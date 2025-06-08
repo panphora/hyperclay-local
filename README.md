@@ -14,6 +14,53 @@ A beautiful, cross-platform desktop application for running your Hyperclay HTML 
 - 🔗 **Quick links** - Easy access to Hyperclay.com and docs
 - ⚡ **Cross-platform** - Works on macOS, Windows, and Linux
 
+## What is Hyperclay?
+
+Hyperclay lets you create **malleable HTML applications** - powerful, self-contained web apps that you fully own and control. Think of it as combining the simplicity of Google Docs with the power of custom web applications.
+
+### The Big Idea
+- **Own Your Stack**: No vendor lock-in. Download your apps and run them anywhere.
+- **Malleable**: Your HTML apps can modify themselves and save changes instantly.
+- **Shareable**: Send a link, and others can view or clone your app with one click.
+- **Future-Proof**: Built on standard HTML/CSS/JavaScript - no proprietary frameworks.
+
+### How Hyperclay Apps Work
+
+#### Self-Modifying HTML
+Your HTML applications can edit themselves in real-time. Change text, add features, modify layouts - everything saves automatically and becomes part of the app. Each app is a complete HTML document that includes:
+- Your content and data
+- Styling (CSS) 
+- Behavior (JavaScript)
+- File references
+- Version metadata
+
+#### Edit Mode
+Toggle edit mode by adding `?editmode=true` to any app URL or clicking the edit button. In edit mode:
+- Click any text to edit it inline
+- Add new elements and components
+- Upload files and images
+- Customize styling and behavior
+- Save changes instantly with Ctrl+S
+
+#### Examples You Can Build
+- **📝 Writer**: Personal writing app with auto-save, word count, and export options
+- **📋 Kanban Board**: Visual project management with drag-and-drop cards and columns
+- **🛠️ Development Log**: Track coding projects, bugs, features, and progress over time
+- **🏠 Landing Pages**: Beautiful pages for projects, products, or personal sites
+- **🎯 Custom Apps**: Calculators, games, portfolios, databases, dashboards - anything you can imagine
+
+### Why Use This Local Server?
+
+While [hyperclay.com](https://hyperclay.com) provides the full hosted experience with user accounts, version history, and collaboration features, this local server lets you:
+
+- ✅ **Work offline** - Edit your apps without internet connection
+- ✅ **Own your data** - Complete independence from any platform
+- ✅ **No subscription needed** - Run unlimited apps locally for free
+- ✅ **Privacy first** - Your apps and data never leave your computer
+- ✅ **Future-proof** - Apps work forever, regardless of service status
+
+This local server provides the core functionality needed to run and edit your Hyperclay apps, ensuring you're never locked into any platform while still benefiting from the powerful malleable HTML concept.
+
 ## 🚀 Quick Start
 
 ### For Users (Download Pre-built App)
