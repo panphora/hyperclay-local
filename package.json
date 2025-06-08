@@ -1,0 +1,71 @@
+{
+  "name": "hyperclay-local-electron",
+  "version": "1.0.0",
+  "description": "Hyperclay Local Server - Desktop App",
+  "main": "main.js",
+  "homepage": "https://hyperclay.com",
+  "author": "Hyperclay",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "build-all": "node build-script.js --all",
+    "build-mac": "electron-builder --mac",
+    "build-windows": "electron-builder --win",
+    "build-linux": "electron-builder --linux",
+    "dist": "npm run build-all",
+    "quick-build": "electron-builder --dir"
+  },
+  "build": {
+    "appId": "com.hyperclay.local-server",
+    "productName": "Hyperclay Local",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "server.js",
+      "preload.js",
+      "renderer.html",
+      "renderer.css",
+      "assets/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "electron": "^27.0.0",
+    "electron-builder": "^24.6.4"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
