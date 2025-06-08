@@ -223,19 +223,6 @@ npm run build-all      # All platforms
 - **Windows**: ~100MB installer  
 - **Linux**: ~120MB AppImage
 
-## 🆚 vs Other Versions
-
-| Feature | Electron App | Go Binary | Node.js |
-|---------|--------------|-----------|---------|
-| **User Interface** | ✅ Beautiful GUI | ❌ Terminal only | ❌ Terminal only |
-| **Setup** | ✅ Install & run | ✅ Drop & run | ❌ npm install |
-| **Folder selection** | ✅ Visual picker | ❌ Must be in folder | ❌ Must be in folder |
-| **Status indicators** | ✅ Real-time UI | ❌ Terminal output | ❌ Terminal output |
-| **System tray** | ✅ Background running | ❌ No | ❌ No |
-| **Auto-updates** | ✅ Built-in support | ❌ Manual download | ❌ Manual update |
-| **File size** | ~150MB | ~5MB | Node.js + modules |
-| **Startup time** | ~2-3 seconds | Instant | ~1-2 seconds |
-
 ## 🚨 Troubleshooting
 
 ### Installation Issues
