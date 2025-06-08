@@ -55,13 +55,17 @@ function startServer(baseDir) {
 
     app = express();
 
-    // Set admin cookie for all requests since local user owns all files
+    // Cookie options for all local development cookies
+    const cookieOptions = {
+      httpOnly: false, // Allow JavaScript access
+      secure: false,   // Allow over HTTP for local development
+      sameSite: 'lax'
+    };
+
+    // Set admin and login cookies for all requests since local user owns all files
     app.use((req, res, next) => {
-      res.cookie('isAdminOfCurrentResource', 'true', { 
-        httpOnly: false, // Allow JavaScript access
-        secure: false,   // Allow over HTTP for local development
-        sameSite: 'lax'
-      });
+      res.cookie('isAdminOfCurrentResource', 'true', cookieOptions);
+      res.cookie('isLoggedIn', 'true', cookieOptions);
       next();
     });
 
@@ -123,6 +127,32 @@ function startServer(baseDir) {
           msgType: 'error'
         });
       }
+    });
+
+    // Set currentResource cookie based on requested HTML file
+    app.use((req, res, next) => {
+      const urlPath = req.path;
+      
+      // Extract app name from URL path
+      let appName = null;
+      if (urlPath === '/') {
+        appName = 'index';
+      } else {
+        const cleanPath = urlPath.substring(1); // Remove leading slash
+        if (cleanPath.endsWith('.html')) {
+          appName = cleanPath.slice(0, -5); // Remove .html extension
+        } else if (!cleanPath.includes('.')) {
+          // Extensionless HTML file
+          appName = cleanPath;
+        }
+      }
+      
+      // Set currentResource cookie if this is an HTML app request
+      if (appName) {
+        res.cookie('currentResource', appName, cookieOptions);
+      }
+      
+      next();
     });
 
     // Static file serving with extensionless HTML support
