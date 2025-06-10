@@ -8,20 +8,20 @@
   <style>
     @font-face {
       font-family: 'Fixedsys';
-      src: url('/home/fixedsys-webfont.woff2') format('woff2');
+      src: url('https://hyperclay.com/fonts/fixedsys-webfont.woff2') format('woff2');
       font-weight: 400;
       font-style: normal;
       font-display: swap;
     }
 
-    button {
+    body button {
       font-family: "Fixedsys";
       font-weight: 400;
     }
 
     @font-face {
       font-family: 'Berkeley Mono';
-      src: url('/home/BerkeleyMonoVariable-Regular.woff2') format('woff2');
+      src: url('https://hyperclay.com/fonts/BerkeleyMonoVariable-Regular.woff2') format('woff2');
       font-weight: 100 900;
       font-style: normal;
       font-display: swap;
@@ -34,29 +34,30 @@
     }
   </style>
 </head>
-<body class="bg-gray-700">
-  <div class="w-[1050px] mt-16 mx-auto p-4 text-white bg-[#0B0C12]">
+<body class="p-8 bg-gray-700">
+  <div class="max-w-[720px] mt-16 mx-auto text-white bg-[#0B0C12]">
     <!-- top bar -->
-    <div class="flex justify-between">
+    <div class="flex justify-between p-4">
       <div class="flex gap-3">
         <div class="w-[16px] h-[16px] bg-[#FE5F58] rounded-full"></div>
         <div class="w-[16px] h-[16px] bg-[#FEBC30] rounded-full"></div>
         <div class="w-[16px] h-[16px] bg-[#28C83E] rounded-full"></div>
       </div>
-      <div class="p-[2px_12px_4px] text-[#F73D48] bg-[#281818] rounded-full">server off</div>
+      <div class="p-[2px_20px_4px] font-bold text-[#F73D48] bg-[#281818] rounded-full">server off</div>
     </div>
+    <hr class="border-[1px] border-[#292F52]">
     <!-- main area -->
-    <div>
+    <div class="p-4">
       <!-- heading -->
-      <div class="flex gap-2">
+      <div class="flex gap-2 items-center mb-3">
         <h1 class="text-[36px]">Hyperclay Local</h1>
-        <a href="https://example.com" class="group ml-auto text-[#69AEFE]">
+        <a href="https://example.com" class="group flex gap-1 ml-auto text-[#69AEFE]">
           <span class="underline group-hover:no-underline">open in browser</span>
-          <svg class="w-4" viewBox="0 0 26 26" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M14.8481 5.60811H4.68411C3.94893 5.60811 3.24386 5.90016 2.72401 6.42001C2.20416 6.93986 1.91211 7.64493 1.91211 8.38011V21.3161C1.91211 22.0513 2.20416 22.7564 2.72401 23.2762C3.24386 23.7961 3.94893 24.0881 4.68411 24.0881H17.6201C18.3553 24.0881 19.0604 23.7961 19.5802 23.2762C20.1001 22.7564 20.3921 22.0513 20.3921 21.3161V11.1521M7.45611 18.5441L24.0881 1.91211M24.0881 1.91211H17.6201M24.0881 1.91211V8.38011" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <svg class="w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" /></svg>
         </a>
       </div>
       <!-- button: start server -->
-      <button class="group w-full p-[4px_17px_7px] text-center text-[20px] cursor-pointer bg-[#247B39] border-[3px] border-t-[#56B96C] border-r-[#15311C] border-b-[#15311C] border-l-[#56B96C] hover:bg-[#2F8744] active:border-b-[#56B96C] active:border-l-[#15311C] active:border-t-[#15311C] active:border-r-[#56B96C] sm:p-[4px_19px_7px] sm:text-[21px]"
+      <button class="group w-full mb-3 p-[6px_17px_9px] text-center text-[23px] cursor-pointer bg-[#247B39] border-[3px] border-t-[#56B96C] border-r-[#15311C] border-b-[#15311C] border-l-[#56B96C] hover:bg-[#2F8744] active:border-b-[#56B96C] active:border-l-[#15311C] active:border-t-[#15311C] active:border-r-[#56B96C] sm:p-[6px_19px_9px] sm:text-[24px]"
       >
         <span class="whitespace-nowrap select-none inline-block group-active:translate-x-[1.5px] group-active:translate-y-[1.5px]">start server</span>
       </button>
