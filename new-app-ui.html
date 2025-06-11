@@ -37,7 +37,7 @@
 <body class="p-8 bg-gray-700">
   <div class="max-w-[720px] mt-16 mx-auto text-white bg-[#0B0C12]">
     <!-- top bar -->
-    <div class="flex justify-between p-4">
+    <div class="flex justify-between items-center px-4 py-3">
       <div class="flex gap-3">
         <div class="w-[16px] h-[16px] bg-[#FE5F58] rounded-full"></div>
         <div class="w-[16px] h-[16px] bg-[#FEBC30] rounded-full"></div>
@@ -49,10 +49,10 @@
     <!-- main area -->
     <div class="p-4">
       <!-- heading -->
-      <div class="flex gap-2 items-center mb-3">
+      <div class="flex gap-2 items-center mb-2.5">
         <h1 class="text-[36px]">Hyperclay Local</h1>
-        <a href="https://example.com" class="group flex gap-1 ml-auto text-[#69AEFE]">
-          <span class="underline group-hover:no-underline">open in browser</span>
+        <a href="https://example.com" class="group flex gap-1 ml-auto text-[#69AEFE]" target="_blank">
+          <span class="text-[20px] underline group-hover:no-underline">open in browser</span>
           <svg class="w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" /></svg>
         </a>
       </div>
@@ -61,7 +61,7 @@
       >
         <span class="whitespace-nowrap select-none inline-block group-active:translate-x-[1.5px] group-active:translate-y-[1.5px]">start server</span>
       </button>
-      <div class="flex gap-2">
+      <div class="flex gap-2 mb-8">
         <div class="m-auto">Folder:</div>
         <div class="truncate flex items-center min-w-0 border-[1px] border-[#4F5A97]">
           <span class="truncate px-2">/Users/davidmiranda/Documents/mega-cool-apps</span>
@@ -71,6 +71,20 @@
         >
           <span class="whitespace-nowrap select-none inline-block group-active:translate-x-[1.5px] group-active:translate-y-[1.5px]">select folder</span>
         </button>
+      </div>
+      <div class="flex flex-col gap-3">
+        <div class="flex gap-4 items-center p-2 border-[2px] border-[#292F52] bg-[#111220] text-[18px]">
+          <div class="w-[42px] h-[42px] text-center leading-[42px] text-white bg-[#292F52] rounded-full">1</div>
+          <div class="text-[#B8BFE5]">Select folder that contains HTML app files</div>
+        </div>
+        <div class="flex gap-4 items-center p-2 border-[2px] border-[#292F52] bg-[#111220] text-[18px]">
+          <div class="w-[42px] h-[42px] text-center leading-[42px] text-white bg-[#292F52] rounded-full">2</div>
+          <div class="text-[#B8BFE5]">Start server and visit http://localhost:4321</div>
+        </div>
+        <div class="flex gap-4 items-center p-2 border-[2px] border-[#292F52] bg-[#111220] text-[18px]">
+          <div class="w-[42px] h-[42px] text-center leading-[42px] text-white bg-[#292F52] rounded-full">3</div>
+          <div class="text-[#B8BFE5]">Locally edit HTML apps using their own UI</div>
+        </div>
       </div>
     </div>
   </div>
