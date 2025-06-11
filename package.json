@@ -29,6 +29,7 @@
     "directories": {
       "output": "dist"
     },
+    "icon": "assets/icon.png",
     "files": [
       "main.js",
       "server.js",
@@ -40,6 +41,7 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.png",
       "target": [
         {
           "target": "dmg",
@@ -51,6 +53,7 @@
       ]
     },
     "win": {
+      "icon": "assets/icon.png",
       "target": [
         {
           "target": "nsis",
@@ -61,6 +64,7 @@
       ]
     },
     "linux": {
+      "icon": "assets/icon.png",
       "target": [
         {
           "target": "AppImage",

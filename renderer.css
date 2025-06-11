@@ -185,23 +185,11 @@
       max-width: 96rem;
     }
   }
-  .m-auto {
-    margin: auto;
-  }
-  .mx-auto {
-    margin-inline: auto;
-  }
   .my-auto {
     margin-block: auto;
   }
   .-mt-1 {
     margin-top: calc(var(--spacing) * -1);
-  }
-  .mt-16 {
-    margin-top: calc(var(--spacing) * 16);
-  }
-  .mb-2 {
-    margin-bottom: calc(var(--spacing) * 2);
   }
   .mb-2\.5 {
     margin-bottom: calc(var(--spacing) * 2.5);
@@ -218,9 +206,6 @@
   .ml-auto {
     margin-left: auto;
   }
-  .block {
-    display: block;
-  }
   .flex {
     display: flex;
   }
@@ -233,29 +218,17 @@
   .inline-block {
     display: inline-block;
   }
-  .table {
-    display: table;
-  }
-  .h-\[16px\] {
-    height: 16px;
-  }
   .h-\[42px\] {
     height: 42px;
   }
   .w-5 {
     width: calc(var(--spacing) * 5);
   }
-  .w-\[16px\] {
-    width: 16px;
-  }
   .w-\[42px\] {
     width: 42px;
   }
   .w-full {
     width: 100%;
-  }
-  .max-w-\[720px\] {
-    max-width: 720px;
   }
   .min-w-0 {
     min-width: calc(var(--spacing) * 0);
@@ -272,9 +245,6 @@
   .items-center {
     align-items: center;
   }
-  .justify-between {
-    justify-content: space-between;
-  }
   .justify-end {
     justify-content: flex-end;
   }
@@ -283,9 +253,6 @@
   }
   .gap-2 {
     gap: calc(var(--spacing) * 2);
-  }
-  .gap-3 {
-    gap: calc(var(--spacing) * 3);
   }
   .gap-4 {
     gap: calc(var(--spacing) * 4);
@@ -367,9 +334,6 @@
   .bg-\[\#7B2525\] {
     background-color: #7B2525;
   }
-  .bg-\[\#28C83E\] {
-    background-color: #28C83E;
-  }
   .bg-\[\#181F28\] {
     background-color: #181F28;
   }
@@ -382,20 +346,8 @@
   .bg-\[\#281818\] {
     background-color: #281818;
   }
-  .bg-\[\#FE5F58\] {
-    background-color: #FE5F58;
-  }
-  .bg-\[\#FEBC30\] {
-    background-color: #FEBC30;
-  }
-  .bg-gray-700 {
-    background-color: var(--color-gray-700);
-  }
   .p-2 {
     padding: calc(var(--spacing) * 2);
-  }
-  .p-8 {
-    padding: calc(var(--spacing) * 8);
   }
   .p-\[2px_20px_4px\] {
     padding: 2px 20px 4px;
@@ -430,6 +382,9 @@
   .text-\[23px\] {
     font-size: 23px;
   }
+  .text-\[24px\] {
+    font-size: 24px;
+  }
   .text-\[36px\] {
     font-size: 36px;
   }
@@ -449,6 +404,9 @@
   }
   .text-\[\#69AEFE\] {
     color: #69AEFE;
+  }
+  .text-\[\#292F52\] {
+    color: #292F52;
   }
   .text-\[\#B8BFE5\] {
     color: #B8BFE5;

@@ -84,6 +84,12 @@ const HyperclayLocalApp = () => {
     }
   };
 
+  const handleOpenFolder = async () => {
+    if (window.electronAPI) {
+      await window.electronAPI.openFolder();
+    }
+  };
+
   const getServerStatusClass = () => {
     return currentState.serverRunning 
       ? 'p-[2px_20px_4px] font-bold text-[#28C83E] bg-[#181F28] rounded-full'
@@ -110,16 +116,26 @@ const HyperclayLocalApp = () => {
         {/* heading */}
         <div className="flex gap-2 items-center mb-2.5">
           <h1 className="text-[36px]">Hyperclay Local</h1>
-          <a 
-            href="#" 
-            className={`group flex gap-1 ml-auto text-[#69AEFE] ${!currentState.serverRunning ? 'hidden' : ''}`}
-            onClick={handleOpenBrowser}
-          >
-            <span className="text-[20px] underline group-hover:no-underline">open in browser</span>
-            <svg className="w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
-            </svg>
-          </a>
+          <div className="ml-auto flex gap-2">
+            <span className="text-[24px] text-[#292F52]">&middot;</span>
+            <button className={`regular-font group flex gap-2 items-center text-[#69AEFE] ${!currentState.selectedFolder ? 'hidden' : ''}`} onClick={handleOpenFolder}>
+              <svg className="w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 240 240">
+                <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="21" d="m130.6 63.1-21.2-21.2a15 15 0 0 0-10.6-4.4H45A22.5 22.5 0 0 0 22.5 60v120A22.5 22.5 0 0 0 45 202.5h150a22.5 22.5 0 0 0 22.5-22.5V90A22.5 22.5 0 0 0 195 67.5h-53.8a15 15 0 0 1-10.6-4.4Z"/>
+              </svg>
+              <span className="text-[20px] underline group-hover:no-underline">folder</span>
+            </button>
+            <span className="text-[24px] text-[#292F52]">&middot;</span>
+            <a 
+              href="#" 
+              className={`group flex gap-1 items-center text-[#69AEFE] ${!currentState.serverRunning ? 'hidden' : ''}`}
+              onClick={handleOpenBrowser}
+            >
+              <span className="text-[20px] underline group-hover:no-underline">browser</span>
+              <svg className="w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+              </svg>
+            </a>
+          </div>
         </div>
         
         {/* button: start server */}
