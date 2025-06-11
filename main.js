@@ -3,10 +3,39 @@ const path = require('path');
 const fs = require('fs');
 const { startServer, stopServer, getServerPort } = require('./server');
 
+// Storage utilities
+const userData = app.getPath('userData');
+const settingsPath = path.join(userData, 'settings.json');
+
+function loadSettings() {
+  try {
+    if (fs.existsSync(settingsPath)) {
+      const data = fs.readFileSync(settingsPath, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch (error) {
+    console.error('Failed to load settings:', error);
+  }
+  return {};
+}
+
+function saveSettings(settings) {
+  try {
+    // Ensure userData directory exists
+    if (!fs.existsSync(userData)) {
+      fs.mkdirSync(userData, { recursive: true });
+    }
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  } catch (error) {
+    console.error('Failed to save settings:', error);
+  }
+}
+
 let mainWindow;
 let tray;
 let serverRunning = false;
 let selectedFolder = null;
+let settings = {};
 
 // Enable live reload for development
 if (process.argv.includes('--dev')) {
@@ -41,6 +70,9 @@ function createWindow() {
     if (process.platform === 'darwin') {
       app.focus();
     }
+    
+    // Update UI with loaded settings
+    updateUI();
   });
 
   // Handle window closed
@@ -224,6 +256,11 @@ async function handleSelectFolder() {
 
   if (!result.canceled && result.filePaths.length > 0) {
     selectedFolder = result.filePaths[0];
+    
+    // Save to persistent storage
+    settings.selectedFolder = selectedFolder;
+    saveSettings(settings);
+    
     updateUI();
   }
 }
@@ -304,6 +341,10 @@ function updateTrayMenu() {
 
 // App event handlers
 app.whenReady().then(() => {
+  // Load settings on startup
+  settings = loadSettings();
+  selectedFolder = settings.selectedFolder || null;
+  
   createWindow();
 
   app.on('activate', () => {
