@@ -9,13 +9,15 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "build": "electron-builder",
-    "build-all": "node build-script.js --all",
-    "build-mac": "electron-builder --mac",
-    "build-windows": "electron-builder --win",
-    "build-linux": "electron-builder --linux",
+    "build": "npm run build-css && electron-builder",
+    "build-css": "tailwindcss -i ./renderer.css -o ./renderer.css --watch=false",
+    "dev-css": "tailwindcss -i ./renderer.css -o ./renderer.css --watch",
+    "build-all": "npm run build-css && node build-script.js --all",
+    "build-mac": "npm run build-css && electron-builder --mac",
+    "build-windows": "npm run build-css && electron-builder --win",
+    "build-linux": "npm run build-css && electron-builder --linux",
     "dist": "npm run build-all",
-    "quick-build": "electron-builder --dir"
+    "quick-build": "npm run build-css && electron-builder --dir"
   },
   "build": {
     "appId": "com.hyperclay.local-server",
@@ -36,7 +38,10 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ]
     },
@@ -44,7 +49,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
@@ -52,7 +59,9 @@
       "target": [
         {
           "target": "AppImage",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
@@ -62,6 +71,7 @@
     }
   },
   "devDependencies": {
+    "@tailwindcss/cli": "^4.0.0",
     "electron": "^27.0.0",
     "electron-builder": "^24.6.4"
   },
