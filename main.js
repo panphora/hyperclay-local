@@ -19,8 +19,8 @@ if (process.argv.includes('--dev')) {
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 720,
-    height: 520,
-    resizable: false,
+    height: 600,
+    resizable: true,
     icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
       nodeIntegration: false,
