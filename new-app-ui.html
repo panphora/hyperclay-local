@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title></title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <title>Hyperclay Local Server</title>
+  <link rel="stylesheet" href="renderer.css">
   <style>
     @font-face {
       font-family: 'Fixedsys';
@@ -43,7 +43,7 @@
         <div class="w-[16px] h-[16px] bg-[#FEBC30] rounded-full"></div>
         <div class="w-[16px] h-[16px] bg-[#28C83E] rounded-full"></div>
       </div>
-      <div class="p-[2px_20px_4px] font-bold text-[#F73D48] bg-[#281818] rounded-full">server off</div>
+      <div id="serverStatus" class="p-[2px_20px_4px] font-bold text-[#F73D48] bg-[#281818] rounded-full">server off</div>
     </div>
     <hr class="border-[1px] border-[#292F52]">
     <!-- main area -->
@@ -51,30 +51,30 @@
       <!-- heading -->
       <div class="flex gap-2 items-center mb-2.5">
         <h1 class="text-[36px]">Hyperclay Local</h1>
-        <a href="https://example.com" class="group flex gap-1 ml-auto text-[#69AEFE]" target="_blank">
+        <a id="openBrowserBtn" href="#" class="group flex gap-1 ml-auto text-[#69AEFE] hidden">
           <span class="text-[20px] underline group-hover:no-underline">open in browser</span>
           <svg class="w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" /></svg>
         </a>
       </div>
       <!-- button: start server (conditional button: shows if server is not running) -->
-      <button class="group w-full mb-3 p-[6px_17px_9px] text-center text-[23px] cursor-pointer bg-[#1E8136] border-[3px] border-t-[#56B96C] border-r-[#15311C] border-b-[#15311C] border-l-[#56B96C] hover:bg-[#23973F] active:border-b-[#56B96C] active:border-l-[#15311C] active:border-t-[#15311C] active:border-r-[#56B96C] sm:p-[6px_19px_9px] sm:text-[24px]"
+      <button id="startServerBtn" class="group w-full mb-3 p-[6px_17px_9px] text-center text-[23px] cursor-pointer bg-[#1E8136] border-[3px] border-t-[#56B96C] border-r-[#15311C] border-b-[#15311C] border-l-[#56B96C] hover:bg-[#23973F] active:border-b-[#56B96C] active:border-l-[#15311C] active:border-t-[#15311C] active:border-r-[#56B96C] sm:p-[6px_19px_9px] sm:text-[24px]"
       >
         <span class="whitespace-nowrap select-none inline-block group-active:translate-x-[1.5px] group-active:translate-y-[1.5px]">start server</span>
       </button>
       <!-- button: stop server (conditional button: shows if server is running) -->
-      <button class="group w-full mb-3 p-[6px_17px_9px] text-center text-[23px] cursor-pointer bg-[#7B2525] border-[3px] border-t-[#B45454] border-r-[#371111] border-b-[#371111] border-l-[#B45454] hover:bg-[#9F3030] active:border-b-[#B45454] active:border-l-[#371111] active:border-t-[#371111] active:border-r-[#B45454] sm:p-[6px_19px_9px] sm:text-[24px]"
+      <button id="stopServerBtn" class="group w-full mb-3 p-[6px_17px_9px] text-center text-[23px] cursor-pointer bg-[#7B2525] border-[3px] border-t-[#B45454] border-r-[#371111] border-b-[#371111] border-l-[#B45454] hover:bg-[#9F3030] active:border-b-[#B45454] active:border-l-[#371111] active:border-t-[#371111] active:border-r-[#B45454] sm:p-[6px_19px_9px] sm:text-[24px] hidden"
       >
         <span class="whitespace-nowrap select-none inline-block group-active:translate-x-[1.5px] group-active:translate-y-[1.5px]">stop server</span>
       </button>
       <!-- conditional error message -->
-      <!-- <div class="-mt-1 mb-4 text-[16px] text-center text-[#FE5F58]">Select a folder before starting server</div> -->
+      <div id="errorMessage" class="-mt-1 mb-4 text-[16px] text-center text-[#FE5F58] hidden">Select a folder before starting server</div>
       <div class="flex gap-2 mb-8">
         <div class="m-auto">Folder:</div>
         <div class="truncate flex items-center min-w-0 border-[1px] border-[#4F5A97]">
-          <span class="truncate px-2">/Users/davidmiranda/Documents/mega-cool-apps</span>
+          <span id="folderPath" class="truncate px-2">No folder selected</span>
         </div>
         <!-- button: select folder -->
-        <button class="group p-[4px_17px_7px] text-center text-[20px] cursor-pointer bg-[#1D1F2F] border-[3px] border-t-[#474C65] border-r-[#131725] border-b-[#131725] border-l-[#474C65] hover:bg-[#232639] active:border-b-[#474C65] active:border-l-[#131725] active:border-t-[#131725] active:border-r-[#474C65] sm:p-[4px_19px_7px] sm:text-[21px]"
+        <button id="selectFolderBtn" class="group p-[4px_17px_7px] text-center text-[20px] cursor-pointer bg-[#1D1F2F] border-[3px] border-t-[#474C65] border-r-[#131725] border-b-[#131725] border-l-[#474C65] hover:bg-[#232639] active:border-b-[#474C65] active:border-l-[#131725] active:border-t-[#131725] active:border-r-[#474C65] sm:p-[4px_19px_7px] sm:text-[21px]"
         >
           <span class="whitespace-nowrap select-none inline-block group-active:translate-x-[1.5px] group-active:translate-y-[1.5px]">select folder</span>
         </button>
@@ -95,5 +95,101 @@
       </div>
     </div>
   </div>
+  
+  <script>
+    // Initialize the app
+    let currentState = {
+      selectedFolder: null,
+      serverRunning: false,
+      serverPort: 4321
+    };
+
+    // DOM elements
+    const elements = {
+      serverStatus: document.getElementById('serverStatus'),
+      openBrowserBtn: document.getElementById('openBrowserBtn'),
+      startServerBtn: document.getElementById('startServerBtn'),
+      stopServerBtn: document.getElementById('stopServerBtn'),
+      errorMessage: document.getElementById('errorMessage'),
+      folderPath: document.getElementById('folderPath'),
+      selectFolderBtn: document.getElementById('selectFolderBtn')
+    };
+
+    // Event listeners
+    elements.selectFolderBtn.addEventListener('click', async () => {
+      await window.electronAPI.selectFolder();
+    });
+
+    elements.startServerBtn.addEventListener('click', async () => {
+      elements.startServerBtn.disabled = true;
+      elements.startServerBtn.querySelector('span').textContent = 'starting...';
+      try {
+        await window.electronAPI.startServer();
+      } catch (error) {
+        console.error('Failed to start server:', error);
+        elements.startServerBtn.disabled = false;
+        elements.startServerBtn.querySelector('span').textContent = 'start server';
+      }
+    });
+
+    elements.stopServerBtn.addEventListener('click', async () => {
+      await window.electronAPI.stopServer();
+    });
+
+    elements.openBrowserBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      await window.electronAPI.openBrowser();
+    });
+
+    // Listen for state updates
+    window.electronAPI.onStateUpdate((state) => {
+      updateUI(state);
+    });
+
+    // Update UI based on current state
+    function updateUI(state) {
+      currentState = { ...currentState, ...state };
+
+      // Update server status
+      if (currentState.serverRunning) {
+        elements.serverStatus.textContent = 'server on';
+        elements.serverStatus.className = 'p-[2px_20px_4px] font-bold text-[#28C83E] bg-[#181F28] rounded-full';
+        elements.startServerBtn.classList.add('hidden');
+        elements.stopServerBtn.classList.remove('hidden');
+        elements.openBrowserBtn.classList.remove('hidden');
+        elements.errorMessage.classList.add('hidden');
+      } else {
+        elements.serverStatus.textContent = 'server off';
+        elements.serverStatus.className = 'p-[2px_20px_4px] font-bold text-[#F73D48] bg-[#281818] rounded-full';
+        elements.startServerBtn.classList.remove('hidden');
+        elements.stopServerBtn.classList.add('hidden');
+        elements.openBrowserBtn.classList.add('hidden');
+        elements.startServerBtn.disabled = false;
+        elements.startServerBtn.querySelector('span').textContent = 'start server';
+      }
+
+      // Update folder selection
+      if (currentState.selectedFolder) {
+        elements.folderPath.textContent = currentState.selectedFolder;
+        elements.startServerBtn.disabled = false;
+        elements.errorMessage.classList.add('hidden');
+      } else {
+        elements.folderPath.textContent = 'No folder selected';
+        elements.startServerBtn.disabled = true;
+        if (currentState.serverRunning === false && elements.startServerBtn.querySelector('span').textContent !== 'starting...') {
+          elements.errorMessage.classList.remove('hidden');
+        }
+      }
+    }
+
+    // Initialize app state
+    async function initializeApp() {
+      const state = await window.electronAPI.getState();
+      updateUI(state);
+    }
+
+    // Start the app
+    initializeApp();
+  </script>
 </body>
 </html>

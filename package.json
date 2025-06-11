@@ -8,10 +8,10 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "dev": "electron . --dev",
+    "dev": "npm run dev-css & electron . --dev",
     "build": "npm run build-css && electron-builder",
-    "build-css": "tailwindcss -i ./renderer.css -o ./renderer.css --watch=false",
-    "dev-css": "tailwindcss -i ./renderer.css -o ./renderer.css --watch",
+    "build-css": "npx @tailwindcss/cli -i ./src.css -o ./renderer.css",
+    "dev-css": "npx @tailwindcss/cli -i ./src.css -o ./renderer.css --watch",
     "build-all": "npm run build-css && node build-script.js --all",
     "build-mac": "npm run build-css && electron-builder --mac",
     "build-windows": "npm run build-css && electron-builder --win",
@@ -29,7 +29,7 @@
       "main.js",
       "server.js",
       "preload.js",
-      "renderer.html",
+      "new-app-ui.html",
       "renderer.css",
       "assets/**/*"
     ],
@@ -71,11 +71,13 @@
     }
   },
   "devDependencies": {
-    "@tailwindcss/cli": "^4.0.0",
     "electron": "^27.0.0",
-    "electron-builder": "^24.6.4"
+    "electron-builder": "^24.6.4",
+    "electron-reload": "^2.0.0-alpha.1"
   },
   "dependencies": {
-    "express": "^4.18.2"
+    "@tailwindcss/cli": "^4.1.8",
+    "express": "^4.18.2",
+    "tailwindcss": "^4.1.8"
   }
 }

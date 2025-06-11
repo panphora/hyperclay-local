@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stopServer: () => ipcRenderer.invoke('stop-server'),
   getState: () => ipcRenderer.invoke('get-state'),
   openFolder: () => ipcRenderer.invoke('open-folder'),
-  openBrowser: () => ipcRenderer.invoke('open-browser'),
+  openBrowser: (url) => ipcRenderer.invoke('open-browser', url),
   
   // Listen for state updates
   onStateUpdate: (callback) => {

@@ -11,7 +11,7 @@ let selectedFolder = null;
 // Enable live reload for development
 if (process.argv.includes('--dev')) {
   require('electron-reload')(__dirname, {
-    electron: path.join(__dirname, '..', 'node_modules', '.bin', 'electron'),
+    electron: path.join(__dirname, 'node_modules', '.bin', 'electron'),
     hardResetMethod: 'exit'
   });
 }
@@ -32,7 +32,7 @@ function createWindow() {
     show: false
   });
 
-  mainWindow.loadFile('renderer.html');
+  mainWindow.loadFile('new-app-ui.html');
 
   // Show window when ready
   mainWindow.once('ready-to-show', () => {
@@ -341,8 +341,10 @@ ipcMain.handle('open-folder', () => {
     shell.openPath(selectedFolder);
   }
 });
-ipcMain.handle('open-browser', () => {
-  if (serverRunning) {
+ipcMain.handle('open-browser', (event, url) => {
+  if (url) {
+    shell.openExternal(url);
+  } else if (serverRunning) {
     shell.openExternal(`http://localhost:${getServerPort()}`);
   }
 });
