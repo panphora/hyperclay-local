@@ -7,17 +7,21 @@
   "author": "Hyperclay",
   "license": "MIT",
   "scripts": {
-    "start": "electron .",
-    "dev": "npm run dev-css & electron . --dev",
-    "build": "npm run build-css && electron-builder",
+    "start": "npm run build-react && electron .",
+    "dev": "concurrently \"npm run dev-css\" \"npm run dev-react\" \"npm run electron-dev\"",
+    "electron-dev": "wait-on dist/bundle.js && electron . --dev",
+    "build": "npm run build-css && npm run build-react && electron-builder",
     "build-css": "npx @tailwindcss/cli -i ./src.css -o ./renderer.css",
     "dev-css": "npx @tailwindcss/cli -i ./src.css -o ./renderer.css --watch",
-    "build-all": "npm run build-css && node build-script.js --all",
-    "build-mac": "npm run build-css && electron-builder --mac",
-    "build-windows": "npm run build-css && electron-builder --win",
-    "build-linux": "npm run build-css && electron-builder --linux",
+    "build-react": "webpack --mode=development",
+    "dev-react": "webpack --mode=development --watch",
+    "build-react-prod": "webpack --mode=production",
+    "build-all": "npm run build-css && npm run build-react-prod && node build-script.js --all",
+    "build-mac": "npm run build-css && npm run build-react-prod && electron-builder --mac",
+    "build-windows": "npm run build-css && npm run build-react-prod && electron-builder --win",
+    "build-linux": "npm run build-css && npm run build-react-prod && electron-builder --linux",
     "dist": "npm run build-all",
-    "quick-build": "npm run build-css && electron-builder --dir"
+    "quick-build": "npm run build-css && npm run build-react-prod && electron-builder --dir"
   },
   "build": {
     "appId": "com.hyperclay.local-server",
@@ -29,7 +33,8 @@
       "main.js",
       "server.js",
       "preload.js",
-      "new-app-ui.html",
+      "app.html",
+      "dist/**/*",
       "renderer.css",
       "assets/**/*"
     ],
@@ -71,13 +76,22 @@
     }
   },
   "devDependencies": {
+    "@babel/core": "^7.27.4",
+    "@babel/preset-react": "^7.27.1",
+    "babel-loader": "^10.0.0",
+    "concurrently": "^9.1.2",
     "electron": "^27.0.0",
     "electron-builder": "^24.6.4",
-    "electron-reload": "^2.0.0-alpha.1"
+    "electron-reload": "^2.0.0-alpha.1",
+    "wait-on": "^8.0.3",
+    "webpack": "^5.99.9",
+    "webpack-cli": "^6.0.1"
   },
   "dependencies": {
     "@tailwindcss/cli": "^4.1.8",
     "express": "^4.18.2",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
     "tailwindcss": "^4.1.8"
   }
 }

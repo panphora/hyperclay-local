@@ -31,7 +31,7 @@ function createWindow() {
     show: false
   });
 
-  mainWindow.loadFile('new-app-ui.html');
+  mainWindow.loadFile('app.html');
 
   // Show window when ready
   mainWindow.once('ready-to-show', () => {
