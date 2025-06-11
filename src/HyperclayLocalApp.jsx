@@ -103,8 +103,8 @@ const HyperclayLocalApp = () => {
   return (
     <div className="text-white bg-[#0B0C12]">
       {/* top bar */}
-      <div className="flex justify-end items-center p-[16px_24px_15px_24px]">
-        <div className={getServerStatusClass()}>
+      <div className="flex justify-end items-center p-[16px_24px_15px_24px]" style={{WebkitAppRegion: 'drag'}}>
+        <div className={getServerStatusClass()} style={{WebkitAppRegion: 'no-drag'}}>
           {currentState.serverRunning ? 'server on' : 'server off'}
         </div>
       </div>
@@ -116,8 +116,8 @@ const HyperclayLocalApp = () => {
         {/* heading */}
         <div className="flex gap-2 items-center mb-2.5">
           <h1 className="text-[36px]">Hyperclay Local</h1>
-          <div className="ml-auto flex gap-2">
-            <span className={`text-[24px] text-[#292F52] ${!currentState.selectedFolder ? 'hidden' : ''}`}> &middot;</span>
+          <div className="ml-auto flex gap-2" style={{WebkitAppRegion: 'no-drag'}}>
+            <span className={`text-[24px] text-[#292F52] ${!currentState.selectedFolder || !currentState.serverRunning ? 'hidden' : ''}`}> &middot;</span>
             <button className={`regular-font group flex gap-2 items-center text-[#69AEFE] ${!currentState.selectedFolder ? 'hidden' : ''}`} onClick={handleOpenFolder}>
               <svg className="w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 240 240">
                 <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="21" d="m130.6 63.1-21.2-21.2a15 15 0 0 0-10.6-4.4H45A22.5 22.5 0 0 0 22.5 60v120A22.5 22.5 0 0 0 45 202.5h150a22.5 22.5 0 0 0 22.5-22.5V90A22.5 22.5 0 0 0 195 67.5h-53.8a15 15 0 0 1-10.6-4.4Z"/>
