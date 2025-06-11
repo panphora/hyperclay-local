@@ -46,11 +46,24 @@ if (process.argv.includes('--dev')) {
 }
 
 function createWindow() {
-  mainWindow = new BrowserWindow({
+  // Try to load icon, with fallback options
+  let iconPath = null;
+  const possibleIcons = [
+    path.join(__dirname, 'assets', 'icon.png'),
+    path.join(__dirname, 'assets', 'icon.svg'),
+  ];
+  
+  for (const iconFile of possibleIcons) {
+    if (fs.existsSync(iconFile)) {
+      iconPath = iconFile;
+      break;
+    }
+  }
+  
+  const windowOptions = {
     width: 720,
     height: 600,
     resizable: true,
-    icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -58,7 +71,14 @@ function createWindow() {
     },
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     show: false
-  });
+  };
+  
+  // Add icon only if we found one
+  if (iconPath) {
+    windowOptions.icon = iconPath;
+  }
+  
+  mainWindow = new BrowserWindow(windowOptions);
 
   mainWindow.loadFile('app.html');
 
@@ -344,6 +364,13 @@ app.whenReady().then(() => {
   // Load settings on startup
   settings = loadSettings();
   selectedFolder = settings.selectedFolder || null;
+  
+  // Set app icon for dock/taskbar
+  const iconPath = path.join(__dirname, 'assets', 'icon.png');
+  if (fs.existsSync(iconPath)) {
+    const icon = nativeImage.createFromPath(iconPath);
+    app.dock?.setIcon(icon); // macOS dock
+  }
   
   createWindow();
 
