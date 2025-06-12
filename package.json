@@ -32,13 +32,17 @@
     },
     "files": [
       "main.js",
-      "server.js",
+      "server.js", 
       "preload.js",
       "app.html",
-      "dist/**/*",
+      "dist/bundle.js",
       "renderer.css",
-      "assets/**/*"
+      "assets/icon.png",
+      "assets/icon.svg",
+      "assets/*.woff2"
     ],
+    "extraFiles": [],
+    "asarUnpack": [],
     "mac": {
       "category": "public.app-category.developer-tools",
         "target": [
