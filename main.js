@@ -130,6 +130,38 @@ function createWindow() {
     return { action: 'deny' };
   });
 
+  // Add context menu with copy functionality
+  mainWindow.webContents.on('context-menu', (event, params) => {
+    const { selectionText, isEditable } = params;
+    
+    if (selectionText || isEditable) {
+      const contextMenu = Menu.buildFromTemplate([
+        {
+          label: 'Copy',
+          role: 'copy',
+          enabled: selectionText.length > 0
+        },
+        {
+          label: 'Cut',
+          role: 'cut',
+          enabled: isEditable && selectionText.length > 0
+        },
+        {
+          label: 'Paste',
+          role: 'paste',
+          enabled: isEditable
+        },
+        { type: 'separator' },
+        {
+          label: 'Select All',
+          role: 'selectAll'
+        }
+      ]);
+      
+      contextMenu.popup();
+    }
+  });
+
   // Create system tray
   createTray();
 
@@ -240,6 +272,18 @@ function createMenu() {
         process.platform === 'darwin' ? 
           { label: 'Close', accelerator: 'CmdOrCtrl+W', role: 'close' } :
           { label: 'Quit', accelerator: 'CmdOrCtrl+Q', role: 'quit' }
+      ]
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', role: 'undo' },
+        { label: 'Redo', accelerator: 'Shift+CmdOrCtrl+Z', role: 'redo' },
+        { type: 'separator' },
+        { label: 'Cut', accelerator: 'CmdOrCtrl+X', role: 'cut' },
+        { label: 'Copy', accelerator: 'CmdOrCtrl+C', role: 'copy' },
+        { label: 'Paste', accelerator: 'CmdOrCtrl+V', role: 'paste' },
+        { label: 'Select All', accelerator: 'CmdOrCtrl+A', role: 'selectAll' }
       ]
     },
     {
