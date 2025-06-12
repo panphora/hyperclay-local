@@ -10,12 +10,20 @@ app.name = 'Hyperclay Local';
 
 // Set app info for About panel on macOS
 if (process.platform === 'darwin') {
-  app.setAboutPanelOptions({
+  const iconPath = path.join(__dirname, 'assets', 'icon.png');
+  const aboutOptions = {
     applicationName: 'Hyperclay Local',
     applicationVersion: '1.0.0',
     version: '1.0.0',
     copyright: 'Made with ❤️ for Hyperclay'
-  });
+  };
+  
+  // Add icon if it exists
+  if (fs.existsSync(iconPath)) {
+    aboutOptions.iconPath = iconPath;
+  }
+  
+  app.setAboutPanelOptions(aboutOptions);
 }
 
 // Storage utilities
@@ -131,12 +139,23 @@ function createWindow() {
 
 function createTray() {
   // Create tray icon
-  const iconPath = path.join(__dirname, 'assets', 'tray-icon.png');
+  // Try to use tray-icon.png first, then fall back to main icon
+  const trayIconPath = path.join(__dirname, 'assets', 'tray-icon.png');
+  const mainIconPath = path.join(__dirname, 'assets', 'icon.png');
   let trayIcon;
   
   try {
-    trayIcon = nativeImage.createFromPath(iconPath);
-    if (trayIcon.isEmpty()) {
+    // Try tray-specific icon first
+    if (fs.existsSync(trayIconPath)) {
+      trayIcon = nativeImage.createFromPath(trayIconPath);
+    } else if (fs.existsSync(mainIconPath)) {
+      // Fall back to main icon and resize it for tray
+      trayIcon = nativeImage.createFromPath(mainIconPath);
+      // Resize to 16x16 for tray on most platforms (22x22 on macOS)
+      const size = process.platform === 'darwin' ? 22 : 16;
+      trayIcon = trayIcon.resize({ width: size, height: size });
+    }
+    if (!trayIcon || trayIcon.isEmpty()) {
       // Fallback to a simple icon if file doesn't exist
       trayIcon = nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAAdgAAAHYBTnsmCAAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAAFYSURBVDiNpZM9SwNBEIafgwQSCxsLwcJCG1sLG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sL');
     }
@@ -243,12 +262,14 @@ function createMenu() {
         {
           label: 'About Hyperclay Local',
           click: () => {
+            const iconPath = path.join(__dirname, 'assets', 'icon.png');
             dialog.showMessageBox(mainWindow, {
               type: 'info',
               title: 'About Hyperclay Local',
               message: 'Hyperclay Local Server v1.0.0',
               detail: 'A local server for running your Hyperclay HTML apps offline.\n\nMade with ❤️ for the Hyperclay platform.',
-              buttons: ['OK']
+              buttons: ['OK'],
+              icon: fs.existsSync(iconPath) ? iconPath : undefined
             });
           }
         },
