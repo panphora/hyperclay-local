@@ -3,6 +3,21 @@ const path = require('path');
 const fs = require('fs');
 const { startServer, stopServer, getServerPort } = require('./server');
 
+// Set app name immediately for CMD+Tab on macOS - must be before app.whenReady()
+app.setName('Hyperclay Local');
+// Also set the name property directly
+app.name = 'Hyperclay Local';
+
+// Set app info for About panel on macOS
+if (process.platform === 'darwin') {
+  app.setAboutPanelOptions({
+    applicationName: 'Hyperclay Local',
+    applicationVersion: '1.0.0',
+    version: '1.0.0',
+    copyright: 'Made with ❤️ for Hyperclay'
+  });
+}
+
 // Storage utilities
 const userData = app.getPath('userData');
 const settingsPath = path.join(userData, 'settings.json');
@@ -61,6 +76,7 @@ function createWindow() {
   }
   
   const windowOptions = {
+    title: 'Hyperclay Local',
     width: 720,
     height: 600,
     resizable: true,
@@ -361,6 +377,9 @@ function updateTrayMenu() {
 
 // App event handlers
 app.whenReady().then(() => {
+  // Ensure app name is set again after ready
+  app.setName('Hyperclay Local');
+  
   // Load settings on startup
   settings = loadSettings();
   selectedFolder = settings.selectedFolder || null;

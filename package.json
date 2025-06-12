@@ -1,5 +1,6 @@
 {
   "name": "hyperclay-local-electron",
+  "productName": "Hyperclay Local",
   "version": "1.0.0",
   "description": "Hyperclay Local Server - Desktop App",
   "main": "main.js",
@@ -42,6 +43,8 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "assets/icon.png",
+      "bundleDisplayName": "Hyperclay Local",
+      "bundleShortVersion": "1.0.0",
       "target": [
         {
           "target": "dmg",
