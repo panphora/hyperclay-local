@@ -30,7 +30,6 @@
     "directories": {
       "output": "dist"
     },
-    "icon": "assets/icon.png",
     "files": [
       "main.js",
       "server.js",
@@ -42,10 +41,7 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "icon": "assets/icon.png",
-      "bundleDisplayName": "Hyperclay Local",
-      "bundleShortVersion": "1.0.0",
-      "target": [
+        "target": [
         {
           "target": "dmg",
           "arch": [
@@ -56,8 +52,7 @@
       ]
     },
     "win": {
-      "icon": "assets/icon.png",
-      "target": [
+        "target": [
         {
           "target": "nsis",
           "arch": [
@@ -67,8 +62,7 @@
       ]
     },
     "linux": {
-      "icon": "assets/icon.png",
-      "target": [
+        "target": [
         {
           "target": "AppImage",
           "arch": [
