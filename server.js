@@ -5,6 +5,7 @@ const path = require('path');
 let server = null;
 let app = null;
 const PORT = 4321;
+let connections = new Set();
 
 // Generate timestamp in same format as hyperclay hosted platform
 function generateTimestamp() {
@@ -216,19 +217,48 @@ function startServer(baseDir) {
       resolve();
     });
 
+    // Track connections for proper cleanup
+    server.on('connection', (connection) => {
+      connections.add(connection);
+      connection.on('close', () => {
+        connections.delete(connection);
+      });
+    });
+
     server.on('error', (err) => {
       server = null;
+      connections.clear();
       reject(err);
     });
   });
 }
 
 function stopServer() {
-  if (server) {
-    server.close();
-    server = null;
-    console.log('Server stopped');
-  }
+  return new Promise((resolve) => {
+    if (server) {
+      console.log('Stopping server...');
+      
+      // Force close all active connections
+      for (const connection of connections) {
+        connection.destroy();
+      }
+      connections.clear();
+      
+      server.close(() => {
+        server = null;
+        app = null;
+        console.log('Server stopped');
+        resolve();
+      });
+      
+      // Fallback: Use built-in closeAllConnections if available (Node.js 18.2+)
+      if (server.closeAllConnections) {
+        server.closeAllConnections();
+      }
+    } else {
+      resolve();
+    }
+  });
 }
 
 function getServerPort() {

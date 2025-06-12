@@ -1,7 +1,7 @@
 const { app, BrowserWindow, dialog, shell, Menu, Tray, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { startServer, stopServer, getServerPort } = require('./server');
+const { startServer, stopServer, getServerPort, isServerRunning } = require('./server');
 
 // Set app name immediately for CMD+Tab on macOS - must be before app.whenReady()
 app.setName('Hyperclay Local');
@@ -374,7 +374,7 @@ async function handleStartServer() {
 
   try {
     await startServer(selectedFolder);
-    serverRunning = true;
+    serverRunning = isServerRunning();
     updateUI();
     updateTrayMenu();
     
@@ -386,11 +386,19 @@ async function handleStartServer() {
   }
 }
 
-function handleStopServer() {
-  stopServer();
-  serverRunning = false;
-  updateUI();
-  updateTrayMenu();
+async function handleStopServer() {
+  try {
+    await stopServer();
+    serverRunning = isServerRunning();
+    updateUI();
+    updateTrayMenu();
+  } catch (error) {
+    console.error('Error stopping server:', error);
+    serverRunning = isServerRunning(); // Ensure state is accurate
+    updateUI();
+    updateTrayMenu();
+    dialog.showErrorBox('Server Error', `Failed to stop server: ${error.message}`);
+  }
 }
 
 function updateUI() {
@@ -470,9 +478,17 @@ app.on('window-all-closed', () => {
   // Don't quit the app when all windows are closed
 });
 
-app.on('before-quit', () => {
-  if (serverRunning) {
-    stopServer();
+app.on('before-quit', async (event) => {
+  if (isServerRunning()) {
+    event.preventDefault(); // Prevent immediate quit
+    try {
+      await stopServer();
+      serverRunning = isServerRunning();
+      app.quit(); // Now quit after server is stopped
+    } catch (error) {
+      console.error('Error stopping server during quit:', error);
+      app.quit(); // Quit anyway
+    }
   }
 });
 
