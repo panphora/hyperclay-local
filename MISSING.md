@@ -1,4 +1,4 @@
-# Missing Features in Local Hyperclay Electron App
+# Missing Features in Hyperclay Local Electron App
 
 This document outlines the major features available in the full Hyperclay platform (hyperclay.com) that are **missing** from the local Electron app. Developers who have used the full platform may expect these features when transitioning to the local app.
 
@@ -182,7 +182,7 @@ This document outlines the major features available in the full Hyperclay platfo
 
 ## Conclusion
 
-The local Hyperclay Electron app provides the **core malleable HTML functionality** but lacks most of the **platform features** that make hyperclay.com a complete web application hosting and development environment. 
+The Hyperclay Local Electron app provides the **core malleable HTML functionality** but lacks most of the **platform features** that make hyperclay.com a complete web application hosting and development environment. 
 
 Developers should expect to:
 - Manually manage files and organization
