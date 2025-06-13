@@ -17,22 +17,25 @@
     "build-react": "webpack --mode=development",
     "dev-react": "webpack --mode=development --watch",
     "build-react-prod": "webpack --mode=production",
-    "build-all": "npm run build-css && npm run build-react-prod && node build-script.js --all",
-    "build-mac": "npm run build-css && npm run build-react-prod && electron-builder --mac",
-    "build-windows": "npm run build-css && npm run build-react-prod && electron-builder --win",
-    "build-linux": "npm run build-css && npm run build-react-prod && electron-builder --linux",
+    "build-all": "npm run build-css && npm run build-react-prod && electron-builder --mac --win --linux && node post-build.js",
+    "build-mac": "npm run build-css && npm run build-react-prod && electron-builder --mac && node post-build.js",
+    "build-windows": "npm run build-css && npm run build-react-prod && electron-builder --win && node post-build.js",
+    "build-linux": "npm run build-css && npm run build-react-prod && electron-builder --linux && node post-build.js",
     "dist": "npm run build-all",
-    "quick-build": "npm run build-css && npm run build-react-prod && electron-builder --dir"
+    "quick-build": "npm run build-css && npm run build-react-prod && electron-builder --dir",
+    "list-remote-files": "node list-remote-files.js",
+    "remove-remote-files": "node remove-remote-files.js"
   },
   "build": {
     "appId": "com.hyperclay.local-server",
     "productName": "Hyperclay Local",
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "build"
     },
     "files": [
       "main.js",
-      "server.js", 
+      "server.js",
       "preload.js",
       "app.html",
       "dist/bundle.js",
@@ -45,7 +48,7 @@
     "asarUnpack": [],
     "mac": {
       "category": "public.app-category.developer-tools",
-        "target": [
+      "target": [
         {
           "target": "dmg",
           "arch": [
@@ -56,7 +59,7 @@
       ]
     },
     "win": {
-        "target": [
+      "target": [
         {
           "target": "nsis",
           "arch": [
@@ -66,7 +69,7 @@
       ]
     },
     "linux": {
-        "target": [
+      "target": [
         {
           "target": "AppImage",
           "arch": [
@@ -93,7 +96,9 @@
     "webpack-cli": "^6.0.1"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.828.0",
     "@tailwindcss/cli": "^4.1.8",
+    "dotenv": "^16.5.0",
     "express": "^4.18.2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
