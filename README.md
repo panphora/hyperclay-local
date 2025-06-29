@@ -219,9 +219,9 @@ npm run build-all      # All platforms
 ```
 
 ### Distribution Size
-- **macOS**: ~150MB DMG
-- **Windows**: ~100MB installer  
-- **Linux**: ~120MB AppImage
+- **macOS**: ~100MB DMG
+- **Windows**: ~76MB installer  
+- **Linux**: ~106MB AppImage
 
 ## 🚨 Troubleshooting
 

@@ -111,7 +111,29 @@ function startServer(baseDir) {
       }
 
       try {
-        // Create backup in sites-versions folder before saving new version
+        // Check if this is the first save (no versions exist yet)
+        const siteVersionsDir = path.join(baseDir, 'sites-versions', name);
+        let isFirstSave = false;
+        try {
+          const versionFiles = await fs.readdir(siteVersionsDir);
+          isFirstSave = versionFiles.length === 0;
+        } catch (error) {
+          // Directory doesn't exist yet, so this is the first save
+          isFirstSave = true;
+        }
+
+        // If first save, backup the existing site content first
+        if (isFirstSave) {
+          try {
+            const existingContent = await fs.readFile(filePath, 'utf8');
+            await createBackup(baseDir, name, existingContent);
+            console.log(`Created initial backup of existing ${name}.html`);
+          } catch (error) {
+            // File doesn't exist yet, that's OK
+          }
+        }
+        
+        // Create backup of the new content
         await createBackup(baseDir, name, content);
         
         // Write file (creates if not exists, overwrites if exists)
