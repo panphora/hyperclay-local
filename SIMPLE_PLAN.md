@@ -171,6 +171,7 @@ async function processUploadQueue() {
   - Skip deletions and treat renames as “new file” uploads.
   - Ensure the hosted service creates its own backup of the current file before overwriting with the uploaded content (local backup already ran when the user saved).
   - Route non-HTML uploads through a dedicated `/api/local-sync/upload` API so the server can mirror them into the correct `uploads/{username}/` structure.
+  - Block `.html` files from the uploads pipeline entirely to avoid assets being misclassified as apps.
 
 ## 5. Continuous Remote → Local Sync
 ### Pseudocode
@@ -245,6 +246,12 @@ async function uploadAsset(job) {
     return;
   }
 
+  if (path.extname(job.path).toLowerCase() === '.html') {
+    logSyncEvent(`skip ${job.path}: HTML files must be treated as apps`);
+    showErrorBanner(`${job.filename} is HTML. Move it into the apps directory to sync.`);
+    return;
+  }
+
   const body = new FormData();
   body.append('appName', job.appName);
   body.append('file', fs.createReadStream(job.path));
@@ -276,6 +283,16 @@ export async function localSyncUpload(req, res) {
   await dx('uploads', node.ownerUsername).createFileOverwrite(req.body.relativePath, file.buffer);
 
   res.json({ ok: true });
+}
+
+export async function processUpload(req, res, next) {
+  const file = req.file;
+  if (path.extname(file.originalFilename).toLowerCase() === '.html') {
+    return sendError(req, res, 400, 'Upload HTML via the site editor, not the uploads tool.');
+  }
+
+  // existing upload pipeline continues here
+  next();
 }
 ```
 
