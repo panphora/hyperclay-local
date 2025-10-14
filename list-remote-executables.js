@@ -20,7 +20,7 @@ function formatDate(dateString) {
   return new Date(dateString).toLocaleString();
 }
 
-async function listR2Files() {
+async function listR2Executables() {
   const client = new S3Client({
     region: "auto",
     endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
@@ -38,12 +38,12 @@ async function listR2Files() {
     const response = await client.send(command);
     
     if (!response.Contents || response.Contents.length === 0) {
-      console.log('📦 No files found in R2 bucket:', R2_BUCKET);
+      console.log('📦 No executables found in R2 bucket:', R2_BUCKET);
       return;
     }
 
-    console.log(`📦 Files in R2 bucket: ${R2_BUCKET}\n`);
-    console.log('Filename'.padEnd(40) + 'Size'.padEnd(12) + 'Last Modified');
+    console.log(`📦 Executables in R2 bucket: ${R2_BUCKET}\n`);
+    console.log('Executable'.padEnd(40) + 'Size'.padEnd(12) + 'Last Modified');
     console.log('-'.repeat(80));
 
     response.Contents.forEach(file => {
@@ -53,9 +53,9 @@ async function listR2Files() {
       console.log(`${filename}${size}${modified}`);
     });
 
-    console.log(`\n✅ Total files: ${response.Contents.length}`);
+    console.log(`\n✅ Total executables: ${response.Contents.length}`);
   } catch (error) {
-    console.error('❌ Failed to list files:', error.message);
+    console.error('❌ Failed to list executables:', error.message);
     process.exit(1);
   }
 }
@@ -68,7 +68,7 @@ async function main() {
     process.exit(1);
   }
 
-  await listR2Files();
+  await listR2Executables();
 }
 
 main().catch(error => {

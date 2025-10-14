@@ -234,6 +234,7 @@ async function reconcileAfterReconnect() {
 
 ```js
 async function uploadAsset(job) {
+  const path = require('path');
   const stat = await fs.promises.stat(job.path).catch(() => null);
   if (!stat) {
     logSyncEvent(`skip delete ${job.path}`);

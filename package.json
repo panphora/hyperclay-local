@@ -23,8 +23,8 @@
     "build-linux": "npm run build-css && npm run build-react-prod && electron-builder --linux && node post-build.js",
     "dist": "npm run build-all",
     "quick-build": "npm run build-css && npm run build-react-prod && electron-builder --dir",
-    "list-remote-files": "node list-remote-files.js",
-    "remove-remote-files": "node remove-remote-files.js"
+    "list-remote-executables": "node list-remote-executables.js",
+    "remove-remote-executables": "node remove-remote-executables.js"
   },
   "build": {
     "appId": "com.hyperclay.local-server",

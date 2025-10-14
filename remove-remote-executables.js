@@ -1,7 +1,7 @@
 const { S3Client, ListObjectsV2Command, DeleteObjectsCommand } = require('@aws-sdk/client-s3');
 require('dotenv').config();
 
-// R2 Configuration - matching list-remote-files.js
+// R2 Configuration - matching list-remote-executables.js
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
 const R2_ACCESS_KEY = process.env.R2_ACCESS_KEY;
 const R2_SECRET_KEY = process.env.R2_SECRET_KEY;
@@ -19,9 +19,9 @@ const s3Client = new S3Client({
 
 const BUCKET_NAME = R2_BUCKET;
 
-async function removeRemoteFiles() {
+async function removeRemoteExecutables() {
   try {
-    console.log('🔍 Checking files in R2 bucket:', BUCKET_NAME);
+    console.log('🔍 Checking executables in R2 bucket:', BUCKET_NAME);
     console.log('');
 
     // First, list all objects in the bucket
@@ -32,11 +32,11 @@ async function removeRemoteFiles() {
     const listResponse = await s3Client.send(listCommand);
     
     if (!listResponse.Contents || listResponse.Contents.length === 0) {
-      console.log('📁 Bucket is already empty - no files to remove');
+      console.log('📁 Bucket is already empty - no executables to remove');
       return;
     }
 
-    console.log(`📦 Found ${listResponse.Contents.length} files to remove:`);
+    console.log(`📦 Found ${listResponse.Contents.length} executables to remove:`);
     console.log('');
 
     // Sort files by last modified date (newest first) for display
@@ -58,7 +58,7 @@ async function removeRemoteFiles() {
     const totalSize = listResponse.Contents.reduce((sum, file) => sum + file.Size, 0);
     const totalSizeInMB = (totalSize / (1024 * 1024)).toFixed(2);
     
-    console.log(`📊 Total to remove: ${listResponse.Contents.length} files, ${totalSizeInMB} MB`);
+    console.log(`📊 Total to remove: ${listResponse.Contents.length} executables, ${totalSizeInMB} MB`);
     console.log('');
 
     // Prepare objects for deletion
@@ -66,7 +66,7 @@ async function removeRemoteFiles() {
       Key: file.Key
     }));
 
-    console.log('🗑️  Starting deletion process...');
+    console.log('🗑️  Starting executable deletion process...');
     console.log('');
 
     // Delete objects in batches (S3 allows up to 1000 objects per delete request)
@@ -88,7 +88,7 @@ async function removeRemoteFiles() {
       
       if (deleteResponse.Deleted) {
         deletedCount += deleteResponse.Deleted.length;
-        console.log(`✅ Deleted batch ${Math.floor(i / batchSize) + 1}: ${deleteResponse.Deleted.length} files`);
+        console.log(`✅ Deleted batch ${Math.floor(i / batchSize) + 1}: ${deleteResponse.Deleted.length} executables`);
         
         // Show first few deleted files in each batch
         deleteResponse.Deleted.slice(0, 3).forEach(deleted => {
@@ -96,7 +96,7 @@ async function removeRemoteFiles() {
         });
         
         if (deleteResponse.Deleted.length > 3) {
-          console.log(`   ... and ${deleteResponse.Deleted.length - 3} more files`);
+          console.log(`   ... and ${deleteResponse.Deleted.length - 3} more executables`);
         }
         console.log('');
       }
@@ -111,11 +111,11 @@ async function removeRemoteFiles() {
     }
 
     console.log('🎉 Deletion completed!');
-    console.log(`📊 Successfully deleted ${deletedCount} files from bucket: ${BUCKET_NAME}`);
+    console.log(`📊 Successfully deleted ${deletedCount} executables from bucket: ${BUCKET_NAME}`);
     console.log(`💾 Freed up ${totalSizeInMB} MB of storage space`);
 
   } catch (error) {
-    console.error('❌ Error removing files:', error.message);
+    console.error('❌ Error removing executables:', error.message);
     
     // Provide more specific error guidance
     if (error.name === 'AccessDenied') {
@@ -151,7 +151,7 @@ async function confirmDeletion() {
       if (input === 'DELETE ALL') {
         resolve(true);
       } else {
-        console.log('❌ Deletion cancelled - input did not match "DELETE ALL"');
+        console.log('❌ Executable deletion cancelled - input did not match "DELETE ALL"');
         resolve(false);
       }
     });
@@ -174,7 +174,7 @@ async function main() {
   const confirmed = await confirmDeletion();
   
   if (confirmed) {
-    await removeRemoteFiles();
+    await removeRemoteExecutables();
   } else {
     console.log('✋ Operation cancelled by user');
     process.exit(0);
