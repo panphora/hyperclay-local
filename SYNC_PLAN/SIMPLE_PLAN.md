@@ -301,6 +301,11 @@ export async function processUpload(req, res, next) {
 - Never delete hosted files automatically; surface errors if remote quotas (e.g., max sites) block uploads.
 
 ## 7. UX Polish
+- Introduce a fixed-position sync status bar along the window bottom with a top border of #292F52 (matching the existing top divider thickness). The bar defaults to visible unless the user hides it.
+  - **Unauthenticated state:** Left-aligned rounded “Hide” button (persists `settings.showSyncBar = false` and hides the bar), right-aligned copy “Sync with Hyperclay Platform:” plus a small `Enable sync` button that launches the OAuth flow.
+  - **Authenticated state:** Left-aligned `Logout` button (revokes token) followed by a `Disable sync` button (turns off auto-sync); right-aligned pill mirroring the “server on/off” styling to display `sync on` / `sync off`.
+  - Add a `View → Toggle Sync Status Bar` menu item tied to the same `showSyncBar` setting; clicking the in-bar “Hide” button should trigger the same toggle.
+- Adjust `HyperclayLocalApp.jsx` state updates so the status bar reflects `syncEnabled`, token presence, and `showSyncBar` preference from `window.electronAPI.getState()`.
 ### Pseudocode
 
 ```jsx
