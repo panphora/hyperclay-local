@@ -811,7 +811,26 @@ app.use('/api/local-sync', syncRouter);
 
 **File**: `hyperclay/hey.js` (MODIFY - add to routingTable)
 
-IMPORTANT: This is a simplified approach - just one JSON endpoint, no templates needed.
+**IMPORTANT:** This is v3.1's simplified approach:
+- ✅ **NO account page templates** (no account.edge, no api-key-generated.edge)
+- ✅ **NO /account routes** - completely removed for simplicity
+- ✅ **Single JSON endpoint** - returns key data for client-side modal
+- ✅ **Modal-only UI** - dashboard JavaScript displays the key in a modal
+
+**How the routing works:**
+
+```
+User makes: POST /generate-sync-key
+  ↓
+State machine detects:
+  • action: 'generate-sync-key' (from single path segment)
+  • resourceType: 'main_app' (default for main domain)
+  • userType: 'dev' (from authenticated user)
+  ↓
+Routing key: 'dev:main_app:generate-sync-key'
+  ↓
+✅ Handler matches and executes
+```
 
 Add imports at the top (after line 17):
 ```javascript
@@ -822,18 +841,19 @@ Add this route to the `routingTable` map (around line 370-380, after existing ma
 
 ```javascript
 // API Key Generation (v3.1: Simple JSON endpoint for modal)
+// POST /generate-sync-key → 'dev:main_app:generate-sync-key'
 'dev:main_app:generate-sync-key': [
   state(s => s.user.person?.hasActiveSubscription).require('Active subscription required'),
   async (req, res) => {
     try {
-      const person = req.state.user.person;
+      const person = req.state.user.person;  // CORRECT: Use req.state.user.person
       const result = await generateApiKey(person.id, 'Sync Key');
 
       // Return JSON for client-side modal display
       res.json({
         success: true,
-        key: result.key,
-        prefix: result.prefix,
+        key: result.key,        // hcsk_abc123... (full key, shown once)
+        prefix: result.prefix,  // hcsk_abc123 (for identification)
         expiresAt: result.expiresAt,
         username: person.username
       });
@@ -848,10 +868,48 @@ Add this route to the `routingTable` map (around line 370-380, after existing ma
 ],
 ```
 
-**Note:** This endpoint will be called from JavaScript in the dashboard. Add a menu item or button that:
-1. Makes a POST request to `/generate-sync-key`
-2. Shows the returned key in a modal with copy button
-3. Warns user this is the only time they'll see it
+**Dashboard UI Implementation** (JavaScript to add in your dashboard):
+
+```javascript
+// Example: Add a "Generate Sync Key" button/menu item in the dashboard
+document.querySelector('#generate-sync-key-btn').addEventListener('click', async () => {
+  try {
+    const response = await fetch('/generate-sync-key', {
+      method: 'POST',
+      credentials: 'include'  // Include auth cookies
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      // Show modal with the API key
+      showModal({
+        title: 'Sync Key Generated',
+        content: `
+          <div class="alert warning">
+            ⚠️ Copy this key now! You won't see it again.
+          </div>
+          <div class="key-display">
+            <code id="api-key">${data.key}</code>
+            <button onclick="copyToClipboard('${data.key}')">Copy</button>
+          </div>
+          <p>Expires: ${new Date(data.expiresAt).toLocaleDateString()}</p>
+        `
+      });
+    } else {
+      alert(data.error || 'Failed to generate key');
+    }
+  } catch (error) {
+    alert('Failed to generate sync key');
+  }
+});
+```
+
+**Key Points:**
+- The endpoint is a simple POST that returns JSON
+- No Edge templates needed anywhere
+- Dashboard JavaScript handles the modal display
+- Key is shown once and then gone (security by design)
 
 ---
 
