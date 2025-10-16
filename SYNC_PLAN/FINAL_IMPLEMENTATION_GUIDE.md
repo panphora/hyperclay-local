@@ -378,6 +378,8 @@ export async function listApiKeys(personId) {
 
 **File**: `hyperclay/server-lib/sync-router.js` (NEW FILE)
 
+IMPORTANT: This router uses `basedir` for filesystem operations. Import it from `'./basedir.js'` (which is typically a default export of the project's base directory path). This ensures the server works correctly regardless of the current working directory.
+
 ```javascript
 /**
  * Sync Router - Handles all /api/local-sync/* endpoints
@@ -390,7 +392,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import { validateApiKey } from './api-key-service.js';
 import { Node, Person, PersonNode, dbOperators } from './database.js';
-import { dx, basedir } from './dx.js';
+import { dx } from './dx.js';
+import basedir from './basedir.js';  // FIXED: Import basedir from correct location (typically a default export)
 import BackupService from './backup-service.js';
 
 const router = express.Router();
@@ -733,13 +736,17 @@ router.post('/upload', express.json({ limit: '20mb' }), async (req, res) => {
       });
     }
 
-    // Proper path construction with separators
+    // FIXED: Proper path construction and dx() usage
     const uploadBasePath = path.posix.join('uploads', req.syncPerson.username);
-    const fullPath = relativePath
-      ? path.posix.join(uploadBasePath, relativePath, fileName)
-      : path.posix.join(uploadBasePath, fileName);
 
-    await dx().createFileOverwrite(fullPath, fileBuffer);
+    if (relativePath) {
+      // Navigate to the subdirectory and create file there
+      const filePath = path.posix.join(relativePath, fileName);
+      await dx(uploadBasePath).createFileOverwrite(filePath, fileBuffer);
+    } else {
+      // Create file directly in user's upload directory
+      await dx(uploadBasePath).createFileOverwrite(fileName, fileBuffer);
+    }
 
     // Create or update node
     let node = req.syncPerson.Nodes.find(n =>
@@ -781,14 +788,13 @@ router.post('/upload', express.json({ limit: '20mb' }), async (req, res) => {
 export default router;
 ```
 
-### Step 3.2: Wire Up Routes in hey.js
+### Step 3.2: Wire Up Sync API Router in hey.js
 
 **File**: `hyperclay/hey.js` (MODIFY)
 
-Add imports at the top (after line 17):
+Add import at the top (after line 17):
 ```javascript
 import syncRouter from './server-lib/sync-router.js';
-import { generateApiKey, listApiKeys } from './server-lib/api-key-service.js';
 ```
 
 Mount the sync router (after line 1035, before WebSocket setup):
@@ -797,19 +803,32 @@ Mount the sync router (after line 1035, before WebSocket setup):
 app.use('/api/local-sync', syncRouter);
 ```
 
+Note: The imports for `requireAuth`, `generateApiKey`, and `listApiKeys` will be added in Step 3.3.
+
 ### Step 3.3: Add Account Page Routes
 
-**File**: `hyperclay/hey.js` (MODIFY - after line 580)
+**File**: `hyperclay/hey.js` (MODIFY)
 
-Add API key generation route:
+First, add imports at the top (after line 17):
 ```javascript
+import { requireAuth } from '#root/server-lib/state-middleware.js';
+import { generateApiKey, listApiKeys } from './server-lib/api-key-service.js';
+```
+
+Then add these routes to the `routingTable` map (around line 580, after existing `/account` routes).
+
+IMPORTANT: hey.js uses a `routingTable` map for the state-machine pipeline, NOT Express `router.post()`. Add entries to the map like this:
+
+```javascript
+// Add to routingTable map (after existing /account entries)
+
 // POST /account/generate-sync-key
-app.post('/account/generate-sync-key', requireAuth, async (req, res) => {
+'dev:main_app:generate-sync-key': [requireAuth, async (req, res) => {
   try {
     const result = await generateApiKey(req.user.id, 'Sync Key');
 
     // IMPORTANT: Show key only once
-    res.render('api-key-generated', {
+    res.edge.render('account/api-key-generated', {
       user: req.user,
       apiKey: result.key,
       prefix: result.prefix,
@@ -817,32 +836,36 @@ app.post('/account/generate-sync-key', requireAuth, async (req, res) => {
     });
   } catch (error) {
     console.error('Failed to generate API key:', error);
-    res.status(500).render('error', {
+    res.status(500).edge.render('error', {
       message: 'Failed to generate sync key'
     });
   }
-});
+}],
 
 // GET /account/sync-keys
-app.get('/account/sync-keys', requireAuth, async (req, res) => {
+'dev:main_app:sync-keys': [requireAuth, async (req, res) => {
   try {
     const keys = await listApiKeys(req.user.id);
-    res.render('sync-keys', {
+    res.edge.render('account/sync-keys', {
       user: req.user,
       keys
     });
   } catch (error) {
     console.error('Failed to list API keys:', error);
-    res.status(500).render('error', {
+    res.status(500).edge.render('error', {
       message: 'Failed to list sync keys'
     });
   }
-});
+}],
 ```
+
+Note: The routing table keys follow the pattern `'dev:main_app:route-name'`. Adjust the prefix (`dev:main_app:`) to match your application's routing table structure.
 
 ### Step 3.4: Create Account Page Templates
 
-**File**: `hyperclay/views/api-key-generated.edge` (NEW FILE)
+IMPORTANT: Templates must be in `server-pages/` directory, NOT `views/`, because Edge looks for templates in `server-pages/`.
+
+**File**: `hyperclay/server-pages/account/api-key-generated.edge` (NEW FILE)
 
 ```html
 <!DOCTYPE html>
@@ -894,7 +917,7 @@ app.get('/account/sync-keys', requireAuth, async (req, res) => {
 </html>
 ```
 
-**File**: `hyperclay/views/account.edge` (MODIFY - add sync section)
+**File**: `hyperclay/server-pages/account.edge` (MODIFY - add sync section)
 
 Add after subscription section:
 ```html
@@ -1840,12 +1863,18 @@ onSyncStats: (callback) => {
 
 **File**: `hyperclay-local/src/HyperclayLocalApp.jsx` (MODIFY)
 
+IMPORTANT: Remove the `import './App.css';` line if your webpack isn't configured for CSS imports. Instead, add the styles from Step 5.4 to your existing `renderer.css` or configure webpack to handle CSS (see note in Step 5.4).
+
 ```javascript
 import React, { useState, useEffect, useRef } from 'react';
-import './App.css';
+// NOTE: Do NOT import './App.css' unless webpack is configured for CSS
+// Add styles to renderer.css instead, or configure webpack (see Step 5.4)
 
 function HyperclayLocalApp() {
   // ... existing state ...
+
+  // FIXED: Add selectedFolder state that was referenced in handleToggleSync
+  const [selectedFolder, setSelectedFolder] = useState(null);
 
   // Sync-related state
   const [syncState, setSyncState] = useState({
@@ -2179,7 +2208,28 @@ export default HyperclayLocalApp;
 
 ### Step 5.4: Add Sync Styles
 
-**File**: `hyperclay-local/src/App.css` (ADD to existing file)
+IMPORTANT: Choose ONE of the following options:
+
+**Option A (Recommended)**: Add these styles to your existing `renderer.css` or similar file that's already bundled.
+
+**Option B**: Configure webpack to handle CSS imports by adding to `webpack.config.js`:
+```javascript
+module.exports = {
+  // ... existing config ...
+  module: {
+    rules: [
+      // ... existing rules ...
+      {
+        test: /\.css$/,
+        use: ['style-loader', 'css-loader']
+      }
+    ]
+  }
+};
+```
+And then install loaders: `npm install --save-dev style-loader css-loader`
+
+**Styles to add** (to `renderer.css` or `App.css` depending on your choice above):
 
 ```css
 /* Sync Status */
