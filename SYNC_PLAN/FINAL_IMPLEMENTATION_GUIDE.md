@@ -868,48 +868,86 @@ Add this route to the `routingTable` map (around line 370-380, after existing ma
 ],
 ```
 
-**Dashboard UI Implementation** (JavaScript to add in your dashboard):
+### Step 3.4: Add Dashboard UI for Key Generation
 
-```javascript
-// Example: Add a "Generate Sync Key" button/menu item in the dashboard
-document.querySelector('#generate-sync-key-btn').addEventListener('click', async () => {
+**File**: `hyperclay/server-pages/sites.edge` (MODIFY - add to profile menu)
+
+Add the button in the profile menu dropdown (after line 37, after "hyperclay local" link):
+
+```edge
+@if(!req.state.user.person.isAppUser() && req.state.user.person.hasActiveSubscription)
+<button
+  id="generate-sync-key-btn"
+  onclick="generateSyncKey()"
+  class="block w-full pl-3 pr-4 pt-[3px] pb-[4px] text-left bg-[#111425] hover:bg-[#292E54] cursor-pointer"
+>
+  generate sync key
+</button>
+@endif
+```
+
+**File**: `hyperclay/server-pages/sites.edge` (ADD script at bottom, before `@include('partials/footer')`)
+
+```html
+<script type="module">
+import { tell } from '/js/ui/prompts.js';
+import toast from '/js/ui/toast.js';
+
+window.generateSyncKey = async function() {
+  // Close the menu
+  All.menu.classList.add('hidden');
+
   try {
     const response = await fetch('/generate-sync-key', {
       method: 'POST',
-      credentials: 'include'  // Include auth cookies
+      credentials: 'include'
     });
 
     const data = await response.json();
 
     if (data.success) {
-      // Show modal with the API key
-      showModal({
-        title: 'Sync Key Generated',
-        content: `
-          <div class="alert warning">
+      // Create the modal content with the key
+      const keyDisplay = `
+        <div class="mt-4 mb-4">
+          <div class="mb-3 p-3 bg-[#FF6B6B] text-white rounded">
             ⚠️ Copy this key now! You won't see it again.
           </div>
-          <div class="key-display">
-            <code id="api-key">${data.key}</code>
-            <button onclick="copyToClipboard('${data.key}')">Copy</button>
+          <div class="p-3 bg-[#292E54] rounded font-mono text-sm break-all select-all">
+            ${data.key}
           </div>
-          <p>Expires: ${new Date(data.expiresAt).toLocaleDateString()}</p>
-        `
-      });
+          <button
+            onclick="navigator.clipboard.writeText('${data.key}').then(() => toast('Copied to clipboard!', 'success'))"
+            class="mt-3 w-full p-2 bg-[#1D1F2F] hover:bg-[#232639] border-2 border-white rounded cursor-pointer"
+          >
+            Copy to Clipboard
+          </button>
+          <div class="mt-3 text-sm text-[#B7BEFB]">
+            <div>Username: ${data.username}</div>
+            <div>Expires: ${new Date(data.expiresAt).toLocaleDateString()}</div>
+          </div>
+        </div>
+      `;
+
+      // Use tell() to show the modal
+      tell('Sync Key Generated', null, keyDisplay);
     } else {
-      alert(data.error || 'Failed to generate key');
+      toast(data.error || 'Failed to generate key', 'error');
     }
   } catch (error) {
-    alert('Failed to generate sync key');
+    toast('Failed to generate sync key', 'error');
   }
-});
+}
+</script>
 ```
 
 **Key Points:**
-- The endpoint is a simple POST that returns JSON
-- No Edge templates needed anywhere
-- Dashboard JavaScript handles the modal display
-- Key is shown once and then gone (security by design)
+- Button placed in profile menu dropdown (only for non-app users with active subscriptions)
+- Matches existing menu item styling exactly
+- Uses existing `tell()` modal system from prompts.js
+- Closes menu automatically before showing modal
+- Displays key with warning, copy button, and expiration info
+- Uses existing `toast()` for success/error messages
+- Key shown once and then gone (security by design)
 
 ---
 
