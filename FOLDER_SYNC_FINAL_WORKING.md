@@ -212,9 +212,23 @@ export async function uploadSyncFile(req, res) {
     ? `${folderPath}/${siteName}.html`
     : `${siteName}.html`;
 
-  // Ensure directory exists on disk
+  // Ensure directory exists on disk using createDir helper
   if (folderPath) {
-    await dx('sites').ensureDir(folderPath);
+    // dx doesn't have ensureDir, use createDir with path segments
+    await dx('sites', ...folderPath.split('/')).createDir();
+  }
+
+  // Check if file exists for backup
+  const fileExists = await dx('sites', diskPath).exists();
+  if (fileExists) {
+    // Create backup before overwrite
+    await BackupService.createBackup(
+      person.id,
+      node.id,
+      await dx('sites', diskPath).getContents(),
+      'sync-overwrite'
+    );
+    console.log(`[SYNC] Created backup for ${diskPath}`);
   }
 
   // Write the file
@@ -435,11 +449,12 @@ async function writeFile(filePath, content, modifiedTime) {
 
 module.exports = {
   getLocalFiles,
-  readFile: fs.readFile,
+  readFile: (filePath) => fs.readFile(filePath, 'utf8'), // Return UTF-8 string, not Buffer
   writeFile,
-  fileExists: async (path) => {
+  fileExists: (filePath) => {
+    // Keep synchronous for queue checks
     try {
-      await fs.access(path);
+      require('fs').accessSync(filePath);
       return true;
     } catch {
       return false;
@@ -542,6 +557,9 @@ async downloadFile(filename, relativePath) {
     // Build full local path
     const localPath = path.join(this.syncFolder, ...relativePath.split('/'));
 
+    // Create backup if file exists locally
+    await createBackupIfNeeded(localPath, relativePath, this.syncFolder, this.emit.bind(this));
+
     // Write file (ensures directories exist)
     await writeFile(localPath, content, modifiedAt);
 
@@ -554,6 +572,12 @@ async downloadFile(filename, relativePath) {
 
   } catch (error) {
     console.error(`[SYNC] Failed to download ${relativePath}:`, error);
+
+    // Emit structured error for UI
+    const errorInfo = classifyError(error, { filename: relativePath, action: 'download' });
+    this.stats.errors.push(formatErrorForLog(error, { filename: relativePath, action: 'download' }));
+
+    this.emit('sync-error', errorInfo);
   }
 }
 
@@ -652,14 +676,10 @@ startFileWatcher() {
 ```javascript
 async uploadFile(relativePath) {
   try {
-    // Extract filename from path for validation
-    const pathParts = relativePath.split('/');
-    const filename = pathParts[pathParts.length - 1].replace('.html', '');
-
-    // Validate the site name
-    const validationResult = validateFileName(filename, false);
+    // Validate the full path (includes folder and site name validation)
+    const validationResult = validateFullPath(relativePath);
     if (!validationResult.valid) {
-      console.error(`[SYNC] Validation failed for ${filename}: ${validationResult.error}`);
+      console.error(`[SYNC] Validation failed for ${relativePath}: ${validationResult.error}`);
       this.emit('sync-error', {
         file: relativePath,
         error: validationResult.error,
@@ -669,26 +689,6 @@ async uploadFile(relativePath) {
         canRetry: false
       });
       return;
-    }
-
-    // Validate folder names if path has folders
-    if (pathParts.length > 1) {
-      for (let i = 0; i < pathParts.length - 1; i++) {
-        const folderName = pathParts[i];
-        if (!folderName.match(/^[a-z0-9_-]+$/)) {
-          const error = `Invalid folder name "${folderName}": must be lowercase letters, numbers, hyphens, and underscores only`;
-          console.error(`[SYNC] ${error}`);
-          this.emit('sync-error', {
-            file: relativePath,
-            error,
-            type: 'validation',
-            priority: ERROR_PRIORITY.HIGH,
-            action: 'upload',
-            canRetry: false
-          });
-          return;
-        }
-      }
     }
 
     const localPath = path.join(this.syncFolder, relativePath);
@@ -718,6 +718,144 @@ async uploadFile(relativePath) {
     console.error(`[SYNC] Failed to upload ${relativePath}:`, error);
     // ... error handling ...
   }
+}
+```
+
+---
+
+## Part 3: Database Changes for Nested Sites
+
+### 3.1 Update Uniqueness Constraints
+
+**File:** `server-lib/database.js`
+
+```javascript
+// Update Node model to allow duplicate names in different folders
+Node.init({
+  // ... existing fields ...
+}, {
+  sequelize: sequelize,
+  paranoid: true,
+  indexes: [
+    // Remove the global unique constraint on name for sites
+    // Add composite unique constraint for sites within same parent
+    {
+      unique: true,
+      fields: ['parentId', 'name', 'type'],
+      where: {
+        type: 'site',
+        deletedAt: null
+      },
+      name: 'unique_site_name_per_folder'
+    },
+    // Keep global unique for folders at same level
+    {
+      unique: true,
+      fields: ['parentId', 'name'],
+      where: {
+        type: 'folder',
+        deletedAt: null
+      },
+      name: 'unique_folder_name_per_parent'
+    }
+  ]
+});
+```
+
+### 3.2 Add Migration to Drop Old Constraint
+
+**File:** `migrations/XXXXX-allow-duplicate-site-names-in-folders.js`
+
+```javascript
+module.exports = {
+  up: async (queryInterface, Sequelize) => {
+    // Drop the old global unique constraint
+    await queryInterface.removeIndex('Nodes', 'unique_site_name');
+
+    // Add new composite constraint
+    await queryInterface.addIndex('Nodes', {
+      unique: true,
+      fields: ['parentId', 'name', 'type'],
+      where: {
+        type: 'site',
+        deletedAt: null
+      },
+      name: 'unique_site_name_per_folder'
+    });
+
+    await queryInterface.addIndex('Nodes', {
+      unique: true,
+      fields: ['parentId', 'name'],
+      where: {
+        type: 'folder',
+        deletedAt: null
+      },
+      name: 'unique_folder_name_per_parent'
+    });
+  },
+
+  down: async (queryInterface, Sequelize) => {
+    // Revert changes
+    await queryInterface.removeIndex('Nodes', 'unique_site_name_per_folder');
+    await queryInterface.removeIndex('Nodes', 'unique_folder_name_per_parent');
+
+    await queryInterface.addIndex('Nodes', {
+      unique: true,
+      fields: ['name'],
+      where: {
+        type: 'site',
+        deletedAt: null
+      },
+      name: 'unique_site_name'
+    });
+  }
+};
+```
+
+### 3.3 Update Upload Duplicate Check
+
+**File:** `server-lib/sync-actions.js` - Update lines 187-198
+
+```javascript
+// Check if site exists in this specific folder
+let node = await Node.findOne({
+  include: [{
+    model: Person,
+    where: { id: person.id },
+    through: { attributes: [] }
+  }],
+  where: {
+    name: siteName,
+    type: 'site',
+    parentId: parentId || null  // Check in specific folder
+  }
+});
+
+if (!node) {
+  // Check if name taken in this specific folder by another user
+  const existingNode = await Node.findOne({
+    where: {
+      name: siteName,
+      type: 'site',
+      parentId: parentId || null  // Only check same folder
+    }
+  });
+
+  if (existingNode) {
+    return sendError(req, res, 409,
+      `The site name "${siteName}" is already taken in this folder. Please rename your local file.`
+    );
+  }
+
+  // Create the site node
+  node = await Node.create({
+    name: siteName,
+    type: 'site',
+    parentId: parentId
+  });
+
+  await person.addNode(node);
+  console.log(`[SYNC] Created site: ${siteName} in ${folderPath || 'root'}`);
 }
 ```
 
@@ -757,6 +895,29 @@ All blockers have been comprehensively addressed with working code that:
 4. **Recursive Local Scanning**: `getLocalFiles()` now scans all subdirectories
 5. **Directory Creation**: `writeFile()` ensures parent directories exist
 6. **Path-Based State**: All sync operations use full paths as keys
+
+## Additional Fixes Applied
+
+### ✅ Fix 1 - dx.createDir instead of ensureDir
+- **Line 218**: Uses `dx('sites', ...folderPath.split('/')).createDir()`
+
+### ✅ Fix 2 - Server-side backups restored
+- **Lines 221-231**: Added `BackupService.createBackup` before overwrite
+
+### ✅ Fix 3 - fileExists kept synchronous
+- **Lines 454-461**: Uses `require('fs').accessSync` for sync checks
+
+### ✅ Fix 4 - readFile returns UTF-8
+- **Line 452**: Returns `fs.readFile(filePath, 'utf8')` not Buffer
+
+### ✅ Fix 5 - Download backups and error reporting
+- **Lines 560-580**: Added `createBackupIfNeeded` and error emission
+
+### ✅ Fix 6 - Full path validation
+- **Line 680**: Uses `validateFullPath(relativePath)` instead of just filename
+
+### ✅ Fix 7 - Database uniqueness constraints
+- **Lines 733-860**: Composite index on `['parentId', 'name', 'type']` allows duplicate names in different folders
 
 ## Testing Checklist
 
