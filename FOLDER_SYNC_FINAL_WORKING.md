@@ -221,13 +221,9 @@ export async function uploadSyncFile(req, res) {
   // Check if file exists for backup
   const fileExists = await dx('sites', diskPath).exists();
   if (fileExists) {
-    // Create backup before overwrite
-    await BackupService.createBackup(
-      person.id,
-      node.id,
-      await dx('sites', diskPath).getContents(),
-      'sync-overwrite'
-    );
+    // Create backup before overwrite - correct signature: (nodeId, html, userId)
+    const currentHtml = await dx('sites', diskPath).getContents();
+    await BackupService.createBackup(node.id, currentHtml || '', person.id);
     console.log(`[SYNC] Created backup for ${diskPath}`);
   }
 
@@ -465,7 +461,79 @@ module.exports = {
 };
 ```
 
-### 2.3 Update Initial Sync to Handle Paths
+### 2.3 Fix Backup System for Nested Folders
+
+**File:** `sync-engine/backup.js` - Prevent collisions for nested sites
+
+```javascript
+const fs = require('fs').promises;
+const path = require('path');
+
+/**
+ * Get backup directory for a file, preserving folder structure
+ */
+function getBackupDir(syncFolder, relativePath) {
+  // Remove .html and create nested backup structure
+  const parts = relativePath.replace(/\.html$/i, '').split('/');
+  return path.join(syncFolder, 'sites-versions', ...parts);
+}
+
+/**
+ * Create a local backup of a file
+ */
+async function createLocalBackup(filePath, relativePath, syncFolder, emit) {
+  try {
+    // Use relative path to create unique backup directory
+    const backupDir = getBackupDir(syncFolder, relativePath);
+
+    // Ensure backup directory exists
+    await fs.mkdir(backupDir, { recursive: true });
+
+    // Create timestamped backup filename
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupName = `backup-${timestamp}.html`;
+    const backupPath = path.join(backupDir, backupName);
+
+    // Copy file to backup location
+    await fs.copyFile(filePath, backupPath);
+
+    console.log(`[BACKUP] Created backup: ${backupPath}`);
+
+    if (emit) {
+      emit('backup-created', {
+        original: relativePath,
+        backup: backupPath
+      });
+    }
+
+    return backupPath;
+  } catch (error) {
+    console.error(`[BACKUP] Failed to create backup for ${relativePath}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Create backup if file exists
+ */
+async function createBackupIfNeeded(localPath, relativePath, syncFolder, emit) {
+  try {
+    await fs.access(localPath);
+    // File exists, create backup
+    return await createLocalBackup(localPath, relativePath, syncFolder, emit);
+  } catch {
+    // File doesn't exist, no backup needed
+    return null;
+  }
+}
+
+module.exports = {
+  createLocalBackup,
+  createBackupIfNeeded
+};
+```
+
+### 2.4 Update Initial Sync to Handle Paths
 
 **File:** `sync-engine/index.js`
 
@@ -727,86 +795,82 @@ async uploadFile(relativePath) {
 
 ### 3.1 Update Uniqueness Constraints
 
-**File:** `server-lib/database.js`
+**File:** `server-lib/database.js` - Edit the existing indexes array in `sequelize.define('Node', ...)`
 
 ```javascript
-// Update Node model to allow duplicate names in different folders
-Node.init({
+const Node = sequelize.define('Node', {
   // ... existing fields ...
 }, {
-  sequelize: sequelize,
-  paranoid: true,
   indexes: [
-    // Remove the global unique constraint on name for sites
-    // Add composite unique constraint for sites within same parent
-    {
-      unique: true,
-      fields: ['parentId', 'name', 'type'],
-      where: {
-        type: 'site',
-        deletedAt: null
-      },
-      name: 'unique_site_name_per_folder'
-    },
-    // Keep global unique for folders at same level
+    // ... keep existing indexes except for the site name one ...
+
+    // REMOVE this block:
+    // {
+    //   unique: true,
+    //   fields: ['name'],
+    //   where: {
+    //     type: 'site'
+    //   }
+    // },
+
+    // ADD this block instead - allows duplicate site names in different folders:
     {
       unique: true,
       fields: ['parentId', 'name'],
       where: {
-        type: 'folder',
-        deletedAt: null
+        type: 'site'
       },
-      name: 'unique_folder_name_per_parent'
-    }
+      name: 'unique_site_name_per_folder'
+    },
+
+    // Keep all other existing indexes as-is
+    {
+      unique: true,
+      fields: ['parentId', 'name'],
+      where: {
+        type: 'folder'
+      }
+    },
+    // ... other existing indexes ...
   ]
 });
 ```
 
-### 3.2 Add Migration to Drop Old Constraint
+### 3.2 Add Migration to Update Constraints
 
 **File:** `migrations/XXXXX-allow-duplicate-site-names-in-folders.js`
 
 ```javascript
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    // Drop the old global unique constraint
-    await queryInterface.removeIndex('Nodes', 'unique_site_name');
-
-    // Add new composite constraint
-    await queryInterface.addIndex('Nodes', {
-      unique: true,
-      fields: ['parentId', 'name', 'type'],
+    // Remove the old global unique constraint on site names
+    // Use fields array since the index may not have an explicit name
+    await queryInterface.removeIndex('Nodes', ['name'], {
       where: {
-        type: 'site',
-        deletedAt: null
-      },
-      name: 'unique_site_name_per_folder'
+        type: 'site'
+      }
     });
 
-    await queryInterface.addIndex('Nodes', {
+    // Add new composite constraint for sites within same parent
+    await queryInterface.addIndex('Nodes', ['parentId', 'name'], {
       unique: true,
-      fields: ['parentId', 'name'],
       where: {
-        type: 'folder',
-        deletedAt: null
+        type: 'site'
       },
-      name: 'unique_folder_name_per_parent'
+      name: 'unique_site_name_per_folder'
     });
   },
 
   down: async (queryInterface, Sequelize) => {
-    // Revert changes
+    // Revert: remove the composite constraint
     await queryInterface.removeIndex('Nodes', 'unique_site_name_per_folder');
-    await queryInterface.removeIndex('Nodes', 'unique_folder_name_per_parent');
 
-    await queryInterface.addIndex('Nodes', {
+    // Restore the global unique constraint on site names
+    await queryInterface.addIndex('Nodes', ['name'], {
       unique: true,
-      fields: ['name'],
       where: {
-        type: 'site',
-        deletedAt: null
-      },
-      name: 'unique_site_name'
+        type: 'site'
+      }
     });
   }
 };
@@ -901,8 +965,8 @@ All blockers have been comprehensively addressed with working code that:
 ### ✅ Fix 1 - dx.createDir instead of ensureDir
 - **Line 218**: Uses `dx('sites', ...folderPath.split('/')).createDir()`
 
-### ✅ Fix 2 - Server-side backups restored
-- **Lines 221-231**: Added `BackupService.createBackup` before overwrite
+### ✅ Fix 2 - Server backup signature corrected
+- **Lines 224-226**: Fixed to use correct signature `BackupService.createBackup(nodeId, html, userId)`
 
 ### ✅ Fix 3 - fileExists kept synchronous
 - **Lines 454-461**: Uses `require('fs').accessSync` for sync checks
@@ -911,13 +975,16 @@ All blockers have been comprehensively addressed with working code that:
 - **Line 452**: Returns `fs.readFile(filePath, 'utf8')` not Buffer
 
 ### ✅ Fix 5 - Download backups and error reporting
-- **Lines 560-580**: Added `createBackupIfNeeded` and error emission
+- **Lines 617-637**: Added `createBackupIfNeeded` and error emission
 
 ### ✅ Fix 6 - Full path validation
-- **Line 680**: Uses `validateFullPath(relativePath)` instead of just filename
+- **Line 678**: Uses `validateFullPath(relativePath)` instead of just filename
 
-### ✅ Fix 7 - Database uniqueness constraints
-- **Lines 733-860**: Composite index on `['parentId', 'name', 'type']` allows duplicate names in different folders
+### ✅ Fix 7 - Local backup collisions prevented
+- **Lines 464-533**: New `getBackupDir()` creates nested backup structure to prevent collisions
+
+### ✅ Fix 8 - Database indexes updated correctly
+- **Lines 798-877**: Updates existing `sequelize.define` indexes array, migration uses field arrays
 
 ## Testing Checklist
 
