@@ -6,18 +6,35 @@
  * Fetch list of files from server
  */
 async function fetchServerFiles(serverUrl, apiKey) {
-  const response = await fetch(`${serverUrl}/sync/files`, {
-    headers: {
-      'X-API-Key': apiKey
+  const url = `${serverUrl}/sync/files`;
+  console.log(`[API] Fetching files from: ${url}`);
+  console.log(`[API] Using API key: ${apiKey.substring(0, 12)}...`);
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'X-API-Key': apiKey
+      }
+    });
+
+    console.log(`[API] Response status: ${response.status}`);
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'Unable to read error');
+      console.error(`[API] Error response: ${errorText}`);
+      throw new Error(`Server returned ${response.status}: ${errorText}`);
     }
-  });
 
-  if (!response.ok) {
-    throw new Error(`Server returned ${response.status}`);
+    const data = await response.json();
+    console.log(`[API] Fetched ${data.files?.length || 0} files from server`);
+    return data.files || [];
+  } catch (error) {
+    console.error(`[API] Fetch failed:`, error);
+    console.error(`[API] Error type: ${error.name}`);
+    console.error(`[API] Error message: ${error.message}`);
+    console.error(`[API] Full error:`, error);
+    throw error;
   }
-
-  const data = await response.json();
-  return data.files || [];
 }
 
 /**
@@ -95,17 +112,35 @@ async function uploadToServer(serverUrl, apiKey, filename, content, modifiedAt) 
  * Get server status and time (for clock calibration)
  */
 async function getServerStatus(serverUrl, apiKey) {
-  const response = await fetch(`${serverUrl}/sync/status`, {
-    headers: {
-      'X-API-Key': apiKey
+  const url = `${serverUrl}/sync/status`;
+  console.log(`[API] Getting server status from: ${url}`);
+  console.log(`[API] Using API key: ${apiKey.substring(0, 12)}...`);
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'X-API-Key': apiKey
+      }
+    });
+
+    console.log(`[API] Response status: ${response.status}`);
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'Unable to read error');
+      console.error(`[API] Error response: ${errorText}`);
+      throw new Error(`Server returned ${response.status}: ${errorText}`);
     }
-  });
 
-  if (!response.ok) {
-    throw new Error(`Server returned ${response.status}`);
+    const data = await response.json();
+    console.log(`[API] Server time: ${data.serverTime}`);
+    return data;
+  } catch (error) {
+    console.error(`[API] Fetch failed:`, error);
+    console.error(`[API] Error type: ${error.name}`);
+    console.error(`[API] Error message: ${error.message}`);
+    console.error(`[API] Full error:`, error);
+    throw error;
   }
-
-  return response.json();
 }
 
 module.exports = {

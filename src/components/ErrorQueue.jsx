@@ -77,7 +77,7 @@ export default function ErrorQueue({ errors, onDismiss, maxVisible = 3 }) {
         <div
           key={error.id}
           className={`
-            p-4 rounded-lg shadow-lg border-2 transition-all
+            p-4 rounded-lg shadow-lg border-2
             ${ERROR_COLORS[error.priority]}
             ${error.priority === ERROR_PRIORITY.CRITICAL ? 'animate-pulse' : ''}
           `}
@@ -123,7 +123,7 @@ export default function ErrorQueue({ errors, onDismiss, maxVisible = 3 }) {
             {error.dismissable && (
               <button
                 onClick={() => onDismiss(error.id)}
-                className="ml-4 text-2xl hover:opacity-70 transition-opacity"
+                className="ml-4 text-2xl hover:opacity-70"
                 title="Dismiss"
               >
                 ×

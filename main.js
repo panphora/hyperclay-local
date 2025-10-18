@@ -696,7 +696,8 @@ ipcMain.handle('get-api-key-info', () => {
   if (settings.apiKey && settings.syncUsername) {
     return {
       username: settings.syncUsername,
-      serverUrl: settings.serverUrl
+      serverUrl: settings.serverUrl,
+      apiKey: settings.apiKey  // Return the decrypted API key
     };
   }
   return null;
@@ -712,7 +713,10 @@ ipcMain.handle('remove-api-key', () => {
 });
 
 ipcMain.handle('toggle-sync', async (event, enabled) => {
-  if (enabled && !settings.syncFolder) {
+  // Use selectedFolder (current folder) as priority, fallback to saved syncFolder
+  const folderToSync = selectedFolder || settings.syncFolder;
+
+  if (enabled && !folderToSync) {
     return { error: 'Please select a folder before enabling sync' };
   }
 
@@ -725,7 +729,7 @@ ipcMain.handle('toggle-sync', async (event, enabled) => {
     return await handleSyncStart(
       settings.apiKey,
       settings.syncUsername,
-      settings.syncFolder,
+      folderToSync,  // Use the current selected folder
       settings.serverUrl
     );
   } else {
@@ -747,6 +751,26 @@ app.whenReady().then(async () => {
   const isDev = baseUrl.includes('localhyperclay');
   console.log(`[APP] Running in ${isDev ? 'DEVELOPMENT' : 'PRODUCTION'} mode`);
   console.log(`[APP] Sync will use: ${baseUrl}`);
+
+  // Handle certificate errors for local development
+  if (isDev) {
+    // Allow self-signed certificates for localhyperclay.com in development
+    app.on('certificate-error', (event, webContents, url, error, certificate, callback) => {
+      if (url.startsWith('https://localhyperclay.com')) {
+        // Ignore certificate error for local development
+        event.preventDefault();
+        callback(true);
+      } else {
+        // Use default behavior for other URLs
+        callback(false);
+      }
+    });
+
+    // For Node.js fetch in main process, we need to configure it differently
+    // This is a workaround for development with self-signed certificates
+    process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = 0;
+    console.log('[APP] Disabled certificate validation for local development');
+  }
 
   // Load settings on startup
   settings = loadSettings();

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import ErrorQueue from './components/ErrorQueue';
 
 const HyperclayLocalApp = () => {
@@ -36,12 +36,11 @@ const HyperclayLocalApp = () => {
 
   // Error queue state
   const [errorQueue, setErrorQueue] = useState([]);
-  const [errorIdCounter, setErrorIdCounter] = useState(0);
+  const errorIdCounter = useRef(0);
 
   // Error management functions
   const addError = (errorData) => {
-    const errorId = errorIdCounter;
-    setErrorIdCounter(prev => prev + 1);
+    const errorId = errorIdCounter.current++;
 
     const error = {
       id: errorId,
@@ -73,6 +72,16 @@ const HyperclayLocalApp = () => {
       if (window.electronAPI) {
         const state = await window.electronAPI.getState();
         setCurrentState(prevState => ({ ...prevState, ...state }));
+
+        // Check if API key is already configured and populate the fields
+        const apiKeyInfo = await window.electronAPI.getApiKeyInfo();
+        if (apiKeyInfo) {
+          setSyncUsername(apiKeyInfo.username || '');
+          // Also need to get the actual API key to populate the field
+          if (apiKeyInfo.apiKey) {
+            setSyncApiKey(apiKeyInfo.apiKey);
+          }
+        }
       }
     };
 
@@ -96,7 +105,18 @@ const HyperclayLocalApp = () => {
       // Listen for sync errors
       window.electronAPI.onSyncUpdate((data) => {
         if (data.error) {
-          addError(data);
+          // Handle validation errors specially
+          if (data.type === 'validation') {
+            addError({
+              ...data,
+              priority: data.priority || 2, // HIGH priority
+              dismissable: true,
+              error: `❌ Validation failed: ${data.error}`,
+              file: data.file
+            });
+          } else {
+            addError(data);
+          }
         }
       });
 
@@ -237,8 +257,8 @@ const HyperclayLocalApp = () => {
         if (result.success) {
           setSyncEnabled(true);
           setSyncButtonText('disable sync');
-          setSyncApiKey(''); // Clear API key from UI for security
-          setSyncButtonDisabled(false); // ✅ Fix: Re-enable button after success
+          // Don't clear the API key from the UI - keep it visible
+          setSyncButtonDisabled(false);
         } else {
           setShowSyncError(true);
           setSyncErrorMessage(result.error || 'Failed to enable sync');
@@ -381,7 +401,7 @@ const HyperclayLocalApp = () => {
 
         {!syncEnabled ? (
           <>
-            {/* Sync setup form */}
+            {/* Sync setup form - always show */}
             <div className="mb-3">
               <label className="block mb-1 text-[16px] text-[#B8BFE5]">API Key:</label>
               <input

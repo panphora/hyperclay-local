@@ -13,7 +13,7 @@ function getServerBaseUrl(serverUrl) {
   }
 
   const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
-  return isDev ? 'http://localhyperclay.com:8989' : 'https://hyperclay.com';
+  return isDev ? 'https://localhyperclay.com' : 'https://hyperclay.com';
 }
 
 module.exports = {

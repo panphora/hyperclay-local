@@ -29,6 +29,7 @@ const {
   getServerStatus
 } = require('./api-client');
 const SyncQueue = require('./sync-queue');
+const { validateFileName, validateFullPath } = require('./validation');
 
 class SyncEngine extends EventEmitter {
   constructor() {
@@ -57,6 +58,14 @@ class SyncEngine extends EventEmitter {
    * Initialize sync with API key and folder
    */
   async init(apiKey, username, syncFolder, serverUrl) {
+    console.log(`[SYNC] Init called with:`, {
+      username,
+      syncFolder,
+      serverUrl,
+      apiKeyLength: apiKey?.length,
+      apiKeyPrefix: apiKey?.substring(0, 12)
+    });
+
     if (this.isRunning) {
       throw new Error('Sync is already running');
     }
@@ -89,27 +98,43 @@ class SyncEngine extends EventEmitter {
       this.apiKeyEncrypted = safeStorage.encryptString(apiKey);
     }
 
-    // Ensure sync folder exists
-    await ensureDirectory(syncFolder);
+    try {
+      // Ensure sync folder exists
+      console.log(`[SYNC] Ensuring sync folder exists: ${syncFolder}`);
+      await ensureDirectory(syncFolder);
 
-    // Calibrate clock with server
-    this.clockOffset = await calibrateClock(this.serverUrl, this.apiKey);
+      // Calibrate clock with server
+      console.log(`[SYNC] Calibrating clock with server...`);
+      this.clockOffset = await calibrateClock(this.serverUrl, this.apiKey);
+      console.log(`[SYNC] Clock offset: ${this.clockOffset}ms`);
 
-    // Perform initial sync
-    await this.performInitialSync();
+      // Perform initial sync
+      console.log(`[SYNC] Starting initial sync...`);
+      await this.performInitialSync();
+      console.log(`[SYNC] Initial sync completed`);
 
-    // Start file watcher
-    this.startFileWatcher();
+      // Start file watcher
+      console.log(`[SYNC] Starting file watcher...`);
+      this.startFileWatcher();
 
-    // Start polling for remote changes
-    this.startPolling();
+      // Start polling for remote changes
+      console.log(`[SYNC] Starting polling...`);
+      this.startPolling();
 
-    this.isRunning = true;
+      this.isRunning = true;
 
-    return {
-      success: true,
-      stats: this.stats
-    };
+      console.log(`[SYNC] Initialization complete!`);
+      return {
+        success: true,
+        stats: this.stats
+      };
+    } catch (error) {
+      console.error(`[SYNC] Initialization failed:`, error);
+      console.error(`[SYNC] Error type: ${error.name}`);
+      console.error(`[SYNC] Error message: ${error.message}`);
+      console.error(`[SYNC] Stack trace:`, error.stack);
+      throw error;
+    }
   }
 
   /**
@@ -245,6 +270,48 @@ class SyncEngine extends EventEmitter {
    */
   async uploadFile(filename) {
     try {
+      // Validate filename before uploading
+      const validationResult = validateFileName(filename, false);
+
+      if (!validationResult.valid) {
+        const validationError = new Error(validationResult.error);
+        validationError.isValidationError = true;
+
+        console.error(`[SYNC] Validation failed for ${filename}: ${validationResult.error}`);
+
+        // Emit validation error
+        this.emit('sync-error', {
+          file: filename,
+          error: validationResult.error,
+          type: 'validation',
+          priority: ERROR_PRIORITY.HIGH,
+          action: 'upload',
+          canRetry: false
+        });
+
+        // Don't throw - just skip this file
+        return;
+      }
+
+      // Check if this is a folder path (future support)
+      if (filename.includes('/')) {
+        const pathValidation = validateFullPath(filename);
+        if (!pathValidation.valid) {
+          console.error(`[SYNC] Path validation failed for ${filename}: ${pathValidation.error}`);
+
+          this.emit('sync-error', {
+            file: filename,
+            error: pathValidation.error,
+            type: 'validation',
+            priority: ERROR_PRIORITY.HIGH,
+            action: 'upload',
+            canRetry: false
+          });
+
+          return;
+        }
+      }
+
       const localPath = path.join(this.syncFolder, filename);
       const content = await readFile(localPath);
       const stat = await getFileStats(localPath);
@@ -296,6 +363,29 @@ class SyncEngine extends EventEmitter {
   queueSync(type, filename) {
     // Don't queue if sync is not running
     if (!this.isRunning) return;
+
+    // Validate filename before queueing (for add/change operations)
+    if (type === 'add' || type === 'change') {
+      const validationResult = filename.includes('/')
+        ? validateFullPath(filename)
+        : validateFileName(filename, false);
+
+      if (!validationResult.valid) {
+        console.error(`[SYNC] Cannot queue ${filename}: ${validationResult.error}`);
+
+        // Emit validation error immediately
+        this.emit('sync-error', {
+          file: filename,
+          error: validationResult.error,
+          type: 'validation',
+          priority: ERROR_PRIORITY.HIGH,
+          action: 'queue',
+          canRetry: false
+        });
+
+        return;
+      }
+    }
 
     // Add to queue
     if (!this.syncQueue.add(type, filename)) {
