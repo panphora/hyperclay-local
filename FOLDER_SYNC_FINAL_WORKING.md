@@ -463,11 +463,15 @@ module.exports = {
 
 ### 2.3 Fix Backup System for Nested Folders
 
-**File:** `sync-engine/backup.js` - Prevent collisions for nested sites
+**File:** `sync-engine/backup.js` - Prevent collisions for nested sites with cleanup
 
 ```javascript
 const fs = require('fs').promises;
 const path = require('path');
+const { SYNC_CONFIG } = require('./constants');
+
+// Ensure MAX_BACKUPS_PER_SITE is defined in constants.js
+// SYNC_CONFIG.MAX_BACKUPS_PER_SITE = 10;
 
 /**
  * Get backup directory for a file, preserving folder structure
@@ -476,6 +480,39 @@ function getBackupDir(syncFolder, relativePath) {
   // Remove .html and create nested backup structure
   const parts = relativePath.replace(/\.html$/i, '').split('/');
   return path.join(syncFolder, 'sites-versions', ...parts);
+}
+
+/**
+ * Clean old backups, keeping only the most recent MAX_BACKUPS_PER_SITE
+ */
+async function cleanOldBackups(backupDir) {
+  try {
+    const files = await fs.readdir(backupDir);
+
+    // Filter for backup files only
+    const backupFiles = files.filter(f => f.startsWith('backup-') && f.endsWith('.html'));
+
+    if (backupFiles.length <= SYNC_CONFIG.MAX_BACKUPS_PER_SITE) {
+      return; // Nothing to clean
+    }
+
+    // Sort by timestamp (newest first)
+    backupFiles.sort().reverse();
+
+    // Delete old backups beyond the limit
+    const toDelete = backupFiles.slice(SYNC_CONFIG.MAX_BACKUPS_PER_SITE);
+
+    for (const file of toDelete) {
+      const filePath = path.join(backupDir, file);
+      await fs.unlink(filePath);
+      console.log(`[BACKUP] Deleted old backup: ${file}`);
+    }
+  } catch (error) {
+    // Directory might not exist yet, or other non-critical error
+    if (error.code !== 'ENOENT') {
+      console.error('[BACKUP] Error cleaning old backups:', error);
+    }
+  }
 }
 
 /**
@@ -499,6 +536,9 @@ async function createLocalBackup(filePath, relativePath, syncFolder, emit) {
 
     console.log(`[BACKUP] Created backup: ${backupPath}`);
 
+    // Clean old backups to enforce retention limit
+    await cleanOldBackups(backupDir);
+
     if (emit) {
       emit('backup-created', {
         original: relativePath,
@@ -519,7 +559,7 @@ async function createLocalBackup(filePath, relativePath, syncFolder, emit) {
 async function createBackupIfNeeded(localPath, relativePath, syncFolder, emit) {
   try {
     await fs.access(localPath);
-    // File exists, create backup
+    // File exists, create backup (cleanup happens inside createLocalBackup)
     return await createLocalBackup(localPath, relativePath, syncFolder, emit);
   } catch {
     // File doesn't exist, no backup needed
@@ -529,7 +569,8 @@ async function createBackupIfNeeded(localPath, relativePath, syncFolder, emit) {
 
 module.exports = {
   createLocalBackup,
-  createBackupIfNeeded
+  createBackupIfNeeded,
+  cleanOldBackups
 };
 ```
 
@@ -980,8 +1021,8 @@ All blockers have been comprehensively addressed with working code that:
 ### ✅ Fix 6 - Full path validation
 - **Line 678**: Uses `validateFullPath(relativePath)` instead of just filename
 
-### ✅ Fix 7 - Local backup collisions prevented
-- **Lines 464-533**: New `getBackupDir()` creates nested backup structure to prevent collisions
+### ✅ Fix 7 - Local backup collisions prevented with retention management
+- **Lines 464-574**: New `getBackupDir()` creates nested backup structure, `cleanOldBackups()` enforces MAX_BACKUPS_PER_SITE limit
 
 ### ✅ Fix 8 - Database indexes updated correctly
 - **Lines 798-877**: Updates existing `sequelize.define` indexes array, migration uses field arrays
