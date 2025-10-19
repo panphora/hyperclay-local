@@ -80,7 +80,8 @@ class HyperclayDNSServer {
     this.logger = options.logger || console;
 
     // Track active requests for graceful shutdown
-    this.activeRequests = new Map(); // requestId -> AbortController
+    this.activeRequests = new Map(); // requestId -> { promise, reject }
+    this.isShuttingDown = false;
   }
 
   async start() {
@@ -90,6 +91,9 @@ class HyperclayDNSServer {
     }
 
     try {
+      // Pre-flight privilege check
+      await this.checkPrivileges();
+
       // Create resolver for upstream queries
       this.resolver = new dns2.Resolver({
         nameServers: [this.upstreamDNS],
@@ -126,10 +130,43 @@ class HyperclayDNSServer {
       }
 
       if (error.code === 'EACCES' || error.code === 'EPERM') {
-        throw new Error('Permission denied. DNS server requires admin/sudo to bind to port 53.');
+        throw new Error('Permission denied. DNS server requires admin/sudo to bind to port 53. Please restart the app with administrator privileges.');
+      }
+
+      if (error.code === 'INSUFFICIENT_PRIVILEGES') {
+        throw error; // Re-throw with original message
       }
 
       throw error;
+    }
+  }
+
+  async checkPrivileges() {
+    const os = require('os');
+    const platform = os.platform();
+
+    if (platform === 'win32') {
+      // Check if running as administrator on Windows
+      const { exec } = require('child_process');
+      const util = require('util');
+      const execAsync = util.promisify(exec);
+
+      try {
+        await execAsync('net session', { timeout: 1000 });
+        this.logger.log('[DNS] Running with administrator privileges (Windows)');
+      } catch {
+        const error = new Error('Administrator privileges required. Please right-click the app and select "Run as administrator".');
+        error.code = 'INSUFFICIENT_PRIVILEGES';
+        throw error;
+      }
+    } else {
+      // Check if running as root on Unix-like systems
+      if (process.getuid && process.getuid() !== 0) {
+        const error = new Error('Root privileges required. Please run the app with sudo or grant elevated permissions.');
+        error.code = 'INSUFFICIENT_PRIVILEGES';
+        throw error;
+      }
+      this.logger.log('[DNS] Running with root privileges');
     }
   }
 
@@ -137,9 +174,12 @@ class HyperclayDNSServer {
     if (!this.isRunning) return;
 
     try {
-      // Abort all active requests
-      for (const [requestId, abortController] of this.activeRequests) {
-        abortController.abort();
+      // Signal shutdown to prevent new requests
+      this.isShuttingDown = true;
+
+      // Reject all active requests
+      for (const [requestId, { reject }] of this.activeRequests) {
+        reject(new Error('DNS server shutting down'));
       }
       this.activeRequests.clear();
 
@@ -151,6 +191,7 @@ class HyperclayDNSServer {
       }
 
       this.isRunning = false;
+      this.isShuttingDown = false;
       this.logger.log('[DNS] Server stopped');
     } catch (error) {
       this.logger.error('[DNS] Error stopping server:', error.message);
@@ -212,28 +253,44 @@ class HyperclayDNSServer {
   }
 
   async forwardToUpstream(request, send, name, type) {
-    const requestId = `${name}-${type}-${Date.now()}`;
-    const abortController = new AbortController();
-
-    // Track this request for graceful shutdown
-    this.activeRequests.set(requestId, abortController);
-
-    const timeoutId = setTimeout(() => {
-      abortController.abort();
-      this.activeRequests.delete(requestId);
-      this.logger.warn(`[DNS] Upstream query timeout for ${name}`);
+    // Check if shutting down
+    if (this.isShuttingDown) {
       const response = Packet.createResponseFromRequest(request);
       send(response);
-    }, 5000);
+      return;
+    }
+
+    const requestId = `${name}-${type}-${Date.now()}`;
+    let timeoutId;
+    let requestReject;
+
+    // Create tracked promise
+    const trackedPromise = new Promise((resolve, reject) => {
+      requestReject = reject;
+
+      timeoutId = setTimeout(() => {
+        this.activeRequests.delete(requestId);
+        reject(new Error('Timeout'));
+      }, 5000);
+
+      // Start the actual DNS resolution
+      this.resolver.resolve(name, type)
+        .then(resolve)
+        .catch(reject)
+        .finally(() => {
+          clearTimeout(timeoutId);
+          this.activeRequests.delete(requestId);
+        });
+    });
+
+    // Track this request for graceful shutdown
+    this.activeRequests.set(requestId, {
+      promise: trackedPromise,
+      reject: requestReject
+    });
 
     try {
-      // Use dns2 Resolver (handles retries, TCP fallback, etc.)
-      // Note: dns2 doesn't support AbortSignal directly, but we track the controller
-      // to abort on shutdown
-      const answers = await this.resolver.resolve(name, type);
-
-      clearTimeout(timeoutId);
-      this.activeRequests.delete(requestId);
+      const answers = await trackedPromise;
 
       // Build response from resolver results
       const response = Packet.createResponseFromRequest(request);
@@ -245,11 +302,8 @@ class HyperclayDNSServer {
         this.logger.log(`[DNS] Forwarded ${name} to upstream`);
       }
     } catch (error) {
-      clearTimeout(timeoutId);
-      this.activeRequests.delete(requestId);
-
       // Don't log errors if we're shutting down
-      if (!abortController.signal.aborted) {
+      if (!this.isShuttingDown && error.message !== 'DNS server shutting down') {
         this.logger.error(`[DNS] Upstream query failed for ${name}:`, error.message);
       }
 
@@ -455,29 +509,61 @@ class SystemDNSManager {
 
   async getNetworkServicesMacOS() {
     try {
+      // Use networksetup -listallnetworkservices (more reliable, locale-independent)
       const { stdout } = await execAsync('networksetup -listallnetworkservices');
+
+      // Parse output - each line is a service name
+      // First line is a header, skip it
       const lines = stdout.split('\n').filter(line =>
         line &&
         !line.startsWith('An asterisk') &&
-        !line.startsWith('*')
+        !line.startsWith('*') // Disabled services start with *
       );
 
-      // Only return services that have DNS configured
-      const activeServices = [];
-      for (const service of lines) {
+      const services = [];
+
+      // Only keep services where getdnsservers succeeds
+      for (const serviceName of lines) {
+        const trimmed = serviceName.trim();
+        if (!trimmed) continue;
+
         try {
-          const { stdout: dnsServers } = await execAsync(`networksetup -getdnsservers "${service}"`);
-          // Service exists and is queryable
-          activeServices.push(service);
+          const { stdout: dnsOutput } = await execAsync(`networksetup -getdnsservers "${trimmed}"`);
+          // Service supports DNS queries
+          services.push(trimmed);
+          this.logger.log(`[DNS Manager] Found DNS-capable service: ${trimmed}`);
         } catch {
           // Service doesn't support DNS or is not active
+          this.logger.log(`[DNS Manager] Skipping service without DNS: ${trimmed}`);
         }
       }
 
-      this.logger.log(`[DNS Manager] Found ${activeServices.length} network service(s)`);
-      return activeServices.length > 0 ? activeServices : ['Wi-Fi']; // Fallback
+      if (services.length > 0) {
+        // Verify via scutil --dns as secondary check
+        try {
+          const { stdout: scutilOutput } = await execAsync('scutil --dns');
+          this.logger.log(`[DNS Manager] scutil verification: ${services.length} services configured`);
+        } catch {
+          this.logger.warn('[DNS Manager] Could not verify with scutil --dns');
+        }
+
+        return services;
+      }
+
+      // Fallback: try common service names
+      const fallbacks = ['Wi-Fi', 'Ethernet', 'USB Ethernet', 'Thunderbolt Ethernet'];
+      for (const service of fallbacks) {
+        try {
+          await execAsync(`networksetup -getdnsservers "${service}"`);
+          this.logger.log(`[DNS Manager] Using fallback service: ${service}`);
+          return [service];
+        } catch {}
+      }
+
+      this.logger.warn('[DNS Manager] Could not detect any network services, using Wi-Fi as last resort');
+      return ['Wi-Fi'];
     } catch (error) {
-      this.logger.warn('[DNS Manager] Could not detect network services, using Wi-Fi');
+      this.logger.error('[DNS Manager] Error detecting network services:', error.message);
       return ['Wi-Fi'];
     }
   }
@@ -645,8 +731,24 @@ class SystemDNSManager {
 
   async checkNetworkManager() {
     try {
+      // Check if nmcli exists and NetworkManager is actually managing connections
       await execAsync('nmcli --version');
-      return true;
+
+      // Verify NetworkManager is managing at least one device
+      const { stdout } = await execAsync('nmcli -t dev status');
+      const lines = stdout.split('\n').filter(line => line.trim());
+
+      // Check if any device is connected
+      for (const line of lines) {
+        const parts = line.split(':');
+        if (parts[2] === 'connected') {
+          this.logger.log('[DNS Manager] NetworkManager detected and managing connections');
+          return true;
+        }
+      }
+
+      this.logger.log('[DNS Manager] NetworkManager installed but not managing connections');
+      return false;
     } catch {
       return false;
     }
@@ -663,26 +765,48 @@ class SystemDNSManager {
 
   async setDNSLinuxNetworkManager() {
     try {
-      // Get active connection name
-      const { stdout } = await execAsync("nmcli -t -f NAME,DEVICE connection show --active | head -n1");
-      const connectionName = stdout.trim().split(':')[0];
+      // Get all connected devices
+      const { stdout: devOutput } = await execAsync('nmcli -t dev status');
+      const lines = devOutput.split('\n').filter(line => line.trim());
 
-      if (!connectionName) {
-        throw new Error('No active NetworkManager connection found');
+      const connectedDevices = [];
+      for (const line of lines) {
+        const parts = line.split(':');
+        const device = parts[0];
+        const type = parts[1];
+        const state = parts[2];
+        const connection = parts[3];
+
+        if (state === 'connected' && connection) {
+          connectedDevices.push({ device, connection });
+        }
       }
 
-      const commands = [
-        `nmcli connection modify "${connectionName}" ipv4.dns "127.0.0.1 8.8.8.8"`,
-        `nmcli connection modify "${connectionName}" ipv4.ignore-auto-dns yes`,
-        `nmcli connection up "${connectionName}"`
-      ].join(' && ');
+      if (connectedDevices.length === 0) {
+        throw new Error('No active NetworkManager connections found');
+      }
+
+      this.logger.log(`[DNS Manager] Found ${connectedDevices.length} connected device(s)`);
+
+      // Build commands for all connected devices
+      const commands = [];
+      for (const { device, connection } of connectedDevices) {
+        commands.push(`nmcli connection modify "${connection}" ipv4.dns "127.0.0.1 8.8.8.8"`);
+        commands.push(`nmcli connection modify "${connection}" ipv4.ignore-auto-dns yes`);
+        commands.push(`nmcli device reapply "${device}"`);
+      }
+
+      // Add systemd-resolved restart if it's running
+      commands.push('systemctl is-active systemd-resolved && systemctl restart systemd-resolved || true');
+
+      const script = commands.join(' && ');
 
       return new Promise((resolve, reject) => {
-        sudo.exec(commands, SUDO_OPTIONS, (error, stdout, stderr) => {
+        sudo.exec(script, SUDO_OPTIONS, (error, stdout, stderr) => {
           if (error) {
             reject(new Error(`Failed to set DNS via NetworkManager: ${stderr || error.message}`));
           } else {
-            this.logger.log(`[DNS Manager] Linux DNS set via NetworkManager on ${connectionName}`);
+            this.logger.log(`[DNS Manager] Linux DNS set via NetworkManager on ${connectedDevices.length} device(s)`);
             resolve();
           }
         });
@@ -695,26 +819,46 @@ class SystemDNSManager {
 
   async restoreDNSLinuxNetworkManager() {
     try {
-      const { stdout } = await execAsync("nmcli -t -f NAME,DEVICE connection show --active | head -n1");
-      const connectionName = stdout.trim().split(':')[0];
+      // Get all connected devices
+      const { stdout: devOutput } = await execAsync('nmcli -t dev status');
+      const lines = devOutput.split('\n').filter(line => line.trim());
 
-      if (!connectionName) {
-        this.logger.warn('[DNS Manager] No active NetworkManager connection found');
+      const connectedDevices = [];
+      for (const line of lines) {
+        const parts = line.split(':');
+        const device = parts[0];
+        const state = parts[2];
+        const connection = parts[3];
+
+        if (state === 'connected' && connection) {
+          connectedDevices.push({ device, connection });
+        }
+      }
+
+      if (connectedDevices.length === 0) {
+        this.logger.warn('[DNS Manager] No active NetworkManager connections found');
         return;
       }
 
-      const commands = [
-        `nmcli connection modify "${connectionName}" ipv4.dns ""`,
-        `nmcli connection modify "${connectionName}" ipv4.ignore-auto-dns no`,
-        `nmcli connection up "${connectionName}"`
-      ].join(' && ');
+      // Build commands to restore DNS for all devices
+      const commands = [];
+      for (const { device, connection } of connectedDevices) {
+        commands.push(`nmcli connection modify "${connection}" ipv4.dns ""`);
+        commands.push(`nmcli connection modify "${connection}" ipv4.ignore-auto-dns no`);
+        commands.push(`nmcli device reapply "${device}"`);
+      }
+
+      // Restart systemd-resolved if running
+      commands.push('systemctl is-active systemd-resolved && systemctl restart systemd-resolved || true');
+
+      const script = commands.join(' && ');
 
       return new Promise((resolve, reject) => {
-        sudo.exec(commands, SUDO_OPTIONS, (error, stdout, stderr) => {
+        sudo.exec(script, SUDO_OPTIONS, (error, stdout, stderr) => {
           if (error) {
             reject(new Error(`Failed to restore DNS via NetworkManager: ${stderr || error.message}`));
           } else {
-            this.logger.log('[DNS Manager] Linux DNS restored via NetworkManager');
+            this.logger.log(`[DNS Manager] Linux DNS restored via NetworkManager on ${connectedDevices.length} device(s)`);
             resolve();
           }
         });
@@ -962,8 +1106,25 @@ class HyperclayHTTPServer {
       const match = hostWithoutPort.match(/^(.+?)\.hyperclaylocal\.com$/);
 
       if (match) {
+        // Subdomain request - this is a site
         const siteName = match[1];
-        await this.serveSite(siteName, req, res);
+
+        // Check if requesting an asset (anything other than /)
+        if (req.url !== '/' && req.url !== '') {
+          // Find the site's HTML file to determine its directory
+          const htmlPath = await this.findSiteFile(siteName);
+
+          if (!htmlPath) {
+            return res.status(404).send('Site not found');
+          }
+
+          // Serve asset relative to the HTML file's directory
+          const siteDir = path.dirname(htmlPath);
+          await this.serveAsset(siteDir, req.url, res);
+        } else {
+          // Serve the HTML file itself
+          await this.serveSite(siteName, req, res);
+        }
       } else if (hostWithoutPort === 'hyperclaylocal.com' || hostWithoutPort === 'localhost') {
         await this.serveDashboard(req, res);
       } else {
@@ -987,25 +1148,15 @@ class HyperclayHTTPServer {
         return this.send404(res, siteName);
       }
 
-      // Get the directory where the HTML file is located
-      const siteDir = path.dirname(htmlPath);
+      // Serve the HTML file (assets are handled in middleware)
+      const html = await this.readFileWithCache(htmlPath);
+      res.type('html');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.send(html);
 
-      // If requesting root, serve the HTML file
-      if (req.url === '/' || req.url === '') {
-        const html = await this.readFileWithCache(htmlPath);
-        res.type('html');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.send(html);
-
-        if (this.logger.level === 'debug') {
-          this.logger.log(`[HTTP] Served ${siteName} from ${htmlPath}`);
-        }
-        return;
+      if (this.logger.level === 'debug') {
+        this.logger.log(`[HTTP] Served ${siteName} from ${htmlPath}`);
       }
-
-      // Otherwise, serve static asset relative to the HTML file's directory
-      await this.serveAsset(siteDir, req.url, res);
-
     } catch (error) {
       this.logger.error(`[HTTP] Error serving ${siteName}:`, error.message);
       res.status(500).send('Internal Server Error');
@@ -1175,13 +1326,20 @@ class HyperclayHTTPServer {
   }
 
   async serveDashboard(req, res) {
+    let requestedPath = req.path;
+
+    // Remove username prefix if present
+    if (this.username && requestedPath.startsWith(`/${this.username}/`)) {
+      requestedPath = requestedPath.replace(`/${this.username}`, '');
+    }
+
     // If requesting root, show dashboard
-    if (req.path === '/' || req.path === '') {
+    if (requestedPath === '/' || requestedPath === '' || requestedPath === '/browse') {
       return this.serveDashboardHome(res);
     }
 
-    // If requesting a path, show directory browser
-    return this.serveDirectoryBrowser(req, res);
+    // If requesting a path, show directory browser or serve file
+    return this.serveDirectoryBrowser(requestedPath, res);
   }
 
   serveDashboardHome(res) {
@@ -1297,11 +1455,8 @@ class HyperclayHTTPServer {
     `);
   }
 
-  async serveDirectoryBrowser(req, res) {
+  async serveDirectoryBrowser(requestedPath, res) {
     try {
-      // Parse requested path
-      let requestedPath = req.path;
-
       // Remove /browse prefix if present
       if (requestedPath.startsWith('/browse')) {
         requestedPath = requestedPath.replace('/browse', '');
@@ -1312,16 +1467,14 @@ class HyperclayHTTPServer {
         requestedPath = '/' + requestedPath;
       }
 
-      // Remove username prefix if present
-      if (this.username && requestedPath.startsWith(`/${this.username}/`)) {
-        requestedPath = requestedPath.replace(`/${this.username}`, '');
-      }
-
       // Build absolute path
       const absolutePath = path.join(this.syncFolder, requestedPath);
 
       // Security: ensure we're within syncFolder
-      if (!absolutePath.startsWith(this.syncFolder)) {
+      const resolvedPath = path.resolve(absolutePath);
+      const resolvedSyncFolder = path.resolve(this.syncFolder);
+
+      if (!resolvedPath.startsWith(resolvedSyncFolder)) {
         return res.status(403).send('Forbidden');
       }
 
@@ -1971,6 +2124,18 @@ nmcli connection up "Wired connection 1"
 - IT policy may prevent DNS changes
 - Contact your IT administrator
 - Request whitelist for 127.0.0.1 DNS changes
+
+**Windows Firewall prompts:**
+- Windows may show firewall prompts for the DNS server
+- Allow the app through the firewall for "Private networks"
+- Manual firewall rule (run as administrator):
+```powershell
+# Add firewall rule for Hyperclay Local DNS
+netsh advfirewall firewall add rule name="Hyperclay Local DNS" dir=in action=allow protocol=UDP localport=53 program="C:\Path\To\HyperclayLocal.exe"
+
+# Remove rule when uninstalling
+netsh advfirewall firewall delete rule name="Hyperclay Local DNS"
+```
 
 ## Uninstall Instructions
 
