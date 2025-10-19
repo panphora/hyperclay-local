@@ -7,13 +7,14 @@ This revision addresses all issues from `BUNDLED_DNS_SERVER_IMPLEMENTATION_REVIE
 1. ✅ Fixed `dns2` API usage to use correct `createServer` factory
 2. ✅ Use `dns2` `Resolver` instead of raw dgram for upstream forwarding
 3. ✅ Persist DNS configuration to survive crashes
-4. ✅ Changed HTTP server to port 4321 (no admin required)
+4. ✅ Changed HTTP server to **port 80** (leverages existing admin privileges from DNS)
 5. ✅ Added static asset support with proper MIME types
 6. ✅ Reduced Windows UAC prompts by batching commands
 7. ✅ Added crash recovery and DNS restoration on startup
 8. ✅ Made IPv6 configurable
 9. ✅ Added structured logging with levels
 10. ✅ Match Hyperclay platform routing (HTML files at subdomains, assets at paths)
+11. ✅ **Clean URLs** - no port numbers required (production parity)
 
 ---
 
@@ -25,7 +26,7 @@ This revision addresses all issues from `BUNDLED_DNS_SERVER_IMPLEMENTATION_REVIE
 │                                                          │
 │  ┌────────────────┐        ┌──────────────────────┐    │
 │  │  DNS Server    │        │   HTTP Server        │    │
-│  │  (port 53)     │        │   (port 4321)        │    │
+│  │  (port 53)     │        │   (port 80)          │    │
 │  │                │        │                      │    │
 │  │  *.hyperclay   │        │  Parses Host header  │    │
 │  │  local.com     │        │  Serves HTML + assets│    │
@@ -43,13 +44,14 @@ This revision addresses all issues from `BUNDLED_DNS_SERVER_IMPLEMENTATION_REVIE
     ┌─────┴──────┐            ┌───────┴────────┐
     │ System DNS │            │  Any Browser   │
     │ 127.0.0.1  │            │  app.hyperclay │
-    └────────────┘            │ local.com:4321 │
+    └────────────┘            │  local.com     │
                               └────────────────┘
 ```
 
 **Key Features:**
-- HTTP server on **port 4321** (no admin needed)
+- HTTP server on **port 80** (leverages admin privileges from DNS)
 - DNS server on **port 53** (requires admin/sudo on startup)
+- **Clean URLs** - no port numbers needed (matches production)
 - Works with **any browser** (Safari, Chrome, Firefox, etc.)
 - Works with **browser extensions**
 - Config persisted via `electron-store`
@@ -1088,20 +1090,20 @@ module.exports = SystemDNSManager;
 
 ---
 
-## Updated HTTP Server (Port 4321 + Static Assets)
+## Updated HTTP Server (Port 80 + Static Assets)
 
 **`src/http-server/index.js`**
 
 ```javascript
 /**
- * HTTP Server on port 4321 (no admin required)
+ * HTTP Server on port 80 (leverages existing admin privileges)
  * Supports static assets with proper MIME types
  *
  * Routing behavior (matches Hyperclay platform):
- * - HTML files: Always served at [filename].hyperclaylocal.com:4321
+ * - HTML files: Always served at [filename].hyperclaylocal.com
  *   (even if located in nested folders on disk)
- * - Other files: Served at http://hyperclaylocal.com:4321/path/to/file
- *   or http://hyperclaylocal.com:4321/[username]/path/to/file if username set
+ * - Other files: Served at http://hyperclaylocal.com/path/to/file
+ *   or http://hyperclaylocal.com/[username]/path/to/file if username set
  */
 
 const express = require('express');
@@ -1112,7 +1114,7 @@ const fs = require('fs').promises;
 class HyperclayHTTPServer {
   constructor(syncFolder, options = {}) {
     this.syncFolder = syncFolder;
-    this.port = options.port || 4321; // High port, no admin needed
+    this.port = options.port || 80; // Standard HTTP port, requires same admin privileges as DNS
     this.username = options.username || null; // Optional username for asset paths
     this.logger = options.logger || console;
     this.app = express();
@@ -1498,7 +1500,7 @@ class HyperclayHTTPServer {
 
             <div class="info-box">
               <h3>How to access your sites:</h3>
-              <p>Access sites at <code>http://sitename.hyperclaylocal.com:4321</code></p>
+              <p>Access sites at <code>http://sitename.hyperclaylocal.com</code></p>
               <p style="margin-top: 10px; font-size: 14px; color: #718096;">
                 Replace <strong>sitename</strong> with your site file name (without .html)
               </p>
@@ -1507,7 +1509,7 @@ class HyperclayHTTPServer {
             <a href="/browse" class="link">📁 Browse all files →</a>
 
             <p style="font-size: 14px; color: #718096; margin-top: 20px;">
-              Running on port 4321 (no admin privileges required)
+              Running on port 80 (clean URLs, production parity)
             </p>
           </div>
         </body>
@@ -1615,7 +1617,7 @@ class HyperclayHTTPServer {
         if (isHTML) {
           // HTML files: link to subdomain
           const siteName = path.basename(entry.name, '.html');
-          url = `http://${siteName}.hyperclaylocal.com:4321`;
+          url = `http://${siteName}.hyperclaylocal.com`;
         } else if (isDir) {
           // Directories: continue browsing
           const dirPath = path.join(requestedPath, entry.name);
@@ -1624,8 +1626,8 @@ class HyperclayHTTPServer {
           // Other files: path-based with username prefix if set
           const filePath = path.join(requestedPath, entry.name);
           url = this.username
-            ? `http://hyperclaylocal.com:4321/${this.username}${filePath}`
-            : `http://hyperclaylocal.com:4321${filePath}`;
+            ? `http://hyperclaylocal.com/${this.username}${filePath}`
+            : `http://hyperclaylocal.com${filePath}`;
         }
 
         const icon = isDir ? '📁' : (isHTML ? '📄' : '📎');
@@ -1792,7 +1794,7 @@ class HyperclayHTTPServer {
           <h1>Site Not Found</h1>
           <p>The site <code>${siteName}</code> does not exist in your Hyperclay folder.</p>
           <p>Looking for: <code>${siteName}.html</code></p>
-          <p><a href="http://hyperclaylocal.com:4321">← Back to Dashboard</a></p>
+          <p><a href="http://hyperclaylocal.com">← Back to Dashboard</a></p>
         </body>
       </html>
     `);
@@ -1909,9 +1911,9 @@ async function startServers() {
     });
     await dnsServer.start();
 
-    // Start HTTP server on port 4321 (no admin needed)
+    // Start HTTP server on port 80 (leverages existing admin privileges)
     httpServer = new HyperclayHTTPServer(syncFolder, {
-      port: 4321,
+      port: 80,
       logger
     });
     await httpServer.start();
@@ -2263,14 +2265,15 @@ process.on('uncaughtException', async (error) => {
 This implementation matches the Hyperclay platform routing exactly:
 
 **HTML Files (Sites):**
-- Always accessible via subdomain: `http://sitename.hyperclaylocal.com:4321`
+- Always accessible via subdomain: `http://sitename.hyperclaylocal.com`
 - Works regardless of folder nesting on disk
 - Indexed on server startup for fast lookups
+- **Clean URLs** - no port numbers (identical to production)
 
 **Other Files (Assets):**
 - Served via path-based URLs
-- Without username: `http://hyperclaylocal.com:4321/path/to/file.svg`
-- With username: `http://hyperclaylocal.com:4321/username/path/to/file.svg`
+- Without username: `http://hyperclaylocal.com/path/to/file.svg`
+- With username: `http://hyperclaylocal.com/username/path/to/file.svg`
 
 **Directory Browser:**
 - HTML files link to subdomain URLs (open in new tab)
@@ -2335,7 +2338,9 @@ nmcli connection up "Wired connection 1"
 **Port conflicts:**
 - Port 53: Another DNS service is running (dnsmasq, Docker, etc.)
   - Stop the conflicting service or restart your computer
-- Port 4321: Change HTTP port in settings
+- Port 80: Another web server is running (Apache, nginx, etc.)
+  - Stop the conflicting service: `sudo apachectl stop` (macOS) or `sudo systemctl stop apache2` (Linux)
+  - Or change Hyperclay Local to use a different port in settings
 
 **VPN conflicts:**
 - VPN may override DNS settings when connecting
@@ -2348,15 +2353,17 @@ nmcli connection up "Wired connection 1"
 - Request whitelist for 127.0.0.1 DNS changes
 
 **Windows Firewall prompts:**
-- Windows may show firewall prompts for the DNS server
+- Windows may show firewall prompts for both DNS and HTTP servers
 - Allow the app through the firewall for "Private networks"
-- Manual firewall rule (run as administrator):
+- Manual firewall rules (run as administrator):
 ```powershell
-# Add firewall rule for Hyperclay Local DNS
+# Add firewall rules for Hyperclay Local
 netsh advfirewall firewall add rule name="Hyperclay Local DNS" dir=in action=allow protocol=UDP localport=53 program="C:\Path\To\HyperclayLocal.exe"
+netsh advfirewall firewall add rule name="Hyperclay Local HTTP" dir=in action=allow protocol=TCP localport=80 program="C:\Path\To\HyperclayLocal.exe"
 
-# Remove rule when uninstalling
+# Remove rules when uninstalling
 netsh advfirewall firewall delete rule name="Hyperclay Local DNS"
+netsh advfirewall firewall delete rule name="Hyperclay Local HTTP"
 ```
 
 ## Uninstall Instructions
@@ -2437,13 +2444,13 @@ ping google.com
 **4. Check for Running Processes**
 
 ```bash
-# Check for lingering processes on port 53 or 4321
+# Check for lingering processes on port 53 or 80
 netstat -an | grep 53
-netstat -an | grep 4321
+netstat -an | grep 80
 
 # If found, kill the process (find PID first)
 lsof -i :53
-lsof -i :4321
+lsof -i :80
 kill -9 <PID>
 ```
 
@@ -2451,7 +2458,7 @@ kill -9 <PID>
 
 After uninstall, verify:
 - [ ] DNS resolves external domains correctly
-- [ ] No processes listening on port 53 or 4321
+- [ ] No processes listening on port 53 or 80
 - [ ] Configuration files removed
 - [ ] System DNS settings restored (not pointing to 127.0.0.1)
 - [ ] Clear DNS cache: `sudo killall -HUP mDNSResponder` (macOS) or `ipconfig /flushdns` (Windows)
@@ -2475,10 +2482,16 @@ After uninstall, verify:
 - Paths are resolved and checked against syncFolder
 - Prevents access to files outside syncFolder
 
+### Port 80 Binding
+- Requires admin/root privileges (same as port 53)
+- Can be exploited if server has vulnerabilities
+- Mitigated by binding only to 127.0.0.1 (loopback interface)
+- No external access - only localhost can connect
+
 ### CORS Policy
 - Currently set to `Access-Control-Allow-Origin: *`
 - Allows any origin to make requests
-- **Recommendation:** Restrict to `http://hyperclaylocal.com:4321` and subdomains
+- **Recommendation:** Restrict to `http://hyperclaylocal.com` and `*.hyperclaylocal.com` subdomains
 
 ### File Serving
 - Only serves files within syncFolder
