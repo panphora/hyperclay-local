@@ -651,7 +651,7 @@ async performInitialSync() {
 
         if (localChecksum === serverFile.checksum) {
           console.log(`[SYNC] SKIP ${relativePath} - identical`);
-          this.stats.filesSkipped++;
+          this.stats.filesDownloadedSkipped++;
           continue;
         }
 
@@ -853,7 +853,7 @@ async uploadFile(relativePath) {
 
       if (serverFile && serverFile.checksum === localChecksum) {
         console.log(`[SYNC] SKIP ${relativePath} - identical to server`);
-        this.stats.filesSkipped++;
+        this.stats.filesDownloadedSkipped++;
         return;
       }
     } catch (error) {
@@ -1013,7 +1013,7 @@ All blockers have been comprehensively addressed with working code that:
 - **Lines 847-862**: Check server checksum before uploading, skip if identical to reduce network traffic
 
 ### ✅ Fix 12 - Merge "Protected" and "Skipped" stats
-- **UI simplification**: Both `filesProtected` and `filesSkipped` should be combined into a single "Skipped" count
+- **UI simplification**: Both `filesProtected` and `filesDownloadedSkipped` should be combined into a single "Skipped" count
 - **Implementation**: Keep separate counters for logging, but display as one "Skipped" stat in UI
 - **Rationale**: From user perspective, both mean "we didn't download this file" - implementation detail doesn't matter
 
