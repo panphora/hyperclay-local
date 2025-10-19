@@ -509,62 +509,122 @@ class SystemDNSManager {
 
   async getNetworkServicesMacOS() {
     try {
-      // Use networksetup -listallnetworkservices (more reliable, locale-independent)
-      const { stdout } = await execAsync('networksetup -listallnetworkservices');
+      // Step 1: Get currently active DNS resolvers from scutil --dns
+      const { stdout: scutilOutput } = await execAsync('scutil --dns');
 
-      // Parse output - each line is a service name
-      // First line is a header, skip it
-      const lines = stdout.split('\n').filter(line =>
+      // Parse scutil output to find active resolvers and their interfaces
+      // Example output:
+      // resolver #1
+      //   search domain[0] : example.com
+      //   nameserver[0] : 8.8.8.8
+      //   if_index : 4 (en0)
+      //   flags    : Request A records, Request AAAA records
+      //   reach    : 0x00000002 (Reachable)
+
+      const activeInterfaces = new Set();
+      const resolverBlocks = scutilOutput.split('resolver #');
+
+      for (const block of resolverBlocks) {
+        if (!block.trim()) continue;
+
+        // Look for if_index line with interface name
+        const ifMatch = block.match(/if_index\s*:\s*\d+\s*\(([^)]+)\)/);
+        if (ifMatch) {
+          activeInterfaces.add(ifMatch[1].trim());
+        }
+      }
+
+      this.logger.log(`[DNS Manager] Active interfaces from scutil: ${Array.from(activeInterfaces).join(', ')}`);
+
+      // Step 2: Get service order mapping from networksetup
+      const { stdout: orderOutput } = await execAsync('networksetup -listnetworkserviceorder');
+
+      // Parse output like:
+      // (1) Wi-Fi
+      // (Hardware Port: Wi-Fi, Device: en0)
+      // (2) Ethernet
+      // (Hardware Port: Ethernet, Device: en1)
+
+      const serviceMap = new Map(); // device -> serviceName
+      const lines = orderOutput.split('\n');
+
+      let currentService = null;
+      for (const line of lines) {
+        // Match service name: (1) Wi-Fi
+        const serviceMatch = line.match(/^\(\d+\)\s+(.+)$/);
+        if (serviceMatch) {
+          currentService = serviceMatch[1].trim();
+          continue;
+        }
+
+        // Match hardware port line: (Hardware Port: Wi-Fi, Device: en0)
+        const deviceMatch = line.match(/Device:\s*(\w+)\)/);
+        if (deviceMatch && currentService) {
+          const device = deviceMatch[1].trim();
+          serviceMap.set(device, currentService);
+          this.logger.log(`[DNS Manager] Mapped ${device} -> ${currentService}`);
+        }
+      }
+
+      // Step 3: Match active interfaces to service names
+      const activeServices = [];
+      for (const iface of activeInterfaces) {
+        const serviceName = serviceMap.get(iface);
+        if (serviceName) {
+          // Verify service supports DNS operations
+          try {
+            await execAsync(`networksetup -getdnsservers "${serviceName}"`);
+            activeServices.push(serviceName);
+            this.logger.log(`[DNS Manager] Active service: ${serviceName} (${iface})`);
+          } catch {
+            this.logger.warn(`[DNS Manager] Service ${serviceName} doesn't support DNS`);
+          }
+        }
+      }
+
+      if (activeServices.length > 0) {
+        this.logger.log(`[DNS Manager] Found ${activeServices.length} active DNS service(s)`);
+        return activeServices;
+      }
+
+      // Fallback: if scutil parsing failed, try all services
+      this.logger.warn('[DNS Manager] scutil parsing incomplete, falling back to all services');
+      const { stdout: allServices } = await execAsync('networksetup -listallnetworkservices');
+      const serviceLines = allServices.split('\n').filter(line =>
         line &&
         !line.startsWith('An asterisk') &&
-        !line.startsWith('*') // Disabled services start with *
+        !line.startsWith('*')
       );
 
-      const services = [];
-
-      // Only keep services where getdnsservers succeeds
-      for (const serviceName of lines) {
+      const workingServices = [];
+      for (const serviceName of serviceLines) {
         const trimmed = serviceName.trim();
         if (!trimmed) continue;
 
         try {
-          const { stdout: dnsOutput } = await execAsync(`networksetup -getdnsservers "${trimmed}"`);
-          // Service supports DNS queries
-          services.push(trimmed);
-          this.logger.log(`[DNS Manager] Found DNS-capable service: ${trimmed}`);
-        } catch {
-          // Service doesn't support DNS or is not active
-          this.logger.log(`[DNS Manager] Skipping service without DNS: ${trimmed}`);
-        }
+          await execAsync(`networksetup -getdnsservers "${trimmed}"`);
+          workingServices.push(trimmed);
+        } catch {}
       }
 
-      if (services.length > 0) {
-        // Verify via scutil --dns as secondary check
-        try {
-          const { stdout: scutilOutput } = await execAsync('scutil --dns');
-          this.logger.log(`[DNS Manager] scutil verification: ${services.length} services configured`);
-        } catch {
-          this.logger.warn('[DNS Manager] Could not verify with scutil --dns');
-        }
-
-        return services;
+      if (workingServices.length > 0) {
+        return workingServices;
       }
 
-      // Fallback: try common service names
-      const fallbacks = ['Wi-Fi', 'Ethernet', 'USB Ethernet', 'Thunderbolt Ethernet'];
+      // Last resort: common service names
+      const fallbacks = ['Wi-Fi', 'Ethernet', 'Thunderbolt Ethernet'];
       for (const service of fallbacks) {
         try {
           await execAsync(`networksetup -getdnsservers "${service}"`);
-          this.logger.log(`[DNS Manager] Using fallback service: ${service}`);
+          this.logger.log(`[DNS Manager] Using last-resort fallback: ${service}`);
           return [service];
         } catch {}
       }
 
-      this.logger.warn('[DNS Manager] Could not detect any network services, using Wi-Fi as last resort');
-      return ['Wi-Fi'];
+      throw new Error('Could not detect any network services on macOS');
     } catch (error) {
-      this.logger.error('[DNS Manager] Error detecting network services:', error.message);
-      return ['Wi-Fi'];
+      this.logger.error('[DNS Manager] Error detecting macOS services:', error.message);
+      throw error;
     }
   }
 
@@ -1883,12 +1943,107 @@ async function stopServers() {
 }
 
 // ===========================
+// Privilege Detection
+// ===========================
+
+function checkElevation() {
+  const os = require('os');
+  const platform = os.platform();
+
+  if (platform === 'win32') {
+    // Check Windows admin privileges
+    const { exec } = require('child_process');
+    return new Promise((resolve) => {
+      exec('net session', { timeout: 1000 }, (error) => {
+        resolve(!error);
+      });
+    });
+  } else {
+    // Check Unix root privileges
+    return Promise.resolve(process.getuid && process.getuid() === 0);
+  }
+}
+
+async function promptForElevation() {
+  const { dialog } = require('electron');
+
+  const response = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    title: 'Administrator Privileges Required',
+    message: 'Hyperclay Local needs administrator privileges to configure DNS',
+    detail: 'The app needs to:\n' +
+            '• Run a DNS server on port 53 (requires admin/sudo)\n' +
+            '• Configure system DNS settings to use localhost\n\n' +
+            'This allows sites to work with any browser on your system.',
+    buttons: ['Quit', 'Learn More', 'Grant Permissions'],
+    defaultId: 2,
+    cancelId: 0
+  });
+
+  if (response.response === 0) {
+    // User chose to quit
+    app.quit();
+    return false;
+  }
+
+  if (response.response === 1) {
+    // User chose to learn more
+    const { shell } = require('electron');
+    shell.openExternal('https://docs.hyperclay.com/local/permissions');
+    return promptForElevation(); // Ask again after they learn more
+  }
+
+  // User chose to grant permissions
+  return true;
+}
+
+async function ensureElevation() {
+  const isElevated = await checkElevation();
+
+  if (isElevated) {
+    logger.log('[App] Running with elevated privileges');
+    return true;
+  }
+
+  logger.warn('[App] Not running with elevated privileges');
+
+  const { dialog } = require('electron');
+  const os = require('os');
+  const platform = os.platform();
+
+  let instructions = '';
+  if (platform === 'win32') {
+    instructions = 'Please close the app and right-click "Hyperclay Local" → "Run as administrator"';
+  } else if (platform === 'darwin') {
+    instructions = 'Please close the app and run: sudo open "/Applications/Hyperclay Local.app"';
+  } else {
+    instructions = 'Please close the app and run: sudo hyperclay-local';
+  }
+
+  await dialog.showMessageBox(mainWindow, {
+    type: 'error',
+    title: 'Restart Required',
+    message: 'Administrator privileges required',
+    detail: instructions + '\n\nThe app will now quit.',
+    buttons: ['OK']
+  });
+
+  app.quit();
+  return false;
+}
+
+// ===========================
 // IPC Handlers
 // ===========================
 
 ipcMain.handle('setup-dns', async () => {
   try {
     logger.log('Setting up DNS...');
+
+    // Check for elevation first
+    if (!await ensureElevation()) {
+      return { success: false, error: 'Insufficient privileges' };
+    }
 
     if (!dnsManager) {
       dnsManager = new SystemDNSManager(store, logger);
@@ -1914,6 +2069,16 @@ ipcMain.handle('setup-dns', async () => {
 
     // Cleanup on failure
     store.set('dnsSetupComplete', false);
+
+    // Show user-friendly error
+    const { dialog } = require('electron');
+    await dialog.showMessageBox(mainWindow, {
+      type: 'error',
+      title: 'DNS Setup Failed',
+      message: 'Failed to configure DNS',
+      detail: error.message + '\n\nPlease check the troubleshooting guide.',
+      buttons: ['OK']
+    });
 
     return { success: false, error: error.message };
   }
@@ -1962,19 +2127,76 @@ ipcMain.handle('check-dns-status', async () => {
 // ===========================
 
 app.on('ready', async () => {
+  // Check for elevation on startup
+  const isElevated = await checkElevation();
+
+  if (!isElevated) {
+    logger.warn('[App] Starting without elevated privileges');
+
+    // Show warning dialog
+    const { dialog } = require('electron');
+    const os = require('os');
+    const platform = os.platform();
+
+    let instructions = '';
+    if (platform === 'win32') {
+      instructions = 'Right-click "Hyperclay Local" and select "Run as administrator"';
+    } else if (platform === 'darwin') {
+      instructions = 'Run in Terminal: sudo open "/Applications/Hyperclay Local.app"';
+    } else {
+      instructions = 'Run in Terminal: sudo hyperclay-local';
+    }
+
+    // Create a minimal window just to show the dialog
+    const { BrowserWindow } = require('electron');
+    const tempWindow = new BrowserWindow({ show: false });
+
+    const response = await dialog.showMessageBox(tempWindow, {
+      type: 'warning',
+      title: 'Administrator Privileges Required',
+      message: 'Hyperclay Local requires administrator privileges',
+      detail: 'To use Hyperclay Local, you need to run it with administrator/sudo privileges.\n\n' +
+              'How to restart with privileges:\n' +
+              instructions + '\n\n' +
+              'Why this is needed:\n' +
+              '• DNS server needs port 53 (privileged port)\n' +
+              '• System DNS configuration requires admin access',
+      buttons: ['Quit', 'Continue Anyway (Limited Mode)'],
+      defaultId: 0,
+      cancelId: 0
+    });
+
+    tempWindow.close();
+
+    if (response.response === 0) {
+      // User chose to quit
+      app.quit();
+      return;
+    }
+
+    // User chose to continue in limited mode
+    logger.warn('[App] Continuing without privileges - DNS features disabled');
+  }
+
   // Attempt DNS recovery first (in case of previous crash)
-  await attemptDNSRecovery();
+  if (isElevated) {
+    await attemptDNSRecovery();
+  }
 
   // Create window
   createWindow();
 
-  // Try to start servers (if DNS already configured)
-  const result = await startServers();
+  // Try to start servers (if DNS already configured and elevated)
+  if (isElevated) {
+    const result = await startServers();
 
-  if (result.success) {
-    logger.log('Servers started automatically');
+    if (result.success) {
+      logger.log('Servers started automatically');
+    } else {
+      logger.log('Servers not started:', result.error);
+    }
   } else {
-    logger.log('Servers not started:', result.error);
+    logger.warn('[App] Skipping server start - insufficient privileges');
   }
 });
 
