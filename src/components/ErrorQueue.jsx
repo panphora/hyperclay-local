@@ -82,23 +82,9 @@ export default function ErrorQueue({ errors, onDismiss, maxVisible = 3 }) {
             ${error.priority === ERROR_PRIORITY.CRITICAL ? 'animate-pulse' : ''}
           `}
         >
-          <div className="flex items-start justify-between">
+          <div className="flex items-start justify-between gap-3">
             <div className="flex-1">
-              <div className="flex items-center gap-2 font-semibold">
-                <span>
-                  {error.priority === ERROR_PRIORITY.CRITICAL ? 'Critical Error' :
-                   error.priority === ERROR_PRIORITY.HIGH ? 'Error' :
-                   error.priority === ERROR_PRIORITY.MEDIUM ? 'Warning' :
-                   'Info'}
-                </span>
-                {error.file && (
-                  <span className="text-sm opacity-75">
-                    ({error.file})
-                  </span>
-                )}
-              </div>
-
-              <div className="mt-2 text-sm">
+              <div className="text-sm">
                 {expandedErrors.has(error.id) || error.error.length < 100
                   ? error.error
                   : error.error.substring(0, 100) + '...'}
@@ -112,23 +98,15 @@ export default function ErrorQueue({ errors, onDismiss, maxVisible = 3 }) {
                   {expandedErrors.has(error.id) ? 'Show less' : 'Show more'}
                 </button>
               )}
-
-              {error.timestamp && (
-                <div className="mt-2 text-xs opacity-60">
-                  {new Date(error.timestamp).toLocaleTimeString()}
-                </div>
-              )}
             </div>
 
-            {error.dismissable && (
-              <button
-                onClick={() => onDismiss(error.id)}
-                className="ml-4 text-2xl hover:opacity-70"
-                title="Dismiss"
-              >
-                ×
-              </button>
-            )}
+            <button
+              onClick={() => onDismiss(error.id)}
+              className="text-2xl leading-none hover:opacity-70 flex-shrink-0"
+              title="Dismiss"
+            >
+              ×
+            </button>
           </div>
         </div>
       ))}
