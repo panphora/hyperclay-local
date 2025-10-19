@@ -26,7 +26,6 @@ const SYNC_CONFIG = {
   TIME_BUFFER: 10000,        // 10 seconds buffer for "same time"
   MAX_RETRIES: 3,
   RETRY_DELAYS: [5000, 15000, 60000], // 5s, 15s, 60s exponential backoff
-  MAX_BACKUPS_PER_SITE: 10,
   FILE_STABILIZATION: {
     stabilityThreshold: 1000,
     pollInterval: 100

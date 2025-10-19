@@ -3,121 +3,67 @@
  */
 
 const fs = require('fs').promises;
-const fsSync = require('fs');
-const path = require('path');
-const { generateTimestamp } = require('./utils');
-const { SYNC_CONFIG } = require('./constants');
+const path = require('upath'); // Use upath for cross-platform compatibility
 
 /**
- * Create local backup before file modifications
- * Follows the same convention as hyperclay-local server.js
+ * Get backup directory for a file, preserving folder structure
  */
-async function createLocalBackup(filePath, syncFolder, emit) {
+function getBackupDir(syncFolder, relativePath) {
+  // Remove .html and create nested backup structure
+  const parts = relativePath.replace(/\.html$/i, '').split('/');
+  return path.join(syncFolder, 'sites-versions', ...parts);
+}
+
+/**
+ * Create a local backup of a file
+ */
+async function createLocalBackup(filePath, relativePath, syncFolder, emit) {
   try {
-    // Extract site name from filename (remove .html extension)
-    const fileName = path.basename(filePath);
-    const siteName = fileName.replace('.html', '');
-
-    // Create backup directory structure: sites-versions/{siteName}/
-    const backupDir = path.join(
-      syncFolder,
-      'sites-versions',
-      siteName
-    );
-
-    // Generate timestamp using same format as local server
-    const timestamp = generateTimestamp();
-    const backupFilename = `${timestamp}.html`;
-    const backupPath = path.join(backupDir, backupFilename);
+    // Use relative path to create unique backup directory
+    const backupDir = getBackupDir(syncFolder, relativePath);
 
     // Ensure backup directory exists
     await fs.mkdir(backupDir, { recursive: true });
 
-    // Copy file to backup
+    // Create timestamped backup filename
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupName = `backup-${timestamp}.html`;
+    const backupPath = path.join(backupDir, backupName);
+
+    // Copy file to backup location
     await fs.copyFile(filePath, backupPath);
 
-    console.log(`[SYNC] Backup created: sites-versions/${siteName}/${backupFilename}`);
+    console.log(`[BACKUP] Created backup: ${backupPath}`);
 
-    // Emit backup event
     if (emit) {
       emit('backup-created', {
-        original: fileName,
-        siteName: siteName,
-        backup: backupFilename,
-        path: backupPath
+        original: relativePath,
+        backup: backupPath
       });
     }
 
-    // Clean old backups for this site
-    await cleanOldBackups(backupDir, siteName);
-
     return backupPath;
   } catch (error) {
-    console.error('[SYNC] Backup creation failed:', error);
-    throw error;
+    console.error(`[BACKUP] Failed to create backup for ${relativePath}:`, error);
+    return null;
   }
 }
 
 /**
- * Create backup if file exists and this is the first backup
+ * Create backup if file exists
  */
-async function createBackupIfNeeded(localPath, filename, syncFolder, emit) {
-  if (fsSync.existsSync(localPath)) {
-    try {
-      // Check if this is the first backup (no versions exist yet)
-      const siteName = filename.replace('.html', '');
-      const siteVersionsDir = path.join(syncFolder, 'sites-versions', siteName);
-      let isFirstSave = false;
-
-      try {
-        const versionFiles = await fs.readdir(siteVersionsDir);
-        isFirstSave = versionFiles.length === 0;
-      } catch (error) {
-        // Directory doesn't exist yet, so this is the first save
-        isFirstSave = true;
-      }
-
-      // If first save, backup the existing content first (matches server.js behavior)
-      if (isFirstSave) {
-        console.log(`[SYNC] Creating initial backup of existing ${filename}`);
-      }
-
-      await createLocalBackup(localPath, syncFolder, emit);
-    } catch (backupError) {
-      // Log but continue - better to sync than fail
-      console.error('[SYNC] Backup failed, continuing:', backupError);
-    }
-  }
-}
-
-/**
- * Keep only the most recent N backups per site
- * Backups are in sites-versions/{siteName}/ directory
- */
-async function cleanOldBackups(backupDir, siteName, maxBackups = SYNC_CONFIG.MAX_BACKUPS_PER_SITE) {
+async function createBackupIfNeeded(localPath, relativePath, syncFolder, emit) {
   try {
-    const entries = await fs.readdir(backupDir);
-
-    // All files in this directory are backups for this site
-    // They're named with timestamps: YYYY-MM-DD-HH-MM-SS-MMM.html
-    const backups = entries
-      .filter(f => f.endsWith('.html'))
-      .sort((a, b) => b.localeCompare(a)); // Newest first (timestamps sort naturally)
-
-    // Delete old backups beyond the limit
-    const toDelete = backups.slice(maxBackups);
-    for (const backup of toDelete) {
-      const backupPath = path.join(backupDir, backup);
-      await fs.unlink(backupPath);
-      console.log(`[SYNC] Deleted old backup: sites-versions/${siteName}/${backup}`);
-    }
-  } catch (error) {
-    console.error('[SYNC] Backup cleanup failed:', error);
+    await fs.access(localPath);
+    // File exists, create backup
+    return await createLocalBackup(localPath, relativePath, syncFolder, emit);
+  } catch {
+    // File doesn't exist, no backup needed
+    return null;
   }
 }
 
 module.exports = {
   createLocalBackup,
-  createBackupIfNeeded,
-  cleanOldBackups
+  createBackupIfNeeded
 };

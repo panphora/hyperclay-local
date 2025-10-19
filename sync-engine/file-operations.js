@@ -4,36 +4,52 @@
 
 const fs = require('fs').promises;
 const fsSync = require('fs');
-const path = require('path');
+const path = require('upath'); // Use upath for cross-platform compatibility
 
 /**
- * Get list of local HTML files
+ * Get all local HTML files recursively with relative paths
  */
 async function getLocalFiles(syncFolder) {
   const files = new Map();
 
-  try {
-    const entries = await fs.readdir(syncFolder);
+  async function scanDirectory(dirPath, relativePath = '') {
+    try {
+      const entries = await fs.readdir(dirPath, { withFileTypes: true });
 
-    for (const entry of entries) {
-      // Only sync .html files
-      if (!entry.endsWith('.html')) continue;
+      for (const entry of entries) {
+        const fullPath = path.join(dirPath, entry.name);
+        const relPath = relativePath
+          ? path.join(relativePath, entry.name)
+          : entry.name;
 
-      const filePath = path.join(syncFolder, entry);
-      const stat = await fs.stat(filePath);
+        if (entry.isDirectory()) {
+          // Skip system directories
+          if (!entry.name.startsWith('.') &&
+              entry.name !== 'node_modules' &&
+              entry.name !== 'sites-versions') {
+            // Recursively scan subdirectories
+            await scanDirectory(fullPath, relPath);
+          }
+        } else if (entry.isFile() && entry.name.endsWith('.html')) {
+          const stats = await fs.stat(fullPath);
 
-      if (stat.isFile()) {
-        files.set(entry, {
-          path: filePath,
-          mtime: stat.mtime,
-          size: stat.size
-        });
+          // Normalize path to forward slashes for consistency
+          const normalizedPath = relPath.split(path.sep).join('/');
+
+          files.set(normalizedPath, {
+            path: fullPath,
+            relativePath: normalizedPath,
+            mtime: stats.mtime,
+            size: stats.size
+          });
+        }
       }
+    } catch (error) {
+      console.error(`Error scanning directory ${dirPath}:`, error);
     }
-  } catch (error) {
-    console.error('[SYNC] Error reading local files:', error);
   }
 
+  await scanDirectory(syncFolder);
   return files;
 }
 
@@ -45,14 +61,20 @@ async function readFile(filePath) {
 }
 
 /**
- * Write file with content and set modification time
+ * Write file ensuring parent directories exist
  */
-async function writeFile(filePath, content, mtime = null) {
+async function writeFile(filePath, content, modifiedTime) {
+  // Ensure parent directory exists
+  const dir = path.dirname(filePath);
+  await fs.mkdir(dir, { recursive: true });
+
+  // Write the file
   await fs.writeFile(filePath, content, 'utf8');
 
-  if (mtime) {
-    const mtimeDate = new Date(mtime);
-    await fs.utimes(filePath, mtimeDate, mtimeDate);
+  // Set modification time if provided
+  if (modifiedTime) {
+    const mtime = new Date(modifiedTime);
+    await fs.utimes(filePath, mtime, mtime);
   }
 }
 

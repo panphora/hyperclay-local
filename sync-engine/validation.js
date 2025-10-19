@@ -912,6 +912,15 @@ function validateFullPath(fullPath) {
     return { valid: false, error: 'Empty path' };
   }
 
+  // Check folder depth (parts.length - 1 because last part is filename)
+  const folderDepth = parts.length - 1;
+  if (folderDepth > 5) {
+    return {
+      valid: false,
+      error: 'Folder depth cannot exceed 5 levels. Please reorganize your files into a shallower structure.'
+    };
+  }
+
   // Validate each folder in the path
   for (let i = 0; i < parts.length - 1; i++) {
     const folderResult = validateFolderName(parts[i]);

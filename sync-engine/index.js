@@ -4,7 +4,7 @@
  */
 
 const EventEmitter = require('events').EventEmitter;
-const path = require('path');
+const path = require('upath'); // Use upath for cross-platform compatibility
 const chokidar = require('chokidar');
 const { safeStorage } = require('electron');
 const { getServerBaseUrl } = require('../utils');
@@ -44,11 +44,14 @@ class SyncEngine extends EventEmitter {
     this.clockOffset = 0;
     this.pollTimer = null;
     this.syncQueue = new SyncQueue();
+    this.serverFilesCache = null; // Cache for server files list
+    this.serverFilesCacheTime = null; // When cache was last updated
     this.stats = {
       filesProtected: 0,
       filesDownloaded: 0,
       filesUploaded: 0,
       filesDownloadedSkipped: 0,
+      filesUploadedSkipped: 0,
       lastSync: null,
       errors: []
     };
@@ -76,6 +79,7 @@ class SyncEngine extends EventEmitter {
       filesDownloaded: 0,
       filesUploaded: 0,
       filesDownloadedSkipped: 0,
+      filesUploadedSkipped: 0,
       lastSync: null,
       errors: []
     };
@@ -138,6 +142,35 @@ class SyncEngine extends EventEmitter {
   }
 
   /**
+   * Fetch server files and cache them
+   * @param {boolean} forceRefresh - Force refresh even if cache is valid
+   */
+  async fetchAndCacheServerFiles(forceRefresh = false) {
+    // Use cache if it's fresh (less than 30 seconds old) and not forcing refresh
+    if (!forceRefresh && this.serverFilesCache && this.serverFilesCacheTime) {
+      const cacheAge = Date.now() - this.serverFilesCacheTime;
+      if (cacheAge < 30000) {
+        console.log(`[SYNC] Using cached server files (age: ${cacheAge}ms)`);
+        return this.serverFilesCache;
+      }
+    }
+
+    // Fetch fresh data
+    console.log(`[SYNC] Fetching fresh server files list...`);
+    this.serverFilesCache = await fetchServerFiles(this.serverUrl, this.apiKey);
+    this.serverFilesCacheTime = Date.now();
+    return this.serverFilesCache;
+  }
+
+  /**
+   * Invalidate the server files cache
+   */
+  invalidateServerFilesCache() {
+    this.serverFilesCache = null;
+    this.serverFilesCacheTime = null;
+  }
+
+  /**
    * Perform initial sync - download files from server but preserve newer local files
    */
   async performInitialSync() {
@@ -145,54 +178,94 @@ class SyncEngine extends EventEmitter {
     this.emit('sync-start', { type: 'initial' });
 
     try {
-      // Get list of files from server
-      const serverFiles = await fetchServerFiles(this.serverUrl, this.apiKey);
+      // Get list of files from server (and cache them)
+      const serverFiles = await this.fetchAndCacheServerFiles(true);
 
       // Get list of local files
       const localFiles = await getLocalFiles(this.syncFolder);
 
       // Process each server file
       for (const serverFile of serverFiles) {
-        // Server returns filename WITHOUT .html, but local files have .html
-        const localFilename = `${serverFile.filename}.html`;
-        const localPath = path.join(this.syncFolder, localFilename);
-        const localExists = localFiles.has(localFilename);
+        // Server returns path WITH .html (e.g., "folder1/folder2/site.html" or "site.html")
+        const relativePath = serverFile.path || `${serverFile.filename}.html`;
+        const localPath = path.join(this.syncFolder, relativePath);
+        const localExists = localFiles.has(relativePath);
 
         if (!localExists) {
           // File doesn't exist locally, download it
-          await this.downloadFile(serverFile.filename);
-          this.stats.filesDownloaded++;
+          try {
+            await this.downloadFile(serverFile.filename, relativePath);
+            this.stats.filesDownloaded++;
+          } catch (error) {
+            // Log the error but don't fail initial sync
+            console.error(`[SYNC] Failed to download ${relativePath} during initial sync:`, error.message);
+            // Error already logged and emitted in downloadFile
+          }
         } else {
           // File exists locally, check if we should update
-          const localStat = await getFileStats(localPath);
+          try {
+            const localStat = await getFileStats(localPath);
 
-          // Check if file is intentionally future-dated
-          if (isFutureFile(localStat.mtime, this.clockOffset)) {
-            console.log(`[SYNC] PRESERVE ${localFilename} - future-dated file`);
-            this.stats.filesProtected++;
-            continue;
+            // Check if file is intentionally future-dated
+            if (isFutureFile(localStat.mtime, this.clockOffset)) {
+              console.log(`[SYNC] PRESERVE ${relativePath} - future-dated file`);
+              this.stats.filesProtected++;
+              continue;
+            }
+
+            // Check if local is newer
+            if (isLocalNewer(localStat.mtime, serverFile.modifiedAt, this.clockOffset)) {
+              console.log(`[SYNC] PRESERVE ${relativePath} - local is newer`);
+              this.stats.filesProtected++;
+              continue;
+            }
+
+            // Check checksums
+            const localContent = await readFile(localPath);
+            const localChecksum = await calculateChecksum(localContent);
+
+            if (localChecksum === serverFile.checksum) {
+              console.log(`[SYNC] SKIP ${relativePath} - checksums match`);
+              this.stats.filesDownloadedSkipped++;
+              continue;
+            }
+
+            // Server file is different and not older, download it
+            await this.downloadFile(serverFile.filename, relativePath);
+            this.stats.filesDownloaded++;
+          } catch (error) {
+            // Log the error but don't fail initial sync
+            console.error(`[SYNC] Failed to process ${relativePath} during initial sync:`, error.message);
+            // Error already logged and emitted in downloadFile if it was a download error
+            if (!error.message.includes('Failed to download')) {
+              this.stats.errors.push(formatErrorForLog(error, { filename: relativePath, action: 'initial-sync-check' }));
+              const errorInfo = classifyError(error, { filename: relativePath, action: 'check' });
+              this.emit('sync-error', errorInfo);
+            }
           }
+        }
+      }
 
-          // Check if local is newer
-          if (isLocalNewer(localStat.mtime, serverFile.modifiedAt, this.clockOffset)) {
-            console.log(`[SYNC] PRESERVE ${localFilename} - local is newer`);
-            this.stats.filesProtected++;
-            continue;
+      // Upload local files not on server
+      for (const [relativePath, localInfo] of localFiles) {
+        const serverFile = serverFiles.find(f =>
+          (f.path === relativePath) || (`${f.filename}.html` === relativePath)
+        );
+
+        if (!serverFile) {
+          console.log(`[SYNC] LOCAL ONLY: ${relativePath} - uploading`);
+          try {
+            await this.uploadFile(relativePath);
+            this.stats.filesUploaded++;
+          } catch (error) {
+            // Log the error but don't fail initial sync
+            console.error(`[SYNC] Failed to upload ${relativePath} during initial sync:`, error.message);
+            this.stats.errors.push(formatErrorForLog(error, { filename: relativePath, action: 'initial-upload' }));
+
+            // Emit error event for UI
+            const errorInfo = classifyError(error, { filename: relativePath, action: 'upload' });
+            this.emit('sync-error', errorInfo);
           }
-
-          // Check checksums
-          const localContent = await readFile(localPath);
-          const localChecksum = await calculateChecksum(localContent);
-
-          if (localChecksum === serverFile.checksum) {
-            console.log(`[SYNC] SKIP ${localFilename} - checksums match`);
-            this.stats.filesDownloadedSkipped++;
-            continue;
-          }
-
-          // Server file is different and not older, download it
-          await this.downloadFile(serverFile.filename);
-          this.stats.filesDownloaded++;
         }
       }
 
@@ -226,8 +299,10 @@ class SyncEngine extends EventEmitter {
 
   /**
    * Download a file from server
+   * @param {string} filename - Filename WITHOUT .html (may include folders)
+   * @param {string} relativePath - Full path WITH .html for local storage
    */
-  async downloadFile(filename) {
+  async downloadFile(filename, relativePath) {
     try {
       // Server expects filename WITHOUT .html
       const { content, modifiedAt } = await downloadFromServer(
@@ -236,14 +311,14 @@ class SyncEngine extends EventEmitter {
         filename
       );
 
-      // Ensure filename has .html extension for local storage
-      const localFilename = filename.endsWith('.html') ? filename : `${filename}.html`;
+      // Use provided relativePath or construct it
+      const localFilename = relativePath || (filename.endsWith('.html') ? filename : `${filename}.html`);
       const localPath = path.join(this.syncFolder, localFilename);
 
       // Create backup if file exists locally
       await createBackupIfNeeded(localPath, localFilename, this.syncFolder, this.emit.bind(this));
 
-      // Write file with server modification time
+      // Write file with server modification time (ensures directories exist)
       await writeFile(localPath, content, modifiedAt);
 
       console.log(`[SYNC] Downloaded ${localFilename}`);
@@ -267,11 +342,14 @@ class SyncEngine extends EventEmitter {
 
   /**
    * Upload a file to server
+   * @param {string} filename - Relative path WITH .html (may include folders)
    */
   async uploadFile(filename) {
     try {
       // Validate filename before uploading
-      const validationResult = validateFileName(filename, false);
+      const validationResult = filename.includes('/')
+        ? validateFullPath(filename)
+        : validateFileName(filename, false);
 
       if (!validationResult.valid) {
         const validationError = new Error(validationResult.error);
@@ -293,39 +371,44 @@ class SyncEngine extends EventEmitter {
         return;
       }
 
-      // Check if this is a folder path (future support)
-      if (filename.includes('/')) {
-        const pathValidation = validateFullPath(filename);
-        if (!pathValidation.valid) {
-          console.error(`[SYNC] Path validation failed for ${filename}: ${pathValidation.error}`);
-
-          this.emit('sync-error', {
-            file: filename,
-            error: pathValidation.error,
-            type: 'validation',
-            priority: ERROR_PRIORITY.HIGH,
-            action: 'upload',
-            canRetry: false
-          });
-
-          return;
-        }
-      }
-
       const localPath = path.join(this.syncFolder, filename);
       const content = await readFile(localPath);
       const stat = await getFileStats(localPath);
 
+      // Calculate checksum for skip optimization
+      const localChecksum = await calculateChecksum(content);
+
+      // Check if server already has this exact content using cached data
+      try {
+        const serverFiles = await this.fetchAndCacheServerFiles(false);
+        const filenameWithoutHtml = filename.replace(/\.html$/i, '');
+        const serverFile = serverFiles.find(f => f.filename === filenameWithoutHtml);
+
+        if (serverFile && serverFile.checksum === localChecksum) {
+          console.log(`[SYNC] SKIP upload ${filename} - server has same checksum`);
+          this.stats.filesUploadedSkipped++;
+          return;
+        }
+      } catch (error) {
+        // If checksum check fails, continue with upload
+        console.log(`[SYNC] Could not verify server checksum, proceeding with upload: ${error.message}`);
+      }
+
+      // Upload to server (filename WITHOUT .html)
+      const filenameWithoutHtml = filename.replace(/\.html$/i, '');
       await uploadToServer(
         this.serverUrl,
         this.apiKey,
-        filename,
+        filenameWithoutHtml,
         content,
         stat.mtime
       );
 
       console.log(`[SYNC] Uploaded ${filename}`);
       this.stats.filesUploaded++;
+
+      // Invalidate cache since server state changed
+      this.invalidateServerFilesCache();
 
       // Emit success event
       this.emit('file-synced', {
@@ -472,32 +555,44 @@ class SyncEngine extends EventEmitter {
    * Start watching local files
    */
   startFileWatcher() {
-    this.watcher = chokidar.watch('*.html', {
+    // Watch recursively for all HTML files
+    this.watcher = chokidar.watch('**/*.html', {
       cwd: this.syncFolder,
       persistent: true,
       ignoreInitial: true,
+      ignored: [
+        '**/node_modules/**',
+        '**/sites-versions/**',
+        '**/.*' // Ignore hidden files/folders
+      ],
       awaitWriteFinish: SYNC_CONFIG.FILE_STABILIZATION
     });
 
     this.watcher
       .on('add', filename => {
-        console.log(`[SYNC] File added: ${filename}`);
-        this.queueSync('add', filename);
+        // Normalize path to forward slashes (fixes Windows backslash issue)
+        const normalizedPath = path.normalize(filename);
+        console.log(`[SYNC] File added: ${normalizedPath}`);
+        this.queueSync('add', normalizedPath);
       })
       .on('change', filename => {
-        console.log(`[SYNC] File changed: ${filename}`);
-        this.queueSync('change', filename);
+        // Normalize path to forward slashes (fixes Windows backslash issue)
+        const normalizedPath = path.normalize(filename);
+        console.log(`[SYNC] File changed: ${normalizedPath}`);
+        this.queueSync('change', normalizedPath);
       })
       .on('unlink', filename => {
+        // Normalize path to forward slashes (fixes Windows backslash issue)
+        const normalizedPath = path.normalize(filename);
         // Intentionally ignore deletes (per design spec)
-        console.log(`[SYNC] File deleted locally (not syncing to server): ${filename}`);
+        console.log(`[SYNC] File deleted locally (not syncing to server): ${normalizedPath}`);
       })
       .on('error', error => {
         console.error('[SYNC] Watcher error:', error);
         this.stats.errors.push(formatErrorForLog(error, { action: 'watcher' }));
       });
 
-    console.log('[SYNC] File watcher started');
+    console.log('[SYNC] File watcher started (watching recursively)');
   }
 
   /**
@@ -518,23 +613,23 @@ class SyncEngine extends EventEmitter {
     if (this.syncQueue.isProcessingQueue()) return;
 
     try {
-      const serverFiles = await fetchServerFiles(this.serverUrl, this.apiKey);
+      const serverFiles = await this.fetchAndCacheServerFiles(true);
       const localFiles = await getLocalFiles(this.syncFolder);
       let changesFound = false;
 
       for (const serverFile of serverFiles) {
-        // Server returns filename WITHOUT .html
-        const localFilename = `${serverFile.filename}.html`;
-        const localPath = path.join(this.syncFolder, localFilename);
-        const localExists = localFiles.has(localFilename);
+        // Server returns path WITH .html (e.g., "folder1/folder2/site.html" or "site.html")
+        const relativePath = serverFile.path || `${serverFile.filename}.html`;
+        const localPath = path.join(this.syncFolder, relativePath);
+        const localExists = localFiles.has(relativePath);
 
         if (!localExists) {
           // New file on server
-          await this.downloadFile(serverFile.filename);
+          await this.downloadFile(serverFile.filename, relativePath);
           this.stats.filesDownloaded++;
           changesFound = true;
         } else {
-          const localInfo = localFiles.get(localFilename);
+          const localInfo = localFiles.get(relativePath);
           const localContent = await readFile(localPath);
           const localChecksum = await calculateChecksum(localContent);
 
@@ -542,11 +637,11 @@ class SyncEngine extends EventEmitter {
           if (localChecksum !== serverFile.checksum) {
             // Check if local is newer
             if (isLocalNewer(localInfo.mtime, serverFile.modifiedAt, this.clockOffset)) {
-              console.log(`[SYNC] PRESERVE ${localFilename} - local is newer`);
+              console.log(`[SYNC] PRESERVE ${relativePath} - local is newer`);
               this.stats.filesProtected++;
             } else {
               // Download newer version from server
-              await this.downloadFile(serverFile.filename);
+              await this.downloadFile(serverFile.filename, relativePath);
               this.stats.filesDownloaded++;
               changesFound = true;
             }
@@ -588,6 +683,9 @@ class SyncEngine extends EventEmitter {
 
     // Clear all pending operations
     this.syncQueue.clear();
+
+    // Clear server files cache
+    this.invalidateServerFilesCache();
 
     console.log('[SYNC] Sync stopped');
 

@@ -41,26 +41,26 @@ async function fetchServerFiles(serverUrl, apiKey) {
  * Download file content from server
  * @param {string} serverUrl - Server base URL
  * @param {string} apiKey - API key for authentication
- * @param {string} filename - Filename WITHOUT .html extension
+ * @param {string} filename - Full path WITHOUT .html extension (may include folders)
  */
 async function downloadFromServer(serverUrl, apiKey, filename) {
-  // Server expects filename WITHOUT .html
-  const nameWithoutExt = filename.replace('.html', '');
-
-  const response = await fetch(`${serverUrl}/sync/download/${nameWithoutExt}`, {
+  // NO encoding - send raw path with slashes
+  const response = await fetch(`${serverUrl}/sync/download/${filename}`, {
     headers: {
       'X-API-Key': apiKey
     }
   });
 
   if (!response.ok) {
-    throw new Error(`Server returned ${response.status}`);
+    throw new Error(`Failed to download ${filename}: ${response.statusText}`);
   }
 
   const data = await response.json();
+
   return {
     content: data.content,
-    modifiedAt: data.modifiedAt
+    modifiedAt: data.modifiedAt,
+    checksum: data.checksum
   };
 }
 
@@ -68,14 +68,11 @@ async function downloadFromServer(serverUrl, apiKey, filename) {
  * Upload file content to server
  * @param {string} serverUrl - Server base URL
  * @param {string} apiKey - API key for authentication
- * @param {string} filename - Filename WITH .html extension (will be stripped for API)
+ * @param {string} filename - Full path WITHOUT .html extension (may include folders)
  * @param {string} content - File content
  * @param {Date} modifiedAt - Modification time
  */
 async function uploadToServer(serverUrl, apiKey, filename, content, modifiedAt) {
-  // Strip .html extension for server API
-  const nameWithoutExt = filename.replace('.html', '');
-
   const response = await fetch(`${serverUrl}/sync/upload`, {
     method: 'POST',
     headers: {
@@ -83,26 +80,47 @@ async function uploadToServer(serverUrl, apiKey, filename, content, modifiedAt) 
       'X-API-Key': apiKey
     },
     body: JSON.stringify({
-      filename: nameWithoutExt, // Send WITHOUT .html
+      filename: filename, // Full path WITHOUT .html
       content,
       modifiedAt: modifiedAt.toISOString()
     })
   });
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({
-      message: `Server error ${response.status}`
-    }));
+    let errorMessage = `Server returned ${response.status}`;
+    let errorDetails = null;
 
-    // Check for detailed error structure (name conflicts, etc)
-    if (errorData.details) {
-      const error = new Error(errorData.error || errorData.message);
-      error.details = errorData.details;
-      error.statusCode = response.status;
-      throw error;
+    try {
+      // Clone response so we can try multiple parsing strategies
+      const errorData = await response.clone().json();
+      errorMessage = errorData.message || errorData.error || errorMessage;
+      errorDetails = errorData.details;
+
+      // Log the parsed error for debugging
+      console.error(`[API] Upload error (${response.status}):`, errorMessage);
+      if (errorDetails) {
+        console.error(`[API] Error details:`, errorDetails);
+      }
+    } catch (parseError) {
+      // If JSON parsing fails, try to get text
+      try {
+        const errorText = await response.text();
+        if (errorText) {
+          errorMessage = errorText;
+          console.error(`[API] Upload error (${response.status}):`, errorText);
+        }
+      } catch (textError) {
+        // Use default error message
+        console.error(`[API] Upload error (${response.status}): Unable to parse response`);
+      }
     }
 
-    throw new Error(errorData.message || errorData.error || `Server returned ${response.status}`);
+    const error = new Error(errorMessage);
+    error.statusCode = response.status;
+    if (errorDetails) {
+      error.details = errorDetails;
+    }
+    throw error;
   }
 
   return response.json();
