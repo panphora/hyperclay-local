@@ -14,7 +14,8 @@ const HyperclayLocalApp = () => {
         filesProtected: 0,
         filesDownloaded: 0,
         filesUploaded: 0,
-        filesSkipped: 0,
+        filesDownloadedSkipped: 0,
+        filesUploadedSkipped: 0, // Placeholder for future upload skip feature
         lastSync: null,
         recentErrors: []
       }
@@ -465,23 +466,31 @@ const HyperclayLocalApp = () => {
                 )}
               </div>
 
-              {/* Stats grid */}
+              {/* Stats grid - merged format */}
               <div className="mt-3 grid grid-cols-2 gap-2 text-[14px]">
                 <div className="p-2 bg-[#0B0C12] border border-[#292F52]">
-                  <div className="text-[#8A92BB]">Protected</div>
-                  <div className="text-[20px] text-white">{currentState.syncStatus.stats.filesProtected}</div>
+                  <div className="text-[#8A92BB] mb-1">Downloaded / Skipped</div>
+                  <div className="text-[20px] flex items-center gap-1">
+                    <span style={{ color: '#ffffff' }}>
+                      {currentState.syncStatus.stats.filesDownloaded}
+                    </span>
+                    <span style={{ color: '#8A92BB' }}>/</span>
+                    <span style={{ color: '#ffffff' }}>
+                      {currentState.syncStatus.stats.filesProtected + currentState.syncStatus.stats.filesDownloadedSkipped}
+                    </span>
+                  </div>
                 </div>
                 <div className="p-2 bg-[#0B0C12] border border-[#292F52]">
-                  <div className="text-[#8A92BB]">Downloaded</div>
-                  <div className="text-[20px] text-white">{currentState.syncStatus.stats.filesDownloaded}</div>
-                </div>
-                <div className="p-2 bg-[#0B0C12] border border-[#292F52]">
-                  <div className="text-[#8A92BB]">Uploaded</div>
-                  <div className="text-[20px] text-white">{currentState.syncStatus.stats.filesUploaded}</div>
-                </div>
-                <div className="p-2 bg-[#0B0C12] border border-[#292F52]">
-                  <div className="text-[#8A92BB]">Skipped</div>
-                  <div className="text-[20px] text-white">{currentState.syncStatus.stats.filesSkipped}</div>
+                  <div className="text-[#8A92BB] mb-1">Uploaded / Skipped</div>
+                  <div className="text-[20px] flex items-center gap-1">
+                    <span style={{ color: '#ffffff' }}>
+                      {currentState.syncStatus.stats.filesUploaded}
+                    </span>
+                    <span style={{ color: '#8A92BB' }}>/</span>
+                    <span style={{ color: '#ffffff' }}>
+                      {currentState.syncStatus.stats.filesUploadedSkipped || 0}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>

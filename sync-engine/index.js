@@ -48,7 +48,7 @@ class SyncEngine extends EventEmitter {
       filesProtected: 0,
       filesDownloaded: 0,
       filesUploaded: 0,
-      filesSkipped: 0,
+      filesDownloadedSkipped: 0,
       lastSync: null,
       errors: []
     };
@@ -75,7 +75,7 @@ class SyncEngine extends EventEmitter {
       filesProtected: 0,
       filesDownloaded: 0,
       filesUploaded: 0,
-      filesSkipped: 0,
+      filesDownloadedSkipped: 0,
       lastSync: null,
       errors: []
     };
@@ -186,7 +186,7 @@ class SyncEngine extends EventEmitter {
 
           if (localChecksum === serverFile.checksum) {
             console.log(`[SYNC] SKIP ${localFilename} - checksums match`);
-            this.stats.filesSkipped++;
+            this.stats.filesDownloadedSkipped++;
             continue;
           }
 
