@@ -259,7 +259,7 @@ function getWindowOptions() {
   const options = {
     title: 'Hyperclay Local',
     width: 720,
-    height: 600,
+    height: 800,
     resizable: true,
     webPreferences: {
       nodeIntegration: false,
