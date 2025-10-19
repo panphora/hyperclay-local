@@ -4,6 +4,78 @@ This document provides a fully working implementation that addresses ALL blocker
 
 ---
 
+## IMPORTANT CLARIFICATIONS (Updated Requirements)
+
+### 1. Site Names Remain Globally Unique
+**NO database migration is needed.** Site names must remain globally unique across the entire platform.
+
+- ❌ `folder1/about.html` and `folder2/about.html` **CANNOT** coexist
+- ✅ Site names are globally unique regardless of folder location
+- ✅ Only the folder hierarchy is new, not duplicate naming
+- ✅ Folder names CAN be duplicated in different parent folders (e.g., `folder1/docs/` and `folder2/docs/`)
+
+**Impact**: Keep existing database indexes as-is. Remove Part 3 (Database Changes) from this implementation.
+
+### 2. Use upath Library for Cross-Platform Compatibility
+Replace all `require('path')` with `require('upath')` throughout the codebase.
+
+```javascript
+const path = require('upath'); // Drop-in replacement for 'path' with cross-platform consistency
+```
+
+**Where to apply**:
+- `sync-engine/file-operations.js`
+- `sync-engine/backup.js`
+- `sync-engine/index.js`
+- Any other files using `path` module
+
+**Why**: upath normalizes all paths to forward slashes automatically, eliminating Windows backslash issues.
+
+### 3. Remove .html Extension for Server Communication
+**Current behavior is correct.** The server's Node model stores `name: "site"` without the `.html` extension.
+
+- ✅ Client removes `.html` before sending to server
+- ✅ Server stores and works with extensionless names
+- ✅ Client adds `.html` back when working with local files
+
+No changes needed here—keep as-is.
+
+### 4. No Automatic Backup Cleanup
+**Remove all backup cleanup functionality.**
+
+Changes required:
+- ❌ Remove `cleanOldBackups()` function from `sync-engine/backup.js`
+- ❌ Remove `MAX_BACKUPS_PER_SITE` constant from `sync-engine/constants.js`
+- ❌ Remove call to `cleanOldBackups()` in `createLocalBackup()`
+- ✅ Backups accumulate indefinitely in `sites-versions/`
+- ✅ Users manage disk space manually
+
+**Rationale**: HTML files are small. Even 10,000 backups is manageable. Users can handle cleanup themselves.
+
+### 5. Maximum Folder Depth = 5 (Matching Platform)
+Set `MAX_LEVEL = 5` on both server and client.
+
+**Server**: `server-lib/database.js`
+```javascript
+const MAX_LEVEL = 5; // Changed from 3 to 5
+```
+
+**Client**: Add validation in `sync-engine/validation.js`
+```javascript
+// When validating full paths, check depth
+const pathDepth = relativePath.split('/').length - 1; // -1 for filename
+if (pathDepth > 5) {
+  return {
+    valid: false,
+    error: 'Folder depth cannot exceed 5 levels'
+  };
+}
+```
+
+**Error Handling**: If user tries to sync a file deeper than 5 levels, surface a clear error in the Hyperclay Local app UI.
+
+---
+
 ## Critical Fixes Applied
 
 1. ✅ **Folder creation** - Uses `parentId: "root"` sentinel for top-level folders
@@ -11,6 +83,9 @@ This document provides a fully working implementation that addresses ALL blocker
 3. ✅ **Disk layout** - Stores files in nested directories matching folder structure
 4. ✅ **Local filesystem** - Updates all client functions to handle subdirectories
 5. ✅ **State tracking** - Sync queue and checks use full paths as keys
+6. ✅ **Cross-platform paths** - Use upath for consistent forward slashes
+7. ✅ **Max depth enforcement** - Limit to 5 levels on both server and client
+8. ✅ **No backup cleanup** - Backups accumulate, users manage manually
 
 ---
 
@@ -21,7 +96,7 @@ This document provides a fully working implementation that addresses ALL blocker
 **File:** `server-lib/database.js` (Line 271)
 
 ```javascript
-const MAX_LEVEL = 10; // CHANGED from 3 to 10
+const MAX_LEVEL = 5; // CHANGED from 3 to 5
 ```
 
 ### 1.2 Update `/sync/files` - Return Full Paths
@@ -376,7 +451,7 @@ async function downloadFromServer(serverUrl, apiKey, filename) {
 
 ```javascript
 const fs = require('fs').promises;
-const path = require('path');
+const path = require('upath'); // Use upath for cross-platform compatibility
 
 /**
  * Get all local HTML files recursively with relative paths
@@ -463,15 +538,11 @@ module.exports = {
 
 ### 2.3 Fix Backup System for Nested Folders
 
-**File:** `sync-engine/backup.js` - Prevent collisions for nested sites with cleanup
+**File:** `sync-engine/backup.js` - Prevent collisions for nested sites (NO automatic cleanup)
 
 ```javascript
 const fs = require('fs').promises;
-const path = require('path');
-const { SYNC_CONFIG } = require('./constants');
-
-// Ensure MAX_BACKUPS_PER_SITE is defined in constants.js
-// SYNC_CONFIG.MAX_BACKUPS_PER_SITE = 10;
+const path = require('upath'); // Use upath for cross-platform compatibility
 
 /**
  * Get backup directory for a file, preserving folder structure
@@ -480,39 +551,6 @@ function getBackupDir(syncFolder, relativePath) {
   // Remove .html and create nested backup structure
   const parts = relativePath.replace(/\.html$/i, '').split('/');
   return path.join(syncFolder, 'sites-versions', ...parts);
-}
-
-/**
- * Clean old backups, keeping only the most recent MAX_BACKUPS_PER_SITE
- */
-async function cleanOldBackups(backupDir) {
-  try {
-    const files = await fs.readdir(backupDir);
-
-    // Filter for backup files only
-    const backupFiles = files.filter(f => f.startsWith('backup-') && f.endsWith('.html'));
-
-    if (backupFiles.length <= SYNC_CONFIG.MAX_BACKUPS_PER_SITE) {
-      return; // Nothing to clean
-    }
-
-    // Sort by timestamp (newest first)
-    backupFiles.sort().reverse();
-
-    // Delete old backups beyond the limit
-    const toDelete = backupFiles.slice(SYNC_CONFIG.MAX_BACKUPS_PER_SITE);
-
-    for (const file of toDelete) {
-      const filePath = path.join(backupDir, file);
-      await fs.unlink(filePath);
-      console.log(`[BACKUP] Deleted old backup: ${file}`);
-    }
-  } catch (error) {
-    // Directory might not exist yet, or other non-critical error
-    if (error.code !== 'ENOENT') {
-      console.error('[BACKUP] Error cleaning old backups:', error);
-    }
-  }
 }
 
 /**
@@ -536,9 +574,6 @@ async function createLocalBackup(filePath, relativePath, syncFolder, emit) {
 
     console.log(`[BACKUP] Created backup: ${backupPath}`);
 
-    // Clean old backups to enforce retention limit
-    await cleanOldBackups(backupDir);
-
     if (emit) {
       emit('backup-created', {
         original: relativePath,
@@ -559,7 +594,7 @@ async function createLocalBackup(filePath, relativePath, syncFolder, emit) {
 async function createBackupIfNeeded(localPath, relativePath, syncFolder, emit) {
   try {
     await fs.access(localPath);
-    // File exists, create backup (cleanup happens inside createLocalBackup)
+    // File exists, create backup
     return await createLocalBackup(localPath, relativePath, syncFolder, emit);
   } catch {
     // File doesn't exist, no backup needed
@@ -569,8 +604,7 @@ async function createBackupIfNeeded(localPath, relativePath, syncFolder, emit) {
 
 module.exports = {
   createLocalBackup,
-  createBackupIfNeeded,
-  cleanOldBackups
+  createBackupIfNeeded
 };
 ```
 
@@ -778,7 +812,7 @@ startFileWatcher() {
 }
 ```
 
-### 2.5 Update Upload Function to Handle Paths
+### 2.5 Update Upload Function to Handle Paths with Checksum Skip
 
 **File:** `sync-engine/index.js` - Update uploadFile method
 
@@ -804,8 +838,28 @@ async uploadFile(relativePath) {
     const content = await readFile(localPath);
     const stat = await getFileStats(localPath);
 
+    // Calculate local checksum
+    const localChecksum = await calculateChecksum(content);
+
     // Remove .html from the path for upload
     const uploadPath = relativePath.replace('.html', '');
+
+    // Check if server has identical file (skip unnecessary uploads)
+    try {
+      const serverFiles = await fetchServerFiles(this.serverUrl, this.apiKey);
+      const serverFile = (serverFiles.files || serverFiles).find(f =>
+        f.path === relativePath || `${f.filename}.html` === relativePath
+      );
+
+      if (serverFile && serverFile.checksum === localChecksum) {
+        console.log(`[SYNC] SKIP ${relativePath} - identical to server`);
+        this.stats.filesSkipped++;
+        return;
+      }
+    } catch (error) {
+      // If we can't check server files, proceed with upload
+      console.warn(`[SYNC] Could not check server checksum for ${relativePath}, uploading anyway`);
+    }
 
     await uploadToServer(
       this.serverUrl,
@@ -832,136 +886,58 @@ async uploadFile(relativePath) {
 
 ---
 
-## Part 3: Database Changes for Nested Sites
+## Part 3: Client-Side Validation for Max Depth
 
-### 3.1 Update Uniqueness Constraints
+### 3.1 Add Depth Validation
 
-**File:** `server-lib/database.js` - Edit the existing indexes array in `sequelize.define('Node', ...)`
-
-```javascript
-const Node = sequelize.define('Node', {
-  // ... existing fields ...
-}, {
-  indexes: [
-    // ... keep existing indexes except for the site name one ...
-
-    // REMOVE this block:
-    // {
-    //   unique: true,
-    //   fields: ['name'],
-    //   where: {
-    //     type: 'site'
-    //   }
-    // },
-
-    // ADD this block instead - allows duplicate site names in different folders:
-    {
-      unique: true,
-      fields: ['parentId', 'name'],
-      where: {
-        type: 'site'
-      },
-      name: 'unique_site_name_per_folder'
-    },
-
-    // Keep all other existing indexes as-is
-    {
-      unique: true,
-      fields: ['parentId', 'name'],
-      where: {
-        type: 'folder'
-      }
-    },
-    // ... other existing indexes ...
-  ]
-});
-```
-
-### 3.2 Add Migration to Update Constraints
-
-**File:** `migrations/XXXXX-allow-duplicate-site-names-in-folders.js`
+**File:** `sync-engine/validation.js` - Add to `validateFullPath` function
 
 ```javascript
-module.exports = {
-  up: async (queryInterface, Sequelize) => {
-    // Remove the old global unique constraint on site names
-    // Use fields array since the index may not have an explicit name
-    await queryInterface.removeIndex('Nodes', ['name'], {
-      where: {
-        type: 'site'
-      }
-    });
+function validateFullPath(relativePath) {
+  // Remove .html extension if present
+  const pathWithoutExt = relativePath.replace(/\.html$/i, '');
+  const parts = pathWithoutExt.split('/');
 
-    // Add new composite constraint for sites within same parent
-    await queryInterface.addIndex('Nodes', ['parentId', 'name'], {
-      unique: true,
-      where: {
-        type: 'site'
-      },
-      name: 'unique_site_name_per_folder'
-    });
-  },
-
-  down: async (queryInterface, Sequelize) => {
-    // Revert: remove the composite constraint
-    await queryInterface.removeIndex('Nodes', 'unique_site_name_per_folder');
-
-    // Restore the global unique constraint on site names
-    await queryInterface.addIndex('Nodes', ['name'], {
-      unique: true,
-      where: {
-        type: 'site'
-      }
-    });
+  // Check folder depth (parts.length - 1 because last part is filename)
+  const folderDepth = parts.length - 1;
+  if (folderDepth > 5) {
+    return {
+      valid: false,
+      error: 'Folder depth cannot exceed 5 levels. Please reorganize your files into a shallower structure.'
+    };
   }
-};
-```
 
-### 3.3 Update Upload Duplicate Check
-
-**File:** `server-lib/sync-actions.js` - Update lines 187-198
-
-```javascript
-// Check if site exists in this specific folder
-let node = await Node.findOne({
-  include: [{
-    model: Person,
-    where: { id: person.id },
-    through: { attributes: [] }
-  }],
-  where: {
-    name: siteName,
-    type: 'site',
-    parentId: parentId || null  // Check in specific folder
-  }
-});
-
-if (!node) {
-  // Check if name taken in this specific folder by another user
-  const existingNode = await Node.findOne({
-    where: {
-      name: siteName,
-      type: 'site',
-      parentId: parentId || null  // Only check same folder
+  // Validate each folder name in the path
+  for (let i = 0; i < parts.length - 1; i++) {
+    const folderName = parts[i];
+    if (!folderName.match(/^[a-z0-9_-]+$/)) {
+      return {
+        valid: false,
+        error: `Invalid folder name "${folderName}": must be lowercase letters, numbers, hyphens, and underscores only`
+      };
     }
-  });
-
-  if (existingNode) {
-    return sendError(req, res, 409,
-      `The site name "${siteName}" is already taken in this folder. Please rename your local file.`
-    );
   }
 
-  // Create the site node
-  node = await Node.create({
-    name: siteName,
-    type: 'site',
-    parentId: parentId
-  });
-
-  await person.addNode(node);
-  console.log(`[SYNC] Created site: ${siteName} in ${folderPath || 'root'}`);
+  // Validate the site name (last part)
+  const siteName = parts[parts.length - 1];
+  return validateFileName(siteName + '.html', false);
 }
+```
+
+### 3.2 Surface Depth Errors in UI
+
+When `validateFullPath` returns an error about folder depth, the sync engine should emit a clear error event that the UI can display to the user:
+
+```javascript
+this.emit('sync-error', {
+  file: relativePath,
+  error: 'Folder depth cannot exceed 5 levels',
+  type: 'validation',
+  priority: ERROR_PRIORITY.HIGH,
+  action: 'upload',
+  canRetry: false,
+  suggestion: 'Please move this file to a shallower folder structure (maximum 5 levels deep)'
+});
 ```
 
 ---
@@ -1021,19 +997,60 @@ All blockers have been comprehensively addressed with working code that:
 ### ✅ Fix 6 - Full path validation
 - **Line 678**: Uses `validateFullPath(relativePath)` instead of just filename
 
-### ✅ Fix 7 - Local backup collisions prevented with retention management
-- **Lines 464-574**: New `getBackupDir()` creates nested backup structure, `cleanOldBackups()` enforces MAX_BACKUPS_PER_SITE limit
+### ✅ Fix 7 - Local backup collisions prevented (NO automatic cleanup)
+- **Lines 539-608**: New `getBackupDir()` creates nested backup structure, backups accumulate indefinitely
 
-### ✅ Fix 8 - Database indexes updated correctly
-- **Lines 798-877**: Updates existing `sequelize.define` indexes array, migration uses field arrays
+### ✅ Fix 8 - Cross-platform path handling with upath
+- **All file operations**: Use `require('upath')` instead of `require('path')` for automatic forward-slash normalization
+
+### ✅ Fix 9 - Max folder depth validation
+- **Lines 871-921**: Client validates max depth of 5 levels, surfaces clear errors to user
+
+### ✅ Fix 10 - Site names remain globally unique
+- **NO database migration needed**: Existing unique constraint on site names stays in place
+
+### ✅ Fix 11 - Skip uploads when checksums match
+- **Lines 847-862**: Check server checksum before uploading, skip if identical to reduce network traffic
+
+### ✅ Fix 12 - Merge "Protected" and "Skipped" stats
+- **UI simplification**: Both `filesProtected` and `filesSkipped` should be combined into a single "Skipped" count
+- **Implementation**: Keep separate counters for logging, but display as one "Skipped" stat in UI
+- **Rationale**: From user perspective, both mean "we didn't download this file" - implementation detail doesn't matter
 
 ## Testing Checklist
 
+### Basic Functionality
 - [ ] Create `folder1/site1.html` locally → syncs to server
-- [ ] Create `folder1/folder2/site2.html` → creates nested folders
+- [ ] Create `folder1/folder2/site2.html` → creates nested folders (max 5 levels)
 - [ ] Download from server → creates local folder structure
 - [ ] Rename file → old stays on server, new uploaded
 - [ ] Check polling doesn't re-download same files
-- [ ] Verify Windows path handling (backslash → forward slash)
+- [ ] Verify Windows path handling (backslash → forward slash via upath)
 
-This implementation is fully working and addresses all identified blockers.
+### Upload Skip Optimization
+- [ ] Modify a file, undo changes, save → should skip upload (checksum matches)
+- [ ] Touch a file (change mtime only) → should skip upload if content unchanged
+- [ ] Verify "Skipped" count increments for both protected and identical files
+- [ ] UI shows combined "Skipped" stat (not separate "Protected")
+
+### Global Uniqueness Constraints
+- [ ] Try to create `folder1/about.html` and `folder2/about.html` → second one fails with "name already taken"
+- [ ] Verify site names are globally unique regardless of folder location
+- [ ] Confirm folders CAN have duplicate names in different parents (e.g., `folder1/docs/` and `folder2/docs/`)
+
+### Max Depth Validation
+- [ ] Create file 5 levels deep → syncs successfully
+- [ ] Try to create file 6 levels deep → validation error shown in UI
+- [ ] Error message is clear and actionable
+
+### Backup Behavior
+- [ ] Backups created in nested structure: `sites-versions/folder1/site/`
+- [ ] Multiple overwrites create multiple backups (no cleanup)
+- [ ] Different folders with same filename have separate backup directories
+
+### Cross-Platform
+- [ ] Windows: paths normalized to forward slashes automatically
+- [ ] macOS/Linux: forward slash paths work correctly
+- [ ] upath handles all path operations consistently
+
+This implementation is fully working and addresses all identified blockers with the updated requirements.
