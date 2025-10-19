@@ -19,51 +19,6 @@ This revision addresses all issues from `BUNDLED_DNS_SERVER_IMPLEMENTATION_REVIE
 
 ## Architecture Overview
 
-### Mode 1: High-Port DNS Resolver (Recommended - No Elevation Required)
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                   Hyperclay Local App                    │
-│                                                          │
-│  ┌────────────────┐        ┌──────────────────────┐    │
-│  │  DNS Resolver  │        │   HTTP Server        │    │
-│  │  (port 15353)  │        │   (port 4321)        │    │
-│  │  NO ELEVATION  │        │                      │    │
-│  │                │        │  Parses Host header  │    │
-│  │  *.hyperclay   │        │  Serves HTML + assets│    │
-│  │  local.com     │        │                      │    │
-│  │  → 127.0.0.1   │        │                      │    │
-│  └────────────────┘        └──────────────────────┘    │
-│         ↑                           ↑                   │
-│         │                           │                   │
-└─────────┼───────────────────────────┼───────────────────┘
-          │                           │
-          │                           │
-    ┌─────┴──────┐            ┌───────┴────────┐
-    │  Electron  │            │  Electron      │
-    │  Chromium  │            │  BrowserView   │
-    │  with      │            │  app.hyperclay │
-    │  --host-   │            │  local.com:4321│
-    │  resolver- │            └────────────────┘
-    │  rules     │
-    └────────────┘
-```
-
-**Advantages:**
-- ✅ No admin/sudo privileges required
-- ✅ No system DNS changes
-- ✅ No Windows Firewall prompts
-- ✅ Works with VPNs and corporate policies
-- ✅ No conflicts with other DNS services
-
-**How it works:**
-- DNS resolver runs on high port (15353)
-- Electron's Chromium is launched with `--host-resolver-rules="MAP *.hyperclaylocal.com 127.0.0.1"`
-- All subdomain requests go directly to HTTP server on port 4321
-- External browsers won't work (Electron-only mode)
-
-### Mode 2: System DNS (Legacy - Requires Elevation)
-
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                   Hyperclay Local App                    │
@@ -71,11 +26,14 @@ This revision addresses all issues from `BUNDLED_DNS_SERVER_IMPLEMENTATION_REVIE
 │  ┌────────────────┐        ┌──────────────────────┐    │
 │  │  DNS Server    │        │   HTTP Server        │    │
 │  │  (port 53)     │        │   (port 4321)        │    │
-│  │  NEEDS SUDO    │        │                      │    │
-│  │                │        │  Parses Host header  │    │
-│  │  *.hyperclay   │        │  Serves HTML + assets│    │
-│  │  local.com     │        │                      │    │
+│  │                │        │                      │    │
+│  │  *.hyperclay   │        │  Parses Host header  │    │
+│  │  local.com     │        │  Serves HTML + assets│    │
 │  │  → 127.0.0.1   │        │                      │    │
+│  │                │        │                      │    │
+│  │  Other queries │        │                      │    │
+│  │  → dns2        │        │                      │    │
+│  │    Resolver    │        │                      │    │
 │  └────────────────┘        └──────────────────────┘    │
 │         ↑                           ↑                   │
 │         │                           │                   │
@@ -85,37 +43,27 @@ This revision addresses all issues from `BUNDLED_DNS_SERVER_IMPLEMENTATION_REVIE
     ┌─────┴──────┐            ┌───────┴────────┐
     │ System DNS │            │  Any Browser   │
     │ 127.0.0.1  │            │  app.hyperclay │
-    └────────────┘            │  local.com:4321│
+    └────────────┘            │ local.com:4321 │
                               └────────────────┘
 ```
 
-**Advantages:**
-- ✅ Works with external browsers
-- ✅ Works with browser extensions
-
-**Disadvantages:**
-- ⚠️ Requires admin/sudo privileges
-- ⚠️ Modifies system DNS settings
-- ⚠️ May conflict with VPNs
-- ⚠️ Windows Firewall prompts
-
-**Implementation strategy:**
-- Default to Mode 1 (high-port resolver)
-- Offer Mode 2 as opt-in for advanced users
-- Provide clear warnings about elevation requirements
+**Key Features:**
+- HTTP server on **port 4321** (no admin needed)
+- DNS server on **port 53** (requires admin/sudo on startup)
+- Works with **any browser** (Safari, Chrome, Firefox, etc.)
+- Works with **browser extensions**
+- Config persisted via `electron-store`
 
 ---
 
-## Updated DNS Server (Dual Mode Support)
+## Updated DNS Server
 
 **`src/dns-server/index.js`**
 
 ```javascript
 /**
- * Pure JavaScript DNS Resolver/Server
- * Supports two modes:
- * 1. High-port resolver (recommended, no elevation)
- * 2. System DNS server (requires elevation, port 53)
+ * Pure JavaScript DNS Server
+ * Uses dns2 library correctly with createServer factory
  */
 
 const dns2 = require('dns2');
@@ -123,8 +71,6 @@ const { Packet } = dns2;
 
 class HyperclayDNSServer {
   constructor(options = {}) {
-    this.mode = options.mode || 'high-port'; // 'high-port' or 'system-dns'
-    this.port = this.mode === 'high-port' ? 15353 : 53;
     this.upstreamDNS = options.upstreamDNS || '8.8.8.8';
     this.localDomain = options.localDomain || 'hyperclaylocal.com';
     this.enableIPv6 = options.enableIPv6 || false;
@@ -158,24 +104,16 @@ class HyperclayDNSServer {
         handle: this.handleRequest.bind(this)
       });
 
-      // Bind to appropriate port
+      // Bind to port 53 on localhost only
       await new Promise((resolve, reject) => {
-        this.server.listen({ port: this.port, address: '127.0.0.1' }, (err) => {
+        this.server.listen({ port: 53, address: '127.0.0.1' }, (err) => {
           if (err) reject(err);
           else resolve();
         });
       });
 
       this.isRunning = true;
-
-      if (this.mode === 'high-port') {
-        this.logger.log(`[DNS] Resolver started on 127.0.0.1:${this.port} (no elevation required)`);
-        this.logger.log('[DNS] Use with Electron --host-resolver-rules flag');
-      } else {
-        this.logger.log(`[DNS] Server started on 127.0.0.1:${this.port}`);
-        this.logger.log('[DNS] System DNS must be configured to use 127.0.0.1');
-      }
-
+      this.logger.log('[DNS] Server started on 127.0.0.1:53');
       this.logger.log(`[DNS] Resolving *.${this.localDomain} to 127.0.0.1`);
       this.logger.log(`[DNS] Forwarding other queries to ${this.upstreamDNS}`);
 
@@ -184,17 +122,11 @@ class HyperclayDNSServer {
 
       // Provide helpful error messages
       if (error.code === 'EADDRINUSE') {
-        const portMsg = this.port === 53
-          ? 'Port 53 is already in use. Please close other DNS servers or use high-port mode.'
-          : `Port ${this.port} is already in use. Please close other applications using this port.`;
-        throw new Error(portMsg);
+        throw new Error('Port 53 is already in use. Please close other DNS servers or restart your computer.');
       }
 
       if (error.code === 'EACCES' || error.code === 'EPERM') {
-        if (this.port === 53) {
-          throw new Error('Permission denied. Port 53 requires admin/sudo. Consider using high-port mode instead.');
-        }
-        throw new Error(`Permission denied for port ${this.port}.`);
+        throw new Error('Permission denied. DNS server requires admin/sudo to bind to port 53.');
       }
 
       throw error;
@@ -1700,12 +1632,12 @@ module.exports = HyperclayHTTPServer;
 
 ---
 
-## Updated Main Process with Dual Mode Support
+## Updated Main Process with Crash Recovery
 
 **`main.js`** (key additions)
 
 ```javascript
-const { app, BrowserWindow, BrowserView, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const HyperclayDNSServer = require('./src/dns-server/index.js');
 const SystemDNSManager = require('./src/dns-server/system-dns-manager.js');
 const HyperclayHTTPServer = require('./src/http-server/index.js');
@@ -1717,7 +1649,6 @@ let dnsServer = null;
 let httpServer = null;
 let dnsManager = null;
 let mainWindow = null;
-let browserView = null;
 
 // Simple logger with levels
 const logger = {
@@ -1728,34 +1659,12 @@ const logger = {
 };
 
 // ===========================
-// Mode Management
-// ===========================
-
-function getDNSMode() {
-  // Default to high-port mode (no elevation needed)
-  return store.get('dnsMode', 'high-port');
-}
-
-function setDNSMode(mode) {
-  if (mode !== 'high-port' && mode !== 'system-dns') {
-    throw new Error(`Invalid DNS mode: ${mode}`);
-  }
-  store.set('dnsMode', mode);
-  logger.log(`[App] DNS mode set to: ${mode}`);
-}
-
-// ===========================
 // Crash Recovery on Startup
 // ===========================
 
 async function attemptDNSRecovery() {
-  const mode = getDNSMode();
-
-  // Only attempt recovery for system-dns mode
-  if (mode === 'system-dns') {
-    dnsManager = new SystemDNSManager(store, logger);
-    await dnsManager.attemptRecovery();
-  }
+  dnsManager = new SystemDNSManager(store, logger);
+  await dnsManager.attemptRecovery();
 }
 
 // ===========================
@@ -1771,18 +1680,15 @@ async function startServers() {
   }
 
   try {
-    const mode = getDNSMode();
     const dnsSetupComplete = store.get('dnsSetupComplete', false);
 
-    // High-port mode doesn't need DNS setup
-    if (mode === 'system-dns' && !dnsSetupComplete) {
-      logger.log('DNS setup not complete for system-dns mode');
+    if (!dnsSetupComplete) {
+      logger.log('DNS setup not complete, skipping server start');
       return { success: false, error: 'DNS not configured' };
     }
 
-    // Start DNS server in appropriate mode
+    // Start DNS server
     dnsServer = new HyperclayDNSServer({
-      mode,
       upstreamDNS: '8.8.8.8',
       localDomain: 'hyperclaylocal.com',
       enableIPv6: false, // Disable by default for compatibility
@@ -1797,8 +1703,8 @@ async function startServers() {
     });
     await httpServer.start();
 
-    logger.log(`All servers running (mode: ${mode})`);
-    return { success: true, mode };
+    logger.log('All servers running');
+    return { success: true };
   } catch (error) {
     logger.error('Failed to start servers:', error.message);
     return { success: false, error: error.message };
@@ -1824,85 +1730,22 @@ async function stopServers() {
 }
 
 // ===========================
-// BrowserView Creation (High-Port Mode)
-// ===========================
-
-function createBrowserView() {
-  const mode = getDNSMode();
-
-  if (mode === 'high-port') {
-    // Create BrowserView with host-resolver-rules to bypass DNS
-    browserView = new BrowserView({
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        // Map all *.hyperclaylocal.com to 127.0.0.1
-        additionalArguments: [
-          '--host-resolver-rules=MAP *.hyperclaylocal.com 127.0.0.1'
-        ]
-      }
-    });
-
-    mainWindow.setBrowserView(browserView);
-    const bounds = mainWindow.getContentBounds();
-    browserView.setBounds({ x: 0, y: 60, width: bounds.width, height: bounds.height - 60 });
-    browserView.setAutoResize({ width: true, height: true });
-
-    logger.log('[BrowserView] Created with host-resolver-rules');
-  }
-}
-
-function navigateToSite(siteName) {
-  const mode = getDNSMode();
-
-  if (mode === 'high-port' && browserView) {
-    browserView.webContents.loadURL(`http://${siteName}.hyperclaylocal.com:4321`);
-  } else {
-    // System DNS mode - open in external browser or use default webview
-    logger.log(`[App] Navigate to: http://${siteName}.hyperclaylocal.com:4321`);
-  }
-}
-
-// ===========================
 // IPC Handlers
 // ===========================
 
-ipcMain.handle('set-dns-mode', async (event, mode) => {
+ipcMain.handle('setup-dns', async () => {
   try {
-    setDNSMode(mode);
-    return { success: true, mode };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-});
+    logger.log('Setting up DNS...');
 
-ipcMain.handle('get-dns-mode', async () => {
-  return { success: true, mode: getDNSMode() };
-});
-
-ipcMain.handle('setup-dns', async (event, requestedMode = null) => {
-  try {
-    // Use requested mode or current mode
-    const mode = requestedMode || getDNSMode();
-    setDNSMode(mode);
-
-    logger.log(`Setting up DNS in ${mode} mode...`);
-
-    if (mode === 'system-dns') {
-      // System DNS mode requires elevation
-      if (!dnsManager) {
-        dnsManager = new SystemDNSManager(store, logger);
-      }
-
-      // Set system DNS to localhost
-      await dnsManager.setDNSToLocalhost();
-
-      // Mark setup as complete
-      store.set('dnsSetupComplete', true);
-    } else {
-      // High-port mode doesn't need system DNS changes
-      store.set('dnsSetupComplete', true);
+    if (!dnsManager) {
+      dnsManager = new SystemDNSManager(store, logger);
     }
+
+    // Set system DNS to localhost
+    await dnsManager.setDNSToLocalhost();
+
+    // Mark setup as complete
+    store.set('dnsSetupComplete', true);
 
     // Start servers
     const result = await startServers();
@@ -1911,37 +1754,16 @@ ipcMain.handle('setup-dns', async (event, requestedMode = null) => {
       throw new Error(result.error);
     }
 
-    // Create BrowserView for high-port mode
-    if (mode === 'high-port') {
-      createBrowserView();
-    }
-
     logger.log('DNS setup complete');
-    return { success: true, mode };
+    return { success: true };
   } catch (error) {
     logger.error('DNS setup failed:', error.message);
 
     // Cleanup on failure
     store.set('dnsSetupComplete', false);
 
-    // If system-dns failed, offer to fall back to high-port mode
-    const currentMode = getDNSMode();
-    if (currentMode === 'system-dns' && error.message.includes('Permission denied')) {
-      return {
-        success: false,
-        error: error.message,
-        canFallback: true,
-        fallbackMode: 'high-port'
-      };
-    }
-
     return { success: false, error: error.message };
   }
-});
-
-ipcMain.handle('navigate-to-site', async (event, siteName) => {
-  navigateToSite(siteName);
-  return { success: true };
 });
 
 ipcMain.handle('restore-dns', async () => {
@@ -2084,26 +1906,15 @@ This implementation matches the Hyperclay platform routing exactly:
 
 **`MANUAL_MODE.md`** - Instructions for users who want manual control
 
-### High-Port Mode (Recommended)
+### DNS Configuration
 
-No manual configuration needed! The app automatically:
-- Runs DNS resolver on port 15353 (no elevation)
-- Configures Electron with `--host-resolver-rules`
-- Works immediately without system changes
+Hyperclay Local automatically configures your system DNS on first launch. This requires admin/sudo privileges.
 
-**Limitations:**
-- Only works within Hyperclay Local app
-- External browsers won't work
-- Browser extensions won't work
-
-### System DNS Mode (Advanced Users)
-
-If you need external browser support, enable System DNS mode in settings.
-
-**Requirements:**
-- Admin/sudo privileges required
-- May conflict with VPNs or corporate policies
-- May trigger Windows Firewall prompts
+**What it does:**
+- Runs DNS server on port 53 (localhost only)
+- Sets system DNS to 127.0.0.1
+- Preserves original DNS settings for restoration
+- Works with all browsers (Safari, Chrome, Firefox, etc.)
 
 **Manual configuration (if automated setup fails):**
 
@@ -2141,24 +1952,25 @@ nmcli connection up "Wired connection 1"
 ### Troubleshooting
 
 **DNS not resolving:**
-1. Check servers are running: `netstat -an | grep 15353` or `netstat -an | grep 53`
+1. Check DNS server is running: `netstat -an | grep 53`
 2. Test DNS resolution: `nslookup test.hyperclaylocal.com 127.0.0.1`
-3. Check system DNS (system-dns mode): `scutil --dns` (macOS) or `ipconfig /all` (Windows)
+3. Check system DNS: `scutil --dns` (macOS) or `ipconfig /all` (Windows)
+4. Verify 127.0.0.1 is listed as primary DNS server
 
 **Port conflicts:**
 - Port 53: Another DNS service is running (dnsmasq, Docker, etc.)
+  - Stop the conflicting service or restart your computer
 - Port 4321: Change HTTP port in settings
-- Port 15353: Change DNS port in settings
 
 **VPN conflicts:**
-- VPN may override DNS settings
-- Use high-port mode instead
+- VPN may override DNS settings when connecting
+- Solution: Reconnect to VPN after starting Hyperclay Local
 - Or configure VPN to exclude `*.hyperclaylocal.com`
 
 **Corporate policy blocks:**
 - IT policy may prevent DNS changes
-- Use high-port mode (no system changes)
-- Or request IT to whitelist 127.0.0.1
+- Contact your IT administrator
+- Request whitelist for 127.0.0.1 DNS changes
 
 ## Uninstall Instructions
 
@@ -2238,11 +2050,13 @@ ping google.com
 **4. Check for Running Processes**
 
 ```bash
-# Check for lingering processes on port 53 or 15353
+# Check for lingering processes on port 53 or 4321
 netstat -an | grep 53
+netstat -an | grep 4321
 
 # If found, kill the process (find PID first)
 lsof -i :53
+lsof -i :4321
 kill -9 <PID>
 ```
 
@@ -2250,18 +2064,18 @@ kill -9 <PID>
 
 After uninstall, verify:
 - [ ] DNS resolves external domains correctly
-- [ ] No processes listening on port 53, 15353, or 4321
+- [ ] No processes listening on port 53 or 4321
 - [ ] Configuration files removed
 - [ ] System DNS settings restored (not pointing to 127.0.0.1)
-- [ ] No DNS cache poisoning: `sudo killall -HUP mDNSResponder` (macOS)
+- [ ] Clear DNS cache: `sudo killall -HUP mDNSResponder` (macOS) or `ipconfig /flushdns` (Windows)
 
 ## Security Considerations
 
-### Port 53 Binding (System DNS Mode)
-- Requires root/admin privileges
+### Port 53 Binding
+- Requires root/admin privileges on startup
 - Can be exploited if server has vulnerabilities
-- Mitigated by binding only to 127.0.0.1 (loopback)
-- **Recommendation:** Use high-port mode instead
+- Mitigated by binding only to 127.0.0.1 (loopback interface)
+- No external access - only localhost can connect
 
 ### DNS Query Logging
 - All DNS queries are logged in debug mode
