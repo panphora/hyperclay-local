@@ -27,6 +27,15 @@ async function fetchServerFiles(serverUrl, apiKey) {
 
     const data = await response.json();
     console.log(`[API] Fetched ${data.files?.length || 0} files from server`);
+
+    // Log each file for debugging
+    if (data.files && data.files.length > 0) {
+      console.log(`[API] Server files:`);
+      data.files.forEach(file => {
+        console.log(`[API]   - ${file.filename} (path: ${file.path}, checksum: ${file.checksum})`);
+      });
+    }
+
     return data.files || [];
   } catch (error) {
     console.error(`[API] Fetch failed:`, error);
@@ -45,14 +54,19 @@ async function fetchServerFiles(serverUrl, apiKey) {
  */
 async function downloadFromServer(serverUrl, apiKey, filename) {
   // NO encoding - send raw path with slashes
-  const response = await fetch(`${serverUrl}/sync/download/${filename}`, {
+  const downloadUrl = `${serverUrl}/sync/download/${filename}`;
+  console.log(`[API] Downloading from: ${downloadUrl}`);
+
+  const response = await fetch(downloadUrl, {
     headers: {
       'X-API-Key': apiKey
     }
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to download ${filename}: ${response.statusText}`);
+    const errorText = await response.text().catch(() => response.statusText);
+    console.error(`[API] Download failed (${response.status}): ${errorText}`);
+    throw new Error(`Failed to download ${filename}: ${errorText}`);
   }
 
   const data = await response.json();
