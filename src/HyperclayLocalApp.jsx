@@ -42,6 +42,9 @@ const HyperclayLocalApp = () => {
   // Navigation state
   const [currentView, setCurrentView] = useState('main'); // 'main' | 'sync'
 
+  // Ref for content container to measure height
+  const contentRef = useRef(null);
+
   // Error management functions
   const addError = (errorData) => {
     const errorId = errorIdCounter.current++;
@@ -311,6 +314,33 @@ const HyperclayLocalApp = () => {
     setCurrentView(view);
   };
 
+  // Auto-resize window based on content height
+  useEffect(() => {
+    if (contentRef.current && window.electronAPI) {
+      // Use ResizeObserver to watch for content size changes
+      const resizeObserver = new ResizeObserver(() => {
+        if (contentRef.current) {
+          // Get the full content height including padding and borders
+          const contentHeight = contentRef.current.scrollHeight;
+
+          // Add extra space for top bar, padding, and breathing room
+          // Top bar (~65px) + content + bottom padding
+          const targetHeight = contentHeight + 100;
+
+          // Request resize from main process
+          window.electronAPI.resizeWindow(targetHeight);
+        }
+      });
+
+      resizeObserver.observe(contentRef.current);
+
+      // Cleanup
+      return () => {
+        resizeObserver.disconnect();
+      };
+    }
+  }, [currentView]); // Re-run when view changes
+
   const shouldShowErrorMessage = () => {
     return showError;
   };
@@ -332,7 +362,7 @@ const HyperclayLocalApp = () => {
       <hr className="border-[1px] border-[#292F52]" />
 
       {/* main area */}
-      <div className="p-[16px_24px_30px_24px]">
+      <div ref={contentRef} className="p-[16px_24px_30px_24px]">
         {/* heading */}
         <div className="flex gap-2 items-center mb-2.5">
           <h1 className="text-[36px]">Hyperclay Local</h1>

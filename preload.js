@@ -22,6 +22,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   toggleSync: (enabled) => ipcRenderer.invoke('toggle-sync', enabled),
   getSyncStats: () => ipcRenderer.invoke('get-sync-stats'),
 
+  // Window management
+  resizeWindow: (height) => ipcRenderer.invoke('resize-window', height),
+
   // Listen for state updates
   onStateUpdate: (callback) => {
     ipcRenderer.on('update-state', (_event, state) => callback(state));

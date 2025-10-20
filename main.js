@@ -259,7 +259,7 @@ function getWindowOptions() {
   const options = {
     title: 'Hyperclay Local',
     width: 720,
-    height: 800,
+    height: 710,
     resizable: true,
     webPreferences: {
       nodeIntegration: false,
@@ -735,6 +735,20 @@ ipcMain.handle('toggle-sync', async (event, enabled) => {
   } else {
     // Stop sync
     return await handleSyncStop();
+  }
+});
+
+// Window resize IPC handler
+ipcMain.handle('resize-window', (event, height) => {
+  if (mainWindow && height) {
+    const currentSize = mainWindow.getSize();
+    const minHeight = 500;
+    const maxHeight = 900;
+
+    // Clamp height between min and max
+    const newHeight = Math.max(minHeight, Math.min(maxHeight, height));
+
+    mainWindow.setSize(currentSize[0], newHeight, true); // true = animate
   }
 });
 
