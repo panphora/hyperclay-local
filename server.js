@@ -178,10 +178,39 @@ function startServer(baseDir) {
       next();
     });
 
+    // MIME type mapping for all file types
+    const mimeTypes = {
+      '.html': 'text/html',
+      '.css': 'text/css',
+      '.js': 'application/javascript',
+      '.mjs': 'application/javascript',
+      '.json': 'application/json',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.svg': 'image/svg+xml',
+      '.ico': 'image/x-icon',
+      '.webp': 'image/webp',
+      '.woff': 'font/woff',
+      '.woff2': 'font/woff2',
+      '.ttf': 'font/ttf',
+      '.otf': 'font/otf',
+      '.eot': 'application/vnd.ms-fontobject',
+      '.mp4': 'video/mp4',
+      '.webm': 'video/webm',
+      '.mp3': 'audio/mpeg',
+      '.wav': 'audio/wav',
+      '.pdf': 'application/pdf',
+      '.txt': 'text/plain',
+      '.xml': 'application/xml',
+      '.zip': 'application/zip'
+    };
+
     // Static file serving with extensionless HTML support
     app.use((req, res, next) => {
       const urlPath = req.path;
-      
+
       // Clean the path and remove leading slash
       const requestedPath = urlPath === '/' ? 'index.html' : urlPath.substring(1);
       const filePath = path.join(baseDir, requestedPath);
@@ -189,9 +218,15 @@ function startServer(baseDir) {
       // Security check
       const resolvedPath = path.resolve(filePath);
       const resolvedBaseDir = path.resolve(baseDir);
-      
+
       if (!resolvedPath.startsWith(resolvedBaseDir)) {
         return res.status(403).send('Access denied');
+      }
+
+      // Set MIME type based on file extension
+      const ext = path.extname(resolvedPath).toLowerCase();
+      if (mimeTypes[ext]) {
+        res.type(mimeTypes[ext]);
       }
 
       // Check if file exists
