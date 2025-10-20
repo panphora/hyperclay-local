@@ -1171,22 +1171,15 @@ class HyperclayHTTPServer {
         // Subdomain request - this is a site
         const siteName = match[1];
 
-        // Check if requesting an asset (anything other than /)
+        // Subdomains ONLY serve HTML files at the root path
+        // Assets must be requested from http://hyperclaylocal.com, not from subdomains
         if (req.url !== '/' && req.url !== '') {
-          // Find the site's HTML file to determine its directory
-          const htmlPath = await this.findSiteFile(siteName);
-
-          if (!htmlPath) {
-            return res.status(404).send('Site not found');
-          }
-
-          // Serve asset relative to the HTML file's directory
-          const siteDir = path.dirname(htmlPath);
-          await this.serveAsset(siteDir, req.url, res);
-        } else {
-          // Serve the HTML file itself
-          await this.serveSite(siteName, req, res);
+          // Return 404 for any non-root path on subdomains
+          return res.status(404).send('Assets must be requested from http://hyperclaylocal.com, not from subdomains');
         }
+
+        // Serve the HTML file itself
+        await this.serveSite(siteName, req, res);
       } else if (hostWithoutPort === 'hyperclaylocal.com' || hostWithoutPort === 'localhost') {
         await this.serveDashboard(req, res);
       } else {
