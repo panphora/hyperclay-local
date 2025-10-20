@@ -165,26 +165,28 @@ function startServer(baseDir) {
     // Set currentResource cookie based on requested HTML file
     app.use((req, res, next) => {
       const urlPath = req.path;
-      
-      // Extract app name from URL path
+
+      // Extract app name from URL path (just the filename, not the full path)
       let appName = null;
       if (urlPath === '/') {
         appName = 'index';
       } else {
         const cleanPath = urlPath.substring(1); // Remove leading slash
         if (cleanPath.endsWith('.html')) {
-          appName = cleanPath.slice(0, -5); // Remove .html extension
+          // Get just the filename without the path, then remove .html extension
+          const filename = path.basename(cleanPath);
+          appName = filename.slice(0, -5); // Remove .html extension
         } else if (!cleanPath.includes('.')) {
-          // Extensionless HTML file
-          appName = cleanPath;
+          // Extensionless HTML file - get just the basename
+          appName = path.basename(cleanPath);
         }
       }
-      
+
       // Set currentResource cookie if this is an HTML app request
       if (appName) {
         res.cookie('currentResource', appName, cookieOptions);
       }
-      
+
       next();
     });
 
