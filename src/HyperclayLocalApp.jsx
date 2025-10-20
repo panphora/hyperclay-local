@@ -333,6 +333,50 @@ const HyperclayLocalApp = () => {
 
       {/* main area */}
       <div className="p-[16px_24px_30px_24px]">
+        {/* heading */}
+        <div className="flex gap-2 items-center mb-2.5">
+          <h1 className="text-[36px]">Hyperclay Local</h1>
+          <div className="ml-auto flex gap-2" style={{WebkitAppRegion: 'no-drag'}}>
+            <span className={`text-[24px] text-[#292F52] ${!currentState.selectedFolder || !currentState.serverRunning ? 'hidden' : ''}`}> &middot;</span>
+            <button className={`regular-font group flex gap-2 items-center text-[#69AEFE] ${!currentState.selectedFolder ? 'hidden' : ''}`} onClick={handleOpenFolder}>
+              <svg className="w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 240 240">
+                <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="21" d="m130.6 63.1-21.2-21.2a15 15 0 0 0-10.6-4.4H45A22.5 22.5 0 0 0 22.5 60v120A22.5 22.5 0 0 0 45 202.5h150a22.5 22.5 0 0 0 22.5-22.5V90A22.5 22.5 0 0 0 195 67.5h-53.8a15 15 0 0 1-10.6-4.4Z"/>
+              </svg>
+              <span className="text-[20px] underline group-hover:no-underline">folder</span>
+            </button>
+            <span className={`text-[24px] text-[#292F52] ${!currentState.serverRunning ? 'hidden' : ''}`}> &middot;</span>
+            <a
+              href="#"
+              className={`group flex gap-1 items-center text-[#69AEFE] ${!currentState.serverRunning ? 'hidden' : ''}`}
+              onClick={handleOpenBrowser}
+            >
+              <span className="text-[20px] underline group-hover:no-underline">browser</span>
+              <svg className="w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+              </svg>
+            </a>
+          </div>
+        </div>
+
+        {/* Folder selector - shared across tabs */}
+        <div className="flex gap-2 mb-6">
+          <div className="my-auto">Folder:</div>
+          <div className="grow flex items-center min-w-0 border-[1px] border-[#4F5A97]">
+            <span className="grow truncate px-2">
+              {currentState.selectedFolder || 'No folder selected'}
+            </span>
+          </div>
+          {/* button: select folder */}
+          <button
+            className="group p-[4px_17px_7px] text-center text-[20px] cursor-pointer bg-[#1D1F2F] border-[3px] border-t-[#474C65] border-r-[#131725] border-b-[#131725] border-l-[#474C65] hover:bg-[#232639] active:border-b-[#474C65] active:border-l-[#131725] active:border-t-[#131725] active:border-r-[#474C65] sm:p-[4px_19px_7px] sm:text-[21px]"
+            onClick={handleSelectFolder}
+          >
+            <span className="whitespace-nowrap select-none inline-block group-active:translate-x-[1.5px] group-active:translate-y-[1.5px]">
+              select folder
+            </span>
+          </button>
+        </div>
+
         {/* Tabs */}
         <div className="tabs-container">
           <div className="tabs flex gap-2 mb-0" style={{WebkitAppRegion: 'no-drag'}}>
@@ -359,31 +403,6 @@ const HyperclayLocalApp = () => {
           </div>
 
           <div className="tab-content bg-[#0B0C12] border-2 border-[#4F5A97] p-6 -mt-[2px] relative">
-            {/* heading */}
-            <div className="flex gap-2 items-center mb-2.5">
-              <h1 className="text-[36px]">Hyperclay Local</h1>
-              <div className="ml-auto flex gap-2" style={{WebkitAppRegion: 'no-drag'}}>
-                <span className={`text-[24px] text-[#292F52] ${!currentState.selectedFolder || !currentState.serverRunning ? 'hidden' : ''}`}> &middot;</span>
-                <button className={`regular-font group flex gap-2 items-center text-[#69AEFE] ${!currentState.selectedFolder ? 'hidden' : ''}`} onClick={handleOpenFolder}>
-                  <svg className="w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 240 240">
-                    <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="21" d="m130.6 63.1-21.2-21.2a15 15 0 0 0-10.6-4.4H45A22.5 22.5 0 0 0 22.5 60v120A22.5 22.5 0 0 0 45 202.5h150a22.5 22.5 0 0 0 22.5-22.5V90A22.5 22.5 0 0 0 195 67.5h-53.8a15 15 0 0 1-10.6-4.4Z"/>
-                  </svg>
-                  <span className="text-[20px] underline group-hover:no-underline">folder</span>
-                </button>
-                <span className={`text-[24px] text-[#292F52] ${!currentState.serverRunning ? 'hidden' : ''}`}> &middot;</span>
-                <a
-                  href="#"
-                  className={`group flex gap-1 items-center text-[#69AEFE] ${!currentState.serverRunning ? 'hidden' : ''}`}
-                  onClick={handleOpenBrowser}
-                >
-                  <span className="text-[20px] underline group-hover:no-underline">browser</span>
-                  <svg className="w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
-                  </svg>
-                </a>
-              </div>
-            </div>
-
             {/* Main view content */}
             {currentView === 'main' && (
               <>
@@ -409,29 +428,9 @@ const HyperclayLocalApp = () => {
             </button>
 
             {/* conditional error message */}
-            <div className={`-mt-1 mb-4 text-[16px] text-center text-[#FE5F58] ${!shouldShowErrorMessage() ? 'hidden' : ''}`}>
+            <div className={`mb-4 text-[16px] text-center text-[#FE5F58] ${!shouldShowErrorMessage() ? 'hidden' : ''}`}>
               Select a folder before starting server
             </div>
-
-            <div className="flex gap-2 mb-8">
-              <div className="my-auto">Folder:</div>
-              <div className="grow flex items-center min-w-0 border-[1px] border-[#4F5A97]">
-                <span className="grow truncate px-2">
-                  {currentState.selectedFolder || 'No folder selected'}
-                </span>
-              </div>
-              {/* button: select folder */}
-              <button
-                className="group p-[4px_17px_7px] text-center text-[20px] cursor-pointer bg-[#1D1F2F] border-[3px] border-t-[#474C65] border-r-[#131725] border-b-[#131725] border-l-[#474C65] hover:bg-[#232639] active:border-b-[#474C65] active:border-l-[#131725] active:border-t-[#131725] active:border-r-[#474C65] sm:p-[4px_19px_7px] sm:text-[21px]"
-                onClick={handleSelectFolder}
-              >
-                <span className="whitespace-nowrap select-none inline-block group-active:translate-x-[1.5px] group-active:translate-y-[1.5px]">
-                  select folder
-                </span>
-              </button>
-            </div>
-
-            <hr className="my-8 border-[1px] border-[#292F52]" />
 
             <div className="flex flex-col gap-[17px]">
               <div className="flex gap-4 items-center p-2 border-[2px] border-[#292F52] bg-[#111220] text-[18px]">
@@ -453,26 +452,6 @@ const HyperclayLocalApp = () => {
             {/* Sync view content */}
             {currentView === 'sync' && (
               <>
-                <div className="flex gap-2 mb-8">
-              <div className="my-auto">Folder:</div>
-              <div className="grow flex items-center min-w-0 border-[1px] border-[#4F5A97]">
-                <span className="grow truncate px-2">
-                  {currentState.selectedFolder || 'No folder selected'}
-                </span>
-              </div>
-              {/* button: select folder */}
-              <button
-                className="group p-[4px_17px_7px] text-center text-[20px] cursor-pointer bg-[#1D1F2F] border-[3px] border-t-[#474C65] border-r-[#131725] border-b-[#131725] border-l-[#474C65] hover:bg-[#232639] active:border-b-[#474C65] active:border-l-[#131725] active:border-t-[#131725] active:border-r-[#474C65] sm:p-[4px_19px_7px] sm:text-[21px]"
-                onClick={handleSelectFolder}
-              >
-                <span className="whitespace-nowrap select-none inline-block group-active:translate-x-[1.5px] group-active:translate-y-[1.5px]">
-                  select folder
-                </span>
-              </button>
-            </div>
-
-            <hr className="my-8 border-[1px] border-[#292F52]" />
-
             <h2 className="text-[28px] mb-4">Sync to Hyperclay Platform</h2>
 
             {!syncEnabled ? (
