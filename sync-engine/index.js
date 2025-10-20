@@ -12,7 +12,7 @@ const { getServerBaseUrl } = require('../utils');
 // Import sync engine modules
 const { SYNC_CONFIG, ERROR_PRIORITY } = require('./constants');
 const { calculateChecksum, generateTimestamp, isLocalNewer, isFutureFile, calibrateClock } = require('./utils');
-const { createBackupIfNeeded } = require('./backup');
+const { createBackupIfExists } = require('../backup');
 const { classifyError, formatErrorForLog } = require('./error-handler');
 const {
   getLocalFiles,
@@ -316,7 +316,9 @@ class SyncEngine extends EventEmitter {
       const localPath = path.join(this.syncFolder, localFilename);
 
       // Create backup if file exists locally
-      await createBackupIfNeeded(localPath, localFilename, this.syncFolder, this.emit.bind(this));
+      // Remove .html extension for siteName (matches server.js behavior)
+      const siteName = localFilename.replace(/\.html$/i, '');
+      await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this));
 
       // Write file with server modification time (ensures directories exist)
       await writeFile(localPath, content, modifiedAt);
