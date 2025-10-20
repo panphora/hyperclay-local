@@ -1,6 +1,7 @@
 const express = require('express');
 const fs = require('fs').promises;
-const path = require('path');
+const path = require('upath');
+const { validateFileName } = require('./sync-engine/validation');
 
 let server = null;
 let app = null;
@@ -88,6 +89,15 @@ function startServer(baseDir) {
       }
 
       const filename = `${name}.html`;
+
+      // Validate against Windows reserved filenames and other restrictions
+      const validationResult = validateFileName(filename);
+      if (!validationResult.valid) {
+        return res.status(400).json({
+          msg: validationResult.error,
+          msgType: 'error'
+        });
+      }
       const filePath = path.join(baseDir, filename);
 
       // Security check: Ensure the final path resolves within the base directory

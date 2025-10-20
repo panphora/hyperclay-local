@@ -788,6 +788,20 @@ function validateSiteName(name) {
     };
   }
 
+  // Check for Windows reserved filenames (critical for cross-platform compatibility)
+  const windowsReservedNames = [
+    'con', 'prn', 'aux', 'nul',
+    'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
+    'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9'
+  ];
+
+  if (windowsReservedNames.includes(lowerName)) {
+    return {
+      valid: false,
+      error: `"${baseName}" is a reserved system name and cannot be used on Windows`
+    };
+  }
+
   return { valid: true };
 }
 

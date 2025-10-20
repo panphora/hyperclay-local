@@ -1,5 +1,5 @@
 const { app, BrowserWindow, dialog, shell, Menu, Tray, nativeImage, ipcMain, safeStorage } = require('electron');
-const path = require('path');
+const path = require('upath');
 const fs = require('fs');
 const { startServer, stopServer, getServerPort, isServerRunning } = require('./server');
 const syncEngine = require('./sync-engine');

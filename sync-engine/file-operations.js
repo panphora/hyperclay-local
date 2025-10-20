@@ -33,12 +33,10 @@ async function getLocalFiles(syncFolder) {
         } else if (entry.isFile() && entry.name.endsWith('.html')) {
           const stats = await fs.stat(fullPath);
 
-          // Normalize path to forward slashes for consistency
-          const normalizedPath = relPath.split(path.sep).join('/');
-
-          files.set(normalizedPath, {
+          // relPath is already normalized by upath.join() to forward slashes
+          files.set(relPath, {
             path: fullPath,
-            relativePath: normalizedPath,
+            relativePath: relPath,
             mtime: stats.mtime,
             size: stats.size
           });
