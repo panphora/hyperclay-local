@@ -42,6 +42,10 @@ const HyperclayLocalApp = () => {
   // Navigation state
   const [currentView, setCurrentView] = useState('main'); // 'main' | 'sync'
 
+  // Update notification state
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [updateVersion, setUpdateVersion] = useState(null);
+
   // Ref for content container to measure height
   const contentRef = useRef(null);
 
@@ -155,6 +159,12 @@ const HyperclayLocalApp = () => {
           ...data,
           error: `Failed to sync ${data.file} after ${data.attempts} attempts: ${data.error}`
         });
+      });
+
+      // Listen for update available
+      window.electronAPI.onUpdateAvailable((data) => {
+        setUpdateAvailable(true);
+        setUpdateVersion(data.latestVersion);
       });
     }
 
@@ -363,6 +373,21 @@ const HyperclayLocalApp = () => {
     <div className="text-white bg-[#0B0C12] min-h-screen">
       {/* top bar */}
       <div className="flex justify-end items-center gap-3 p-[16px_24px_15px_24px]" style={{WebkitAppRegion: 'drag'}}>
+        {updateAvailable && (
+          <button
+            className="relative group p-[2px_12px_4px] font-bold text-white bg-[#1E8136] rounded-full cursor-pointer hover:bg-[#23973F]"
+            style={{WebkitAppRegion: 'no-drag'}}
+            onClick={() => window.electronAPI?.openBrowser('https://hyperclay.com/hyperclay-local')}
+            title="Update available"
+          >
+            <svg className="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="3" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18" />
+            </svg>
+            <div className="absolute bottom-[-30px] left-1/2 transform -translate-x-1/2 hidden group-hover:block whitespace-nowrap bg-[#1D1F2F] border-2 border-[#4F5A97] px-3 py-1 text-sm pointer-events-none z-50">
+              update available
+            </div>
+          </button>
+        )}
         <div className={getServerStatusClass()} style={{WebkitAppRegion: 'no-drag'}}>
           {currentState.serverRunning ? 'server on' : 'server off'}
         </div>

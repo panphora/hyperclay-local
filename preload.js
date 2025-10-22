@@ -58,6 +58,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('sync-failed', (_event, data) => callback(data));
   },
 
+  // Update available listener
+  onUpdateAvailable: (callback) => {
+    ipcRenderer.on('update-available', (_event, data) => callback(data));
+  },
+
   // Remove listeners
   removeAllListeners: (channel) => {
     ipcRenderer.removeAllListeners(channel);
