@@ -251,6 +251,62 @@ function updateUI() {
 }
 
 // =============================================================================
+// VERSION CHECK
+// =============================================================================
+
+/**
+ * Compare two semver version strings
+ * Returns: 1 if v1 > v2, -1 if v1 < v2, 0 if equal
+ */
+function compareVersions(v1, v2) {
+  const parts1 = v1.split('.').map(Number);
+  const parts2 = v2.split('.').map(Number);
+
+  for (let i = 0; i < 3; i++) {
+    const p1 = parts1[i] || 0;
+    const p2 = parts2[i] || 0;
+    if (p1 > p2) return 1;
+    if (p1 < p2) return -1;
+  }
+  return 0;
+}
+
+/**
+ * Check for updates from CDN
+ */
+async function checkForUpdates() {
+  try {
+    const response = await fetch('https://cdn.jsdelivr.net/gh/panphora/hyperclay-local@main/package.json');
+
+    if (!response.ok) {
+      console.log('[UPDATE] Failed to check for updates:', response.status);
+      return;
+    }
+
+    const remotePackage = await response.json();
+    const remoteVersion = remotePackage.version;
+    const currentVersion = app.getVersion();
+
+    console.log(`[UPDATE] Current version: ${currentVersion}, Latest version: ${remoteVersion}`);
+
+    if (compareVersions(remoteVersion, currentVersion) > 0) {
+      console.log('[UPDATE] New version available!');
+      if (mainWindow) {
+        mainWindow.webContents.send('update-available', {
+          currentVersion,
+          latestVersion: remoteVersion
+        });
+      }
+    } else {
+      console.log('[UPDATE] App is up to date');
+    }
+  } catch (error) {
+    // Silently fail - don't bother user if check fails
+    console.log('[UPDATE] Update check failed:', error.message);
+  }
+}
+
+// =============================================================================
 // WINDOW CREATION
 // =============================================================================
 
@@ -632,6 +688,12 @@ ipcMain.handle('open-folder', () => {
   }
 });
 
+ipcMain.handle('open-logs', () => {
+  // Open the logs directory (platform-specific location)
+  const logsPath = app.getPath('logs');
+  shell.openPath(logsPath);
+});
+
 ipcMain.handle('open-browser', (event, url) => {
   if (url) {
     shell.openExternal(url);
@@ -804,6 +866,9 @@ app.whenReady().then(async () => {
 
   createWindow();
 
+  // Check for updates on startup
+  checkForUpdates();
+
   // Auto-restart sync if it was enabled before quit
   if (settings.syncEnabled && settings.apiKey && settings.syncFolder) {
     console.log('[APP] Auto-restarting sync from previous session...');
@@ -862,6 +927,12 @@ app.on('before-quit', async (event) => {
         console.log('[APP] Stopping sync engine before quit...');
         await syncEngine.stop();
         syncEngine.clearApiKey();
+
+        // Ensure syncEnabled is set to false and persisted
+        settings.syncEnabled = false;
+        saveSettings(settings);
+        // Give filesystem time to flush
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
 
       // Stop server if running

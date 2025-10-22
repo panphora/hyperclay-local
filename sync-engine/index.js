@@ -550,6 +550,10 @@ class SyncEngine extends EventEmitter {
     }
 
     this.stats.lastSync = new Date().toISOString();
+
+    // Emit stats update to UI
+    this.emit('sync-stats', this.stats);
+
     this.syncQueue.setProcessing(false);
   }
 
