@@ -46,6 +46,7 @@ class SyncEngine extends EventEmitter {
     this.syncQueue = new SyncQueue();
     this.serverFilesCache = null; // Cache for server files list
     this.serverFilesCacheTime = null; // When cache was last updated
+    this.logger = null; // Logger instance
     this.stats = {
       filesProtected: 0,
       filesDownloaded: 0,
@@ -55,6 +56,13 @@ class SyncEngine extends EventEmitter {
       lastSync: null,
       errors: []
     };
+  }
+
+  /**
+   * Set the logger instance
+   */
+  setLogger(logger) {
+    this.logger = logger;
   }
 
   /**
@@ -97,6 +105,15 @@ class SyncEngine extends EventEmitter {
     console.log(`[SYNC] Initializing for ${username} at ${syncFolder}`);
     console.log(`[SYNC] Server: ${this.serverUrl}`);
 
+    // Log sync initialization
+    if (this.logger) {
+      this.logger.info('SYNC', 'Sync initialized', {
+        username,
+        syncFolder: this.logger.sanitizePath(syncFolder),
+        serverUrl: this.serverUrl
+      });
+    }
+
     // Encrypt and store API key
     if (safeStorage.isEncryptionAvailable()) {
       this.apiKeyEncrypted = safeStorage.encryptString(apiKey);
@@ -137,6 +154,12 @@ class SyncEngine extends EventEmitter {
       console.error(`[SYNC] Error type: ${error.name}`);
       console.error(`[SYNC] Error message: ${error.message}`);
       console.error(`[SYNC] Stack trace:`, error.stack);
+
+      // Log initialization error
+      if (this.logger) {
+        this.logger.error('SYNC', 'Sync initialization failed', { error });
+      }
+
       throw error;
     }
   }
@@ -241,6 +264,14 @@ class SyncEngine extends EventEmitter {
               this.stats.errors.push(formatErrorForLog(error, { filename: relativePath, action: 'initial-sync-check' }));
               const errorInfo = classifyError(error, { filename: relativePath, action: 'check' });
               this.emit('sync-error', errorInfo);
+
+              // Log file processing error
+              if (this.logger) {
+                this.logger.error('SYNC', 'Initial sync file processing failed', {
+                  file: relativePath,
+                  error
+                });
+              }
             }
           }
         }
@@ -273,6 +304,17 @@ class SyncEngine extends EventEmitter {
       console.log('[SYNC] Initial sync complete');
       console.log(`[SYNC] Stats: ${JSON.stringify(this.stats)}`);
 
+      // Log initial sync completion
+      if (this.logger) {
+        this.logger.success('SYNC', 'Initial sync completed', {
+          filesDownloaded: this.stats.filesDownloaded,
+          filesUploaded: this.stats.filesUploaded,
+          filesProtected: this.stats.filesProtected,
+          filesDownloadedSkipped: this.stats.filesDownloadedSkipped,
+          filesUploadedSkipped: this.stats.filesUploadedSkipped
+        });
+      }
+
       // Emit completion event
       this.emit('sync-complete', {
         type: 'initial',
@@ -285,6 +327,11 @@ class SyncEngine extends EventEmitter {
     } catch (error) {
       console.error('[SYNC] Initial sync failed:', error);
       this.stats.errors.push(formatErrorForLog(error, { action: 'initial-sync' }));
+
+      // Log initial sync error
+      if (this.logger) {
+        this.logger.error('SYNC', 'Initial sync failed', { error });
+      }
 
       // Emit error event
       this.emit('sync-error', {
@@ -318,12 +365,20 @@ class SyncEngine extends EventEmitter {
       // Create backup if file exists locally
       // Remove .html extension for siteName (matches server.js behavior)
       const siteName = localFilename.replace(/\.html$/i, '');
-      await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this));
+      await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
 
       // Write file with server modification time (ensures directories exist)
       await writeFile(localPath, content, modifiedAt);
 
       console.log(`[SYNC] Downloaded ${localFilename}`);
+
+      // Log download success
+      if (this.logger) {
+        this.logger.success('DOWNLOAD', 'File downloaded', {
+          file: this.logger.sanitizePath(localPath),
+          modifiedAt
+        });
+      }
 
       // Emit success event
       this.emit('file-synced', {
@@ -333,6 +388,14 @@ class SyncEngine extends EventEmitter {
 
     } catch (error) {
       console.error(`[SYNC] Failed to download ${filename}:`, error);
+
+      // Log download error
+      if (this.logger) {
+        this.logger.error('DOWNLOAD', 'Download failed', {
+          file: filename,
+          error
+        });
+      }
 
       const errorInfo = classifyError(error, { filename, action: 'download' });
       this.stats.errors.push(formatErrorForLog(error, { filename, action: 'download' }));
@@ -358,6 +421,14 @@ class SyncEngine extends EventEmitter {
         validationError.isValidationError = true;
 
         console.error(`[SYNC] Validation failed for ${filename}: ${validationResult.error}`);
+
+        // Log validation error
+        if (this.logger) {
+          this.logger.error('VALIDATION', 'Filename validation failed', {
+            file: filename,
+            reason: validationResult.error
+          });
+        }
 
         // Emit validation error
         this.emit('sync-error', {
@@ -389,6 +460,14 @@ class SyncEngine extends EventEmitter {
         if (serverFile && serverFile.checksum === localChecksum) {
           console.log(`[SYNC] SKIP upload ${filename} - server has same checksum`);
           this.stats.filesUploadedSkipped++;
+
+          // Log upload skip
+          if (this.logger) {
+            this.logger.skip('UPLOAD', 'Upload skipped - checksums match', {
+              file: this.logger.sanitizePath(localPath)
+            });
+          }
+
           return;
         }
       } catch (error) {
@@ -409,6 +488,14 @@ class SyncEngine extends EventEmitter {
       console.log(`[SYNC] Uploaded ${filename}`);
       this.stats.filesUploaded++;
 
+      // Log upload success
+      if (this.logger) {
+        this.logger.success('UPLOAD', 'File uploaded', {
+          file: this.logger.sanitizePath(localPath),
+          modifiedAt: stat.mtime
+        });
+      }
+
       // Invalidate cache since server state changed
       this.invalidateServerFilesCache();
 
@@ -420,6 +507,14 @@ class SyncEngine extends EventEmitter {
 
     } catch (error) {
       console.error(`[SYNC] Failed to upload ${filename}:`, error);
+
+      // Log upload error
+      if (this.logger) {
+        this.logger.error('UPLOAD', 'Upload failed', {
+          file: filename,
+          error
+        });
+      }
 
       // Check for detailed error structure (name conflicts)
       if (error.details) {
@@ -457,6 +552,14 @@ class SyncEngine extends EventEmitter {
 
       if (!validationResult.valid) {
         console.error(`[SYNC] Cannot queue ${filename}: ${validationResult.error}`);
+
+        // Log validation error
+        if (this.logger) {
+          this.logger.error('VALIDATION', 'Cannot queue file - validation failed', {
+            file: filename,
+            reason: validationResult.error
+          });
+        }
 
         // Emit validation error immediately
         this.emit('sync-error', {
@@ -507,7 +610,24 @@ class SyncEngine extends EventEmitter {
         // Success - clear retry tracking
         this.syncQueue.clearRetry(item.filename);
 
+        // Log successful queue item processing
+        if (this.logger) {
+          this.logger.success('QUEUE', 'Queue item processed', {
+            file: item.filename,
+            type: item.type
+          });
+        }
+
       } catch (error) {
+        // Log queue processing error
+        if (this.logger) {
+          this.logger.error('QUEUE', 'Queue processing failed', {
+            file: item.filename,
+            type: item.type,
+            error
+          });
+        }
+
         // Handle retry
         const retryResult = this.syncQueue.scheduleRetry(
           item,
@@ -537,6 +657,16 @@ class SyncEngine extends EventEmitter {
             attempts: retryResult.attempts
           });
         } else {
+          // Log retry scheduling
+          if (this.logger) {
+            this.logger.warn('QUEUE', 'Retry scheduled', {
+              file: item.filename,
+              attempt: retryResult.attempt,
+              maxAttempts: retryResult.maxAttempts,
+              nextRetryIn: retryResult.nextRetryIn
+            });
+          }
+
           // Scheduled for retry
           this.emit('sync-retry', {
             file: item.filename,
@@ -596,9 +726,21 @@ class SyncEngine extends EventEmitter {
       .on('error', error => {
         console.error('[SYNC] Watcher error:', error);
         this.stats.errors.push(formatErrorForLog(error, { action: 'watcher' }));
+
+        // Log watcher error
+        if (this.logger) {
+          this.logger.error('WATCHER', 'File watcher error', { error });
+        }
       });
 
     console.log('[SYNC] File watcher started (watching recursively)');
+
+    // Log watcher start
+    if (this.logger) {
+      this.logger.info('WATCHER', 'File watcher started', {
+        syncFolder: this.logger.sanitizePath(this.syncFolder)
+      });
+    }
   }
 
   /**
@@ -610,20 +752,53 @@ class SyncEngine extends EventEmitter {
     }, SYNC_CONFIG.POLL_INTERVAL);
 
     console.log('[SYNC] Polling started');
+
+    // Log polling start
+    if (this.logger) {
+      this.logger.info('POLL', 'Polling started', {
+        interval: SYNC_CONFIG.POLL_INTERVAL
+      });
+    }
   }
 
   /**
    * Check for changes on the server
    */
   async checkForRemoteChanges() {
-    if (this.syncQueue.isProcessingQueue()) return;
+    // Don't poll if sync is not running
+    if (!this.isRunning) {
+      return;
+    }
+
+    if (this.syncQueue.isProcessingQueue()) {
+      // Log when poll is skipped due to queue processing
+      if (this.logger) {
+        this.logger.info('POLL', 'Poll check skipped - queue is processing');
+      }
+      return;
+    }
 
     try {
+      // Log poll check start
+      if (this.logger) {
+        this.logger.info('POLL', 'Checking for remote changes');
+      }
+
       const serverFiles = await this.fetchAndCacheServerFiles(true);
+
+      // Check if sync was stopped during the fetch
+      if (!this.isRunning) {
+        return;
+      }
+
       const localFiles = await getLocalFiles(this.syncFolder);
       let changesFound = false;
 
       for (const serverFile of serverFiles) {
+        // Check if sync was stopped during iteration
+        if (!this.isRunning) {
+          return;
+        }
         // Server returns path WITH .html (e.g., "folder1/folder2/site.html" or "site.html")
         const relativePath = serverFile.path || `${serverFile.filename}.html`;
         const localPath = path.join(this.syncFolder, relativePath);
@@ -657,12 +832,29 @@ class SyncEngine extends EventEmitter {
 
       if (changesFound) {
         this.emit('sync-stats', this.stats);
+
+        // Log poll check completion with changes
+        if (this.logger) {
+          this.logger.success('POLL', 'Remote changes detected and downloaded', {
+            filesDownloaded: this.stats.filesDownloaded
+          });
+        }
+      } else {
+        // Log poll check completion with no changes
+        if (this.logger) {
+          this.logger.info('POLL', 'Poll check completed - no changes');
+        }
       }
 
       this.stats.lastSync = new Date().toISOString();
     } catch (error) {
       console.error('[SYNC] Failed to check for remote changes:', error);
       this.stats.errors.push(formatErrorForLog(error, { action: 'poll' }));
+
+      // Log polling error
+      if (this.logger) {
+        this.logger.error('POLL', 'Polling check failed', { error });
+      }
     }
   }
 
@@ -672,19 +864,23 @@ class SyncEngine extends EventEmitter {
   async stop() {
     if (!this.isRunning) return;
 
-    // Mark as not running immediately
+    console.log('[SYNC] Stopping sync engine...');
+
+    // Mark as not running immediately (this will abort any ongoing polls)
     this.isRunning = false;
+
+    // Stop polling FIRST (before watcher, to prevent new polls from starting)
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+      console.log('[SYNC] Polling timer cleared');
+    }
 
     // Stop file watcher
     if (this.watcher) {
       await this.watcher.close();
       this.watcher = null;
-    }
-
-    // Stop polling
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
+      console.log('[SYNC] File watcher closed');
     }
 
     // Clear all pending operations
@@ -694,6 +890,18 @@ class SyncEngine extends EventEmitter {
     this.invalidateServerFilesCache();
 
     console.log('[SYNC] Sync stopped');
+
+    // Log sync stop
+    if (this.logger) {
+      this.logger.info('SYNC', 'Sync stopped', {
+        finalStats: {
+          filesDownloaded: this.stats.filesDownloaded,
+          filesUploaded: this.stats.filesUploaded,
+          filesProtected: this.stats.filesProtected,
+          errors: this.stats.errors.length
+        }
+      });
+    }
 
     return {
       success: true,

@@ -3,6 +3,7 @@ const path = require('upath');
 const fs = require('fs');
 const { startServer, stopServer, getServerPort, isServerRunning } = require('./server');
 const syncEngine = require('./sync-engine');
+const syncLogger = require('./sync-engine/logger');
 const { getServerBaseUrl } = require('./utils');
 
 // =============================================================================
@@ -619,6 +620,12 @@ function setupSyncEventHandlers() {
 
 async function handleSyncStart(apiKey, username, syncFolder, serverUrl) {
   try {
+    // Initialize logger with sync folder
+    await syncLogger.init(syncFolder);
+
+    // Set logger on sync engine
+    syncEngine.setLogger(syncLogger);
+
     // Wire up event handlers before starting
     syncEngine.removeAllListeners();
     setupSyncEventHandlers();
@@ -689,9 +696,10 @@ ipcMain.handle('open-folder', () => {
 });
 
 ipcMain.handle('open-logs', () => {
-  // Open the logs directory (platform-specific location)
+  // Open the sync logs directory
   const logsPath = app.getPath('logs');
-  shell.openPath(logsPath);
+  const syncLogsPath = path.join(logsPath, 'sync');
+  shell.openPath(syncLogsPath);
 });
 
 ipcMain.handle('open-browser', (event, url) => {
@@ -874,6 +882,12 @@ app.whenReady().then(async () => {
     console.log('[APP] Auto-restarting sync from previous session...');
 
     try {
+      // Initialize logger with sync folder
+      await syncLogger.init(settings.syncFolder);
+
+      // Set logger on sync engine
+      syncEngine.setLogger(syncLogger);
+
       // Wire up event handlers using the shared function
       syncEngine.removeAllListeners();
       setupSyncEventHandlers();

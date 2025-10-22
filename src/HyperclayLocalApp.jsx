@@ -541,18 +541,18 @@ const HyperclayLocalApp = () => {
                   <label className="block mb-1 text-[16px] text-[#B8BFE5]">API Key:</label>
                   <input
                     type="password"
-                    className="w-full p-2 border-[1px] border-[#4F5A97] bg-[#111220] text-white focus:border-[#69AEFE] focus:outline-none"
+                    className="w-full p-2 border-[2px] border-[#4F5A97] bg-[#111220] text-white focus:border-[#69AEFE] focus:outline-none"
                     placeholder="Paste your sync key from hyperclay.com"
                     value={syncApiKey}
                     onChange={(e) => setSyncApiKey(e.target.value)}
                   />
                 </div>
 
-                <div className="mb-3">
+                <div className="mb-5">
                   <label className="block mb-1 text-[16px] text-[#B8BFE5]">Username:</label>
                   <input
                     type="text"
-                    className="w-full p-2 border-[1px] border-[#4F5A97] bg-[#111220] text-white focus:border-[#69AEFE] focus:outline-none"
+                    className="w-full p-2 border-[2px] border-[#4F5A97] bg-[#111220] text-white focus:border-[#69AEFE] focus:outline-none"
                     placeholder="Your hyperclay.com username"
                     value={syncUsername}
                     onChange={(e) => setSyncUsername(e.target.value)}
@@ -602,7 +602,7 @@ const HyperclayLocalApp = () => {
 
                   {/* Stats grid - merged format */}
                   <div className="mt-3 grid grid-cols-2 gap-2 text-[14px]">
-                    <div className="p-2 bg-[#0B0C12] border border-[#292F52]">
+                    <div className="p-2 bg-[#0B0C12] border-2 border-[#292F52]">
                       <div className="text-[#8A92BB] mb-1">Downloaded / Skipped</div>
                       <div className="text-[20px] flex items-center gap-1">
                         <span style={{ color: '#ffffff' }}>
@@ -614,7 +614,7 @@ const HyperclayLocalApp = () => {
                         </span>
                       </div>
                     </div>
-                    <div className="p-2 bg-[#0B0C12] border border-[#292F52]">
+                    <div className="p-2 bg-[#0B0C12] border-2 border-[#292F52]">
                       <div className="text-[#8A92BB] mb-1">Uploaded / Skipped</div>
                       <div className="text-[20px] flex items-center gap-1">
                         <span style={{ color: '#ffffff' }}>

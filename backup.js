@@ -28,8 +28,9 @@ function generateTimestamp() {
  * @param {string} siteName - Site name (e.g., "mysite" or "folder1/folder2/mysite")
  * @param {string} content - Content to backup
  * @param {function} emit - Optional event emitter function
+ * @param {object} logger - Optional logger instance
  */
-async function createBackup(baseDir, siteName, content, emit) {
+async function createBackup(baseDir, siteName, content, emit, logger = null) {
   try {
     const versionsDir = path.join(baseDir, 'sites-versions');
     const siteVersionsDir = path.join(versionsDir, siteName);
@@ -49,6 +50,14 @@ async function createBackup(baseDir, siteName, content, emit) {
     await fs.writeFile(backupPath, content, 'utf8');
     console.log(`[BACKUP] Created: sites-versions/${siteName}/${backupFilename}`);
 
+    // Log backup creation
+    if (logger) {
+      logger.info('BACKUP', 'Backup created', {
+        site: siteName,
+        backupFile: backupFilename
+      });
+    }
+
     // Emit event if emitter provided
     if (emit) {
       emit('backup-created', {
@@ -60,6 +69,15 @@ async function createBackup(baseDir, siteName, content, emit) {
     return backupPath;
   } catch (error) {
     console.error(`[BACKUP] Failed to create backup for ${siteName}:`, error.message);
+
+    // Log backup error
+    if (logger) {
+      logger.error('BACKUP', 'Backup creation failed', {
+        site: siteName,
+        error
+      });
+    }
+
     // Don't throw error - backup failure shouldn't prevent save/sync
     return null;
   }
@@ -72,13 +90,14 @@ async function createBackup(baseDir, siteName, content, emit) {
  * @param {string} siteName - Site name for backup directory
  * @param {string} baseDir - Base directory
  * @param {function} emit - Optional event emitter function
+ * @param {object} logger - Optional logger instance
  */
-async function createBackupIfExists(filePath, siteName, baseDir, emit) {
+async function createBackupIfExists(filePath, siteName, baseDir, emit, logger = null) {
   try {
     await fs.access(filePath);
     // File exists, read and backup
     const content = await fs.readFile(filePath, 'utf8');
-    return await createBackup(baseDir, siteName, content, emit);
+    return await createBackup(baseDir, siteName, content, emit, logger);
   } catch {
     // File doesn't exist, no backup needed
     return null;
