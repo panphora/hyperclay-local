@@ -43,8 +43,8 @@ const HyperclayLocalApp = () => {
   const [currentView, setCurrentView] = useState('main'); // 'main' | 'sync'
 
   // Update notification state
-  const [updateAvailable, setUpdateAvailable] = useState(true); // MOCK: Set to true to test
-  const [updateVersion, setUpdateVersion] = useState('1.0.1'); // MOCK: Set version to test
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [updateVersion, setUpdateVersion] = useState(null);
 
   // Ref for content container to measure height
   const contentRef = useRef(null);
@@ -378,7 +378,6 @@ const HyperclayLocalApp = () => {
             <button
               className="relative group h-full aspect-square flex items-center justify-center font-bold text-white bg-[#1E8136] rounded-full cursor-pointer hover:bg-[#23973F] border-2 border-[#0B0C11]"
               onClick={() => window.electronAPI?.openBrowser('https://hyperclay.com/hyperclay-local')}
-              title="Update available"
             >
               <svg className="w-[15px] h-[15px]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="3" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18" />
