@@ -1,8 +1,8 @@
 const express = require('express');
 const fs = require('fs').promises;
 const path = require('upath');
-const { validateFileName } = require('./sync-engine/validation');
-const { createBackup } = require('./backup');
+const { validateFileName } = require('../sync-engine/validation');
+const { createBackup } = require('./utils/backup');
 
 let server = null;
 let app = null;

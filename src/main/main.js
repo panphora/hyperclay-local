@@ -2,9 +2,9 @@ const { app, BrowserWindow, dialog, shell, Menu, Tray, nativeImage, ipcMain, saf
 const path = require('upath');
 const fs = require('fs');
 const { startServer, stopServer, getServerPort, isServerRunning } = require('./server');
-const syncEngine = require('./sync-engine');
-const syncLogger = require('./sync-engine/logger');
-const { getServerBaseUrl } = require('./utils');
+const syncEngine = require('../sync-engine');
+const syncLogger = require('../sync-engine/logger');
+const { getServerBaseUrl } = require('./utils/utils');
 
 // =============================================================================
 // APP CONFIGURATION
@@ -16,7 +16,7 @@ app.name = 'Hyperclay Local';
 
 // Set app info for About panel on macOS
 if (process.platform === 'darwin') {
-  const iconPath = path.join(__dirname, 'assets', 'icon.png');
+  const iconPath = path.join(__dirname, '../../assets/icons/icon.png');
   const aboutOptions = {
     applicationName: 'Hyperclay Local',
     applicationVersion: '1.0.0',
@@ -35,7 +35,7 @@ if (process.platform === 'darwin') {
 // Enable live reload for development
 if (process.argv.includes('--dev')) {
   require('electron-reload')(__dirname, {
-    electron: path.join(__dirname, 'node_modules', '.bin', 'electron'),
+    electron: path.join(__dirname, '../../node_modules', '.bin', 'electron'),
     hardResetMethod: 'exit'
   });
 }
@@ -151,8 +151,8 @@ function saveSettings(settings) {
 
 function getAppIcon() {
   const possibleIcons = [
-    path.join(__dirname, 'assets', 'icon.png'),
-    path.join(__dirname, 'assets', 'icon.svg'),
+    path.join(__dirname, '../../assets/icons/icon.png'),
+    path.join(__dirname, '../../assets/icons/icon.svg'),
   ];
 
   for (const iconFile of possibleIcons) {
@@ -164,8 +164,8 @@ function getAppIcon() {
 }
 
 function getTrayIcon() {
-  const trayIconPath = path.join(__dirname, 'assets', 'tray-icon.png');
-  const mainIconPath = path.join(__dirname, 'assets', 'icon.png');
+  const trayIconPath = path.join(__dirname, '../../assets/icons/tray-icon.png');
+  const mainIconPath = path.join(__dirname, '../../assets/icons/icon.png');
 
   try {
     // Try tray-specific icon first
@@ -336,7 +336,7 @@ function getWindowOptions() {
 
 function createWindow() {
   mainWindow = new BrowserWindow(getWindowOptions());
-  mainWindow.loadFile('app.html');
+  mainWindow.loadFile(path.join(__dirname, '../renderer/app.html'));
 
   // Show window when ready
   mainWindow.once('ready-to-show', () => {

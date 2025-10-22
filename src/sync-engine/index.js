@@ -7,12 +7,12 @@ const EventEmitter = require('events').EventEmitter;
 const path = require('upath'); // Use upath for cross-platform compatibility
 const chokidar = require('chokidar');
 const { safeStorage } = require('electron');
-const { getServerBaseUrl } = require('../utils');
+const { getServerBaseUrl } = require('../main/utils/utils');
 
 // Import sync engine modules
 const { SYNC_CONFIG, ERROR_PRIORITY } = require('./constants');
 const { calculateChecksum, generateTimestamp, isLocalNewer, isFutureFile, calibrateClock } = require('./utils');
-const { createBackupIfExists } = require('../backup');
+const { createBackupIfExists } = require('../main/utils/backup');
 const { classifyError, formatErrorForLog } = require('./error-handler');
 const {
   getLocalFiles,
