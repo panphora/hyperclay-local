@@ -478,7 +478,7 @@ const HyperclayLocalApp = () => {
               <>
             {/* button: start server */}
             <button
-              className={`group w-full mb-3 p-[6px_17px_9px] text-center text-[23px] cursor-pointer bg-[#1E8136] border-[3px] border-t-[#56B96C] border-r-[#15311C] border-b-[#15311C] border-l-[#56B96C] hover:bg-[#23973F] active:border-b-[#56B96C] active:border-l-[#15311C] active:border-t-[#15311C] active:border-r-[#56B96C] sm:p-[6px_19px_9px] sm:text-[24px] ${currentState.serverRunning ? 'hidden' : ''}`}
+              className={`group w-full mb-[17px] p-[6px_17px_9px] text-center text-[23px] cursor-pointer bg-[#1E8136] border-[3px] border-t-[#56B96C] border-r-[#15311C] border-b-[#15311C] border-l-[#56B96C] hover:bg-[#23973F] active:border-b-[#56B96C] active:border-l-[#15311C] active:border-t-[#15311C] active:border-r-[#56B96C] sm:p-[6px_19px_9px] sm:text-[24px] ${currentState.serverRunning ? 'hidden' : ''}`}
               onClick={handleStartServer}
               disabled={startButtonDisabled}
             >
@@ -489,7 +489,7 @@ const HyperclayLocalApp = () => {
 
             {/* button: stop server */}
             <button
-              className={`group w-full mb-3 p-[6px_17px_9px] text-center text-[23px] cursor-pointer bg-[#7B2525] border-[3px] border-t-[#B45454] border-r-[#371111] border-b-[#371111] border-l-[#B45454] hover:bg-[#9F3030] active:border-b-[#B45454] active:border-l-[#371111] active:border-t-[#371111] active:border-r-[#B45454] sm:p-[6px_19px_9px] sm:text-[24px] ${!currentState.serverRunning ? 'hidden' : ''}`}
+              className={`group w-full mb-[17px] p-[6px_17px_9px] text-center text-[23px] cursor-pointer bg-[#7B2525] border-[3px] border-t-[#B45454] border-r-[#371111] border-b-[#371111] border-l-[#B45454] hover:bg-[#9F3030] active:border-b-[#B45454] active:border-l-[#371111] active:border-t-[#371111] active:border-r-[#B45454] sm:p-[6px_19px_9px] sm:text-[24px] ${!currentState.serverRunning ? 'hidden' : ''}`}
               onClick={handleStopServer}
             >
               <span className="whitespace-nowrap select-none inline-block group-active:translate-x-[1.5px] group-active:translate-y-[1.5px]">
@@ -498,7 +498,7 @@ const HyperclayLocalApp = () => {
             </button>
 
             {/* conditional error message */}
-            <div className={`mb-4 text-[16px] text-center text-[#FE5F58] ${!shouldShowErrorMessage() ? 'hidden' : ''}`}>
+            <div className={`mb-[17px] text-[16px] text-center text-[#FE5F58] ${!shouldShowErrorMessage() ? 'hidden' : ''}`}>
               Select a folder before starting server
             </div>
 

@@ -270,85 +270,346 @@ module.exports = new SyncLogger();
 
 ## 5. Integration Points
 
-### Files to Modify:
+### Step-by-Step Implementation Guide:
 
-1. **`/sync-engine/index.js`** - Main sync engine
-   - Add `this.logger = null` property to constructor
-   - Add `setLogger(logger)` method to accept logger instance
-   - Add logging in:
-     - `init()` - Log sync start with settings
-     - `performInitialSync()` - Log each file operation
-     - `downloadFile()` - Log download success/failure
-     - `uploadFile()` - Log upload success/failure/skip
-     - `processQueue()` - Log queue processing, retries
-     - `checkForRemoteChanges()` - Log polling results
-     - `stop()` - Log sync stop
+---
 
-   **Example setLogger implementation:**
-   ```javascript
-   class SyncEngine extends EventEmitter {
-     constructor() {
-       super();
-       this.logger = null;
-       // ... existing properties
-     }
+### **STEP 1: Create the logger module**
 
-     setLogger(logger) {
-       this.logger = logger;
-     }
+Create file: `/sync-engine/logger.js`
 
-     // Use throughout the code:
-     async init(apiKey, username, syncFolder, serverUrl) {
-       if (this.logger) {
-         this.logger.info('SYNC', `Sync initialized for user '${username}' - Server: ${serverUrl}`, {
-           apiKeyPrefix: apiKey.substring(0, 12) + '...'
-         });
-       }
-       // ... rest of init
-     }
-   }
-   ```
+Copy the complete module code from Section 4 above. This is the singleton logger instance.
 
-2. **`/sync-engine/api-client.js`** - API calls
-   - Log all HTTP responses (status codes, errors)
-   - Log network timeouts/failures
-   - Log authentication failures
+---
 
-3. **`/sync-engine/error-handler.js`** - Error classification
-   - Log all classified errors with context
-   - Include error priority and type
+### **STEP 2: Modify `/sync-engine/index.js`**
 
-4. **`/sync-engine/sync-queue.js`** - Queue management
-   - Log retry attempts
-   - Log permanent failures
+#### 2a. Add logger property to constructor
 
-5. **`/backup.js`** - Backup operations
-   - Log backup creation with paths
+Find the constructor (around line 35):
+```javascript
+class SyncEngine extends EventEmitter {
+  constructor() {
+    super();
+    this.apiKey = null;
+    // ... other properties
+```
 
-6. **`/main.js`** - Main process
-   - Initialize logger when sync starts
-   - Pass logger instance to sync engine via `setLogger()`
+**Add this line:**
+```javascript
+this.logger = null;
+```
 
-   **Example initialization:**
-   ```javascript
-   const syncLogger = require('./sync-engine/logger');
-   const syncEngine = require('./sync-engine');
+#### 2b. Add setLogger method
 
-   // When starting sync:
-   async function handleSyncStart(apiKey, username, syncFolder, serverUrl) {
-     try {
-       syncEngine.removeAllListeners();
-       setupSyncEventHandlers();
+Add this method after the constructor:
+```javascript
+/**
+ * Set the logger instance
+ */
+setLogger(logger) {
+  this.logger = logger;
+}
+```
 
-       // Initialize logger once with baseDir for path sanitization
-       await syncLogger.init(syncFolder);
-       syncEngine.setLogger(syncLogger);
+#### 2c. Add logging to init() method
 
-       const result = await syncEngine.init(apiKey, username, syncFolder, serverUrl);
-       // ... rest of handler
-     }
-   }
-   ```
+Find the `init()` method (around line 63). After this line:
+```javascript
+this.serverUrl = getServerBaseUrl(serverUrl);
+console.log(`[SYNC] Server: ${this.serverUrl}`);
+```
+
+**Add:**
+```javascript
+// Log sync initialization
+if (this.logger) {
+  this.logger.info('SYNC', `Sync initialized for user '${username}'`, {
+    serverUrl: this.serverUrl,
+    apiKeyPrefix: apiKey.substring(0, 12) + '...',
+    syncFolder: this.logger.sanitizePath(syncFolder)
+  });
+}
+```
+
+At the end of `init()`, before `return { success: true, stats: this.stats };`, **add:**
+```javascript
+// Log successful initialization
+if (this.logger) {
+  this.logger.info('SYNC', 'Sync engine started successfully');
+}
+```
+
+#### 2d. Add logging to performInitialSync() method
+
+Find `performInitialSync()` (around line 176). After the stats summary console.log:
+```javascript
+console.log(`[SYNC] Stats: ${JSON.stringify(this.stats)}`);
+```
+
+**Add:**
+```javascript
+// Log initial sync completion
+if (this.logger) {
+  this.logger.info('STATS', 'Initial sync complete', {
+    filesDownloaded: this.stats.filesDownloaded,
+    filesUploaded: this.stats.filesUploaded,
+    filesSkipped: this.stats.filesDownloadedSkipped,
+    filesProtected: this.stats.filesProtected
+  });
+}
+```
+
+Inside the loop where files are downloaded (around line 197), after `this.stats.filesDownloaded++;`, **add:**
+```javascript
+if (this.logger) {
+  this.logger.success('DOWNLOAD', `Downloaded '${this.logger.sanitizePath(relativePath)}'`);
+}
+```
+
+Inside the loop where files are uploaded (around line 259), after `this.stats.filesUploaded++;`, **add:**
+```javascript
+if (this.logger) {
+  this.logger.success('UPLOAD', `Uploaded '${this.logger.sanitizePath(relativePath)}'`);
+}
+```
+
+When files are skipped for checksum match (around line 228), after the console.log, **add:**
+```javascript
+if (this.logger) {
+  this.logger.skip('DOWNLOAD', `Skipped '${this.logger.sanitizePath(relativePath)}' - checksums match`);
+}
+```
+
+When files are protected (around line 218), after the console.log, **add:**
+```javascript
+if (this.logger) {
+  this.logger.info('DOWNLOAD', `Protected '${this.logger.sanitizePath(relativePath)}' - local is newer`);
+}
+```
+
+#### 2e. Add logging to downloadFile() method
+
+Find `downloadFile()` (around line 305). After the success console.log (around line 326):
+```javascript
+console.log(`[SYNC] Downloaded ${localFilename}`);
+```
+
+**Add:**
+```javascript
+if (this.logger) {
+  const stats = await fs.promises.stat(localPath);
+  this.logger.success('DOWNLOAD', `Downloaded '${this.logger.sanitizePath(localFilename)}'`, {
+    size: stats.size,
+    modifiedAt
+  });
+}
+```
+
+In the catch block (around line 334), after the console.error, **add:**
+```javascript
+if (this.logger) {
+  this.logger.error('DOWNLOAD', `Failed to download '${filename}'`, error);
+}
+```
+
+#### 2f. Add logging to uploadFile() method
+
+Find `uploadFile()` (around line 349). When validation fails (around line 360), after the emit, **add:**
+```javascript
+if (this.logger) {
+  this.logger.error('VALIDATION', `Validation failed for '${this.logger.sanitizePath(filename)}'`, {
+    reason: validationResult.error
+  });
+}
+```
+
+When upload is skipped for checksum match (around line 390), after the console.log, **add:**
+```javascript
+if (this.logger) {
+  this.logger.skip('UPLOAD', `Skipped '${this.logger.sanitizePath(filename)}' - server has same checksum`);
+}
+```
+
+After successful upload (around line 410), after `console.log(\`[SYNC] Uploaded ${filename}\`);`, **add:**
+```javascript
+if (this.logger) {
+  const stats = await getFileStats(localPath);
+  this.logger.success('UPLOAD', `Uploaded '${this.logger.sanitizePath(filename)}'`, {
+    size: stats.size
+  });
+}
+```
+
+In the catch block (around line 421), after the console.error, **add:**
+```javascript
+if (this.logger) {
+  this.logger.error('UPLOAD', `Failed to upload '${this.logger.sanitizePath(filename)}'`, error);
+}
+```
+
+#### 2g. Add logging to processQueue() method
+
+Find `processQueue()` (around line 491). In the retry block (around line 540), after the emit for retry, **add:**
+```javascript
+if (this.logger) {
+  this.logger.warn('QUEUE', `Retry ${retryResult.attempt}/${retryResult.maxAttempts} for '${this.logger.sanitizePath(item.filename)}'`, {
+    error: error.message,
+    nextRetryIn: retryResult.nextRetryIn
+  });
+}
+```
+
+In the permanent failure block (around line 530), after the emit, **add:**
+```javascript
+if (this.logger) {
+  this.logger.error('QUEUE', `Permanent failure for '${this.logger.sanitizePath(item.filename)}' after ${retryResult.attempts} attempts`, error);
+}
+```
+
+#### 2h. Add logging to startFileWatcher() method
+
+Find `startFileWatcher()` (around line 563). After the final console.log (around line 601), **add:**
+```javascript
+if (this.logger) {
+  this.logger.info('WATCHER', 'File watcher started');
+}
+```
+
+#### 2i. Add logging to startPolling() method
+
+Find `startPolling()` (around line 607). After the console.log (around line 612), **add:**
+```javascript
+if (this.logger) {
+  this.logger.info('POLL', 'Polling started', {
+    intervalMs: SYNC_CONFIG.POLL_INTERVAL
+  });
+}
+```
+
+#### 2j. Add logging to checkForRemoteChanges() method
+
+Find `checkForRemoteChanges()` (around line 618). In the catch block (around line 663), after the console.error, **add:**
+```javascript
+if (this.logger) {
+  this.logger.error('POLL', 'Failed to check for remote changes', error);
+}
+```
+
+#### 2k. Add logging to stop() method
+
+Find `stop()` (around line 672). After the console.log (around line 696), **add:**
+```javascript
+if (this.logger) {
+  this.logger.info('SYNC', 'Sync stopped');
+}
+```
+
+---
+
+### **STEP 3: Modify `/backup.js`**
+
+#### 3a. Accept logger parameter
+
+Find the `createBackupIfExists()` function signature (around line 10):
+```javascript
+async function createBackupIfExists(filePath, siteName, baseDir, emitCallback) {
+```
+
+**Change to:**
+```javascript
+async function createBackupIfExists(filePath, siteName, baseDir, emitCallback, logger = null) {
+```
+
+#### 3b. Add logging after backup creation
+
+Find where the backup is created successfully (after `await fs.copyFile(...)`). After the emit callback (around line 40), **add:**
+```javascript
+if (logger) {
+  logger.info('DOWNLOAD', `Created backup for '${siteName}.html'`, {
+    backupPath: logger.sanitizePath(backupFileName)
+  });
+}
+```
+
+#### 3c. Update the call in sync-engine/index.js
+
+Find the call to `createBackupIfExists` in `downloadFile()` (around line 321):
+```javascript
+await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this));
+```
+
+**Change to:**
+```javascript
+await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
+```
+
+---
+
+### **STEP 4: Modify `/main.js`**
+
+#### 4a. Import the logger
+
+At the top of the file (around line 5), **add:**
+```javascript
+const syncLogger = require('./sync-engine/logger');
+```
+
+#### 4b. Initialize logger when sync starts
+
+Find the `handleSyncStart()` function (around line 564). After `setupSyncEventHandlers();`, **add:**
+```javascript
+// Initialize logger with sync folder for path sanitization
+await syncLogger.init(syncFolder);
+syncEngine.setLogger(syncLogger);
+```
+
+#### 4c. Update open-logs handler
+
+Find the `open-logs` IPC handler (around line 635). **Replace it with:**
+```javascript
+ipcMain.handle('open-logs', () => {
+  const logsPath = app.getPath('logs');
+  const syncLogsPath = path.join(logsPath, 'sync');
+  shell.openPath(syncLogsPath);
+});
+```
+
+---
+
+### **STEP 5: Test the implementation**
+
+1. Run the app in dev mode: `npm run dev`
+2. Enable sync with your API key
+3. Check that logs are being created in:
+   - macOS: `~/Library/Logs/Hyperclay Local/sync/`
+   - Windows: `%USERPROFILE%\AppData\Roaming\Hyperclay Local\logs\sync\`
+   - Linux: `~/.config/Hyperclay Local/logs/sync/`
+4. Verify log format matches examples in Section 3
+5. Click "logs" link in UI - should open the sync logs folder
+6. Upload a file - check for SUCCESS log entry
+7. Download a file - check for SUCCESS and INFO (backup) entries
+8. Trigger an error - check for ERROR entry with stack trace
+9. Wait 31 days and restart - verify old logs are deleted
+
+---
+
+### **Common Issues & Solutions:**
+
+**Issue:** Logger is undefined
+- **Solution:** Make sure you imported it: `const syncLogger = require('./sync-engine/logger');`
+
+**Issue:** Logs folder not opening
+- **Solution:** Check that the path.join is correct and shell is imported from electron
+
+**Issue:** No logs being written
+- **Solution:** Check that logger.init() was called before any logging happens
+
+**Issue:** Paths showing absolute instead of relative
+- **Solution:** Always use `this.logger.sanitizePath(path)` when logging file paths
+
+**Issue:** Stack traces not showing
+- **Solution:** Make sure you're passing the Error object directly to metadata, not error.message
 
 ---
 

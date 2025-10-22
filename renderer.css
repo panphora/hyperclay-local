@@ -272,6 +272,9 @@
   .mb-6 {
     margin-bottom: calc(var(--spacing) * 6);
   }
+  .mb-\[17px\] {
+    margin-bottom: 17px;
+  }
   .ml-auto {
     margin-left: auto;
   }
