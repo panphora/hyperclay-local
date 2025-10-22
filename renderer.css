@@ -206,6 +206,9 @@
   .bottom-\[-30px\] {
     bottom: -30px;
   }
+  .bottom-\[-42px\] {
+    bottom: -42px;
+  }
   .left-1\/2 {
     left: calc(1/2 * 100%);
   }
@@ -296,20 +299,44 @@
   .table {
     display: table;
   }
+  .aspect-square {
+    aspect-ratio: 1 / 1;
+  }
+  .h-3 {
+    height: calc(var(--spacing) * 3);
+  }
   .h-4 {
     height: calc(var(--spacing) * 4);
+  }
+  .h-\[14px\] {
+    height: 14px;
+  }
+  .h-\[15px\] {
+    height: 15px;
   }
   .h-\[42px\] {
     height: 42px;
   }
+  .h-full {
+    height: 100%;
+  }
   .min-h-screen {
     min-height: 100vh;
+  }
+  .w-3 {
+    width: calc(var(--spacing) * 3);
   }
   .w-4 {
     width: calc(var(--spacing) * 4);
   }
   .w-5 {
     width: calc(var(--spacing) * 5);
+  }
+  .w-\[14px\] {
+    width: 14px;
+  }
+  .w-\[15px\] {
+    width: 15px;
   }
   .w-\[42px\] {
     width: 42px;
@@ -360,8 +387,14 @@
   .items-start {
     align-items: flex-start;
   }
+  .items-stretch {
+    align-items: stretch;
+  }
   .justify-between {
     justify-content: space-between;
+  }
+  .justify-center {
+    justify-content: center;
   }
   .justify-end {
     justify-content: flex-end;
@@ -414,6 +447,10 @@
     border-style: var(--tw-border-style);
     border-width: 2px;
   }
+  .border-4 {
+    border-style: var(--tw-border-style);
+    border-width: 4px;
+  }
   .border-\[1px\] {
     border-style: var(--tw-border-style);
     border-width: 1px;
@@ -446,6 +483,9 @@
     border-left-style: var(--tw-border-style);
     border-left-width: 2px;
   }
+  .border-\[\#0B0C11\] {
+    border-color: #0B0C11;
+  }
   .border-\[\#4F5A97\] {
     border-color: #4F5A97;
   }
@@ -466,6 +506,9 @@
   }
   .border-red-700 {
     border-color: var(--color-red-700);
+  }
+  .border-transparent {
+    border-color: transparent;
   }
   .border-t-\[\#4F7CC4\] {
     border-top-color: #4F7CC4;
@@ -568,9 +611,6 @@
   }
   .p-6 {
     padding: calc(var(--spacing) * 6);
-  }
-  .p-\[2px_12px_4px\] {
-    padding: 2px 12px 4px;
   }
   .p-\[2px_20px_4px\] {
     padding: 2px 20px 4px;
