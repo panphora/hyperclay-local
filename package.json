@@ -1,7 +1,7 @@
 {
   "name": "hyperclay-local-electron",
   "productName": "Hyperclay Local",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Hyperclay Local Server - Desktop App",
   "main": "src/main/main.js",
   "homepage": "https://hyperclay.com",
@@ -17,18 +17,22 @@
     "build-react": "webpack --config config/webpack.config.js --mode=development",
     "dev-react": "webpack --config config/webpack.config.js --mode=development --watch",
     "build-react-prod": "webpack --config config/webpack.config.js --mode=production",
-    "build-all": "npm run build-css && npm run build-react-prod && electron-builder --mac --win --linux && node build-scripts/post-build.js",
-    "build-mac": "npm run build-css && npm run build-react-prod && electron-builder --mac && node build-scripts/post-build.js",
-    "build-windows": "npm run build-css && npm run build-react-prod && electron-builder --win && node build-scripts/post-build.js",
-    "build-linux": "npm run build-css && npm run build-react-prod && electron-builder --linux && node build-scripts/post-build.js",
+    "clean": "node build-scripts/clean-dist.js",
+    "clean-mac": "node build-scripts/clean-dist.js mac",
+    "clean-windows": "node build-scripts/clean-dist.js windows",
+    "clean-linux": "node build-scripts/clean-dist.js linux",
+    "build-all": "npm run clean && npm run build-css && npm run build-react-prod && electron-builder --mac --win --linux",
+    "build-mac": "npm run clean-mac && npm run build-css && npm run build-react-prod && electron-builder --mac",
+    "build-windows": "npm run clean-windows && npm run build-css && npm run build-react-prod && electron-builder --win",
+    "build-linux": "npm run clean-linux && npm run build-css && npm run build-react-prod && electron-builder --linux",
     "dist": "npm run build-all",
-    "quick-build": "npm run build-css && npm run build-react-prod && electron-builder --dir",
-    "list-remote-executables": "node build-scripts/list-remote-executables.js",
-    "remove-remote-executables": "node build-scripts/remove-remote-executables.js"
+    "check-notarization": "node build-scripts/check-notarization.js",
+    "upload-to-r2": "node build-scripts/post-build.js"
   },
   "build": {
     "appId": "com.hyperclay.local-server",
     "productName": "Hyperclay Local",
+    "npmRebuild": false,
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -45,6 +49,16 @@
     "asarUnpack": [],
     "mac": {
       "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "identity": "Hyperspace Systems LLC (JC7YGGXYKH)",
+      "type": "distribution",
+      "entitlements": "entitlements.plist",
+      "entitlementsInherit": "entitlements.plist",
+      "electronLanguages": [
+        "en",
+        "en_US"
+      ],
       "target": [
         {
           "target": "dmg",
@@ -56,6 +70,12 @@
       ]
     },
     "win": {
+      "azureSignOptions": {
+        "publisherName": "CN=Hyperclay",
+        "endpoint": "https://eus.codesigning.azure.net",
+        "codeSigningAccountName": "Hyperclay",
+        "certificateProfileName": "HyperclayLocalPublicCertProfile"
+      },
       "target": [
         {
           "target": "nsis",
@@ -78,11 +98,14 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
-    }
+    },
+    "afterSign": "build-scripts/notarize-submit.js"
   },
   "devDependencies": {
     "@babel/core": "^7.28.4",
     "@babel/preset-react": "^7.27.1",
+    "@electron/notarize": "^3.1.1",
+    "@tailwindcss/cli": "^4.1.14",
     "babel-loader": "^10.0.0",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
@@ -90,18 +113,18 @@
     "electron": "^38.3.0",
     "electron-builder": "^25.1.8",
     "electron-reload": "^2.0.0-alpha.1",
+    "tailwindcss": "^4.1.14",
+    "tslib": "^2.8.1",
     "wait-on": "^9.0.1",
     "webpack": "^5.102.1",
     "webpack-cli": "^6.0.1"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.913.0",
-    "@tailwindcss/cli": "^4.1.14",
     "chokidar": "^3.6.0",
     "express": "^4.18.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "tailwindcss": "^4.1.14",
     "upath": "^2.0.1"
   }
 }
