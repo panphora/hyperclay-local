@@ -54,20 +54,30 @@ try {
 
   console.log('✍️  Signing installer with Azure Trusted Signing...\n');
 
-  // Azure Trusted Signing requires the TrustedSigning PowerShell module
-  // We'll use PowerShell directly since AzureSignTool is for Key Vault, not Trusted Signing
+  // Escape single quotes in values for PowerShell
+  const escapePowerShell = (str) => str.replace(/'/g, "''");
 
+  const tenantId = escapePowerShell(process.env.AZURE_TENANT_ID);
+  const clientId = escapePowerShell(process.env.AZURE_CLIENT_ID);
+  const clientSecret = escapePowerShell(process.env.AZURE_CLIENT_SECRET);
+  const installerPathEscaped = escapePowerShell(installerPath);
+
+  // Use Service Principal authentication with explicit parameters
   const psCommand = `
-    $env:AZURE_TENANT_ID = '${process.env.AZURE_TENANT_ID}'
-    $env:AZURE_CLIENT_ID = '${process.env.AZURE_CLIENT_ID}'
-    $env:AZURE_CLIENT_SECRET = '${process.env.AZURE_CLIENT_SECRET}'
+    # Convert client secret to SecureString
+    $secureSecret = ConvertTo-SecureString -String '${clientSecret}' -AsPlainText -Force
 
+    # Call with Service Principal authentication
     Invoke-TrustedSigning \`
       -FileDigest SHA256 \`
       -Endpoint https://eus.codesigning.azure.net \`
       -CodeSigningAccountName Hyperclay \`
       -CertificateProfileName HyperclayLocalPublicCertProfile \`
-      -Files '${installerPath}'
+      -Files '${installerPathEscaped}' \`
+      -AuthType ServicePrincipal \`
+      -TenantId '${tenantId}' \`
+      -ClientId '${clientId}' \`
+      -ClientSecret $secureSecret
   `.trim();
 
   // Write to temp file to avoid command line escaping issues
