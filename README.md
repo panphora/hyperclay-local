@@ -66,9 +66,9 @@ This local server provides the core functionality needed to run and edit your Hy
 ### For Users (Download Pre-built App)
 
 1. **Download** the app for your platform:
-   - **macOS**: `Hyperclay-Local-1.0.0.dmg`
-   - **Windows**: `Hyperclay-Local-Setup-1.0.0.exe`
-   - **Linux**: `Hyperclay-Local-1.0.0.AppImage`
+   - **macOS**: `Hyperclay-Local-1.1.0.dmg`
+   - **Windows**: `Hyperclay-Local-Setup-1.1.0.exe`
+   - **Linux**: `Hyperclay-Local-1.1.0.AppImage`
 
 2. **Install** and run the app
 
@@ -238,7 +238,7 @@ xattr -cr "/Applications/Hyperclay Local.app"
 
 **Linux permission denied**:
 ```bash
-chmod +x Hyperclay-Local-1.0.0.AppImage
+chmod +x Hyperclay-Local-1.1.0.AppImage
 ```
 
 ### Runtime Issues

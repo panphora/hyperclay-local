@@ -70,12 +70,6 @@
       ]
     },
     "win": {
-      "azureSignOptions": {
-        "publisherName": "CN=Hyperclay",
-        "endpoint": "https://eus.codesigning.azure.net",
-        "codeSigningAccountName": "Hyperclay",
-        "certificateProfileName": "HyperclayLocalPublicCertProfile"
-      },
       "target": [
         {
           "target": "nsis",
@@ -83,7 +77,12 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "azureSignOptions": {
+        "endpoint": "https://eus.codesigning.azure.net",
+        "codeSigningAccountName": "Hyperclay",
+        "certificateProfileName": "HyperclayLocalPublicCertProfile"
+      }
     },
     "linux": {
       "target": [

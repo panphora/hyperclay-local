@@ -19,8 +19,8 @@ if (process.platform === 'darwin') {
   const iconPath = path.join(__dirname, '../../assets/icons/icon.png');
   const aboutOptions = {
     applicationName: 'Hyperclay Local',
-    applicationVersion: '1.0.0',
-    version: '1.0.0',
+    applicationVersion: '1.1.0',
+    version: '1.1.0',
     copyright: 'Made with ❤️ for Hyperclay'
   };
 
@@ -471,7 +471,7 @@ function createMenu() {
             dialog.showMessageBox(mainWindow, {
               type: 'info',
               title: 'About Hyperclay Local',
-              message: 'Hyperclay Local Server v1.0.0',
+              message: 'Hyperclay Local Server v1.1.0',
               detail: 'A local server for running your Hyperclay HTML apps offline.\n\nMade with ❤️ for the Hyperclay platform.',
               buttons: ['OK'],
               icon: iconPath || undefined
