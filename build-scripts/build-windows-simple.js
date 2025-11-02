@@ -52,27 +52,37 @@ try {
     throw new Error(`Installer not found at: ${installerPath}`);
   }
 
-  console.log('✍️  Signing installer with AzureSignTool...\n');
+  console.log('✍️  Signing installer with Azure Trusted Signing...\n');
 
-  // Build command as array for clarity
-  const signArgs = [
-    'azuresigntool', 'sign',
-    '-kvu', 'https://eus.codesigning.azure.net',
-    '-kva', 'Hyperclay',  // Account name
-    '-kvt', process.env.AZURE_TENANT_ID,
-    '-kvi', process.env.AZURE_CLIENT_ID,
-    '-kvs', process.env.AZURE_CLIENT_SECRET,
-    '-kvc', 'HyperclayLocalPublicCertProfile',  // Certificate profile
-    '-v', `"${installerPath}"`
-  ];
+  // Azure Trusted Signing requires the TrustedSigning PowerShell module
+  // We'll use PowerShell directly since AzureSignTool is for Key Vault, not Trusted Signing
 
-  const signCommand = signArgs.join(' ');
+  const psCommand = `
+    $env:AZURE_TENANT_ID = '${process.env.AZURE_TENANT_ID}'
+    $env:AZURE_CLIENT_ID = '${process.env.AZURE_CLIENT_ID}'
+    $env:AZURE_CLIENT_SECRET = '${process.env.AZURE_CLIENT_SECRET}'
 
-  // Log command (with secret hidden)
-  console.log('Command:', signCommand.replace(process.env.AZURE_CLIENT_SECRET, '***SECRET***'));
-  console.log('');
+    Invoke-TrustedSigning \`
+      -FileDigest SHA256 \`
+      -Endpoint https://eus.codesigning.azure.net \`
+      -CodeSigningAccountName Hyperclay \`
+      -CertificateProfileName HyperclayLocalPublicCertProfile \`
+      -Files '${installerPath}'
+  `.trim();
 
-  execSync(signCommand, { stdio: 'inherit' });
+  // Write to temp file to avoid command line escaping issues
+  const tempPs1 = path.join(__dirname, '..', 'temp-sign.ps1');
+  fs.writeFileSync(tempPs1, psCommand);
+
+  console.log('Running PowerShell signing script...\n');
+
+  try {
+    execSync(`powershell -ExecutionPolicy Bypass -File "${tempPs1}"`, { stdio: 'inherit' });
+    fs.unlinkSync(tempPs1); // Clean up temp file
+  } catch (e) {
+    fs.unlinkSync(tempPs1); // Clean up even on error
+    throw e;
+  }
 
   console.log('\n✅ Build and signing completed successfully!');
   console.log('   Output: dist\\HyperclayLocal Setup 1.1.0.exe (signed)\n');
