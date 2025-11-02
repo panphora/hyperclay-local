@@ -23,7 +23,8 @@
     "clean-linux": "node build-scripts/clean-dist.js linux",
     "build-all": "npm run clean && npm run build-css && npm run build-react-prod && electron-builder --mac --win --linux",
     "build-mac": "npm run clean-mac && npm run build-css && npm run build-react-prod && electron-builder --mac",
-    "build-windows": "node build-scripts/build-windows-with-env.js",
+    "build-windows": "node build-scripts/build-windows-simple.js",
+    "build-windows-old": "node build-scripts/build-windows-with-env.js",
     "build-linux": "npm run clean-linux && npm run build-css && npm run build-react-prod && electron-builder --linux",
     "dist": "npm run build-all",
     "check-notarization": "node build-scripts/check-notarization.js",
@@ -77,12 +78,7 @@
             "x64"
           ]
         }
-      ],
-      "azureSignOptions": {
-        "endpoint": "https://eus.codesigning.azure.net",
-        "codeSigningAccountName": "Hyperclay",
-        "certificateProfileName": "HyperclayLocalPublicCertProfile"
-      }
+      ]
     },
     "linux": {
       "target": [
