@@ -49,11 +49,15 @@ npm run build-windows
 ```
 
 This will:
+- Load Azure credentials from `.env` file
+- Clean previous Windows builds
 - Build the React app (Webpack)
 - Compile Tailwind CSS
 - Package the Electron app for Windows x64
-- **Automatically sign** all executables with Azure Trusted Signing using electron-builder's native support
+- **Automatically sign** all executables with Azure Trusted Signing
 - Create NSIS installer
+
+**Note:** The `npm run build-windows` script automatically loads environment variables from `.env` and passes them to electron-builder. This solves the issue where electron-builder's Azure signing couldn't find the credentials.
 
 ## Output
 
