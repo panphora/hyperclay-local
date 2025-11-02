@@ -75,17 +75,27 @@ try {
     # Clear from environment immediately
     Remove-Item Env:AZURE_CLIENT_SECRET_TEMP -ErrorAction SilentlyContinue
 
-    # Call with Service Principal authentication
-    Invoke-TrustedSigning \`
-      -FileDigest SHA256 \`
-      -Endpoint https://eus.codesigning.azure.net \`
-      -CodeSigningAccountName Hyperclay \`
-      -CertificateProfileName HyperclayLocalPublicCertProfile \`
-      -Files '${installerPathEscaped}' \`
-      -AuthType ServicePrincipal \`
-      -TenantId '${tenantId}' \`
-      -ClientId '${clientId}' \`
-      -ClientSecret $secureSecret
+    # Set environment variables for authentication (module reads these)
+    $env:AZURE_TENANT_ID = '${tenantId}'
+    $env:AZURE_CLIENT_ID = '${clientId}'
+    $env:AZURE_CLIENT_SECRET = $clientSecretPlain
+
+    # Call Invoke-TrustedSigning (it uses env vars for auth)
+    try {
+      Invoke-TrustedSigning \`
+        -FileDigest SHA256 \`
+        -Endpoint https://eus.codesigning.azure.net \`
+        -CodeSigningAccountName Hyperclay \`
+        -CertificateProfileName HyperclayLocalPublicCertProfile \`
+        -Files '${installerPathEscaped}'
+
+      Write-Host "Signing completed successfully"
+    } finally {
+      # Clean up environment variables
+      Remove-Item Env:AZURE_TENANT_ID -ErrorAction SilentlyContinue
+      Remove-Item Env:AZURE_CLIENT_ID -ErrorAction SilentlyContinue
+      Remove-Item Env:AZURE_CLIENT_SECRET -ErrorAction SilentlyContinue
+    }
   `.trim();
 
   // Write to temp file (without secret)
@@ -104,13 +114,14 @@ try {
       }
     });
     fs.unlinkSync(tempPs1); // Clean up temp file
+
+    console.log('\n✅ Build and signing completed successfully!');
+    console.log('   Output: dist\\HyperclayLocal Setup 1.1.0.exe (signed)\n');
   } catch (e) {
     fs.unlinkSync(tempPs1); // Clean up even on error
+    console.error('\n❌ Signing failed!');
     throw e;
   }
-
-  console.log('\n✅ Build and signing completed successfully!');
-  console.log('   Output: dist\\HyperclayLocal Setup 1.1.0.exe (signed)\n');
 
 } catch (error) {
   console.error('\n❌ Build failed:', error.message);
