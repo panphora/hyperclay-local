@@ -31,7 +31,7 @@
   },
   "build": {
     "appId": "com.hyperclay.local-server",
-    "productName": "Hyperclay Local",
+    "productName": "HyperclayLocal",
     "npmRebuild": false,
     "directories": {
       "output": "dist",
