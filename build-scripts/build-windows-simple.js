@@ -58,11 +58,11 @@ try {
   const signArgs = [
     'azuresigntool', 'sign',
     '-kvu', 'https://eus.codesigning.azure.net',
-    '-kvc', 'Hyperclay',
+    '-kva', 'Hyperclay',  // Account name
     '-kvt', process.env.AZURE_TENANT_ID,
     '-kvi', process.env.AZURE_CLIENT_ID,
     '-kvs', process.env.AZURE_CLIENT_SECRET,
-    '-kvcert', 'HyperclayLocalPublicCertProfile',
+    '-kvc', 'HyperclayLocalPublicCertProfile',  // Certificate profile
     '-v', `"${installerPath}"`
   ];
 
