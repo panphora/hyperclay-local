@@ -45,7 +45,7 @@ try {
 
   console.log('\n✅ Unsigned installer built successfully\n');
 
-  // Step 2: Sign with AzureSignTool
+  // Step 2: Sign with Azure Trusted Signing PowerShell module
   const installerPath = path.join(__dirname, '..', 'dist', 'HyperclayLocal Setup 1.1.0.exe');
 
   if (!fs.existsSync(installerPath)) {
@@ -59,13 +59,21 @@ try {
 
   const tenantId = escapePowerShell(process.env.AZURE_TENANT_ID);
   const clientId = escapePowerShell(process.env.AZURE_CLIENT_ID);
-  const clientSecret = escapePowerShell(process.env.AZURE_CLIENT_SECRET);
   const installerPathEscaped = escapePowerShell(installerPath);
 
-  // Use Service Principal authentication with explicit parameters
+  // PowerShell script - reads secret from environment to avoid writing to disk
   const psCommand = `
-    # Convert client secret to SecureString
-    $secureSecret = ConvertTo-SecureString -String '${clientSecret}' -AsPlainText -Force
+    # Read client secret from environment variable (not written to script file)
+    $clientSecretPlain = $env:AZURE_CLIENT_SECRET_TEMP
+    if (-not $clientSecretPlain) {
+      throw "AZURE_CLIENT_SECRET_TEMP environment variable not found"
+    }
+
+    # Convert to SecureString
+    $secureSecret = ConvertTo-SecureString -String $clientSecretPlain -AsPlainText -Force
+
+    # Clear from environment immediately
+    Remove-Item Env:AZURE_CLIENT_SECRET_TEMP -ErrorAction SilentlyContinue
 
     # Call with Service Principal authentication
     Invoke-TrustedSigning \`
@@ -80,14 +88,21 @@ try {
       -ClientSecret $secureSecret
   `.trim();
 
-  // Write to temp file to avoid command line escaping issues
+  // Write to temp file (without secret)
   const tempPs1 = path.join(__dirname, '..', 'temp-sign.ps1');
   fs.writeFileSync(tempPs1, psCommand);
 
   console.log('Running PowerShell signing script...\n');
 
   try {
-    execSync(`powershell -ExecutionPolicy Bypass -File "${tempPs1}"`, { stdio: 'inherit' });
+    // Pass secret through environment variable, not in script file
+    execSync(`powershell -ExecutionPolicy Bypass -File "${tempPs1}"`, {
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        AZURE_CLIENT_SECRET_TEMP: process.env.AZURE_CLIENT_SECRET // Pass secret via env
+      }
+    });
     fs.unlinkSync(tempPs1); // Clean up temp file
   } catch (e) {
     fs.unlinkSync(tempPs1); // Clean up even on error
