@@ -35,7 +35,7 @@ try {
   });
 
   console.log('\n✅ Build completed successfully!');
-  console.log('   Output: dist\\Hyperclay Local Setup 1.1.0.exe\n');
+  console.log('   Output: dist\\HyperclayLocal Setup 1.1.0.exe\n');
 } catch (error) {
   console.error('\n❌ Build failed');
   process.exit(1);

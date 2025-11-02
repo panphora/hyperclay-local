@@ -63,15 +63,15 @@ This will:
 
 After successful build, you'll find:
 
-- **Installer**: `dist/Hyperclay Local Setup 1.1.0.exe` (~86MB, signed)
+- **Installer**: `dist/HyperclayLocal Setup 1.1.0.exe` (~86MB, signed)
 - **Unpacked app**: `dist/win-unpacked/` (all .exe/.dll files signed)
-- **Block map**: `dist/Hyperclay Local Setup 1.1.0.exe.blockmap`
+- **Block map**: `dist/HyperclayLocal Setup 1.1.0.exe.blockmap`
 
 ## Transferring to macOS
 
 1. Copy the installer to your Mac:
    ```cmd
-   # From Windows, copy dist/Hyperclay Local Setup 1.1.0.exe to Mac
+   # From Windows, copy dist/HyperclayLocal Setup 1.1.0.exe to Mac
    ```
 
 2. On macOS, upload to R2 (optional):

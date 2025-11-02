@@ -229,7 +229,7 @@ npm run build-all      # All platforms
 
 **macOS "App is damaged" error**:
 ```bash
-xattr -cr "/Applications/Hyperclay Local.app"
+xattr -cr "/Applications/HyperclayLocal.app"
 ```
 
 **Windows SmartScreen warning**:
