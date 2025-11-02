@@ -78,5 +78,5 @@ Write-Host ""
 Write-Host "=== Debug Complete ===" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "If all checks pass, try signing manually:" -ForegroundColor Yellow
-$cmd = "Invoke-TrustedSigning -Endpoint https://eus.codesigning.azure.net -CodeSigningAccountName Hyperclay -CertificateProfileName HyperclayLocalPublicCertProfile -Files `"$installerPath`""
+$cmd = "Invoke-TrustedSigning -Endpoint https://eus.codesigning.azure.net -CodeSigningAccountName Hyperclay -CertificateProfileName HyperclayLocalPublicCertProfile -Files '$installerPath'"
 Write-Host $cmd -ForegroundColor Cyan
