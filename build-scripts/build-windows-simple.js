@@ -31,10 +31,16 @@ try {
   execSync('npm run build-css', { stdio: 'inherit' });
   execSync('npm run build-react-prod', { stdio: 'inherit' });
 
-  // Use --win.sign=false to FORCE disable signing
-  execSync('electron-builder --win --win.sign=false', {
+  // Build without signing (no Azure config = no signing)
+  // We need to temporarily clear Azure env vars so electron-builder doesn't auto-detect them
+  const buildEnv = { ...process.env };
+  delete buildEnv.AZURE_TENANT_ID;
+  delete buildEnv.AZURE_CLIENT_ID;
+  delete buildEnv.AZURE_CLIENT_SECRET;
+
+  execSync('electron-builder --win', {
     stdio: 'inherit',
-    env: process.env // Just pass normal env, signing is disabled anyway
+    env: buildEnv
   });
 
   console.log('\n✅ Unsigned installer built successfully\n');
