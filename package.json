@@ -92,7 +92,8 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "HyperclayLocal-Setup-${version}.${ext}"
     },
     "afterSign": "build-scripts/notarize-submit.js"
   },

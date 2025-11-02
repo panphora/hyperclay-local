@@ -46,7 +46,7 @@ try {
   console.log('\n✅ Unsigned installer built successfully\n');
 
   // Step 2: Sign with Azure Trusted Signing PowerShell module
-  const installerPath = path.join(__dirname, '..', 'dist', 'HyperclayLocal Setup 1.1.0.exe');
+  const installerPath = path.join(__dirname, '..', 'dist', 'HyperclayLocal-Setup-1.1.0.exe');
 
   if (!fs.existsSync(installerPath)) {
     throw new Error(`Installer not found at: ${installerPath}`);
@@ -116,7 +116,7 @@ try {
     fs.unlinkSync(tempPs1); // Clean up temp file
 
     console.log('\n✅ Build and signing completed successfully!');
-    console.log('   Output: dist\\HyperclayLocal Setup 1.1.0.exe (signed)\n');
+    console.log('   Output: dist\\HyperclayLocal-Setup-1.1.0.exe (signed)\n');
   } catch (e) {
     fs.unlinkSync(tempPs1); // Clean up even on error
     console.error('\n❌ Signing failed!');
