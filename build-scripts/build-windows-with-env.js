@@ -22,6 +22,13 @@ console.log('✅ Azure credentials found');
 console.log('   Tenant ID: ' + process.env.AZURE_TENANT_ID.substring(0, 8) + '...');
 console.log('   Client ID: ' + process.env.AZURE_CLIENT_ID.substring(0, 8) + '...\n');
 
+// Save credentials for later use
+const azureCredentials = {
+  AZURE_TENANT_ID: process.env.AZURE_TENANT_ID,
+  AZURE_CLIENT_ID: process.env.AZURE_CLIENT_ID,
+  AZURE_CLIENT_SECRET: process.env.AZURE_CLIENT_SECRET,
+};
+
 try {
   // Step 1: Build unsigned (skip electron-builder's buggy Azure signing)
   console.log('📦 Building unsigned installer...\n');
@@ -47,10 +54,17 @@ try {
     throw new Error(`Installer not found at: ${installerPath}`);
   }
 
-  const signCommand = `azuresigntool sign -kvu "https://eus.codesigning.azure.net" -kvc "Hyperclay" -kvt "${process.env.AZURE_TENANT_ID}" -kvi "${process.env.AZURE_CLIENT_ID}" -kvs "${process.env.AZURE_CLIENT_SECRET}" -kvcert "HyperclayLocalPublicCertProfile" -v "${installerPath}"`;
+  const signCommand = `azuresigntool sign -kvu "https://eus.codesigning.azure.net" -kvc "Hyperclay" -kvt "${azureCredentials.AZURE_TENANT_ID}" -kvi "${azureCredentials.AZURE_CLIENT_ID}" -kvs "${azureCredentials.AZURE_CLIENT_SECRET}" -kvcert "HyperclayLocalPublicCertProfile" -v "${installerPath}"`;
 
   execSync(signCommand, {
-    stdio: 'inherit'
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      // Restore Azure credentials for AzureSignTool
+      AZURE_TENANT_ID: azureCredentials.AZURE_TENANT_ID,
+      AZURE_CLIENT_ID: azureCredentials.AZURE_CLIENT_ID,
+      AZURE_CLIENT_SECRET: azureCredentials.AZURE_CLIENT_SECRET,
+    }
   });
 
   console.log('\n✅ Build and signing completed successfully!');
