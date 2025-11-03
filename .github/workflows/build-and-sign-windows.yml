@@ -1,0 +1,95 @@
+name: Build and Sign Windows Installer
+
+on:
+  workflow_dispatch:  # Manual trigger
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'build-scripts/**'
+
+jobs:
+  build-and-sign:
+    runs-on: windows-latest  # Native x64 Windows
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build CSS
+        run: npm run build-css
+
+      - name: Build React (production)
+        run: npm run build-react-prod
+
+      - name: Build unsigned installer with electron-builder
+        run: npm run clean-windows && npx electron-builder --win
+        env:
+          # Don't pass Azure vars - we want unsigned first
+          NODE_ENV: production
+          # Provide GH_TOKEN to avoid publish errors (we're not publishing)
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install TrustedSigning PowerShell module
+        run: Install-Module -Name TrustedSigning -Force -Scope CurrentUser -AcceptLicense
+        shell: pwsh
+
+      - name: Sign installer with Azure Trusted Signing
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          $installerPath = Resolve-Path "dist\HyperclayLocal-Setup-*.exe"
+          Write-Host "Signing: $installerPath"
+
+          Invoke-TrustedSigning `
+            -Endpoint "https://eus.codesigning.azure.net" `
+            -CodeSigningAccountName "Hyperclay" `
+            -CertificateProfileName "HyperclayLocalPublicCertProfile" `
+            -Files "$installerPath" `
+            -FileDigest SHA256 `
+            -Verbose
+
+          Write-Host "Signing completed successfully!"
+        shell: pwsh
+
+      - name: Verify signature
+        run: |
+          $installer = Resolve-Path "dist\HyperclayLocal-Setup-*.exe"
+          $sig = Get-AuthenticodeSignature $installer
+          Write-Host "Signature status: $($sig.Status)"
+          Write-Host "Signer: $($sig.SignerCertificate.Subject)"
+
+          if ($sig.Status -ne "Valid") {
+            Write-Error "Signature verification failed!"
+            exit 1
+          }
+        shell: pwsh
+
+      - name: Upload signed installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: hyperclay-local-windows-signed
+          path: dist/HyperclayLocal-Setup-*.exe
+          if-no-files-found: error
+
+      - name: Get installer info
+        run: |
+          $installer = Get-Item (Resolve-Path "dist\HyperclayLocal-Setup-*.exe")
+          Write-Host "Signed installer:"
+          Write-Host "  Name: $($installer.Name)"
+          Write-Host "  Size: $([math]::Round($installer.Length / 1MB, 2)) MB"
+          Write-Host "  Path: $($installer.FullName)"
+        shell: pwsh
