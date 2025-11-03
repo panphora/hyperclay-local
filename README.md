@@ -188,39 +188,63 @@ npm run build-all
 
 ## 📦 Building & Distribution
 
-### Build Configuration
-The app uses `electron-builder` for packaging with these outputs:
+### Automated Build & Sign (GitHub Actions) ⭐ **RECOMMENDED**
+
+**The easiest way to get signed installers for both macOS and Windows!**
+
+Simply push your code to GitHub and the automated workflows handle everything:
+
+```bash
+git add .
+git commit -m "Your changes"
+git push origin main
+```
+
+**What happens automatically:**
+- 🍎 **macOS**: Builds, signs, and notarizes DMG installer
+- 🪟 **Windows**: Builds and signs EXE installer
+- ⏱️ **Time**: ~10 minutes total
+- 📦 **Download**: Signed installers from GitHub Actions → Artifacts
+
+**First-time setup** (one-time, ~5 minutes):
+1. Add GitHub Secrets for macOS (see `.github/workflows/build-and-sign-macos.yml`)
+2. Add GitHub Secrets for Windows (see `.github/workflows/build-and-sign-windows.yml`)
+3. That's it! Every push builds signed installers automatically.
+
+📖 **Full documentation**: See `docs/WINDOWS_SIGNING_SOLUTION.md` for Windows setup details
+
+### Manual Local Builds
+
+**Build for your current platform:**
+```bash
+npm run build          # Current platform
+npm run build-mac      # macOS DMG (requires macOS)
+npm run build-windows  # Windows installer (requires Windows)
+npm run build-linux    # Linux AppImage
+npm run build-all      # All platforms (experimental)
+```
+
+**Note**: Local builds on Windows may fail code signing if you're on ARM64 Windows. Use GitHub Actions instead for reliable signed builds.
+
+### Build Outputs
 
 **macOS**:
 - `.dmg` installer with drag-to-Applications
 - Universal binary (Intel + Apple Silicon)
-- Code signing ready
+- ✅ Signed & notarized (via GitHub Actions)
 
 **Windows**:
 - NSIS installer with custom install directory option
-- Auto-updater support
-- Windows Store ready
+- ✅ Code signed with Azure Trusted Signing (via GitHub Actions)
+- Works on all Windows versions (x64)
 
 **Linux**:
 - AppImage (portable, runs anywhere)
-- Debian/Ubuntu packages available
-- Snap package support
-
-### Build Commands
-```bash
-# Development build (current platform)
-npm run build
-
-# Production builds
-npm run build-mac      # macOS DMG
-npm run build-windows  # Windows installer
-npm run build-linux    # Linux AppImage
-npm run build-all      # All platforms
-```
+- No signing required
 
 ### Distribution Size
 - **macOS**: ~100MB DMG
-- **Windows**: ~76MB installer  
+- **Windows**: ~90MB installer
 - **Linux**: ~106MB AppImage
 
 ## 🚨 Troubleshooting
