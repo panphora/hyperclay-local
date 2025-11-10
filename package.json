@@ -22,15 +22,15 @@
     "clean-mac": "node build-scripts/clean-dist.js mac",
     "clean-windows": "node build-scripts/clean-dist.js windows",
     "clean-linux": "node build-scripts/clean-dist.js linux",
-    "build-all": "npm run build-icons && npm run clean && npm run build-css && npm run build-react-prod && electron-builder --mac --linux",
-    "build-mac": "npm run build-icons && npm run clean-mac && npm run build-css && npm run build-react-prod && electron-builder --mac",
-    "build-linux": "npm run build-icons && npm run clean-linux && npm run build-css && npm run build-react-prod && electron-builder --linux",
+    "build-all": "npm run build-icons && npm run clean && npm run build-css && npm run build-react-prod && electron-builder --mac --linux && node build-scripts/move-executables.js",
+    "build-mac": "npm run build-icons && npm run clean-mac && npm run build-css && npm run build-react-prod && electron-builder --mac && node build-scripts/move-executables.js mac",
+    "build-linux": "npm run build-icons && npm run clean-linux && npm run build-css && npm run build-react-prod && electron-builder --linux && node build-scripts/move-executables.js linux",
     "dist": "npm run build-all",
     "check-notarization": "node build-scripts/check-notarization.js",
     "upload-to-r2": "node build-scripts/post-build.js",
     "win-build:run": "gh workflow run build-and-sign-windows.yml",
     "win-build:status": "gh run list --workflow=build-and-sign-windows.yml --limit 5",
-    "win-build:download": "gh run download --name hyperclay-local-windows-signed --dir dist"
+    "win-build:download": "npm run clean-windows && gh run download --name hyperclay-local-windows-signed --dir executables"
   },
   "build": {
     "appId": "com.hyperclay.local-server",
@@ -114,6 +114,7 @@
     "electron": "^38.3.0",
     "electron-builder": "^25.1.8",
     "electron-reload": "^2.0.0-alpha.1",
+    "rimraf": "^6.1.0",
     "tailwindcss": "^4.1.14",
     "tslib": "^2.8.1",
     "wait-on": "^9.0.1",

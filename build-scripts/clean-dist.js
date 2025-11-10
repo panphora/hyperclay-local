@@ -12,7 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const rimraf = require('rimraf');
+const { rimrafSync } = require('rimraf');
 
 const colors = {
   reset: '\x1b[0m',
@@ -26,7 +26,7 @@ const platform = process.argv[2]?.toLowerCase();
 
 function removeIfExists(itemPath, description) {
   if (fs.existsSync(itemPath)) {
-    rimraf.sync(itemPath);
+    rimrafSync(itemPath);
     console.log(`  ${colors.green}✓${colors.reset} Removed ${description}`);
     return true;
   }
@@ -64,6 +64,8 @@ function cleanWindows() {
   console.log(`${colors.blue}🧹 Cleaning Windows build artifacts...${colors.reset}`);
   let cleaned = false;
 
+  // Note: win-unpacked folders never exist locally (Windows builds are remote-only)
+  // But we clean them for backwards compatibility if they somehow exist
   cleaned |= removeIfExists(path.join(distDir, 'win-unpacked'), 'dist/win-unpacked/');
   cleaned |= removeIfExists(path.join(distDir, 'win-ia32-unpacked'), 'dist/win-ia32-unpacked/');
 
@@ -131,7 +133,7 @@ function cleanAll() {
 
       // Remove everything else
       const isDir = fs.statSync(itemPath).isDirectory();
-      rimraf.sync(itemPath);
+      rimrafSync(itemPath);
       const suffix = isDir ? '/' : '';
       console.log(`  ${colors.green}✓${colors.reset} Removed dist/${item}${suffix}`);
       cleaned = true;
