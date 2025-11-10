@@ -18,19 +18,23 @@
     "dev-react": "webpack --config config/webpack.config.js --mode=development --watch",
     "build-react-prod": "webpack --config config/webpack.config.js --mode=production",
     "build-icons": "node build-scripts/generate-icons.js",
+
     "clean": "node build-scripts/clean-dist.js",
     "clean-mac": "node build-scripts/clean-dist.js mac",
     "clean-windows": "node build-scripts/clean-dist.js windows",
     "clean-linux": "node build-scripts/clean-dist.js linux",
+
     "build-all": "npm run build-icons && npm run clean && npm run build-css && npm run build-react-prod && electron-builder --mac --linux && node build-scripts/move-executables.js",
-    "build-mac": "npm run build-icons && npm run clean-mac && npm run build-css && npm run build-react-prod && electron-builder --mac && node build-scripts/move-executables.js mac",
-    "build-linux": "npm run build-icons && npm run clean-linux && npm run build-css && npm run build-react-prod && electron-builder --linux && node build-scripts/move-executables.js linux",
-    "dist": "npm run build-all",
-    "check-notarization": "node build-scripts/check-notarization.js",
-    "upload-to-r2": "node build-scripts/post-build.js",
+    "linux-build:run": "npm run build-icons && npm run clean-linux && npm run build-css && npm run build-react-prod && electron-builder --linux && node build-scripts/move-executables.js linux",
+
+    "mac-build:run": "npm run build-icons && npm run clean-mac && npm run build-css && npm run build-react-prod && electron-builder --mac && node build-scripts/move-executables.js mac",
+    "mac-build:status": "node build-scripts/check-notarization.js",
+
     "win-build:run": "gh workflow run build-and-sign-windows.yml",
     "win-build:status": "gh run list --workflow=build-and-sign-windows.yml --limit 5",
-    "win-build:download": "npm run clean-windows && gh run download --name hyperclay-local-windows-signed --dir executables"
+    "win-build:download": "npm run clean-windows && gh run download --name hyperclay-local-windows-signed --dir executables",
+
+    "upload-to-r2": "node build-scripts/post-build.js"
   },
   "build": {
     "appId": "com.hyperclay.local-server",
