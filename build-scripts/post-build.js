@@ -18,6 +18,10 @@ function getContentType(filename) {
       return 'application/x-msdos-program';
     case '.appimage':
       return 'application/x-executable';
+    case '.yml':
+      return 'text/yaml';
+    case '.blockmap':
+      return 'application/json';
     default:
       return 'application/octet-stream';
   }
@@ -55,18 +59,21 @@ async function main() {
     return;
   }
 
-  // Find distributable files in dist directory
-  const distDir = path.join(__dirname, 'dist');
-  if (!fs.existsSync(distDir)) {
-    console.log('❌ dist directory not found.');
+  // Find distributable files in executables directory
+  const executablesDir = path.join(__dirname, '..', 'executables');
+  if (!fs.existsSync(executablesDir)) {
+    console.log('❌ executables/ directory not found.');
+    console.log('   Run the build scripts first to generate executables.');
     return;
   }
 
-  const files = fs.readdirSync(distDir);
-  const distributables = files.filter(file => 
-    file.endsWith('.dmg') || 
-    file.endsWith('.exe') || 
-    file.endsWith('.AppImage')
+  const files = fs.readdirSync(executablesDir);
+  const distributables = files.filter(file =>
+    file.endsWith('.dmg') ||
+    file.endsWith('.exe') ||
+    file.endsWith('.AppImage') ||
+    file.endsWith('.yml') ||
+    file.endsWith('.blockmap')
   );
 
   if (distributables.length === 0) {
@@ -80,7 +87,7 @@ async function main() {
   for (const file of distributables) {
     try {
       const normalizedFilename = file.replace(/\s+/g, '-');
-      await uploadToR2(path.join(distDir, file), normalizedFilename);
+      await uploadToR2(path.join(executablesDir, file), normalizedFilename);
     } catch (error) {
       console.error(`❌ Failed to upload ${file}:`, error.message);
     }
