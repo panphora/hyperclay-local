@@ -2,6 +2,15 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+// Color codes for output
+const colors = {
+  reset: '\x1b[0m',
+  yellow: '\x1b[33m',
+  green: '\x1b[32m',
+  blue: '\x1b[34m',
+  cyan: '\x1b[36m'
+};
+
 // Load environment variables from .env file
 require('dotenv').config();
 
@@ -34,6 +43,45 @@ function stapleTicket(appPath) {
   } catch (error) {
     console.log(`   ❌ Stapling failed: ${error.message}`);
     return false;
+  }
+}
+
+function moveExecutables() {
+  const distDir = path.join(__dirname, '..', 'dist');
+  const executablesDir = path.join(__dirname, '..', 'executables');
+
+  // Ensure executables directory exists
+  if (!fs.existsSync(executablesDir)) {
+    fs.mkdirSync(executablesDir, { recursive: true });
+    console.log(`\n${colors.cyan}📁 Created executables/ directory${colors.reset}`);
+  }
+
+  console.log(`\n${colors.blue}📦 Moving macOS executables to executables/...${colors.reset}`);
+  let moved = false;
+
+  if (fs.existsSync(distDir)) {
+    const files = fs.readdirSync(distDir);
+    files.forEach(file => {
+      if (file.endsWith('.dmg') || file.endsWith('.dmg.blockmap') || file === 'latest-mac.yml') {
+        const sourcePath = path.join(distDir, file);
+        const destPath = path.join(executablesDir, file);
+
+        // If destination exists, remove it first
+        if (fs.existsSync(destPath)) {
+          fs.unlinkSync(destPath);
+        }
+
+        fs.renameSync(sourcePath, destPath);
+        console.log(`   ${colors.green}✓${colors.reset} Moved ${file} → executables/`);
+        moved = true;
+      }
+    });
+  }
+
+  if (!moved) {
+    console.log(`   ${colors.yellow}→${colors.reset} No macOS executables found to move`);
+  } else {
+    console.log(`\n${colors.cyan}✨ Executables are now in: ./executables/${colors.reset}`);
   }
 }
 
@@ -123,13 +171,22 @@ async function main() {
   console.log(`❌ Invalid: ${invalid}`);
   console.log('─'.repeat(50));
 
-  if (pending > 0) {
-    console.log('\n💡 Run this command again later to check pending submissions.');
-  }
-
   if (accepted === submissions.length && accepted > 0) {
     console.log('\n🎉 All submissions are notarized and stapled!');
     console.log('   Your apps are ready for distribution.');
+
+    // Move executables to executables/ folder
+    moveExecutables();
+  } else if (pending > 0) {
+    console.log('\n❌ ERROR: Notarization is still in progress.');
+    console.log(`   ${pending} submission(s) are still pending approval from Apple.`);
+    console.log(`   This usually takes 5-10 minutes.`);
+    console.log('\n💡 Wait a few minutes, then run: npm run mac-build:finalize');
+    process.exit(1);
+  } else if (invalid > 0) {
+    console.log('\n❌ ERROR: Some submissions were rejected by Apple.');
+    console.log('   You need to fix the issues and rebuild.');
+    process.exit(1);
   }
 }
 

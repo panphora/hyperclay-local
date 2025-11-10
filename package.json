@@ -27,8 +27,8 @@
     "build-all": "npm run build-icons && npm run clean && npm run build-css && npm run build-react-prod && electron-builder --mac --linux && node build-scripts/move-executables.js",
     "linux-build:run": "npm run build-icons && npm run clean-linux && npm run build-css && npm run build-react-prod && electron-builder --linux && node build-scripts/move-executables.js linux",
 
-    "mac-build:run": "npm run build-icons && npm run clean-mac && npm run build-css && npm run build-react-prod && electron-builder --mac && node build-scripts/move-executables.js mac",
-    "mac-build:status": "node build-scripts/check-notarization.js",
+    "mac-build:run": "npm run build-icons && npm run clean-mac && npm run build-css && npm run build-react-prod && electron-builder --mac",
+    "mac-build:finalize": "node build-scripts/check-notarization.js",
 
     "win-build:run": "gh workflow run build-and-sign-windows.yml",
     "win-build:status": "gh run list --workflow=build-and-sign-windows.yml --limit 5",
