@@ -17,18 +17,20 @@
     "build-react": "webpack --config config/webpack.config.js --mode=development",
     "dev-react": "webpack --config config/webpack.config.js --mode=development --watch",
     "build-react-prod": "webpack --config config/webpack.config.js --mode=production",
+    "build-icons": "node build-scripts/generate-icons.js",
     "clean": "node build-scripts/clean-dist.js",
     "clean-mac": "node build-scripts/clean-dist.js mac",
     "clean-windows": "node build-scripts/clean-dist.js windows",
     "clean-linux": "node build-scripts/clean-dist.js linux",
-    "build-all": "npm run clean && npm run build-css && npm run build-react-prod && electron-builder --mac --win --linux",
-    "build-mac": "npm run clean-mac && npm run build-css && npm run build-react-prod && electron-builder --mac",
-    "build-windows": "node build-scripts/build-windows-simple.js",
-    "build-windows-old": "node build-scripts/build-windows-with-env.js",
-    "build-linux": "npm run clean-linux && npm run build-css && npm run build-react-prod && electron-builder --linux",
+    "build-all": "npm run build-icons && npm run clean && npm run build-css && npm run build-react-prod && electron-builder --mac --linux",
+    "build-mac": "npm run build-icons && npm run clean-mac && npm run build-css && npm run build-react-prod && electron-builder --mac",
+    "build-linux": "npm run build-icons && npm run clean-linux && npm run build-css && npm run build-react-prod && electron-builder --linux",
     "dist": "npm run build-all",
     "check-notarization": "node build-scripts/check-notarization.js",
-    "upload-to-r2": "node build-scripts/post-build.js"
+    "upload-to-r2": "node build-scripts/post-build.js",
+    "win-build:run": "gh workflow run build-and-sign-windows.yml",
+    "win-build:status": "gh run list --workflow=build-and-sign-windows.yml --limit 5",
+    "win-build:download": "gh run download --name hyperclay-local-windows-signed --dir dist"
   },
   "build": {
     "appId": "com.hyperclay.local-server",
@@ -49,6 +51,7 @@
     "extraFiles": [],
     "asarUnpack": [],
     "mac": {
+      "icon": "build/icon.icns",
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
@@ -71,6 +74,7 @@
       ]
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -81,6 +85,7 @@
       ]
     },
     "linux": {
+      "icon": "build/icon.png",
       "target": [
         {
           "target": "AppImage",

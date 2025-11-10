@@ -1,14 +1,7 @@
 name: Build and Sign Windows Installer
 
 on:
-  workflow_dispatch:  # Manual trigger
-  push:
-    branches:
-      - main
-    paths:
-      - 'src/**'
-      - 'package.json'
-      - 'build-scripts/**'
+  workflow_dispatch:  # Manual trigger only
 
 jobs:
   build-and-sign:
