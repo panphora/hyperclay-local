@@ -52,7 +52,7 @@ async function main() {
   // Load submissions
   if (!fs.existsSync(submissionsFile)) {
     console.log('ℹ️  No submissions found.');
-    console.log('   Run `npm run build-mac` first to create notarization submissions.');
+    console.log('   Run `npm run mac-build:run` first to create notarization submissions.');
     return;
   }
 

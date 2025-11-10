@@ -91,9 +91,9 @@ npm run dev
 npm run build-all
 
 # Build for specific platform
-npm run build-mac     # macOS
-npm run build-windows # Windows  
-npm run build-linux   # Linux
+npm run mac-build:run   # macOS
+npm run win-build:run   # Windows (triggers GitHub Actions)
+npm run linux-build:run # Linux
 ```
 
 ## 🎯 User Interface
@@ -217,11 +217,11 @@ git push origin main
 
 **Build for your current platform:**
 ```bash
-npm run build          # Current platform
-npm run build-mac      # macOS DMG (requires macOS)
-npm run build-windows  # Windows installer (requires Windows)
-npm run build-linux    # Linux AppImage
-npm run build-all      # All platforms (experimental)
+npm run build            # Current platform
+npm run mac-build:run    # macOS DMG (requires macOS)
+npm run win-build:run    # Windows installer (triggers GitHub Actions)
+npm run linux-build:run  # Linux AppImage
+npm run build-all        # All platforms (experimental)
 ```
 
 **Note**: Local builds on Windows may fail code signing if you're on ARM64 Windows. Use GitHub Actions instead for reliable signed builds.

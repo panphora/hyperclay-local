@@ -6,9 +6,14 @@
 2. Update version in `README.md`
 3. Update version in `main.js` (lines 21, 417)
 4. Commit and push version bump
-5. `npm run build-all` (includes automatic upload via post-build script)
-6. Verify CDN uploads at `https://local.hyperclay.com/`
-7. Update download page at `../hyperclay/server-pages/hyperclay-local.edge`
+5. Build all platforms:
+   - macOS: `npm run mac-build:run`
+   - Linux: `npm run linux-build:run`
+   - Windows: `npm run win-build:run` (triggers GitHub Actions)
+6. Download Windows installer: `npm run win-build:download`
+7. Upload to CDN: `npm run upload-to-r2`
+8. Verify CDN uploads at `https://local.hyperclay.com/`
+9. Update download page at `../hyperclay/server-pages/hyperclay-local.edge`
 
 ## Build Scripts
 

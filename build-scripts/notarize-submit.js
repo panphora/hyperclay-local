@@ -90,7 +90,7 @@ exports.default = async function notarizeSubmit(context) {
       fs.unlinkSync(zipPath);
     }
 
-    console.log('\n   💡 Check status later with: npm run check-notarization\n');
+    console.log('\n   💡 Check status later with: npm run mac-build:status\n');
 
   } catch (error) {
     console.error('\n   ❌ Notarization submission failed');
