@@ -14,7 +14,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Sync methods
   syncStart: (apiKey, username, syncFolder, serverUrl) => ipcRenderer.invoke('sync-start', { apiKey, username, syncFolder, serverUrl }),
   syncStop: () => ipcRenderer.invoke('sync-stop'),
-  syncResume: (selectedFolder) => ipcRenderer.invoke('sync-resume', selectedFolder),
+  syncResume: (selectedFolder, username) => ipcRenderer.invoke('sync-resume', selectedFolder, username),
   syncStatus: () => ipcRenderer.invoke('sync-status'),
 
   // API key and settings methods

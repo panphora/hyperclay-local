@@ -257,6 +257,13 @@ const HyperclayLocalApp = () => {
     const isUsingStoredKey = syncApiKey.startsWith('••••');
 
     if (isUsingStoredKey) {
+      // Validate username even when reusing stored key
+      if (!syncUsername.trim()) {
+        setShowSyncError(true);
+        setSyncErrorMessage('Username is required');
+        return;
+      }
+
       // Resume with stored credentials
       setSyncButtonDisabled(true);
       setSyncButtonText('enabling...');
@@ -264,8 +271,11 @@ const HyperclayLocalApp = () => {
 
       try {
         if (window.electronAPI) {
-          // Pass selectedFolder to sync-resume
-          const result = await window.electronAPI.syncResume(currentState.selectedFolder);
+          // Pass selectedFolder and username to sync-resume
+          const result = await window.electronAPI.syncResume(
+            currentState.selectedFolder,
+            syncUsername.trim()
+          );
 
           if (result.success) {
             setSyncEnabled(true);

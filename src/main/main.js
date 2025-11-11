@@ -806,10 +806,11 @@ ipcMain.handle('sync-stop', async () => {
   return await handleSyncStop();
 });
 
-ipcMain.handle('sync-resume', async (event, selectedFolder) => {
+ipcMain.handle('sync-resume', async (event, selectedFolder, username) => {
   // Resume sync with stored credentials (decrypts API key - triggers keychain)
-  // Use selectedFolder if provided, fallback to saved syncFolder
+  // Use provided values if available, fallback to saved settings
   const folderToSync = selectedFolder || settings.syncFolder;
+  const usernameToUse = username || settings.syncUsername;
 
   if (!settings.hasApiKey) {
     return { error: 'No stored credentials to resume sync' };
@@ -826,7 +827,7 @@ ipcMain.handle('sync-resume', async (event, selectedFolder) => {
 
   return await handleSyncStart(
     apiKey,
-    settings.syncUsername,
+    usernameToUse,
     folderToSync,
     settings.serverUrl
   );
