@@ -97,23 +97,39 @@ function decryptApiKey(encryptedKey) {
   return encryptedKey;
 }
 
+/**
+ * Get decrypted API key from settings (only when needed)
+ * This triggers keychain access - use sparingly!
+ */
+function getDecryptedApiKey() {
+  if (!settings.apiKey) return null;
+  return decryptApiKey(settings.apiKey);
+}
+
 function loadSettings() {
   try {
     if (fs.existsSync(settingsPath)) {
       const data = fs.readFileSync(settingsPath, 'utf8');
       const settings = JSON.parse(data);
 
-      // Decrypt API key if present and mark if migration needed
+      // Keep API key encrypted - don't decrypt at startup
+      // Just set a flag to indicate one exists
       if (settings.apiKey) {
-        const originalKey = settings.apiKey;
-        settings.apiKey = decryptApiKey(settings.apiKey);
+        settings.hasApiKey = true;
 
-        // Check if this was a plaintext key that needs migration
-        if (originalKey.startsWith && originalKey.startsWith('hcsk_')) {
+        // Check if this is a plaintext key that needs migration
+        if (settings.apiKey.startsWith && settings.apiKey.startsWith('hcsk_')) {
           console.log('[SECURITY] Detected plaintext API key - will encrypt on next save');
-          // The key is now decrypted in memory, and will be encrypted
-          // on the next saveSettings() call automatically
+          // Encrypt it now and save immediately
+          const encryptedKey = encryptApiKey(settings.apiKey);
+          settings.apiKey = encryptedKey;
+          settings.hasApiKey = true;
+          // Save immediately to migrate
+          const settingsToSave = { ...settings };
+          fs.writeFileSync(settingsPath, JSON.stringify(settingsToSave, null, 2));
         }
+      } else {
+        settings.hasApiKey = false;
       }
 
       return settings;
@@ -134,9 +150,12 @@ function saveSettings(settings) {
     // Clone settings to avoid mutating original
     const settingsToSave = { ...settings };
 
-    // Encrypt API key before saving
+    // Encrypt API key before saving and set hasApiKey flag
     if (settingsToSave.apiKey) {
       settingsToSave.apiKey = encryptApiKey(settingsToSave.apiKey);
+      settingsToSave.hasApiKey = true;
+    } else {
+      settingsToSave.hasApiKey = false;
     }
 
     fs.writeFileSync(settingsPath, JSON.stringify(settingsToSave, null, 2));
@@ -169,8 +188,16 @@ function getTrayIcon() {
 
   try {
     // Try tray-specific icon first
+    // Note: Electron automatically loads @2x variant (tray-icon@2x.png) on Retina displays
     if (fs.existsSync(trayIconPath)) {
-      return nativeImage.createFromPath(trayIconPath);
+      const icon = nativeImage.createFromPath(trayIconPath);
+
+      // On macOS, mark as template image so it adapts to light/dark menu bar
+      if (process.platform === 'darwin') {
+        icon.setTemplateImage(true);
+      }
+
+      return icon;
     } else if (fs.existsSync(mainIconPath)) {
       // Fall back to main icon and resize it for tray
       const icon = nativeImage.createFromPath(mainIconPath);
@@ -191,15 +218,31 @@ function getTrayIcon() {
 // =============================================================================
 
 function getTrayMenuTemplate() {
+  const isAppVisible = mainWindow && mainWindow.isVisible();
+
   return [
     {
-      label: 'Show App',
+      label: isAppVisible ? 'Hide App' : 'Show App',
       click: () => {
-        if (mainWindow) {
-          mainWindow.show();
-          mainWindow.focus();
+        if (isAppVisible) {
+          // Hide from Dock and Cmd+Tab
+          if (process.platform === 'darwin') {
+            app.dock.hide();
+            mainWindow?.hide();
+          } else {
+            mainWindow?.hide();
+          }
         } else {
-          createWindow();
+          // Show in Dock and Cmd+Tab
+          if (process.platform === 'darwin') {
+            app.dock.show();
+          }
+          if (mainWindow) {
+            mainWindow.show();
+            mainWindow.focus();
+          } else {
+            createWindow();
+          }
         }
       }
     },
@@ -210,6 +253,28 @@ function getTrayMenuTemplate() {
           handleStopServer();
         } else {
           handleStartServer();
+        }
+      }
+    },
+    {
+      label: settings.syncEnabled ? 'Disable Sync' : 'Enable Sync',
+      enabled: !!(settings.hasApiKey && settings.syncFolder),
+      click: async () => {
+        if (settings.syncEnabled) {
+          await handleSyncStop();
+        } else {
+          if (settings.hasApiKey && settings.syncFolder) {
+            // Decrypt API key only when starting sync (triggers keychain prompt)
+            const apiKey = getDecryptedApiKey();
+            if (apiKey) {
+              await handleSyncStart(
+                apiKey,
+                settings.syncUsername,
+                settings.syncFolder,
+                settings.serverUrl
+              );
+            }
+          }
         }
       }
     },
@@ -356,6 +421,15 @@ function createWindow() {
     mainWindow = null;
   });
 
+  // Update tray menu when window visibility changes
+  mainWindow.on('show', () => {
+    updateTrayMenu();
+  });
+
+  mainWindow.on('hide', () => {
+    updateTrayMenu();
+  });
+
   // Handle external links
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
@@ -397,8 +471,18 @@ function createTray() {
   tray.on('double-click', () => {
     if (mainWindow) {
       if (mainWindow.isVisible()) {
-        mainWindow.hide();
+        // Hide from Dock and Cmd+Tab on macOS
+        if (process.platform === 'darwin') {
+          app.dock.hide();
+          mainWindow.hide();
+        } else {
+          mainWindow.hide();
+        }
       } else {
+        // Show in Dock and Cmd+Tab on macOS
+        if (process.platform === 'darwin') {
+          app.dock.show();
+        }
         mainWindow.show();
         mainWindow.focus();
       }
@@ -635,7 +719,8 @@ async function handleSyncStart(apiKey, username, syncFolder, serverUrl) {
     if (result.success) {
       // Persist ALL settings including API key
       settings.syncEnabled = true;
-      settings.apiKey = apiKey; // ✅ Fix: Persist API key
+      settings.apiKey = apiKey;
+      settings.hasApiKey = true; // Update flag in memory
       settings.syncUsername = username;
       settings.syncFolder = syncFolder;
       settings.serverUrl = serverUrl;
@@ -643,6 +728,7 @@ async function handleSyncStart(apiKey, username, syncFolder, serverUrl) {
     }
 
     updateUI();
+    updateTrayMenu();
     return result;
   } catch (error) {
     return {
@@ -664,6 +750,7 @@ async function handleSyncStop() {
     syncEngine.removeAllListeners();
 
     updateUI();
+    updateTrayMenu();
     return result;
   } catch (error) {
     return {
@@ -719,6 +806,32 @@ ipcMain.handle('sync-stop', async () => {
   return await handleSyncStop();
 });
 
+ipcMain.handle('sync-resume', async (event, selectedFolder) => {
+  // Resume sync with stored credentials (decrypts API key - triggers keychain)
+  // Use selectedFolder if provided, fallback to saved syncFolder
+  const folderToSync = selectedFolder || settings.syncFolder;
+
+  if (!settings.hasApiKey) {
+    return { error: 'No stored credentials to resume sync' };
+  }
+
+  if (!folderToSync) {
+    return { error: 'No folder selected for sync' };
+  }
+
+  const apiKey = getDecryptedApiKey();
+  if (!apiKey) {
+    return { error: 'Failed to decrypt stored API key' };
+  }
+
+  return await handleSyncStart(
+    apiKey,
+    settings.syncUsername,
+    folderToSync,
+    settings.serverUrl
+  );
+});
+
 ipcMain.handle('sync-status', () => {
   return syncEngine.getStatus();
 });
@@ -751,6 +864,7 @@ ipcMain.handle('set-api-key', async (event, key, serverUrl) => {
 
     // Store settings
     settings.apiKey = key;
+    settings.hasApiKey = true;
     settings.syncUsername = data.username;
     settings.serverUrl = baseUrl;
     saveSettings(settings);
@@ -763,11 +877,11 @@ ipcMain.handle('set-api-key', async (event, key, serverUrl) => {
 });
 
 ipcMain.handle('get-api-key-info', () => {
-  if (settings.apiKey && settings.syncUsername) {
+  if (settings.hasApiKey && settings.syncUsername) {
     return {
+      hasApiKey: true,
       username: settings.syncUsername,
-      serverUrl: settings.serverUrl,
-      apiKey: settings.apiKey  // Return the decrypted API key
+      serverUrl: settings.serverUrl
     };
   }
   return null;
@@ -775,6 +889,7 @@ ipcMain.handle('get-api-key-info', () => {
 
 ipcMain.handle('remove-api-key', () => {
   delete settings.apiKey;
+  settings.hasApiKey = false;
   delete settings.syncUsername;
   delete settings.serverUrl;
   settings.syncEnabled = false;
@@ -790,14 +905,21 @@ ipcMain.handle('toggle-sync', async (event, enabled) => {
     return { error: 'Please select a folder before enabling sync' };
   }
 
-  if (enabled && !settings.apiKey) {
+  if (enabled && !settings.hasApiKey) {
     return { error: 'Please connect with API key first' };
   }
 
   if (enabled) {
+    // Decrypt API key (triggers keychain prompt)
+    const apiKey = getDecryptedApiKey();
+
+    if (!apiKey) {
+      return { error: 'Failed to decrypt API key' };
+    }
+
     // Start sync with existing settings
     return await handleSyncStart(
-      settings.apiKey,
+      apiKey,
       settings.syncUsername,
       folderToSync,  // Use the current selected folder
       settings.serverUrl
@@ -860,11 +982,6 @@ app.whenReady().then(async () => {
   settings = loadSettings();
   selectedFolder = settings.selectedFolder || null;
 
-  // If API key exists, trigger immediate save to ensure encryption migration
-  if (settings.apiKey) {
-    saveSettings(settings);
-  }
-
   // Set app icon for dock/taskbar
   const iconPath = getAppIcon();
   if (iconPath) {
@@ -878,10 +995,17 @@ app.whenReady().then(async () => {
   checkForUpdates();
 
   // Auto-restart sync if it was enabled before quit
-  if (settings.syncEnabled && settings.apiKey && settings.syncFolder) {
+  if (settings.syncEnabled && settings.hasApiKey && settings.syncFolder) {
     console.log('[APP] Auto-restarting sync from previous session...');
 
     try {
+      // Decrypt API key (this triggers keychain prompt during auto-restart)
+      const apiKey = getDecryptedApiKey();
+
+      if (!apiKey) {
+        throw new Error('Failed to decrypt API key');
+      }
+
       // Initialize logger with sync folder
       await syncLogger.init(settings.syncFolder);
 
@@ -894,7 +1018,7 @@ app.whenReady().then(async () => {
 
       // Initialize sync
       const result = await syncEngine.init(
-        settings.apiKey,
+        apiKey,
         settings.syncUsername,
         settings.syncFolder,
         settings.serverUrl

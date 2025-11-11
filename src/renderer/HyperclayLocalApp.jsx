@@ -30,6 +30,7 @@ const HyperclayLocalApp = () => {
   const [syncApiKey, setSyncApiKey] = useState('');
   const [syncUsername, setSyncUsername] = useState('');
   const [syncEnabled, setSyncEnabled] = useState(false);
+  const [hasStoredApiKey, setHasStoredApiKey] = useState(false);
   const [syncButtonText, setSyncButtonText] = useState('enable sync');
   const [syncButtonDisabled, setSyncButtonDisabled] = useState(false);
   const [showSyncError, setShowSyncError] = useState(false);
@@ -84,14 +85,12 @@ const HyperclayLocalApp = () => {
         const state = await window.electronAPI.getState();
         setCurrentState(prevState => ({ ...prevState, ...state }));
 
-        // Check if API key is already configured and populate the fields
+        // Check if API key is already configured
         const apiKeyInfo = await window.electronAPI.getApiKeyInfo();
-        if (apiKeyInfo) {
+        if (apiKeyInfo && apiKeyInfo.hasApiKey) {
           setSyncUsername(apiKeyInfo.username || '');
-          // Also need to get the actual API key to populate the field
-          if (apiKeyInfo.apiKey) {
-            setSyncApiKey(apiKeyInfo.apiKey);
-          }
+          setSyncApiKey('••••••••••••••••••••••••••••••••');
+          setHasStoredApiKey(true);
         }
       }
     };
@@ -254,7 +253,42 @@ const HyperclayLocalApp = () => {
   };
 
   const handleEnableSync = async () => {
-    // Validate inputs
+    // Check if user is using stored credentials (placeholder dots)
+    const isUsingStoredKey = syncApiKey.startsWith('••••');
+
+    if (isUsingStoredKey) {
+      // Resume with stored credentials
+      setSyncButtonDisabled(true);
+      setSyncButtonText('enabling...');
+      setShowSyncError(false);
+
+      try {
+        if (window.electronAPI) {
+          // Pass selectedFolder to sync-resume
+          const result = await window.electronAPI.syncResume(currentState.selectedFolder);
+
+          if (result.success) {
+            setSyncEnabled(true);
+            setSyncButtonText('disable sync');
+            setSyncButtonDisabled(false);
+          } else {
+            setShowSyncError(true);
+            setSyncErrorMessage(result.error || 'Failed to enable sync');
+            setSyncButtonText('enable sync');
+            setSyncButtonDisabled(false);
+          }
+        }
+      } catch (error) {
+        console.error('Sync resume error:', error);
+        setShowSyncError(true);
+        setSyncErrorMessage('Failed to enable sync');
+        setSyncButtonText('enable sync');
+        setSyncButtonDisabled(false);
+      }
+      return;
+    }
+
+    // Validate inputs for new API key
     if (!syncApiKey.trim()) {
       setShowSyncError(true);
       setSyncErrorMessage('API key is required');
@@ -288,7 +322,9 @@ const HyperclayLocalApp = () => {
         if (result.success) {
           setSyncEnabled(true);
           setSyncButtonText('disable sync');
-          // Don't clear the API key from the UI - keep it visible
+          setHasStoredApiKey(true);
+          // Replace API key with placeholder dots
+          setSyncApiKey('••••••••••••••••••••••••••••••••');
           setSyncButtonDisabled(false);
         } else {
           setShowSyncError(true);

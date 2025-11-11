@@ -28,6 +28,7 @@
     "linux-build:run": "npm run build-icons && npm run clean-linux && npm run build-css && npm run build-react-prod && electron-builder --linux && node build-scripts/move-executables.js linux",
 
     "mac-build:run": "npm run build-icons && npm run clean-mac && npm run build-css && npm run build-react-prod && electron-builder --mac",
+    "mac-build:local": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false CSC_NAME= npm run mac-build:run -- --config.mac.identity=null --config.afterSign=build-scripts/no-op.js",
     "mac-build:finalize": "node build-scripts/check-notarization.js",
 
     "win-build:run": "gh workflow run build-and-sign-windows.yml",
@@ -76,6 +77,28 @@
           ]
         }
       ]
+    },
+    "dmg": {
+      "background": "build/dmg-background.png",
+      "window": {
+        "width": 540,
+        "height": 380,
+        "x": 400,
+        "y": 100
+      },
+      "contents": [
+        {
+          "x": 130,
+          "y": 100
+        },
+        {
+          "x": 410,
+          "y": 100,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "iconSize": 128
     },
     "win": {
       "icon": "build/icon.ico",

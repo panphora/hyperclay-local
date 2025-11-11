@@ -15,11 +15,26 @@ if (!fs.existsSync(BUILD_DIR)) {
   fs.mkdirSync(BUILD_DIR, { recursive: true });
 }
 
-// Check if source icon exists
+// Check if source icon exists, generate if possible
 if (!fs.existsSync(SOURCE_ICON)) {
-  console.error('❌ Error: Source icon not found at', SOURCE_ICON);
-  console.error('   Please run: rsvg-convert -w 1024 -h 1024 assets/icons/icon.svg -o build/icon-1024.png');
-  process.exit(1);
+  const SVG_SOURCE = path.join(ROOT_DIR, 'assets', 'icons', 'icon.svg');
+
+  if (commandExists('rsvg-convert') && fs.existsSync(SVG_SOURCE)) {
+    console.log('🔄 Generating icon from SVG...');
+    if (exec(
+      `rsvg-convert -w 1024 -h 1024 -b white "${SVG_SOURCE}" -o "${SOURCE_ICON}"`,
+      'Converting SVG to PNG with white background'
+    )) {
+      console.log(`   ✅ Created: ${SOURCE_ICON}\n`);
+    } else {
+      console.error('❌ Failed to convert SVG');
+      process.exit(1);
+    }
+  } else {
+    console.error('❌ Error: Source icon not found at', SOURCE_ICON);
+    console.error('   Please run: rsvg-convert -w 1024 -h 1024 -b white assets/icons/icon.svg -o build/icon-1024.png');
+    process.exit(1);
+  }
 }
 
 function exec(command, description) {
@@ -41,6 +56,9 @@ function commandExists(command) {
     return false;
   }
 }
+
+// Tray icons are generated manually - skipping automatic generation
+console.log('⏭️  Skipping tray icon generation (using manually created icons)\n');
 
 // Generate macOS .icns
 if (process.platform === 'darwin' || commandExists('sips')) {
