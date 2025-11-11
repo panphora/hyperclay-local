@@ -52,12 +52,53 @@ async function uploadToR2(filePath, filename) {
   console.log(`✅ Uploaded ${filename} (${sizeMB}MB)`);
 }
 
+function generateReport(uploadedFiles, publicUrl) {
+  const reportPath = path.join(__dirname, '..', 'UPLOAD_REPORT.md');
+
+  let markdown = '';
+
+  // Group by platform
+  const macFiles = uploadedFiles.filter(f => f.filename.includes('mac') || f.filename.endsWith('.dmg'));
+  const winFiles = uploadedFiles.filter(f => f.filename.includes('Setup') || f.filename.endsWith('.exe'));
+  const linuxFiles = uploadedFiles.filter(f => f.filename.includes('AppImage') || f.filename.includes('linux'));
+
+  if (macFiles.length > 0) {
+    markdown += `### macOS\n\n`;
+    macFiles.forEach(file => {
+      markdown += `- **${file.filename}** (${file.size})\n`;
+      markdown += `  - ${file.url}\n\n`;
+    });
+  }
+
+  if (winFiles.length > 0) {
+    markdown += `### Windows\n\n`;
+    winFiles.forEach(file => {
+      markdown += `- **${file.filename}** (${file.size})\n`;
+      markdown += `  - ${file.url}\n\n`;
+    });
+  }
+
+  if (linuxFiles.length > 0) {
+    markdown += `### Linux\n\n`;
+    linuxFiles.forEach(file => {
+      markdown += `- **${file.filename}** (${file.size})\n`;
+      markdown += `  - ${file.url}\n\n`;
+    });
+  }
+
+  fs.writeFileSync(reportPath, markdown);
+  console.log(`\n📄 Upload report generated: UPLOAD_REPORT.md`);
+}
+
 async function main() {
   // Check if R2 credentials exist
   if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY || !R2_SECRET_KEY || !R2_BUCKET) {
     console.log('⚠️  R2 credentials not found in .env file. Skipping uploads.');
     return;
   }
+
+  // Check for R2_PUBLIC_URL in .env, otherwise use default R2 URL
+  const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL || `https://${R2_BUCKET}.r2.dev`;
 
   // Find distributable files in executables directory
   const executablesDir = path.join(__dirname, '..', 'executables');
@@ -71,9 +112,7 @@ async function main() {
   const distributables = files.filter(file =>
     file.endsWith('.dmg') ||
     file.endsWith('.exe') ||
-    file.endsWith('.AppImage') ||
-    file.endsWith('.yml') ||
-    file.endsWith('.blockmap')
+    file.endsWith('.AppImage')
   );
 
   if (distributables.length === 0) {
@@ -83,17 +122,32 @@ async function main() {
 
   console.log(`📦 Uploading ${distributables.length} file(s) to R2...\n`);
 
+  // Track uploaded files with URLs
+  const uploadedFiles = [];
+
   // Upload each file
   for (const file of distributables) {
     try {
       const normalizedFilename = file.replace(/\s+/g, '-');
       await uploadToR2(path.join(executablesDir, file), normalizedFilename);
+
+      // Store file info with URL
+      uploadedFiles.push({
+        filename: normalizedFilename,
+        url: `${R2_PUBLIC_URL}/${normalizedFilename}`,
+        size: (fs.statSync(path.join(executablesDir, file)).size / (1024 * 1024)).toFixed(1) + 'MB'
+      });
     } catch (error) {
       console.error(`❌ Failed to upload ${file}:`, error.message);
     }
   }
 
   console.log(`\n✅ Upload complete! Files available in R2 bucket: ${R2_BUCKET}`);
+
+  // Generate markdown report
+  if (uploadedFiles.length > 0) {
+    generateReport(uploadedFiles, R2_PUBLIC_URL);
+  }
 }
 
 main().catch(error => {
