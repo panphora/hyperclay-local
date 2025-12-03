@@ -55,6 +55,13 @@ function classifyError(error, context = {}) {
     errorType = ERROR_TYPES.SYNC_CONFLICT;
     userMessage = 'Sync conflict detected. Manual resolution may be required.';
   }
+  // Reserved name errors (from server validation)
+  else if (errorMsg.includes(' is reserved')) {
+    priority = ERROR_PRIORITY.HIGH;
+    errorType = ERROR_TYPES.NAME_CONFLICT;
+    const siteName = filename ? filename.replace(/\.html$/i, '') : 'This name';
+    userMessage = `"${siteName}" is a reserved name. Rename to sync.`;
+  }
 
   return {
     priority,
