@@ -378,6 +378,21 @@ function uploadToR2() {
 }
 
 // ============================================
+// EXTERNAL DOCS
+// ============================================
+
+function updateExternalDocs(version) {
+  logInfo('Updating external documentation...');
+
+  try {
+    execSafe(`node scripts/update-external-docs.js ${version}`, { stdio: 'inherit' });
+  } catch (error) {
+    // Don't fail the release if external docs can't be updated
+    logWarn(`Could not update external docs: ${error.message}`);
+  }
+}
+
+// ============================================
 // MAIN
 // ============================================
 
@@ -544,6 +559,14 @@ async function main() {
   uploadToR2();
 
   // ==========================================
+  // STEP 9: Update external docs
+  // ==========================================
+
+  logSection('Step 9: Update External Docs');
+
+  updateExternalDocs(newVersion);
+
+  // ==========================================
   // DONE
   // ==========================================
 
@@ -563,6 +586,8 @@ async function main() {
   log(`  Linux:         https://local.hyperclay.com/HyperclayLocal-${newVersion}.AppImage`);
   log('');
   logSuccess('All platforms built, signed, and uploaded!');
+  log('');
+  logWarn('Remember to commit changes in hyperclay and hyperclay-website repos!');
   log('');
   log(`Full log: ${LOG_FILE}`);
 }

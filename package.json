@@ -31,7 +31,8 @@
     "win-build:status": "gh run list --workflow=build-and-sign-windows.yml --limit 5",
     "win-build:download": "npm run clean-windows && gh run download --name hyperclay-local-windows-signed --dir executables",
     "upload-to-r2": "node build-scripts/post-build.js",
-    "release": "node scripts/release.js"
+    "release": "node scripts/release.js",
+    "update-external-docs": "node scripts/update-external-docs.js"
   },
   "build": {
     "appId": "com.hyperclay.local-server",
