@@ -10,6 +10,9 @@ const readline = require('readline');
 // ============================================
 
 const ROOT_DIR = path.join(__dirname, '..');
+
+// Load .env file for Apple credentials
+require('dotenv').config({ path: path.join(ROOT_DIR, '.env') });
 const LOG_FILE = path.join(ROOT_DIR, 'release.log');
 const NOTARIZATION_FILE = path.join(ROOT_DIR, '.notarization-submissions-mac.json');
 
@@ -282,11 +285,19 @@ function getNotarizationSubmissions() {
 }
 
 function checkNotarizationStatus(submissionId) {
+  const appleId = process.env.APPLE_ID;
+  const teamId = process.env.APPLE_TEAM_ID;
+  const password = process.env.APPLE_APP_SPECIFIC_PASSWORD;
+
+  if (!appleId || !teamId || !password) {
+    return { status: 'Error', message: 'Missing Apple credentials in environment' };
+  }
+
   try {
     const cmd = `xcrun notarytool info "${submissionId}" \
-      --apple-id "$APPLE_ID" \
-      --team-id "$APPLE_TEAM_ID" \
-      --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+      --apple-id "${appleId}" \
+      --team-id "${teamId}" \
+      --password "${password}" \
       --output-format json`;
 
     const output = execSafe(cmd, { stdio: 'pipe' });
@@ -406,6 +417,14 @@ async function main() {
   }
 
   logSuccess('Working directory clean');
+
+  // Clear executables folder
+  const executablesDir = path.join(ROOT_DIR, 'executables');
+  if (fs.existsSync(executablesDir)) {
+    fs.rmSync(executablesDir, { recursive: true });
+  }
+  fs.mkdirSync(executablesDir, { recursive: true });
+  logSuccess('Cleared executables folder');
 
   // ==========================================
   // STEP 2: Version bump selection

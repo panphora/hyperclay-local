@@ -54,6 +54,8 @@ async function uploadToR2(filePath, filename) {
 
 function generateReport(uploadedFiles, publicUrl) {
   const reportPath = path.join(__dirname, '..', 'UPLOAD_REPORT.md');
+  const pkgPath = path.join(__dirname, '..', 'package.json');
+  const version = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).version;
 
   let markdown = '';
 
@@ -70,12 +72,18 @@ function generateReport(uploadedFiles, publicUrl) {
     });
   }
 
+  // Always include Windows (uploaded by GitHub Actions)
+  markdown += `### Windows\n\n`;
   if (winFiles.length > 0) {
-    markdown += `### Windows\n\n`;
     winFiles.forEach(file => {
       markdown += `- **${file.filename}** (${file.size})\n`;
       markdown += `  - ${file.url}\n\n`;
     });
+  } else {
+    // Windows is uploaded by GitHub Actions, not locally
+    const winFilename = `HyperclayLocal-Setup-${version}.exe`;
+    markdown += `- **${winFilename}** (uploaded by GitHub Actions)\n`;
+    markdown += `  - ${publicUrl}/${winFilename}\n\n`;
   }
 
   if (linuxFiles.length > 0) {

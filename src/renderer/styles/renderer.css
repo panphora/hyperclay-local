@@ -191,9 +191,6 @@
   .relative {
     position: relative;
   }
-  .static {
-    position: static;
-  }
   .top-20 {
     top: calc(var(--spacing) * 20);
   }
@@ -295,9 +292,6 @@
   }
   .inline-block {
     display: inline-block;
-  }
-  .table {
-    display: table;
   }
   .aspect-square {
     aspect-ratio: 1 / 1;
