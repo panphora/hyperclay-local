@@ -3,7 +3,7 @@ const fs = require('fs').promises;
 const path = require('upath');
 const { validateFileName } = require('../sync-engine/validation');
 const { createBackup } = require('./utils/backup');
-const { compileTailwind, hasTailwindLink } = require('tailwind-hyperclay');
+const { compileTailwind, getTailwindCssName } = require('tailwind-hyperclay');
 
 let server = null;
 let app = null;
@@ -111,12 +111,13 @@ function startServer(baseDir) {
         await fs.writeFile(filePath, content, 'utf8');
 
         // Generate Tailwind CSS if site uses it
-        if (hasTailwindLink(content, name)) {
+        const tailwindName = getTailwindCssName(content);
+        if (tailwindName) {
           const css = await compileTailwind(content);
           const cssDir = path.join(baseDir, 'tailwindcss');
           await fs.mkdir(cssDir, { recursive: true });
-          await fs.writeFile(path.join(cssDir, `${name}.css`), css, 'utf8');
-          console.log(`Generated Tailwind CSS: tailwindcss/${name}.css`);
+          await fs.writeFile(path.join(cssDir, `${tailwindName}.css`), css, 'utf8');
+          console.log(`Generated Tailwind CSS: tailwindcss/${tailwindName}.css`);
         }
 
         res.status(200).json({
