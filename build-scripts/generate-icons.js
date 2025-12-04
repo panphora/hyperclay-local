@@ -64,7 +64,7 @@ console.log('⏭️  Skipping tray icon generation (using manually created icons
 if (process.platform === 'darwin' || commandExists('sips')) {
   console.log('📱 Generating macOS icon (.icns)...');
 
-  const iconsetDir = path.join(BUILD_DIR, 'temp.iconset');
+  const iconsetDir = path.join(BUILD_DIR, `temp-${process.pid}.iconset`);
 
   // Create iconset directory
   if (fs.existsSync(iconsetDir)) {
