@@ -86,3 +86,34 @@ jobs:
           Write-Host "  Size: $([math]::Round($installer.Length / 1MB, 2)) MB"
           Write-Host "  Path: $($installer.FullName)"
         shell: pwsh
+
+      - name: Upload to R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY }}
+          R2_SECRET_KEY: ${{ secrets.R2_SECRET_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+        run: |
+          # Install AWS CLI
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://awscli.amazonaws.com/AWSCLIV2.msi" -OutFile "AWSCLIV2.msi"
+          Start-Process msiexec.exe -Wait -ArgumentList '/i AWSCLIV2.msi /quiet'
+          $env:PATH += ";C:\Program Files\Amazon\AWSCLI2"
+
+          # Configure for R2
+          aws configure set aws_access_key_id $env:R2_ACCESS_KEY
+          aws configure set aws_secret_access_key $env:R2_SECRET_KEY
+          aws configure set region auto
+
+          # Upload
+          $installer = Get-Item (Resolve-Path "dist\HyperclayLocal-Setup-*.exe")
+          $filename = $installer.Name -replace ' ', '-'
+
+          Write-Host "Uploading $filename to R2..."
+          aws s3 cp $installer.FullName "s3://$env:R2_BUCKET/$filename" `
+            --endpoint-url "https://$env:R2_ACCOUNT_ID.r2.cloudflarestorage.com" `
+            --content-type "application/x-msdos-program"
+
+          Write-Host "Uploaded: $env:R2_PUBLIC_URL/$filename"
+        shell: pwsh
