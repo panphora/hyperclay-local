@@ -55,7 +55,11 @@
       "node_modules/tailwind-hyperclay/**",
       "node_modules/tailwindcss/**",
       "node_modules/@tailwindcss/**",
-      "node_modules/lightningcss*/**"
+      "node_modules/lightningcss*/**",
+      "node_modules/postcss-selector-parser/**",
+      "node_modules/cssesc/**",
+      "node_modules/util-deprecate/**",
+      "node_modules/mini-svg-data-uri/**"
     ],
     "mac": {
       "icon": "build/icon.icns",
@@ -156,7 +160,7 @@
     "lightningcss": "^1.30.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "tailwind-hyperclay": "^0.1.9",
+    "tailwind-hyperclay": "^0.1.11",
     "tailwindcss": "^4.1.14",
     "upath": "^2.0.1"
   }
