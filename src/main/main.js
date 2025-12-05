@@ -19,8 +19,8 @@ if (process.platform === 'darwin') {
   const iconPath = path.join(__dirname, '../../assets/icons/icon.png');
   const aboutOptions = {
     applicationName: 'Hyperclay Local',
-    applicationVersion: '1.2.4',
-    version: '1.2.4',
+    applicationVersion: '1.2.5',
+    version: '1.2.5',
     copyright: 'Made with ❤️ for Hyperclay'
   };
 

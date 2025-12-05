@@ -1,7 +1,7 @@
 {
   "name": "hyperclay-local-electron",
   "productName": "HyperclayLocal",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "Hyperclay Local Server - Desktop App",
   "main": "src/main/main.js",
   "homepage": "https://hyperclay.com",
