@@ -49,6 +49,7 @@ let tray = null;
 let serverRunning = false;
 let selectedFolder = null;
 let settings = {};
+let isQuitting = false;
 
 const userData = app.getPath('userData');
 const settingsPath = path.join(userData, 'settings.json');
@@ -1051,11 +1052,16 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  // Keep app running in system tray on all platforms
-  // Don't quit the app when all windows are closed
+  // If we're quitting, let the quit proceed
+  // Otherwise keep app running in system tray
+  if (isQuitting) {
+    app.quit();
+  }
 });
 
 app.on('before-quit', async (event) => {
+  isQuitting = true;
+
   // Stop both server and sync engine before quitting
   if (isServerRunning() || syncEngine.isRunning) {
     event.preventDefault(); // Prevent immediate quit

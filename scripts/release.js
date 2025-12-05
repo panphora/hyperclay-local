@@ -171,6 +171,37 @@ function updateVersionInFile(filePath, oldVersion, newVersion) {
   fs.writeFileSync(fullPath, content);
 }
 
+function formatFileSize(bytes) {
+  const mb = bytes / (1024 * 1024);
+  return `${mb.toFixed(1)}MB`;
+}
+
+function updateReadmeSizes(version) {
+  const readmePath = path.join(ROOT_DIR, 'README.md');
+  const executablesDir = path.join(ROOT_DIR, 'executables');
+  let content = fs.readFileSync(readmePath, 'utf8');
+
+  const files = fs.readdirSync(executablesDir);
+
+  for (const file of files) {
+    if (!file.endsWith('.dmg') && !file.endsWith('.AppImage')) continue;
+
+    const size = formatFileSize(fs.statSync(path.join(executablesDir, file)).size);
+    const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    content = content.replace(new RegExp(`(${escaped}\\)) \\([^)]+\\)`, 'g'), `$1 (${size})`);
+
+    // Estimate Windows as ~75% of macOS Intel
+    if (file.endsWith('.dmg') && !file.includes('arm64')) {
+      const winSize = formatFileSize(fs.statSync(path.join(executablesDir, file)).size * 0.75);
+      const winFile = file.replace('.dmg', '.exe').replace('HyperclayLocal-', 'HyperclayLocal-Setup-');
+      const winEscaped = winFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      content = content.replace(new RegExp(`(${winEscaped}\\)) \\([^)]+\\)`, 'g'), `$1 (~${winSize})`);
+    }
+  }
+
+  fs.writeFileSync(readmePath, content);
+}
+
 // ============================================
 // BUILD FUNCTIONS
 // ============================================
@@ -232,42 +263,6 @@ function triggerWindowsBuild() {
   return runId;
 }
 
-function watchWindowsBuild(runId) {
-  return new Promise((resolve, reject) => {
-    logInfo(`Watching Windows build (run ${runId})...`);
-
-    const proc = spawn('gh', ['run', 'watch', runId, '--exit-status'], {
-      cwd: ROOT_DIR,
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
-
-    proc.stdout.on('data', data => {
-      const line = data.toString().trim();
-      if (line) {
-        fs.appendFileSync(LOG_FILE, `[Windows] ${line}\n`);
-        // Only show key status updates
-        if (line.includes('completed') || line.includes('failed') || line.includes('in_progress')) {
-          console.log(`  ${colors.dim}[Windows] ${line}${colors.reset}`);
-        }
-      }
-    });
-
-    proc.stderr.on('data', data => {
-      fs.appendFileSync(LOG_FILE, `[Windows stderr] ${data.toString()}`);
-    });
-
-    proc.on('close', code => {
-      if (code === 0) {
-        logSuccess('Windows build complete');
-        resolve();
-      } else {
-        reject(new Error(`Windows build failed (exit code ${code})`));
-      }
-    });
-
-    proc.on('error', reject);
-  });
-}
 
 // ============================================
 // NOTARIZATION
@@ -512,8 +507,8 @@ async function main() {
     fs.unlinkSync(NOTARIZATION_FILE);
   }
 
-  // Trigger Windows build first (runs on GitHub)
-  const windowsRunId = triggerWindowsBuild();
+  // Trigger Windows build (runs independently on GitHub Actions)
+  triggerWindowsBuild();
 
   // Start macOS and Linux builds in parallel
   logInfo('Starting macOS and Linux builds in parallel...');
@@ -526,17 +521,15 @@ async function main() {
   await Promise.all(buildPromises);
 
   // ==========================================
-  // STEP 6: Wait for notarization + Windows
+  // STEP 6: Wait for notarization
   // ==========================================
 
-  logSection('Step 6: Wait for Signing');
+  logSection('Step 6: Wait for Notarization');
 
-  logInfo('Waiting for macOS notarization and Windows signing in parallel...');
+  logInfo('Waiting for macOS notarization...');
+  logInfo('(Windows build runs independently on GitHub Actions)');
 
-  await Promise.all([
-    pollNotarizationUntilComplete(),
-    watchWindowsBuild(windowsRunId)
-  ]);
+  await pollNotarizationUntilComplete();
 
   // ==========================================
   // STEP 7: Finalize macOS
@@ -549,6 +542,11 @@ async function main() {
   // Move Linux executable too
   logInfo('Moving Linux executable...');
   execSafe('node build-scripts/move-executables.js linux');
+
+  // Update README with actual file sizes
+  logInfo('Updating README with file sizes...');
+  updateReadmeSizes(newVersion);
+  logSuccess('README sizes updated');
 
   // ==========================================
   // STEP 8: Upload to R2
