@@ -165,6 +165,24 @@ Development mode features:
 
 For building signed installers, see [BUILD.md](./BUILD.md).
 
+### Adding npm Modules
+
+When adding new npm dependencies, consider whether they need `asarUnpack` in `package.json`. Electron bundles node_modules into a `.asar` archive, which can break:
+
+- **Native bindings** (e.g., `lightningcss` in `tailwind-hyperclay`)
+- **Dynamic require.resolve()** with package.json exports
+- **File system operations** with hardcoded paths
+
+If a module fails in production builds but works in development, add it to `asarUnpack`:
+
+```json
+"asarUnpack": [
+  "node_modules/your-module/**"
+]
+```
+
+Pure JavaScript modules (like `livesync-hyperclay`) typically work without unpacking.
+
 ## 🚨 Troubleshooting
 
 ### Installation Issues

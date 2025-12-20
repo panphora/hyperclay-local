@@ -4,6 +4,7 @@ const path = require('upath');
 const { validateFileName } = require('../sync-engine/validation');
 const { createBackup } = require('./utils/backup');
 const { compileTailwind, getTailwindCssName } = require('tailwind-hyperclay');
+const { setupLiveSync } = require('livesync-hyperclay');
 
 let server = null;
 let app = null;
@@ -31,6 +32,12 @@ function startServer(baseDir) {
       res.cookie('isLoggedIn', 'true', cookieOptions);
       next();
     });
+
+    // Middleware to parse JSON body for live-sync endpoint
+    app.use('/live-sync', express.json({ limit: '10mb' }));
+
+    // Enable live sync for AI agent hot reload and collaborative editing
+    setupLiveSync(app, { baseDir });
 
     // Middleware to parse plain text body for the /save route
     app.use('/save/:name', express.text({ type: 'text/plain', limit: '10mb' }));
