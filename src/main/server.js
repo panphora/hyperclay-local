@@ -1,10 +1,16 @@
 const express = require('express');
 const fs = require('fs').promises;
 const path = require('upath');
+const crypto = require('crypto');
+const cheerio = require('cheerio');
 const { validateFileName } = require('../sync-engine/validation');
 const { createBackup } = require('./utils/backup');
 const { compileTailwind, getTailwindCssName } = require('tailwind-hyperclay');
-const { setupLiveSync } = require('livesync-hyperclay');
+const { liveSync } = require('livesync-hyperclay');
+
+// Track who initiated the last save (for sender attribution in watcher)
+// This prevents duplicate broadcasts when browser saves trigger file watcher
+const lastSender = new Map();
 
 let server = null;
 let app = null;
@@ -36,8 +42,144 @@ function startServer(baseDir) {
     // Middleware to parse JSON body for live-sync endpoint
     app.use('/live-sync', express.json({ limit: '10mb' }));
 
-    // Enable live sync for AI agent hot reload and collaborative editing
-    setupLiveSync(app, { baseDir });
+    // Live-sync SSE stream endpoint
+    app.get('/live-sync/stream', (req, res) => {
+      const file = req.query.file;
+      if (!file) {
+        return res.status(400).send('file parameter required');
+      }
+
+      // SSE headers
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      // Register client
+      liveSync.subscribe(file, res);
+      console.log(`[LiveSync] Client connected: ${file}`);
+
+      // Keep-alive ping every 30 seconds
+      const keepAlive = setInterval(() => {
+        try {
+          res.write(': ping\n\n');
+        } catch (e) {
+          clearInterval(keepAlive);
+        }
+      }, 30000);
+
+      // Cleanup on disconnect
+      req.on('close', () => {
+        clearInterval(keepAlive);
+        liveSync.unsubscribe(file, res);
+        console.log(`[LiveSync] Client disconnected: ${file}`);
+      });
+
+      // Connection established
+      res.write(': connected\n\n');
+    });
+
+    // Live-sync save endpoint
+    app.post('/live-sync/save', async (req, res) => {
+      const { file, body, headHash, sender } = req.body;
+
+      if (!file || typeof body !== 'string') {
+        return res.status(400).json({ error: 'file and body are required' });
+      }
+
+      // Validate file parameter to prevent path traversal
+      if (typeof file !== 'string' ||
+          file.length === 0 ||
+          file.length > 255 ||
+          file.includes('..') ||
+          file.includes('/') ||
+          file.includes('\\') ||
+          file.startsWith('.') ||
+          file.endsWith('.html') ||
+          path.isAbsolute(file) ||
+          !/^[\w-]+$/.test(file)) {
+        return res.status(400).json({ error: 'Invalid file identifier' });
+      }
+
+      // Write body to file
+      const filepath = path.join(baseDir, file + '.html');
+
+      // Security: ensure resolved path is within baseDir
+      const resolvedPath = path.resolve(filepath);
+      const resolvedBase = path.resolve(baseDir);
+      if (!resolvedPath.startsWith(resolvedBase + path.sep)) {
+        return res.status(400).json({ error: 'Path escapes base directory' });
+      }
+      try {
+        const content = await fs.readFile(filepath, 'utf8');
+
+        // Replace body content
+        const newContent = content.replace(
+          /(<body[^>]*>)([\s\S]*)(<\/body>)/i,
+          (match, openTag, oldBody, closeTag) => openTag + body + closeTag
+        );
+
+        // Track sender so watcher uses it instead of 'file-system'
+        lastSender.set(file, sender);
+        await fs.writeFile(filepath, newContent, 'utf8');
+        console.log(`[LiveSync] Saved: ${file} (from: ${sender})`);
+
+        // Don't broadcast here - let the watcher handle it
+        // The watcher will use lastSender to attribute correctly
+
+        res.json({ success: true });
+      } catch (err) {
+        console.error('[LiveSync] Save error:', err.message);
+        res.status(500).json({ error: 'Failed to save file' });
+      }
+    });
+
+    // File watcher for live-sync (broadcasts changes to connected browsers)
+    const chokidar = require('chokidar');
+    const liveSyncWatcher = chokidar.watch('**/*.html', {
+      cwd: baseDir,
+      persistent: true,
+      ignoreInitial: true,
+      ignored: ['**/node_modules/**', '**/sites-versions/**', '**/.*'],
+      awaitWriteFinish: {
+        stabilityThreshold: 300
+      }
+    });
+
+    liveSyncWatcher.on('change', async (filename) => {
+      const siteId = filename.replace(/\.html$/, '');
+      const stats = liveSync.getStats();
+
+      // Only process if there are connected clients
+      if (stats.rooms === 0) return;
+
+      try {
+        const filepath = path.join(baseDir, filename);
+        const content = await fs.readFile(filepath, 'utf8');
+
+        // Extract head and body using cheerio
+        const $ = cheerio.load(content);
+        const head = $('head').html() || '';
+        const body = $('body').html() || '';
+
+        // Allow empty body (clearing content is valid)
+
+        // Compute headHash using SHA-256 (first 16 hex chars)
+        const headHash = crypto.createHash('sha256').update(head).digest('hex').slice(0, 16);
+
+        // Use tracked sender if this was triggered by a browser save, otherwise 'file-system'
+        const sender = lastSender.get(siteId) || 'file-system';
+        lastSender.delete(siteId);
+
+        liveSync.broadcast(siteId, { body, headHash, sender });
+        console.log(`[LiveSync] File changed, broadcast: ${siteId} (sender: ${sender})`);
+      } catch (err) {
+        console.error('[LiveSync] Error broadcasting file change:', err.message);
+      }
+    });
+
+    console.log(`[LiveSync] Watching ${baseDir} for HTML changes`);
 
     // Middleware to parse plain text body for the /save route
     app.use('/save/:name', express.text({ type: 'text/plain', limit: '10mb' }));
