@@ -110,12 +110,8 @@ function validateSiteName(name) {
 /**
  * Validate upload/file name
  * More permissive than sites/folders but still has restrictions
- * NOTE: This is a placeholder for future upload sync support
  */
 function validateUploadName(name) {
-  // For now, we don't sync uploads, so this is just a placeholder
-  // that shows the structure for when we do implement it
-
   // Check if empty
   if (!name || name.trim() === '') {
     return {
@@ -129,7 +125,7 @@ function validateUploadName(name) {
   if (byteLength > 255) {
     return {
       valid: false,
-      error: 'File name is too long'
+      error: 'File name is too long (max 255 bytes)'
     };
   }
 
@@ -143,7 +139,8 @@ function validateUploadName(name) {
 
   // Prevent control characters and problematic chars
   // Blocks: Control chars, /, \, <, >, :, ", |, ?, *, null byte
-  if (/[\x00-\x1F\x7F\/\\<>:"|?*\u0000]/u.test(name)) {
+  // Also blocks full-width punctuation that server sanitizes: ：？｜，。！￥…（）—
+  if (/[\x00-\x1F\x7F\/\\<>:"|?*\u0000：？｜，。！￥…（）—]/u.test(name)) {
     return {
       valid: false,
       error: 'File name contains invalid characters'
@@ -166,8 +163,50 @@ function validateUploadName(name) {
     };
   }
 
-  // For now, since we don't sync uploads, always return valid
-  // This structure is here for future implementation
+  return { valid: true };
+}
+
+/**
+ * Validate full upload path (folder/folder/file.ext)
+ * Used for upload sync validation
+ */
+function validateUploadPath(fullPath) {
+  const parts = fullPath.split('/').filter(Boolean);
+
+  if (parts.length === 0) {
+    return { valid: false, error: 'Empty path' };
+  }
+
+  // Check folder depth (max 5 folders)
+  if (parts.length > 6) {  // 5 folders + 1 filename
+    return {
+      valid: false,
+      error: 'Folder depth cannot exceed 5 levels'
+    };
+  }
+
+  // Validate each folder in the path
+  for (let i = 0; i < parts.length - 1; i++) {
+    const folderResult = validateFolderName(parts[i]);
+    if (!folderResult.valid) {
+      return {
+        valid: false,
+        error: `Invalid folder "${parts[i]}": ${folderResult.error}`
+      };
+    }
+  }
+
+  // Validate the filename (last part)
+  const filename = parts[parts.length - 1];
+  const fileResult = validateUploadName(filename);
+
+  if (!fileResult.valid) {
+    return {
+      valid: false,
+      error: `Invalid filename: ${fileResult.error}`
+    };
+  }
+
   return { valid: true };
 }
 
@@ -268,6 +307,7 @@ module.exports = {
   validateFolderName,
   validateSiteName,
   validateUploadName,
+  validateUploadPath,
   validateFullPath,
   getFileType
 };

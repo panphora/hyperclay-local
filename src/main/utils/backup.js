@@ -104,8 +104,100 @@ async function createBackupIfExists(filePath, siteName, baseDir, emit, logger = 
   }
 }
 
+/**
+ * Create a binary backup of a file (for uploads - images, etc.)
+ * @param {string} baseDir - Base directory (sync folder)
+ * @param {string} uploadPath - Upload path (e.g., "folder/image.png")
+ * @param {Buffer} content - Binary content to backup
+ * @param {function} emit - Optional event emitter function
+ * @param {object} logger - Optional logger instance
+ */
+async function createBinaryBackup(baseDir, uploadPath, content, emit, logger = null) {
+  try {
+    const versionsDir = path.join(baseDir, 'sites-versions');
+
+    // Get directory and filename from path
+    const pathParts = uploadPath.split('/');
+    const filename = pathParts.pop();
+    const ext = path.extname(filename);
+    const basename = path.basename(filename, ext);
+
+    // Build backup directory: sites-versions/uploads/<path>/<basename>/
+    const backupSubdir = pathParts.length > 0
+      ? path.join('uploads', ...pathParts, basename)
+      : path.join('uploads', basename);
+    const uploadVersionsDir = path.join(versionsDir, backupSubdir);
+
+    // Create directory if it doesn't exist
+    await fs.mkdir(uploadVersionsDir, { recursive: true });
+
+    // Generate timestamp filename with original extension
+    const timestamp = generateTimestamp();
+    const backupFilename = `${timestamp}${ext}`;
+    const backupPath = path.join(uploadVersionsDir, backupFilename);
+
+    // Write backup file as binary
+    await fs.writeFile(backupPath, content);
+    console.log(`[BACKUP] Created: sites-versions/${backupSubdir}/${backupFilename}`);
+
+    // Log backup creation
+    if (logger) {
+      logger.info('BACKUP', 'Binary backup created', {
+        upload: uploadPath,
+        backupFile: backupFilename
+      });
+    }
+
+    // Emit event if emitter provided
+    if (emit) {
+      emit('backup-created', {
+        original: uploadPath,
+        backup: backupPath,
+        type: 'upload'
+      });
+    }
+
+    return backupPath;
+  } catch (error) {
+    console.error(`[BACKUP] Failed to create backup for ${uploadPath}:`, error.message);
+
+    // Log backup error
+    if (logger) {
+      logger.error('BACKUP', 'Binary backup creation failed', {
+        upload: uploadPath,
+        error
+      });
+    }
+
+    // Don't throw error - backup failure shouldn't prevent sync
+    return null;
+  }
+}
+
+/**
+ * Create binary backup if file exists
+ * @param {string} filePath - Absolute path to file
+ * @param {string} uploadPath - Upload path for backup directory
+ * @param {string} baseDir - Base directory
+ * @param {function} emit - Optional event emitter function
+ * @param {object} logger - Optional logger instance
+ */
+async function createBinaryBackupIfExists(filePath, uploadPath, baseDir, emit, logger = null) {
+  try {
+    await fs.access(filePath);
+    // File exists, read as binary and backup
+    const content = await fs.readFile(filePath);  // No encoding = Buffer
+    return await createBinaryBackup(baseDir, uploadPath, content, emit, logger);
+  } catch {
+    // File doesn't exist, no backup needed
+    return null;
+  }
+}
+
 module.exports = {
   generateTimestamp,
   createBackup,
-  createBackupIfExists
+  createBackupIfExists,
+  createBinaryBackup,
+  createBinaryBackupIfExists
 };

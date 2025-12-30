@@ -175,9 +175,139 @@ async function getServerStatus(serverUrl, apiKey) {
   }
 }
 
+// =============================================================================
+// UPLOAD SYNC API FUNCTIONS
+// =============================================================================
+
+/**
+ * Fetch list of uploads from server
+ */
+async function fetchServerUploads(serverUrl, apiKey) {
+  const url = `${serverUrl}/sync/uploads`;
+  console.log(`[API] Fetching uploads from: ${url}`);
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'X-API-Key': apiKey
+      }
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'Unable to read error');
+      console.error(`[API] Error response: ${errorText}`);
+      throw new Error(`Server returned ${response.status}: ${errorText}`);
+    }
+
+    const data = await response.json();
+    console.log(`[API] Fetched ${data.uploads?.length || 0} uploads from server`);
+
+    return data.uploads || [];
+  } catch (error) {
+    console.error(`[API] Fetch uploads failed:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Encode path segments for URL (preserves slashes, encodes each segment)
+ */
+function encodePathSegments(filePath) {
+  return filePath.split('/').map(segment => encodeURIComponent(segment)).join('/');
+}
+
+/**
+ * Download upload content from server
+ * @param {string} serverUrl - Server base URL
+ * @param {string} apiKey - API key for authentication
+ * @param {string} filePath - Full path including filename
+ * @returns {Promise<{content: Buffer, modifiedAt: string, checksum: string}>}
+ */
+async function downloadUpload(serverUrl, apiKey, filePath) {
+  const encodedPath = encodePathSegments(filePath);
+  const downloadUrl = `${serverUrl}/sync/uploads/${encodedPath}`;
+  console.log(`[API] Downloading upload from: ${downloadUrl}`);
+
+  const response = await fetch(downloadUrl, {
+    headers: {
+      'X-API-Key': apiKey
+    }
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => response.statusText);
+    console.error(`[API] Download upload failed (${response.status}): ${errorText}`);
+    throw new Error(`Failed to download upload ${filePath}: ${errorText}`);
+  }
+
+  const data = await response.json();
+
+  // Decode base64 content to Buffer
+  return {
+    content: Buffer.from(data.content, 'base64'),
+    modifiedAt: data.modifiedAt,
+    checksum: data.checksum
+  };
+}
+
+/**
+ * Upload file content to server (for uploads, not sites)
+ * @param {string} serverUrl - Server base URL
+ * @param {string} apiKey - API key for authentication
+ * @param {string} filePath - Full path including filename
+ * @param {Buffer} content - File content as Buffer
+ * @param {Date} modifiedAt - Modification time
+ */
+async function uploadUploadToServer(serverUrl, apiKey, filePath, content, modifiedAt) {
+  console.log(`[API] Uploading upload to server: ${filePath}`);
+
+  const response = await fetch(`${serverUrl}/sync/uploads`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': apiKey
+    },
+    body: JSON.stringify({
+      path: filePath,
+      content: content.toString('base64'),
+      modifiedAt: modifiedAt.toISOString()
+    })
+  });
+
+  if (!response.ok) {
+    let errorMessage = `Server returned ${response.status}`;
+
+    try {
+      const errorData = await response.clone().json();
+      errorMessage = errorData.message || errorData.error || errorMessage;
+      console.error(`[API] Upload error (${response.status}):`, errorMessage);
+    } catch (parseError) {
+      try {
+        const errorText = await response.text();
+        if (errorText) {
+          errorMessage = errorText;
+          console.error(`[API] Upload error (${response.status}):`, errorText);
+        }
+      } catch (textError) {
+        console.error(`[API] Upload error (${response.status}): Unable to parse response`);
+      }
+    }
+
+    const error = new Error(errorMessage);
+    error.statusCode = response.status;
+    throw error;
+  }
+
+  return response.json();
+}
+
 module.exports = {
   fetchServerFiles,
   downloadFromServer,
   uploadToServer,
-  getServerStatus
+  getServerStatus,
+  // Upload sync
+  fetchServerUploads,
+  downloadUpload,
+  uploadUploadToServer
 };

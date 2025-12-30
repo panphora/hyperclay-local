@@ -12,7 +12,7 @@ const { getServerBaseUrl } = require('../main/utils/utils');
 // Import sync engine modules
 const { SYNC_CONFIG, ERROR_PRIORITY } = require('./constants');
 const { calculateChecksum, generateTimestamp, isLocalNewer, isFutureFile, calibrateClock } = require('./utils');
-const { createBackupIfExists } = require('../main/utils/backup');
+const { createBackupIfExists, createBinaryBackupIfExists } = require('../main/utils/backup');
 const { classifyError, formatErrorForLog } = require('./error-handler');
 const {
   getLocalFiles,
@@ -20,16 +20,25 @@ const {
   writeFile,
   fileExists,
   getFileStats,
-  ensureDirectory
+  ensureDirectory,
+  // Upload-specific
+  getLocalUploads,
+  readFileBuffer,
+  writeFileBuffer,
+  calculateBufferChecksum
 } = require('./file-operations');
 const {
   fetchServerFiles,
   downloadFromServer,
   uploadToServer,
-  getServerStatus
+  getServerStatus,
+  // Upload sync
+  fetchServerUploads,
+  downloadUpload,
+  uploadUploadToServer
 } = require('./api-client');
 const SyncQueue = require('./sync-queue');
-const { validateFileName, validateFullPath } = require('./validation');
+const { validateFileName, validateFullPath, validateUploadPath } = require('./validation');
 
 class SyncEngine extends EventEmitter {
   constructor() {
@@ -40,12 +49,15 @@ class SyncEngine extends EventEmitter {
     this.serverUrl = null;
     this.syncFolder = null;
     this.watcher = null;
+    this.uploadWatcher = null; // Watcher for uploads
     this.isRunning = false;
     this.clockOffset = 0;
     this.pollTimer = null;
     this.syncQueue = new SyncQueue();
     this.serverFilesCache = null; // Cache for server files list
     this.serverFilesCacheTime = null; // When cache was last updated
+    this.serverUploadsCache = null; // Cache for server uploads list
+    this.serverUploadsCacheTime = null; // When uploads cache was last updated
     this.logger = null; // Logger instance
     this.stats = {
       filesProtected: 0,
@@ -53,6 +65,11 @@ class SyncEngine extends EventEmitter {
       filesUploaded: 0,
       filesDownloadedSkipped: 0,
       filesUploadedSkipped: 0,
+      // Upload stats
+      uploadsDownloaded: 0,
+      uploadsUploaded: 0,
+      uploadsProtected: 0,
+      uploadsSkipped: 0,
       lastSync: null,
       errors: []
     };
@@ -88,6 +105,11 @@ class SyncEngine extends EventEmitter {
       filesUploaded: 0,
       filesDownloadedSkipped: 0,
       filesUploadedSkipped: 0,
+      // Upload stats
+      uploadsDownloaded: 0,
+      uploadsUploaded: 0,
+      uploadsProtected: 0,
+      uploadsSkipped: 0,
       lastSync: null,
       errors: []
     };
@@ -124,19 +146,33 @@ class SyncEngine extends EventEmitter {
       console.log(`[SYNC] Ensuring sync folder exists: ${syncFolder}`);
       await ensureDirectory(syncFolder);
 
+      // Ensure uploads folder exists
+      const uploadsFolder = path.join(syncFolder, 'uploads');
+      console.log(`[SYNC] Ensuring uploads folder exists: ${uploadsFolder}`);
+      await ensureDirectory(uploadsFolder);
+
       // Calibrate clock with server
       console.log(`[SYNC] Calibrating clock with server...`);
       this.clockOffset = await calibrateClock(this.serverUrl, this.apiKey);
       console.log(`[SYNC] Clock offset: ${this.clockOffset}ms`);
 
-      // Perform initial sync
-      console.log(`[SYNC] Starting initial sync...`);
+      // Perform initial sync for sites
+      console.log(`[SYNC] Starting initial site sync...`);
       await this.performInitialSync();
-      console.log(`[SYNC] Initial sync completed`);
+      console.log(`[SYNC] Initial site sync completed`);
 
-      // Start file watcher
+      // Perform initial sync for uploads
+      console.log(`[SYNC] Starting initial upload sync...`);
+      await this.performInitialUploadSync();
+      console.log(`[SYNC] Initial upload sync completed`);
+
+      // Start file watcher for sites
       console.log(`[SYNC] Starting file watcher...`);
       this.startFileWatcher();
+
+      // Start upload watcher
+      console.log(`[SYNC] Starting upload watcher...`);
+      this.startUploadWatcher();
 
       // Start polling for remote changes
       console.log(`[SYNC] Starting polling...`);
@@ -191,6 +227,32 @@ class SyncEngine extends EventEmitter {
   invalidateServerFilesCache() {
     this.serverFilesCache = null;
     this.serverFilesCacheTime = null;
+  }
+
+  /**
+   * Fetch server uploads and cache them
+   */
+  async fetchAndCacheServerUploads(forceRefresh = false) {
+    if (!forceRefresh && this.serverUploadsCache && this.serverUploadsCacheTime) {
+      const cacheAge = Date.now() - this.serverUploadsCacheTime;
+      if (cacheAge < 30000) {
+        console.log(`[SYNC] Using cached server uploads (age: ${cacheAge}ms)`);
+        return this.serverUploadsCache;
+      }
+    }
+
+    console.log(`[SYNC] Fetching fresh server uploads list...`);
+    this.serverUploadsCache = await fetchServerUploads(this.serverUrl, this.apiKey);
+    this.serverUploadsCacheTime = Date.now();
+    return this.serverUploadsCache;
+  }
+
+  /**
+   * Invalidate the server uploads cache
+   */
+  invalidateServerUploadsCache() {
+    this.serverUploadsCache = null;
+    this.serverUploadsCacheTime = null;
   }
 
   /**
@@ -604,7 +666,14 @@ class SyncEngine extends EventEmitter {
 
       try {
         if (item.type === 'add' || item.type === 'change') {
-          await this.uploadFile(item.filename);
+          // Check if this is an upload (prefixed with 'upload:')
+          if (item.filename.startsWith('upload:')) {
+            const uploadPath = item.filename.replace('upload:', '');
+            await this.uploadUploadFile(uploadPath);
+          } else {
+            // Regular site file
+            await this.uploadFile(item.filename);
+          }
         }
 
         // Success - clear retry tracking
@@ -635,9 +704,22 @@ class SyncEngine extends EventEmitter {
           (retryItem) => {
             // Only retry if sync is still running and file exists
             if (this.isRunning) {
-              const filePath = path.join(this.syncFolder, retryItem.filename);
+              // Handle upload vs site paths
+              let filePath;
+              if (retryItem.filename.startsWith('upload:')) {
+                const uploadPath = retryItem.filename.replace('upload:', '');
+                filePath = path.join(this.syncFolder, 'uploads', uploadPath);
+              } else {
+                filePath = path.join(this.syncFolder, retryItem.filename);
+              }
+
               if (fileExists(filePath)) {
-                this.queueSync(retryItem.type, retryItem.filename);
+                // Re-queue with appropriate method
+                if (retryItem.filename.startsWith('upload:')) {
+                  this.queueUploadSync(retryItem.type, retryItem.filename.replace('upload:', ''));
+                } else {
+                  this.queueSync(retryItem.type, retryItem.filename);
+                }
               } else {
                 this.syncQueue.clearRetry(retryItem.filename);
               }
@@ -691,7 +773,7 @@ class SyncEngine extends EventEmitter {
    * Start watching local files
    */
   startFileWatcher() {
-    // Watch recursively for all HTML files
+    // Watch recursively for all HTML files (excluding uploads folder)
     this.watcher = chokidar.watch('**/*.html', {
       cwd: this.syncFolder,
       persistent: true,
@@ -699,6 +781,7 @@ class SyncEngine extends EventEmitter {
       ignored: [
         '**/node_modules/**',
         '**/sites-versions/**',
+        '**/uploads/**',    // Uploads have their own watcher
         '**/.*' // Ignore hidden files/folders
       ],
       awaitWriteFinish: SYNC_CONFIG.FILE_STABILIZATION
@@ -741,6 +824,302 @@ class SyncEngine extends EventEmitter {
         syncFolder: this.logger.sanitizePath(this.syncFolder)
       });
     }
+  }
+
+  // ===========================================================================
+  // UPLOAD SYNC METHODS
+  // ===========================================================================
+
+  /**
+   * Perform initial sync for uploads
+   */
+  async performInitialUploadSync() {
+    console.log('[SYNC] Starting initial upload sync...');
+    this.emit('sync-start', { type: 'initial-uploads' });
+
+    try {
+      const serverUploads = await this.fetchAndCacheServerUploads(true);
+      const localUploads = await getLocalUploads(this.syncFolder);
+
+      // Download server uploads not present locally
+      for (const serverUpload of serverUploads) {
+        const localPath = path.join(this.syncFolder, 'uploads', serverUpload.path);
+        const localExists = localUploads.has(serverUpload.path);
+
+        if (!localExists) {
+          try {
+            await this.downloadUploadFile(serverUpload.path);
+            this.stats.uploadsDownloaded++;
+          } catch (error) {
+            console.error(`[SYNC] Failed to download upload ${serverUpload.path}:`, error.message);
+            this.stats.errors.push(formatErrorForLog(error, { filename: serverUpload.path, action: 'initial-upload-download' }));
+          }
+        } else {
+          try {
+            const localInfo = localUploads.get(serverUpload.path);
+
+            // Check if local is future-dated
+            if (isFutureFile(localInfo.mtime, this.clockOffset)) {
+              console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - future-dated`);
+              this.stats.uploadsProtected++;
+              continue;
+            }
+
+            // Check if local is newer
+            if (isLocalNewer(localInfo.mtime, serverUpload.modifiedAt, this.clockOffset)) {
+              console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - local is newer`);
+              this.stats.uploadsProtected++;
+              continue;
+            }
+
+            // Check checksums
+            const localContent = await readFileBuffer(localPath);
+            const localChecksum = calculateBufferChecksum(localContent);
+
+            if (localChecksum === serverUpload.checksum) {
+              console.log(`[SYNC] SKIP upload ${serverUpload.path} - checksums match`);
+              this.stats.uploadsSkipped++;
+              continue;
+            }
+
+            // Server is newer, download it
+            await this.downloadUploadFile(serverUpload.path);
+            this.stats.uploadsDownloaded++;
+          } catch (error) {
+            console.error(`[SYNC] Failed to process upload ${serverUpload.path}:`, error.message);
+            this.stats.errors.push(formatErrorForLog(error, { filename: serverUpload.path, action: 'initial-upload-check' }));
+          }
+        }
+      }
+
+      // Upload local files not on server
+      for (const [relativePath, localInfo] of localUploads) {
+        const serverUpload = serverUploads.find(u => u.path === relativePath);
+
+        if (!serverUpload) {
+          console.log(`[SYNC] LOCAL ONLY upload: ${relativePath} - uploading`);
+          try {
+            await this.uploadUploadFile(relativePath);
+            // Note: uploadsUploaded is incremented inside uploadUploadFile
+          } catch (error) {
+            console.error(`[SYNC] Failed to upload ${relativePath}:`, error.message);
+            this.stats.errors.push(formatErrorForLog(error, { filename: relativePath, action: 'initial-upload-upload' }));
+          }
+        }
+      }
+
+      console.log('[SYNC] Initial upload sync complete');
+      this.emit('sync-complete', { type: 'initial-uploads', stats: this.stats });
+
+    } catch (error) {
+      console.error('[SYNC] Initial upload sync failed:', error);
+      this.stats.errors.push(formatErrorForLog(error, { action: 'initial-upload-sync' }));
+      // Don't throw - allow sync to continue even if upload sync fails
+    }
+  }
+
+  /**
+   * Download an upload file from server
+   */
+  async downloadUploadFile(serverPath) {
+    try {
+      const { content, modifiedAt } = await downloadUpload(
+        this.serverUrl,
+        this.apiKey,
+        serverPath
+      );
+
+      const localPath = path.join(this.syncFolder, 'uploads', serverPath);
+
+      // Create binary backup if file exists (preserves images, PDFs, etc.)
+      await createBinaryBackupIfExists(localPath, serverPath, this.syncFolder, this.emit.bind(this), this.logger);
+
+      // Write file
+      await writeFileBuffer(localPath, content, modifiedAt);
+
+      console.log(`[SYNC] Downloaded upload: ${serverPath}`);
+
+      if (this.logger) {
+        this.logger.success('DOWNLOAD', 'Upload downloaded', { file: serverPath });
+      }
+
+      this.emit('file-synced', { file: serverPath, action: 'download', type: 'upload' });
+
+    } catch (error) {
+      console.error(`[SYNC] Failed to download upload ${serverPath}:`, error);
+
+      if (this.logger) {
+        this.logger.error('DOWNLOAD', 'Upload download failed', { file: serverPath, error });
+      }
+
+      const errorInfo = classifyError(error, { filename: serverPath, action: 'download-upload' });
+      this.stats.errors.push(formatErrorForLog(error, { filename: serverPath, action: 'download-upload' }));
+      this.emit('sync-error', errorInfo);
+    }
+  }
+
+  /**
+   * Upload an upload file to server
+   */
+  async uploadUploadFile(relativePath) {
+    try {
+      // Validate path
+      const validationResult = validateUploadPath(relativePath);
+      if (!validationResult.valid) {
+        console.error(`[SYNC] Validation failed for upload ${relativePath}: ${validationResult.error}`);
+        this.emit('sync-error', {
+          file: relativePath,
+          error: validationResult.error,
+          type: 'validation',
+          priority: ERROR_PRIORITY.HIGH,
+          canRetry: false
+        });
+        return;
+      }
+
+      const localPath = path.join(this.syncFolder, 'uploads', relativePath);
+      const content = await readFileBuffer(localPath);
+      const stat = await getFileStats(localPath);
+
+      // Check size limit (10MB)
+      if (content.length > 10 * 1024 * 1024) {
+        this.emit('sync-error', {
+          file: relativePath,
+          error: 'File exceeds 10MB limit',
+          type: 'validation',
+          priority: ERROR_PRIORITY.HIGH,
+          canRetry: false
+        });
+        return;
+      }
+
+      // Check if server has same content
+      const localChecksum = calculateBufferChecksum(content);
+
+      try {
+        const serverUploads = await this.fetchAndCacheServerUploads(false);
+        const serverUpload = serverUploads.find(u => u.path === relativePath);
+
+        if (serverUpload && serverUpload.checksum === localChecksum) {
+          console.log(`[SYNC] SKIP upload ${relativePath} - server has same checksum`);
+          this.stats.uploadsSkipped++;
+          return;
+        }
+      } catch (error) {
+        console.log(`[SYNC] Could not verify server checksum, proceeding: ${error.message}`);
+      }
+
+      // Upload to server
+      await uploadUploadToServer(
+        this.serverUrl,
+        this.apiKey,
+        relativePath,
+        content,
+        stat.mtime
+      );
+
+      console.log(`[SYNC] Uploaded: ${relativePath}`);
+      this.stats.uploadsUploaded++;
+
+      // Invalidate cache
+      this.invalidateServerUploadsCache();
+
+      this.emit('file-synced', { file: relativePath, action: 'upload', type: 'upload' });
+
+    } catch (error) {
+      console.error(`[SYNC] Failed to upload ${relativePath}:`, error);
+
+      if (this.logger) {
+        this.logger.error('UPLOAD', 'Upload failed', { file: relativePath, error });
+      }
+
+      const errorInfo = classifyError(error, { filename: relativePath, action: 'upload-upload' });
+      this.stats.errors.push(formatErrorForLog(error, { filename: relativePath, action: 'upload-upload' }));
+      this.emit('sync-error', errorInfo);
+      throw error;
+    }
+  }
+
+  /**
+   * Start watching upload files
+   */
+  startUploadWatcher() {
+    const uploadsDir = path.join(this.syncFolder, 'uploads');
+
+    this.uploadWatcher = chokidar.watch('**/*', {
+      cwd: uploadsDir,
+      persistent: true,
+      ignoreInitial: true,
+      ignored: [
+        '**/node_modules/**',
+        '**/sites-versions/**',
+        '**/.*',           // Hidden files
+        '**/.DS_Store',
+        '**/Thumbs.db'
+      ],
+      awaitWriteFinish: SYNC_CONFIG.FILE_STABILIZATION
+    });
+
+    this.uploadWatcher
+      .on('add', filename => {
+        const normalizedPath = path.normalize(filename);
+        console.log(`[SYNC] Upload added: ${normalizedPath}`);
+        this.queueUploadSync('add', normalizedPath);
+      })
+      .on('change', filename => {
+        const normalizedPath = path.normalize(filename);
+        console.log(`[SYNC] Upload changed: ${normalizedPath}`);
+        this.queueUploadSync('change', normalizedPath);
+      })
+      .on('unlink', filename => {
+        // Intentionally ignore deletes (same as sites)
+        console.log(`[SYNC] Upload deleted locally (not syncing): ${filename}`);
+      })
+      .on('error', error => {
+        console.error('[SYNC] Upload watcher error:', error);
+        this.stats.errors.push(formatErrorForLog(error, { action: 'upload-watcher' }));
+      });
+
+    console.log('[SYNC] Upload watcher started');
+
+    if (this.logger) {
+      this.logger.info('WATCHER', 'Upload watcher started', {
+        uploadsDir: this.logger.sanitizePath(uploadsDir)
+      });
+    }
+  }
+
+  /**
+   * Queue an upload file for sync
+   */
+  queueUploadSync(type, filename) {
+    if (!this.isRunning) return;
+
+    // Validate before queueing
+    const validationResult = validateUploadPath(filename);
+    if (!validationResult.valid) {
+      console.error(`[SYNC] Cannot queue upload ${filename}: ${validationResult.error}`);
+      this.emit('sync-error', {
+        file: filename,
+        error: validationResult.error,
+        type: 'validation',
+        priority: ERROR_PRIORITY.HIGH,
+        canRetry: false
+      });
+      return;
+    }
+
+    // Add to queue with 'upload:' prefix to distinguish from sites
+    const queueKey = `upload:${filename}`;
+    if (!this.syncQueue.add(type, queueKey)) {
+      return;
+    }
+
+    this.syncQueue.setQueueTimer(() => {
+      if (this.isRunning) {
+        this.processQueue();
+      }
+    });
   }
 
   /**
@@ -830,13 +1209,48 @@ class SyncEngine extends EventEmitter {
         }
       }
 
+      // Also check for upload changes
+      if (!this.isRunning) return;
+
+      const serverUploads = await this.fetchAndCacheServerUploads(true);
+      const localUploads = await getLocalUploads(this.syncFolder);
+
+      for (const serverUpload of serverUploads) {
+        if (!this.isRunning) return;
+
+        const localPath = path.join(this.syncFolder, 'uploads', serverUpload.path);
+        const localExists = localUploads.has(serverUpload.path);
+
+        if (!localExists) {
+          await this.downloadUploadFile(serverUpload.path);
+          this.stats.uploadsDownloaded++;
+          changesFound = true;
+        } else {
+          const localInfo = localUploads.get(serverUpload.path);
+          const localContent = await readFileBuffer(localPath);
+          const localChecksum = calculateBufferChecksum(localContent);
+
+          if (localChecksum !== serverUpload.checksum) {
+            if (isLocalNewer(localInfo.mtime, serverUpload.modifiedAt, this.clockOffset)) {
+              console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - local is newer`);
+              this.stats.uploadsProtected++;
+            } else {
+              await this.downloadUploadFile(serverUpload.path);
+              this.stats.uploadsDownloaded++;
+              changesFound = true;
+            }
+          }
+        }
+      }
+
       if (changesFound) {
         this.emit('sync-stats', this.stats);
 
         // Log poll check completion with changes
         if (this.logger) {
           this.logger.success('POLL', 'Remote changes detected and downloaded', {
-            filesDownloaded: this.stats.filesDownloaded
+            filesDownloaded: this.stats.filesDownloaded,
+            uploadsDownloaded: this.stats.uploadsDownloaded
           });
         }
       } else {
@@ -883,11 +1297,19 @@ class SyncEngine extends EventEmitter {
       console.log('[SYNC] File watcher closed');
     }
 
+    // Stop upload watcher
+    if (this.uploadWatcher) {
+      await this.uploadWatcher.close();
+      this.uploadWatcher = null;
+      console.log('[SYNC] Upload watcher closed');
+    }
+
     // Clear all pending operations
     this.syncQueue.clear();
 
-    // Clear server files cache
+    // Clear caches
     this.invalidateServerFilesCache();
+    this.invalidateServerUploadsCache();
 
     console.log('[SYNC] Sync stopped');
 
@@ -898,6 +1320,9 @@ class SyncEngine extends EventEmitter {
           filesDownloaded: this.stats.filesDownloaded,
           filesUploaded: this.stats.filesUploaded,
           filesProtected: this.stats.filesProtected,
+          uploadsDownloaded: this.stats.uploadsDownloaded,
+          uploadsUploaded: this.stats.uploadsUploaded,
+          uploadsProtected: this.stats.uploadsProtected,
           errors: this.stats.errors.length
         }
       });
