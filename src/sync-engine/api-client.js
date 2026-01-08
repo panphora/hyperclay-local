@@ -3,6 +3,19 @@
  */
 
 /**
+ * Parse error message from server response
+ * Server may return JSON with msg, message, or error field
+ */
+function parseErrorMessage(errorText, fallback) {
+  try {
+    const data = JSON.parse(errorText);
+    return data.msg || data.message || data.error || fallback;
+  } catch {
+    return errorText || fallback;
+  }
+}
+
+/**
  * Fetch list of files from server
  */
 async function fetchServerFiles(serverUrl, apiKey) {
@@ -22,7 +35,7 @@ async function fetchServerFiles(serverUrl, apiKey) {
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Unable to read error');
       console.error(`[API] Error response: ${errorText}`);
-      throw new Error(`Server returned ${response.status}: ${errorText}`);
+      throw new Error(parseErrorMessage(errorText, `Server returned ${response.status}`));
     }
 
     const data = await response.json();
@@ -107,7 +120,7 @@ async function uploadToServer(serverUrl, apiKey, filename, content, modifiedAt) 
     try {
       // Clone response so we can try multiple parsing strategies
       const errorData = await response.clone().json();
-      errorMessage = errorData.message || errorData.error || errorMessage;
+      errorMessage = errorData.msg || errorData.message || errorData.error || errorMessage;
       errorDetails = errorData.details;
 
       // Log the parsed error for debugging
@@ -160,7 +173,7 @@ async function getServerStatus(serverUrl, apiKey) {
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Unable to read error');
       console.error(`[API] Error response: ${errorText}`);
-      throw new Error(`Server returned ${response.status}: ${errorText}`);
+      throw new Error(parseErrorMessage(errorText, `Server returned ${response.status}`));
     }
 
     const data = await response.json();
@@ -196,7 +209,7 @@ async function fetchServerUploads(serverUrl, apiKey) {
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Unable to read error');
       console.error(`[API] Error response: ${errorText}`);
-      throw new Error(`Server returned ${response.status}: ${errorText}`);
+      throw new Error(parseErrorMessage(errorText, `Server returned ${response.status}`));
     }
 
     const data = await response.json();
@@ -279,7 +292,7 @@ async function uploadUploadToServer(serverUrl, apiKey, filePath, content, modifi
 
     try {
       const errorData = await response.clone().json();
-      errorMessage = errorData.message || errorData.error || errorMessage;
+      errorMessage = errorData.msg || errorData.message || errorData.error || errorMessage;
       console.error(`[API] Upload error (${response.status}):`, errorMessage);
     } catch (parseError) {
       try {

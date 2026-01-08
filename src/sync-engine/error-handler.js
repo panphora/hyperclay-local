@@ -17,7 +17,8 @@ function classifyError(error, context = {}) {
   const errorMsg = error.message.toLowerCase();
 
   // Authentication errors
-  if (errorMsg.includes('401') || errorMsg.includes('403') || errorMsg.includes('unauthorized')) {
+  if (errorMsg.includes('401') || errorMsg.includes('403') || errorMsg.includes('unauthorized') ||
+      errorMsg.includes('invalid') && errorMsg.includes('api key') || errorMsg.includes('expired')) {
     priority = ERROR_PRIORITY.CRITICAL;
     errorType = ERROR_TYPES.AUTH_FAILURE;
     userMessage = 'Authentication failed. Please reconnect with a valid API key.';
@@ -103,7 +104,9 @@ function isRetryableError(error) {
       errorMsg.includes('401') ||
       errorMsg.includes('403') ||
       errorMsg.includes('unauthorized') ||
-      errorMsg.includes('permission')) {
+      errorMsg.includes('permission') ||
+      (errorMsg.includes('invalid') && errorMsg.includes('api key')) ||
+      errorMsg.includes('expired')) {
     return false;
   }
 
