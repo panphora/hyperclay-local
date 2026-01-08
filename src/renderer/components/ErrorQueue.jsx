@@ -8,10 +8,10 @@ const ERROR_PRIORITY = {
 };
 
 const ERROR_COLORS = {
-  1: 'bg-red-600 text-white border-red-700',
-  2: 'bg-red-500 text-white border-red-600',
-  3: 'bg-red-400 text-white border-red-500',
-  4: 'bg-red-300 text-white border-red-400'
+  1: 'bg-red-600 text-white',
+  2: 'bg-red-500 text-white',
+  3: 'bg-red-400 text-white',
+  4: 'bg-red-300 text-white'
 };
 
 export default function ErrorQueue({ errors, onDismiss, maxVisible = 3 }) {
@@ -72,42 +72,38 @@ export default function ErrorQueue({ errors, onDismiss, maxVisible = 3 }) {
   if (errors.length === 0) return null;
 
   return (
-    <div className="fixed top-20 right-4 z-50 space-y-2 max-w-md">
+    <div className="fixed top-20 right-4 z-50 space-y-2">
       {visibleErrors.map(error => (
         <div
           key={error.id}
           className={`
-            p-4 rounded-lg shadow-lg border-2
+            w-fit max-w-[400px] px-4 py-2 shadow-lg relative
             ${ERROR_COLORS[error.priority]}
-            ${error.priority === ERROR_PRIORITY.CRITICAL ? 'animate-pulse' : ''}
           `}
         >
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex-1">
-              <div className="text-sm">
-                {expandedErrors.has(error.id) || error.error.length < 100
-                  ? error.error
-                  : error.error.substring(0, 100) + '...'}
-              </div>
-
-              {error.error.length > 100 && (
-                <button
-                  onClick={() => toggleExpanded(error.id)}
-                  className="mt-2 text-xs underline opacity-75 hover:opacity-100"
-                >
-                  {expandedErrors.has(error.id) ? 'Show less' : 'Show more'}
-                </button>
-              )}
+          <div className="mr-4">
+            <div className="text-sm">
+              {expandedErrors.has(error.id) || error.error.length < 100
+                ? error.error
+                : error.error.substring(0, 100) + '...'}
             </div>
 
-            <button
-              onClick={() => onDismiss(error.id)}
-              className="text-2xl leading-none hover:opacity-70 flex-shrink-0"
-              title="Dismiss"
-            >
-              ×
-            </button>
+            {error.error.length > 100 && (
+              <button
+                onClick={() => toggleExpanded(error.id)}
+                className="mt-2 text-xs underline opacity-75 hover:opacity-100"
+              >
+                {expandedErrors.has(error.id) ? 'Show less' : 'Show more'}
+              </button>
+            )}
           </div>
+          <button
+            onClick={() => onDismiss(error.id)}
+            className="absolute top-[-6px] right-0 p-1.5 text-2xl leading-none hover:opacity-70 cursor-pointer"
+            title="Dismiss"
+          >
+            ×
+          </button>
         </div>
       ))}
 
