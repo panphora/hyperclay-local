@@ -1,0 +1,71 @@
+# Phosphor Light SVG - Folder & File Icons
+
+## Folder Icons
+- folder-light.svg              - Basic folder
+- folder-open-light.svg         - Open folder
+- folder-plus-light.svg         - Folder with plus (add)
+- folder-minus-light.svg        - Folder with minus (remove)
+- folder-lock-light.svg         - Locked folder
+- folder-star-light.svg         - Starred/favorite folder
+- folder-user-light.svg         - User folder
+- folder-dashed-light.svg       - Dashed outline folder
+- folder-simple-light.svg       - Simple folder style
+- folder-simple-dashed-light.svg
+- folder-simple-lock-light.svg
+- folder-simple-minus-light.svg
+- folder-simple-plus-light.svg
+- folder-simple-star-light.svg
+- folder-simple-user-light.svg
+- folders-light.svg             - Multiple folders
+
+## File Icons - Generic
+- file-light.svg                - Basic file
+- file-text-light.svg           - Text file
+- file-plus-light.svg           - File with plus (add)
+- file-minus-light.svg          - File with minus (remove)
+- file-x-light.svg              - File with X (delete/error)
+- file-lock-light.svg           - Locked file
+- file-dashed-light.svg         - Dashed outline file
+- file-cloud-light.svg          - Cloud file (sync)
+- file-arrow-up-light.svg       - Upload file
+- file-arrow-down-light.svg     - Download file
+- file-magnifying-glass-light.svg - Search file
+- files-light.svg               - Multiple files
+
+## File Icons - Code/Dev
+- file-code-light.svg           - Generic code
+- file-html-light.svg           - HTML
+- file-css-light.svg            - CSS
+- file-js-light.svg             - JavaScript
+- file-jsx-light.svg            - JSX
+- file-ts-light.svg             - TypeScript
+- file-tsx-light.svg            - TSX
+- file-py-light.svg             - Python
+- file-c-light.svg              - C
+- file-cpp-light.svg            - C++
+- file-c-sharp-light.svg        - C#
+- file-rs-light.svg             - Rust
+- file-vue-light.svg            - Vue
+- file-sql-light.svg            - SQL
+- file-md-light.svg             - Markdown
+- file-ini-light.svg            - INI config
+
+## File Icons - Media
+- file-image-light.svg          - Generic image
+- file-jpg-light.svg            - JPG
+- file-png-light.svg            - PNG
+- file-svg-light.svg            - SVG
+- file-audio-light.svg          - Audio
+- file-video-light.svg          - Video
+
+## File Icons - Documents
+- file-doc-light.svg            - Word doc
+- file-pdf-light.svg            - PDF
+- file-txt-light.svg            - Plain text
+- file-csv-light.svg            - CSV
+- file-xls-light.svg            - Excel
+- file-ppt-light.svg            - PowerPoint
+
+## File Icons - Archives
+- file-archive-light.svg        - Archive
+- file-zip-light.svg            - ZIP

@@ -1,0 +1,1351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hyperclay Style Guide</title>
+  <style>
+    @font-face {
+      font-family: 'Berkeley Mono';
+      src: url('https://hyperclay.com/fonts/BerkeleyMonoVariable-Regular.woff2') format('woff2'),
+           url('./public-assets/fonts/BerkeleyMonoVariable-Regular.woff2') format('woff2');
+      font-weight: 100 900;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: 'Fixedsys';
+      src: url('https://hyperclay.com/home/fixedsys-webfont.woff2') format('woff2'),
+           url('./public-assets/fonts/fixedsys-webfont.woff2') format('woff2');
+      font-weight: 400;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    /* ========================================
+       CSS VARIABLES / DESIGN TOKENS
+    ======================================== */
+    :root {
+      /* Core Colors */
+      --bg-dark: #0B0C12;
+      --bg-card: #11131e;
+      --bg-input: #292E54;
+      --bg-button: #1D1F2F;
+      --bg-button-hover: #232639;
+      --bg-menu-item: #111425;
+      --bg-menu-item-hover: #292E54;
+      --bg-sortable-hover: #232742;
+      --bg-sortable-drag: #171927;
+
+      /* Accent Colors */
+      --primary-blue: #6A73B6;
+      --accent-green: #12B886;
+      --accent-purple: #df3bfa;
+      --accent-neon-green: #03ff00;
+
+      /* Text Colors */
+      --text-primary: #fff;
+      --text-secondary: #B7BEFB;
+      --text-muted: #9ca3af;
+      --text-link: #9B9BF6;
+      --text-link-hover: #C8C8FA;
+      --text-placeholder: #B7BEFB;
+
+      /* Border Colors */
+      --border-primary: #8A92BB;
+      --border-secondary: #868CBA;
+      --border-dashed: #495197;
+      --border-blue: #6A73B6;
+
+      /* Button Beveled Borders */
+      --btn-border-top: #474C65;
+      --btn-border-right: #131725;
+      --btn-border-bottom: #131725;
+      --btn-border-left: #474C65;
+
+      /* Shadows */
+      --shadow-blue: rgba(106, 115, 182, 0.2);
+      --code-bg: rgba(106, 115, 182, 0.15);
+
+      /* Typography */
+      --font-mono: "Berkeley Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --font-fixedsys: "Fixedsys", monospace;
+      --font-size-base: 19px;
+      --font-size-lg: 21px;
+      --font-size-xl: 22px;
+      --font-size-2xl: 24px;
+      --font-size-3xl: 36px;
+      --font-size-4xl: 42px;
+    }
+
+    /* ========================================
+       BASE STYLES
+    ======================================== */
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      background-color: var(--bg-dark);
+      font-family: var(--font-mono);
+      font-size: var(--font-size-base);
+      font-weight: 400;
+      color: var(--text-primary);
+      margin: 0;
+      padding: 0;
+      line-height: 1.6;
+    }
+
+    /* ========================================
+       LAYOUT
+    ======================================== */
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 40px 24px;
+    }
+
+    .section {
+      margin-bottom: 80px;
+    }
+
+    .section-title {
+      font-size: 28px;
+      font-weight: 700;
+      margin: 0 0 8px 0;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border-blue);
+      color: var(--primary-blue);
+    }
+
+    .section-description {
+      color: var(--text-secondary);
+      margin-bottom: 32px;
+    }
+
+    .subsection {
+      margin-bottom: 40px;
+    }
+
+    .subsection-title {
+      font-size: 20px;
+      color: var(--text-primary);
+      margin: 0 0 16px 0;
+    }
+
+    .example-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    /* ========================================
+       TYPOGRAPHY
+    ======================================== */
+    .heading-1 {
+      font-size: var(--font-size-4xl);
+      font-weight: 700;
+      margin: 0;
+    }
+
+    .heading-2 {
+      font-size: var(--font-size-3xl);
+      font-weight: 700;
+      margin: 0;
+    }
+
+    .heading-3 {
+      font-size: var(--font-size-2xl);
+      font-weight: 600;
+      margin: 0;
+    }
+
+    .body-text {
+      font-size: var(--font-size-base);
+      line-height: 1.6;
+    }
+
+    .text-muted {
+      color: var(--text-muted);
+    }
+
+    .text-secondary {
+      color: var(--text-secondary);
+    }
+
+    .text-accent {
+      color: var(--accent-green);
+    }
+
+    .font-fixedsys {
+      font-family: var(--font-fixedsys);
+    }
+
+    /* ========================================
+       BUTTONS - BEVELED 3D STYLE
+    ======================================== */
+    .btn {
+      font-family: var(--font-fixedsys);
+      font-size: 20px;
+      text-align: center;
+      cursor: pointer;
+      border-width: 3px;
+      border-style: solid;
+      border-top-color: var(--btn-border-top);
+      border-right-color: var(--btn-border-right);
+      border-bottom-color: var(--btn-border-bottom);
+      border-left-color: var(--btn-border-left);
+      background-color: var(--bg-button);
+      color: var(--text-primary);
+      padding: 4px 17px 7px;
+      display: inline-block;
+      text-decoration: none;
+      transition: background-color 0.1s;
+    }
+
+    .btn:hover {
+      background-color: var(--bg-button-hover);
+    }
+
+    .btn:active {
+      border-top-color: var(--btn-border-bottom);
+      border-right-color: var(--btn-border-top);
+      border-bottom-color: var(--btn-border-top);
+      border-left-color: var(--btn-border-bottom);
+    }
+
+    .btn:active .btn-text {
+      transform: translate(1.5px, 1.5px);
+    }
+
+    .btn-text {
+      white-space: nowrap;
+      user-select: none;
+      display: inline-block;
+    }
+
+    .btn-sm {
+      font-size: 18px;
+      padding: 2px 12px 4px;
+    }
+
+    .btn-lg {
+      font-size: 23px;
+      padding: 4px 19px 7px;
+    }
+
+    .btn-icon {
+      padding: 0;
+      width: 36px;
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .btn-dots {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .btn-dot {
+      width: 3px;
+      height: 3px;
+      background-color: var(--text-primary);
+      display: block;
+    }
+
+    /* ========================================
+       FORM INPUTS
+    ======================================== */
+    .input {
+      width: 100%;
+      height: 42px;
+      padding: 0 8px;
+      font-family: var(--font-mono);
+      font-size: var(--font-size-base);
+      color: var(--text-primary);
+      background-color: var(--bg-input);
+      border: none;
+      border-bottom: 2px solid var(--border-secondary);
+      outline: none;
+    }
+
+    .input:focus {
+      border-bottom-color: var(--text-primary);
+    }
+
+    .input::placeholder {
+      color: var(--text-placeholder);
+    }
+
+    .input-center {
+      text-align: center;
+    }
+
+    .input-boxed {
+      border: 2px solid var(--border-primary);
+      border-bottom: 2px solid var(--border-primary);
+    }
+
+    .input-boxed:focus {
+      border-color: var(--text-primary);
+    }
+
+    /* Floating Label Pattern */
+    .form-group {
+      position: relative;
+      margin-bottom: 48px;
+    }
+
+    .form-group .input {
+      padding-top: 8px;
+    }
+
+    .form-group .input::placeholder {
+      color: transparent;
+    }
+
+    .form-label {
+      position: absolute;
+      left: 0;
+      top: 45%;
+      transform: translateY(-50%);
+      width: 100%;
+      font-size: 20px;
+      color: var(--text-placeholder);
+      text-align: center;
+      cursor: text;
+      transition: transform 150ms cubic-bezier(0.4, 0, 0.2, 1);
+      pointer-events: none;
+    }
+
+    .form-group .input:focus + .form-label,
+    .form-group .input:not(:placeholder-shown) + .form-label {
+      transform: translateY(-62px);
+    }
+
+    /* Textarea */
+    .textarea {
+      width: 100%;
+      min-height: 120px;
+      padding: 12px;
+      font-family: var(--font-mono);
+      font-size: var(--font-size-base);
+      color: var(--text-primary);
+      background-color: var(--bg-input);
+      border: 2px solid var(--border-primary);
+      outline: none;
+      resize: vertical;
+    }
+
+    .textarea:focus {
+      border-color: var(--text-primary);
+    }
+
+    .textarea::placeholder {
+      color: var(--text-placeholder);
+    }
+
+    /* Checkbox */
+    .checkbox {
+      width: 20px;
+      height: 20px;
+      accent-color: var(--primary-blue);
+      cursor: pointer;
+    }
+
+    .checkbox:focus {
+      outline: 2px solid var(--primary-blue);
+      outline-offset: 0;
+    }
+
+    .checkbox:checked:focus {
+      outline-color: var(--text-primary);
+    }
+
+    .checkbox-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+
+    /* ========================================
+       LINKS
+    ======================================== */
+    .link {
+      color: var(--text-link);
+      text-decoration: underline;
+    }
+
+    .link:hover {
+      color: var(--text-link-hover);
+    }
+
+    .link-white {
+      color: var(--text-primary);
+      text-decoration: underline;
+      text-underline-offset: 4px;
+    }
+
+    .link-white:hover {
+      color: #7d9cf6;
+    }
+
+    .link-green {
+      color: var(--accent-green);
+      text-decoration: underline;
+    }
+
+    .link-green:hover {
+      text-decoration: none;
+    }
+
+    /* ========================================
+       CARDS
+    ======================================== */
+    .card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-blue);
+      box-shadow: 4px 4px 0 var(--shadow-blue);
+      padding: 24px;
+    }
+
+    .card-title {
+      font-size: 18px;
+      font-weight: 600;
+      margin: 0 0 8px 0;
+    }
+
+    .card-description {
+      color: var(--text-secondary);
+      margin: 0 0 16px 0;
+    }
+
+    .card-compact {
+      padding: 16px;
+      box-shadow: 2px 2px 0 var(--shadow-blue);
+    }
+
+    /* ========================================
+       DROPDOWN MENUS
+    ======================================== */
+    .menu {
+      position: absolute;
+      top: calc(100% - 2px);
+      right: 0;
+      z-index: 10;
+      white-space: nowrap;
+      border: 2px solid var(--border-primary);
+      background-color: var(--border-primary);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .menu-item {
+      display: block;
+      width: 100%;
+      padding: 4px 16px 5px 12px;
+      text-align: left;
+      background-color: var(--bg-menu-item);
+      color: var(--text-primary);
+      text-decoration: none;
+      border: none;
+      font-family: var(--font-mono);
+      font-size: var(--font-size-base);
+      cursor: pointer;
+    }
+
+    .menu-item:hover {
+      background-color: var(--bg-menu-item-hover);
+    }
+
+    /* ========================================
+       SEPARATORS / DIVIDERS
+    ======================================== */
+    .divider-dashed {
+      border: none;
+      border-top: 2px dashed var(--border-dashed);
+      margin: 0;
+    }
+
+    .divider-solid {
+      border: none;
+      border-top: 1px solid var(--border-blue);
+      margin: 0;
+    }
+
+    /* ========================================
+       CODE BLOCKS
+    ======================================== */
+    .code-inline {
+      background-color: var(--code-bg);
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 14px;
+    }
+
+    .code-block {
+      background-color: var(--code-bg);
+      border-left: 3px solid var(--primary-blue);
+      padding: 16px;
+      overflow-x: auto;
+    }
+
+    .code-block pre {
+      margin: 0;
+      font-family: var(--font-mono);
+      font-size: 14px;
+      line-height: 1.5;
+      white-space: pre;
+    }
+
+    .signature {
+      background-color: var(--code-bg);
+      border-left: 3px solid var(--primary-blue);
+      padding: 12px 16px;
+    }
+
+    .signature code {
+      display: block;
+      white-space: pre;
+    }
+
+    /* ========================================
+       TABLES
+    ======================================== */
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    .table th {
+      text-align: left;
+      color: var(--text-secondary);
+      font-weight: normal;
+      padding: 8px;
+      border-bottom: 1px solid var(--border-blue);
+    }
+
+    .table td {
+      padding: 8px;
+      border-bottom: 1px solid var(--shadow-blue);
+      vertical-align: top;
+    }
+
+    /* ========================================
+       BADGES / TAGS
+    ======================================== */
+    .badge {
+      display: inline-block;
+      background-color: var(--code-bg);
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: var(--primary-blue);
+    }
+
+    /* ========================================
+       LIST ITEMS (Dashboard Style)
+    ======================================== */
+    .list-item {
+      display: flex;
+      align-items: center;
+      padding: 13px 16px;
+      gap: 14px;
+    }
+
+    .list-item-icon {
+      width: 23px;
+      flex-shrink: 0;
+    }
+
+    .list-item-icon svg {
+      width: 100%;
+      height: auto;
+    }
+
+    .drag-handle {
+      width: 17px;
+      padding: 0 8px;
+      cursor: grab;
+      flex-shrink: 0;
+    }
+
+    .drag-handle:active {
+      cursor: grabbing;
+    }
+
+    /* ========================================
+       HEADER
+    ======================================== */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    .header-logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .header-logo img {
+      width: 48px;
+    }
+
+    .header-title {
+      font-size: var(--font-size-3xl);
+      font-weight: 700;
+      text-decoration: none;
+      color: var(--text-primary);
+    }
+
+    /* ========================================
+       BREADCRUMBS
+    ======================================== */
+    .breadcrumbs {
+      display: flex;
+      align-items: center;
+      font-size: var(--font-size-2xl);
+      gap: 4px;
+    }
+
+    .breadcrumb-link {
+      padding: 4px 8px;
+      color: var(--text-primary);
+      text-decoration: underline;
+    }
+
+    .breadcrumb-link:hover {
+      text-decoration: none;
+    }
+
+    .breadcrumb-separator {
+      color: var(--text-primary);
+    }
+
+    /* ========================================
+       FOOTER
+    ======================================== */
+    .footer {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 160px 16px 64px;
+      color: var(--accent-green);
+      text-align: center;
+    }
+
+    .footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 12px 24px;
+    }
+
+    .footer-link {
+      color: var(--accent-green);
+      text-decoration: underline;
+    }
+
+    .footer-link:hover {
+      text-decoration: none;
+    }
+
+    .footer-copyright {
+      margin-bottom: 12px;
+    }
+
+    /* ========================================
+       MODAL (micromodal style)
+    ======================================== */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.75);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .modal {
+      background-color: var(--bg-dark);
+      border: 2px solid var(--text-primary);
+      padding: 24px;
+      max-width: 480px;
+      width: 90%;
+    }
+
+    .modal-title {
+      font-size: 20px;
+      font-weight: 600;
+      margin: 0 0 16px 0;
+    }
+
+    .modal-content {
+      margin-bottom: 24px;
+    }
+
+    .modal-input {
+      width: 100%;
+      height: 42px;
+      padding: 0 12px;
+      font-family: var(--font-mono);
+      font-size: 16px;
+      color: var(--text-primary);
+      background-color: var(--bg-input);
+      border: 2px solid var(--border-primary);
+      outline: none;
+    }
+
+    .modal-input:focus {
+      border-color: var(--text-primary);
+    }
+
+    .modal-input::placeholder {
+      color: var(--text-placeholder);
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+    }
+
+    /* ========================================
+       TOAST NOTIFICATIONS
+    ======================================== */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 12px 24px;
+      font-family: var(--font-mono);
+      font-size: 18px;
+      border: 2px solid var(--border-blue);
+      z-index: 2000;
+    }
+
+    .toast-success {
+      background-color: var(--bg-card);
+      color: var(--accent-green);
+    }
+
+    .toast-error {
+      background-color: var(--bg-card);
+      color: #ff6b6b;
+    }
+
+    /* ========================================
+       UTILITY CLASSES
+    ======================================== */
+    .text-center { text-align: center; }
+    .text-left { text-align: left; }
+    .text-right { text-align: right; }
+
+    .mt-0 { margin-top: 0; }
+    .mt-4 { margin-top: 16px; }
+    .mt-8 { margin-top: 32px; }
+    .mb-0 { margin-bottom: 0; }
+    .mb-4 { margin-bottom: 16px; }
+    .mb-8 { margin-bottom: 32px; }
+
+    .flex { display: flex; }
+    .flex-col { flex-direction: column; }
+    .items-center { align-items: center; }
+    .justify-center { justify-content: center; }
+    .justify-between { justify-content: space-between; }
+    .gap-2 { gap: 8px; }
+    .gap-4 { gap: 16px; }
+    .gap-6 { gap: 24px; }
+
+    /* ========================================
+       COLOR SWATCHES
+    ======================================== */
+    .swatch-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 16px;
+    }
+
+    .swatch {
+      padding: 24px 12px 12px;
+      border: 1px solid var(--border-blue);
+    }
+
+    .swatch-name {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 8px;
+    }
+
+    .swatch-value {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* Demo positioning for menus */
+    .menu-demo-container {
+      position: relative;
+      display: inline-block;
+    }
+
+    .menu-demo {
+      position: relative;
+      top: 0;
+      right: auto;
+    }
+
+    /* Animating ellipsis */
+    .animating-ellipsis span {
+      opacity: 0;
+    }
+
+    .animating-ellipsis span:nth-child(1) {
+      animation: ellipsis-1 3.6s infinite;
+    }
+
+    .animating-ellipsis span:nth-child(2) {
+      animation: ellipsis-2 3.6s infinite;
+    }
+
+    .animating-ellipsis span:nth-child(3) {
+      animation: ellipsis-3 3.6s infinite;
+    }
+
+    @keyframes ellipsis-1 {
+      0%, 19% { opacity: 0; }
+      24%, 78% { opacity: 1; }
+      83%, 100% { opacity: 0; }
+    }
+
+    @keyframes ellipsis-2 {
+      0%, 33.5% { opacity: 0; }
+      38.5%, 78% { opacity: 1; }
+      83%, 100% { opacity: 0; }
+    }
+
+    @keyframes ellipsis-3 {
+      0%, 48% { opacity: 0; }
+      53%, 78% { opacity: 1; }
+      83%, 100% { opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header" style="padding-left: 0;">
+      <div class="header-logo">
+        <svg width="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="100" height="100" rx="12" fill="#6A73B6"/>
+          <path d="M25 30h50v40H25z" stroke="#fff" stroke-width="4" fill="none"/>
+          <path d="M35 45h30M35 55h20" stroke="#fff" stroke-width="4"/>
+        </svg>
+        <a href="#" class="header-title">Style Guide</a>
+      </div>
+    </header>
+
+    <!-- Colors Section -->
+    <section class="section">
+      <h2 class="section-title">Colors</h2>
+      <p class="section-description">The core color palette for Hyperclay's dark theme.</p>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Backgrounds</h3>
+        <div class="swatch-grid">
+          <div class="swatch" style="background-color: #0B0C12;">
+            <div class="swatch-name">bg-dark</div>
+            <div class="swatch-value">#0B0C12</div>
+          </div>
+          <div class="swatch" style="background-color: #11131e;">
+            <div class="swatch-name">bg-card</div>
+            <div class="swatch-value">#11131e</div>
+          </div>
+          <div class="swatch" style="background-color: #292E54;">
+            <div class="swatch-name">bg-input</div>
+            <div class="swatch-value">#292E54</div>
+          </div>
+          <div class="swatch" style="background-color: #1D1F2F;">
+            <div class="swatch-name">bg-button</div>
+            <div class="swatch-value">#1D1F2F</div>
+          </div>
+          <div class="swatch" style="background-color: #232639;">
+            <div class="swatch-name">bg-button-hover</div>
+            <div class="swatch-value">#232639</div>
+          </div>
+          <div class="swatch" style="background-color: #111425;">
+            <div class="swatch-name">bg-menu-item</div>
+            <div class="swatch-value">#111425</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Accents</h3>
+        <div class="swatch-grid">
+          <div class="swatch" style="background-color: #6A73B6;">
+            <div class="swatch-name">primary-blue</div>
+            <div class="swatch-value">#6A73B6</div>
+          </div>
+          <div class="swatch" style="background-color: #12B886;">
+            <div class="swatch-name">accent-green</div>
+            <div class="swatch-value">#12B886</div>
+          </div>
+          <div class="swatch" style="background-color: #df3bfa;">
+            <div class="swatch-name">accent-purple</div>
+            <div class="swatch-value">#df3bfa</div>
+          </div>
+          <div class="swatch" style="background-color: #03ff00;">
+            <div class="swatch-name" style="color: #0B0C12;">neon-green</div>
+            <div class="swatch-value" style="color: #0B0C12;">#03ff00</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Text Colors</h3>
+        <div class="swatch-grid">
+          <div class="swatch" style="background-color: #fff; color: #0B0C12;">
+            <div class="swatch-name" style="color: #333;">text-primary</div>
+            <div class="swatch-value" style="color: #666;">#fff</div>
+          </div>
+          <div class="swatch" style="background-color: #B7BEFB; color: #0B0C12;">
+            <div class="swatch-name" style="color: #333;">text-secondary</div>
+            <div class="swatch-value" style="color: #666;">#B7BEFB</div>
+          </div>
+          <div class="swatch" style="background-color: #9B9BF6; color: #0B0C12;">
+            <div class="swatch-name" style="color: #333;">text-link</div>
+            <div class="swatch-value" style="color: #666;">#9B9BF6</div>
+          </div>
+          <div class="swatch" style="background-color: #9ca3af; color: #0B0C12;">
+            <div class="swatch-name" style="color: #333;">text-muted</div>
+            <div class="swatch-value" style="color: #666;">#9ca3af</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Borders</h3>
+        <div class="swatch-grid">
+          <div class="swatch" style="background-color: #8A92BB; color: #0B0C12;">
+            <div class="swatch-name" style="color: #333;">border-primary</div>
+            <div class="swatch-value" style="color: #666;">#8A92BB</div>
+          </div>
+          <div class="swatch" style="background-color: #495197;">
+            <div class="swatch-name">border-dashed</div>
+            <div class="swatch-value">#495197</div>
+          </div>
+          <div class="swatch" style="background-color: #6A73B6;">
+            <div class="swatch-name">border-blue</div>
+            <div class="swatch-value">#6A73B6</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Typography Section -->
+    <section class="section">
+      <h2 class="section-title">Typography</h2>
+      <p class="section-description">Berkeley Mono is the primary typeface. Fixedsys is used for buttons.</p>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Headings</h3>
+        <div class="mb-4">
+          <div class="heading-1">Heading 1 (42px bold)</div>
+        </div>
+        <div class="mb-4">
+          <div class="heading-2">Heading 2 (36px bold)</div>
+        </div>
+        <div class="mb-4">
+          <div class="heading-3">Heading 3 (24px semibold)</div>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Body Text</h3>
+        <p class="body-text">This is body text at 19px. The font is Berkeley Mono, a monospace typeface that brings clarity and consistency to the interface. Line height is set to 1.6 for comfortable reading.</p>
+        <p class="body-text text-secondary">This is secondary text using a lighter purple tone for less emphasis.</p>
+        <p class="body-text text-muted">This is muted text for metadata and captions.</p>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Special Text</h3>
+        <p><span class="text-accent">app: my-project</span> - Accent green for app names</p>
+        <p class="font-fixedsys">Fixedsys font for buttons and retro styling</p>
+        <p>Loading<span class="animating-ellipsis"><span>.</span><span>.</span><span>.</span></span> - Animated ellipsis</p>
+      </div>
+    </section>
+
+    <!-- Buttons Section -->
+    <section class="section">
+      <h2 class="section-title">Buttons</h2>
+      <p class="section-description">Beveled 3D buttons with press-down effect. Uses Fixedsys font.</p>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Button Sizes</h3>
+        <div class="example-row">
+          <button class="btn btn-sm"><span class="btn-text">Small</span></button>
+          <button class="btn"><span class="btn-text">Default</span></button>
+          <button class="btn btn-lg"><span class="btn-text">Large</span></button>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Button Variations</h3>
+        <div class="example-row">
+          <button class="btn"><span class="btn-text">Log in</span></button>
+          <button class="btn"><span class="btn-text">Create html app</span></button>
+          <button class="btn"><span class="btn-text">new folder</span></button>
+          <button class="btn btn-icon">
+            <span class="btn-dots btn-text">
+              <span class="btn-dot"></span>
+              <span class="btn-dot"></span>
+              <span class="btn-dot"></span>
+            </span>
+          </button>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Button as Link</h3>
+        <div class="example-row">
+          <a href="#" class="btn"><span class="btn-text">Link Button</span></a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Form Inputs Section -->
+    <section class="section">
+      <h2 class="section-title">Form Inputs</h2>
+      <p class="section-description">Minimal inputs with bottom border focus style.</p>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Text Input with Floating Label</h3>
+        <div style="max-width: 420px;">
+          <div class="form-group">
+            <input type="email" class="input input-center" id="email-demo" placeholder="email address">
+            <label class="form-label" for="email-demo">email address</label>
+          </div>
+          <div class="form-group">
+            <input type="password" class="input input-center" id="password-demo" placeholder="password">
+            <label class="form-label" for="password-demo">password</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Boxed Input</h3>
+        <div style="max-width: 420px;">
+          <input type="text" class="input input-boxed" placeholder="html app name">
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Textarea</h3>
+        <div style="max-width: 420px;">
+          <textarea class="textarea" placeholder="Enter your message..."></textarea>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Checkbox</h3>
+        <div class="example-row">
+          <label class="checkbox-label">
+            <input type="checkbox" class="checkbox">
+            <span>Unchecked option</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" class="checkbox" checked>
+            <span>Checked option</span>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <!-- Links Section -->
+    <section class="section">
+      <h2 class="section-title">Links</h2>
+      <p class="section-description">Various link styles for different contexts.</p>
+
+      <div class="example-row">
+        <a href="#" class="link">Default link</a>
+        <a href="#" class="link-white">White underlined link</a>
+        <a href="#" class="link-green">Green footer link</a>
+      </div>
+    </section>
+
+    <!-- Cards Section -->
+    <section class="section">
+      <h2 class="section-title">Cards</h2>
+      <p class="section-description">Shadowed cards with blue border accent.</p>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Default Card</h3>
+        <div class="card" style="max-width: 500px;">
+          <h4 class="card-title">toast</h4>
+          <p class="card-description">Display a toast notification for success or error messages.</p>
+          <div class="badge">Available as: window.toast</div>
+          <div class="signature mt-4">
+            <code>toast(message, messageType)</code>
+          </div>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Compact Card</h3>
+        <div class="card card-compact" style="max-width: 300px;">
+          <h4 class="card-title">Quick Action</h4>
+          <p class="card-description">Smaller padding for dense layouts.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Code Blocks Section -->
+    <section class="section">
+      <h2 class="section-title">Code Blocks</h2>
+      <p class="section-description">Styled code with left border accent.</p>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Inline Code</h3>
+        <p>Use <code class="code-inline">toast('message')</code> to show notifications.</p>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Code Block</h3>
+        <div class="code-block">
+<pre>// Show a success message
+toast('Changes saved!', 'success');
+
+// Show an error message
+toast('Something went wrong', 'error');
+
+// Success is the default type
+toast('Uploaded successfully');</pre>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Signature Block</h3>
+        <div class="signature">
+          <code>themodal.html = content;
+themodal.yes = buttonContent;
+themodal.open();</code>
+        </div>
+      </div>
+    </section>
+
+    <!-- Dropdown Menus Section -->
+    <section class="section">
+      <h2 class="section-title">Dropdown Menus</h2>
+      <p class="section-description">Context menus with border-separated items.</p>
+
+      <div class="menu-demo-container">
+        <div class="menu menu-demo">
+          <span class="menu-item">hi, username!</span>
+          <a href="#" class="menu-item">docs</a>
+          <button class="menu-item">upload file</button>
+          <a href="#" class="menu-item">report issue</a>
+          <a href="#" class="menu-item">manage billing</a>
+          <a href="#" class="menu-item">logout</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- List Items Section -->
+    <section class="section">
+      <h2 class="section-title">List Items</h2>
+      <p class="section-description">Dashboard-style list items with icons and actions.</p>
+
+      <div style="border: 1px solid var(--border-dashed);">
+        <hr class="divider-dashed">
+        <div class="list-item">
+          <svg class="drag-handle" viewBox="0 0 17 29" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect fill="#4B5192" width="5" height="5"/>
+            <rect fill="#4B5192" x="12" width="5" height="5"/>
+            <rect fill="#4B5192" y="12" width="5" height="5"/>
+            <rect fill="#4B5192" x="12" y="12" width="5" height="5"/>
+            <rect fill="#4B5192" y="24" width="5" height="5"/>
+            <rect fill="#4B5192" x="12" y="24" width="5" height="5"/>
+          </svg>
+          <svg class="list-item-icon" viewBox="0 0 23 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M1.3 18.3V1.6h8.3v3.1h11.5v13.6H1.3Z" stroke="#fff" stroke-width="2.3"/>
+          </svg>
+          <a href="#" class="link-white">my-folder</a>
+          <button class="btn btn-icon" style="margin-left: auto;">
+            <span class="btn-dots btn-text">
+              <span class="btn-dot"></span>
+              <span class="btn-dot"></span>
+              <span class="btn-dot"></span>
+            </span>
+          </button>
+        </div>
+        <hr class="divider-dashed">
+        <div class="list-item">
+          <svg class="drag-handle" viewBox="0 0 17 29" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect fill="#4B5192" width="5" height="5"/>
+            <rect fill="#4B5192" x="12" width="5" height="5"/>
+            <rect fill="#4B5192" y="12" width="5" height="5"/>
+            <rect fill="#4B5192" x="12" y="12" width="5" height="5"/>
+            <rect fill="#4B5192" y="24" width="5" height="5"/>
+            <rect fill="#4B5192" x="12" y="24" width="5" height="5"/>
+          </svg>
+          <svg class="list-item-icon" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M5.3501 12.9C10.7501 16.95 23.8001 22.8 38.6501 12.9" stroke="white" stroke-width="4"/>
+            <path d="M4 25.5C15.7 32.7 26.95 32.7 40 25.5" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M17.1498 3.55C13.1001 10.75 9.04992 28.75 17.1498 40" stroke="white" stroke-width="4"/>
+            <path d="M27.3002 3.55C31.3499 10.75 35.4 28.75 27.3002 40" stroke="white" stroke-width="4"/>
+            <circle cx="22.0001" cy="22" r="18.9" stroke="white" stroke-width="4.5"/>
+          </svg>
+          <a href="#" class="link-white">my-website</a>
+          <button class="btn btn-icon" style="margin-left: auto;">
+            <span class="btn-dots btn-text">
+              <span class="btn-dot"></span>
+              <span class="btn-dot"></span>
+              <span class="btn-dot"></span>
+            </span>
+          </button>
+        </div>
+        <hr class="divider-dashed">
+      </div>
+    </section>
+
+    <!-- Breadcrumbs Section -->
+    <section class="section">
+      <h2 class="section-title">Breadcrumbs</h2>
+      <p class="section-description">Navigation path with folder icons.</p>
+
+      <div class="breadcrumbs">
+        <a href="#" class="breadcrumb-link" style="margin-left: -8px;">
+          <svg width="30" viewBox="0 0 23 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M1.3 18.3V1.6h8.3v3.1h11.5v13.6H1.3Z" stroke="#fff" stroke-width="2.3"/>
+          </svg>
+        </a>
+        <span class="breadcrumb-separator">/</span>
+        <a href="#" class="breadcrumb-link">projects</a>
+        <span class="breadcrumb-separator">/</span>
+        <a href="#" class="breadcrumb-link">website</a>
+      </div>
+    </section>
+
+    <!-- Dividers Section -->
+    <section class="section">
+      <h2 class="section-title">Dividers</h2>
+      <p class="section-description">Horizontal separators for content sections.</p>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Dashed Divider</h3>
+        <hr class="divider-dashed">
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Solid Divider</h3>
+        <hr class="divider-solid">
+      </div>
+    </section>
+
+    <!-- Tables Section -->
+    <section class="section">
+      <h2 class="section-title">Tables</h2>
+      <p class="section-description">Data tables with subtle row borders.</p>
+
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Default</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code class="code-inline">message</code></td>
+            <td><code class="code-inline">string</code></td>
+            <td>-</td>
+            <td>The message to display</td>
+          </tr>
+          <tr>
+            <td><code class="code-inline">messageType</code></td>
+            <td><code class="code-inline">string</code></td>
+            <td><code class="code-inline">'success'</code></td>
+            <td>Either 'success' or 'error'</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Modal Section -->
+    <section class="section">
+      <h2 class="section-title">Modal</h2>
+      <p class="section-description">Confirmation and input dialogs.</p>
+
+      <div class="modal" style="position: relative; max-width: 400px;">
+        <h3 class="modal-title">Enter a value</h3>
+        <div class="modal-content">
+          <input type="text" class="modal-input" placeholder="Type here...">
+        </div>
+        <div class="modal-actions">
+          <button class="btn"><span class="btn-text">Cancel</span></button>
+          <button class="btn"><span class="btn-text">Confirm</span></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Toast Section -->
+    <section class="section">
+      <h2 class="section-title">Toast Notifications</h2>
+      <p class="section-description">Feedback messages for user actions.</p>
+
+      <div class="example-row">
+        <div class="toast toast-success" style="position: relative; transform: none;">
+          Changes saved!
+        </div>
+        <div class="toast toast-error" style="position: relative; transform: none;">
+          Something went wrong
+        </div>
+      </div>
+    </section>
+
+    <!-- Badges Section -->
+    <section class="section">
+      <h2 class="section-title">Badges</h2>
+      <p class="section-description">Small labels for metadata.</p>
+
+      <div class="example-row">
+        <span class="badge">Available as: window.toast</span>
+        <span class="badge">hyperclay.ask</span>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <p class="footer-copyright">&copy; 2025 Hyperspace Systems LLC</p>
+      <div class="footer-links">
+        <a href="#" class="footer-link">Home</a>
+        <a href="#" class="footer-link">Docs</a>
+        <a href="#" class="footer-link">Blog</a>
+        <a href="#" class="footer-link">Changelog</a>
+        <a href="#" class="footer-link">Terms</a>
+        <a href="#" class="footer-link">Privacy</a>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>
