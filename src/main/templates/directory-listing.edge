@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ displayPath ? displayPath : 'Home' }} - Hyperclay Local</title>
+  <link rel="stylesheet" href="/__templates/directory-listing.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <nav class="breadcrumbs">
+        @if(breadcrumbs.length === 0)
+          <span class="breadcrumb-icon">
+            <svg width="30" viewBox="0 0 23 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M1.3 18.3V1.6h8.3v3.1h11.5v13.6H1.3Z" stroke="#B7BEFB" stroke-width="2.3"/>
+            </svg>
+          </span>
+          <span class="breadcrumb-current">Home</span>
+        @else
+          <a href="/" class="breadcrumb-icon">
+            <svg width="30" viewBox="0 0 23 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M1.3 18.3V1.6h8.3v3.1h11.5v13.6H1.3Z" stroke="#B7BEFB" stroke-width="2.3"/>
+            </svg>
+          </a>
+          @each((crumb, index) in breadcrumbs)
+            <span class="breadcrumb-separator">/</span>
+            @if(index === breadcrumbs.length - 1)
+              <span class="breadcrumb-current">{{ crumb.name }}</span>
+            @else
+              <a href="{{ crumb.path }}" class="breadcrumb-link">{{ crumb.name }}</a>
+            @end
+          @end
+        @end
+      </nav>
+      <div class="settings-container">
+        <button class="settings-btn" onclick="this.parentElement.classList.toggle('open')">
+          <svg style="width:100%" viewBox="0 0 1417 1291" fill="#B7BEFB" xmlns="http://www.w3.org/2000/svg">
+            <path d="M0 105.107H103V1176.11H0V105.107Z"/>
+            <path d="M1313.78 105.107H1416.78V1186.5H1313.78V105.107Z"/>
+            <path d="M103.723 0H1313.72V105H103.723V0Z"/>
+            <path d="M1225.28 1190.56H189.496V1069H102.054V1290.33H1309.28V1186.5H1314.72V1069H1225.28L1225.28 1190.56Z"/>
+            <path d="M251.509 952.893H1165.28V251.56H251.496V952L251.509 952.893ZM873.736 448.893H990.179V565.336H873.736V448.893ZM563.509 699.56H852.403V816.003H563.509V699.56ZM425.736 448.893H542.179V565.336H425.736V448.893Z"/>
+          </svg>
+        </button>
+        <div class="settings-menu">
+          <a href="https://docs.hyperclay.com/docs/hyperclay-local-desktop-app-documentation/#syncing-with-hyperclaycom" target="_blank" class="menu-item">Get sync key</a>
+          <a href="https://github.com/panphora/hyperclay-platform" target="_blank" class="menu-item">Report issues</a>
+          <a href="https://hyperclay.com/hyperclay-local" target="_blank" class="menu-item">Hyperclay Local</a>
+        </div>
+      </div>
+    </header>
+
+    <div class="file-list">
+      @if(dirs.length === 0 && files.length === 0)
+        <p class="empty-message">This directory is empty</p>
+      @else
+        <hr class="divider-dashed">
+
+        @each(dir in dirs)
+          <a href="/{{ dir.path }}" class="list-item">
+            <span class="list-item-icon">
+              <svg viewBox="0 0 23 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M1.3 18.3V1.6h8.3v3.1h11.5v13.6H1.3Z" stroke="#fff" stroke-width="2.3"/>
+              </svg>
+            </span>
+            <span class="list-item-link">{{{ dir.displayName }}}</span>
+          </a>
+          <hr class="divider-dashed">
+        @end
+
+        @each(file in files)
+          <a href="/{{ file.path }}" class="list-item">
+            <span class="list-item-icon">
+              @if(file.isHtml)
+                <svg viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M5.3501 12.9C10.7501 16.95 23.8001 22.8 38.6501 12.9" stroke="#fff" stroke-width="4"/>
+                  <path d="M4 25.5C15.7 32.7 26.95 32.7 40 25.5" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M17.1498 3.55C13.1001 10.75 9.04992 28.75 17.1498 40" stroke="#fff" stroke-width="4"/>
+                  <path d="M27.3002 3.55C31.3499 10.75 35.4 28.75 27.3002 40" stroke="#fff" stroke-width="4"/>
+                  <circle cx="22.0001" cy="22" r="18.9" stroke="#fff" stroke-width="4.5"/>
+                </svg>
+              @else
+                <svg viewBox="0 0 48 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M28.0984 3.6887V17.7537H40.7084" stroke="#fff" stroke-width="4.5"/>
+                  <path d="M40.4368 14.9504L28.0596 3H8V46H40.4368V14.9504Z" stroke="#fff" stroke-width="4.5"/>
+                </svg>
+              @end
+            </span>
+            <span class="list-item-link">{{{ file.displayName }}}</span>
+          </a>
+          <hr class="divider-dashed">
+        @end
+      @end
+    </div>
+
+  </div>
+  <script>
+    document.addEventListener('click', (e) => {
+      const container = document.querySelector('.settings-container');
+      if (!container.contains(e.target)) {
+        container.classList.remove('open');
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,12 +1,18 @@
-const express = require('express');
-const fs = require('fs').promises;
-const path = require('upath');
-const crypto = require('crypto');
-const cheerio = require('cheerio');
-const { validateFileName } = require('../sync-engine/validation');
-const { createBackup } = require('./utils/backup');
-const { compileTailwind, getTailwindCssName } = require('tailwind-hyperclay');
-const { liveSync } = require('livesync-hyperclay');
+import express from 'express';
+import { promises as fs } from 'fs';
+import path from 'upath';
+import crypto from 'crypto';
+import * as cheerio from 'cheerio';
+import chokidar from 'chokidar';
+import { Edge } from 'edge.js';
+import { validateFileName } from '../sync-engine/validation.js';
+import { createBackup } from './utils/backup.js';
+import { compileTailwind, getTailwindCssName } from 'tailwind-hyperclay';
+import { liveSync } from 'livesync-hyperclay';
+
+// Initialize Edge.js
+const edge = Edge.create();
+edge.mount(new URL('./templates', import.meta.url));
 
 // Track who initiated the last save (for sender attribution in watcher)
 // This prevents duplicate broadcasts when browser saves trigger file watcher
@@ -37,6 +43,24 @@ function startServer(baseDir) {
       res.cookie('isAdminOfCurrentResource', 'true', cookieOptions);
       res.cookie('isLoggedIn', 'true', cookieOptions);
       next();
+    });
+
+    // Serve template CSS files
+    app.get('/__templates/:filename', async (req, res) => {
+      const filename = req.params.filename;
+      if (!filename.endsWith('.css')) {
+        return res.status(404).send('Not found');
+      }
+      const safeName = path.basename(filename);
+      const templateDir = new URL('./templates', import.meta.url).pathname;
+      const cssPath = path.join(templateDir, safeName);
+      try {
+        const css = await fs.readFile(cssPath, 'utf8');
+        res.setHeader('Content-Type', 'text/css');
+        res.send(css);
+      } catch {
+        res.status(404).send('Not found');
+      }
     });
 
     // Middleware to parse JSON body for live-sync endpoint
@@ -136,7 +160,6 @@ function startServer(baseDir) {
     });
 
     // File watcher for live-sync (broadcasts changes to connected browsers)
-    const chokidar = require('chokidar');
     const liveSyncWatcher = chokidar.watch('**/*.html', {
       cwd: baseDir,
       persistent: true,
@@ -213,7 +236,7 @@ function startServer(baseDir) {
       // Security check: Ensure the final path resolves within the base directory
       const resolvedPath = path.resolve(filePath);
       const resolvedBaseDir = path.resolve(baseDir);
-      
+
       if (!resolvedPath.startsWith(resolvedBaseDir + path.sep) || path.dirname(resolvedPath) !== resolvedBaseDir) {
         console.error(`Security Alert: Attempt to save outside base directory blocked for "${name}"`);
         return res.status(400).json({
@@ -252,10 +275,10 @@ function startServer(baseDir) {
             // File doesn't exist yet, that's OK
           }
         }
-        
+
         // Create backup of the new content
         await createBackup(baseDir, name, content);
-        
+
         // Write file (creates if not exists, overwrites if exists)
         await fs.writeFile(filePath, content, 'utf8');
 
@@ -392,20 +415,20 @@ function stopServer() {
   return new Promise((resolve) => {
     if (server) {
       console.log('Stopping server...');
-      
+
       // Force close all active connections
       for (const connection of connections) {
         connection.destroy();
       }
       connections.clear();
-      
+
       server.close(() => {
         server = null;
         app = null;
         console.log('Server stopped');
         resolve();
       });
-      
+
       // Fallback: Use built-in closeAllConnections if available (Node.js 18.2+)
       if (server.closeAllConnections) {
         server.closeAllConnections();
@@ -424,130 +447,84 @@ function isServerRunning() {
   return server !== null;
 }
 
+function addWordBreaks(name) {
+  // Rule 1: After separators (-, _, /)
+  let result = name.replace(/([-_/])/g, '$1<wbr>');
+
+  // Rule 4: CamelCase (lowercase → uppercase)
+  result = result.replace(/([a-z])([A-Z])/g, '$1<wbr>$2');
+
+  // Rule 5: Letter → Number transition
+  result = result.replace(/([a-zA-Z])(\d)/g, '$1<wbr>$2');
+
+  // Rule 2 & 3: Handle dots - before last dot, after intermediate dots
+  const lastDotIndex = result.lastIndexOf('.');
+  if (lastDotIndex > 0) {
+    // Add break after intermediate dots (not the last one)
+    const beforeLastDot = result.slice(0, lastDotIndex).replace(/\./g, '.<wbr>');
+    const lastDotAndAfter = result.slice(lastDotIndex);
+    result = beforeLastDot + '<wbr>' + lastDotAndAfter;
+  }
+
+  return result;
+}
+
 async function serveDirListing(res, dirPath, baseDir) {
   try {
     const entries = await fs.readdir(dirPath, { withFileTypes: true });
-    
+
     // Get relative path for display
     const relPath = path.relative(baseDir, dirPath);
     const displayPath = relPath === '' ? '' : relPath;
 
-    res.setHeader('Content-Type', 'text/html');
-    
-    let html = `<!DOCTYPE html>
-<html>
-<head>
-    <title>📁 Directory: /${displayPath}</title>
-    <style>
-        body { 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
-            margin: 40px; 
-            background: #f5f5f5; 
-        }
-        .container { 
-            background: white; 
-            padding: 30px; 
-            border-radius: 8px; 
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1); 
-        }
-        h1 { 
-            color: #333; 
-            border-bottom: 2px solid #eee; 
-            padding-bottom: 10px; 
-        }
-        .file-list { 
-            list-style: none; 
-            padding: 0; 
-        }
-        .file-item { 
-            padding: 8px 0; 
-            border-bottom: 1px solid #eee; 
-        }
-        .file-item:hover { 
-            background: #f9f9f9; 
-            margin: 0 -10px; 
-            padding-left: 10px; 
-            padding-right: 10px; 
-        }
-        .file-link { 
-            text-decoration: none; 
-            color: #0066cc; 
-            display: flex; 
-            align-items: center; 
-        }
-        .file-link:hover { 
-            text-decoration: underline; 
-        }
-        .icon { 
-            margin-right: 10px; 
-            font-size: 16px; 
-        }
-        .html-file { 
-            color: #ff6b35; 
-        }
-        .directory { 
-            color: #4a90e2; 
-            font-weight: 500; 
-        }
-        .back-link { 
-            color: #666; 
-            margin-bottom: 20px; 
-            display: inline-block; 
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>📁 Directory: /${displayPath}</h1>`;
-
-    // Add back link if not in root
-    if (displayPath !== '') {
-      const parentPath = path.dirname('/' + displayPath);
-      const backPath = parentPath === '/.' ? '/' : parentPath;
-      html += `<a href="${backPath}" class="back-link">⬆️ Back to parent directory</a>`;
-    }
-
-    html += '<ul class="file-list">';
-
     // Sort entries: directories first, then files
-    const dirs = entries.filter(entry => entry.isDirectory() && !entry.name.startsWith('.'));
-    const files = entries.filter(entry => entry.isFile() && !entry.name.startsWith('.'));
+    const dirs = entries
+      .filter(entry => entry.isDirectory() && !entry.name.startsWith('.'))
+      .map(entry => ({
+        name: entry.name,
+        displayName: addWordBreaks(entry.name),
+        path: displayPath ? `${displayPath}/${entry.name}` : entry.name
+      }));
 
-    // List directories
-    for (const entry of dirs) {
-      const entryPath = displayPath ? `${displayPath}/${entry.name}` : entry.name;
-      html += `<li class="file-item">
-        <a href="/${entryPath}" class="file-link directory">
-          <span class="icon">📁</span>${entry.name}/
-        </a>
-      </li>`;
+    const files = entries
+      .filter(entry => entry.isFile() && !entry.name.startsWith('.'))
+      .map(entry => ({
+        name: entry.name,
+        displayName: addWordBreaks(entry.name),
+        path: displayPath ? `${displayPath}/${entry.name}` : entry.name,
+        isHtml: entry.name.endsWith('.html')
+      }));
+
+    // Build breadcrumbs array
+    const breadcrumbs = [];
+    if (displayPath) {
+      const parts = displayPath.split('/');
+      let currentPath = '';
+      for (const part of parts) {
+        currentPath = currentPath ? `${currentPath}/${part}` : part;
+        breadcrumbs.push({
+          name: part,
+          path: '/' + currentPath
+        });
+      }
     }
 
-    // List files
-    for (const entry of files) {
-      const entryPath = displayPath ? `${displayPath}/${entry.name}` : entry.name;
-      const icon = entry.name.endsWith('.html') ? '🌐' : '📄';
-      const className = entry.name.endsWith('.html') ? 'html-file' : '';
-      
-      html += `<li class="file-item">
-        <a href="/${entryPath}" class="file-link ${className}">
-          <span class="icon">${icon}</span>${entry.name}
-        </a>
-      </li>`;
-    }
+    const html = await edge.render('directory-listing', {
+      displayPath,
+      dirs,
+      files,
+      breadcrumbs
+    });
 
-    html += `</ul>
-    </div>
-</body>
-</html>`;
-
+    res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch (error) {
+    console.error('Error rendering directory listing:', error);
     res.status(500).send('Error reading directory');
   }
 }
 
-module.exports = {
+export {
   startServer,
   stopServer,
   getServerPort,

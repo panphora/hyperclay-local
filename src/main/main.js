@@ -1,10 +1,24 @@
 const { app, BrowserWindow, dialog, shell, Menu, Tray, nativeImage, ipcMain, safeStorage } = require('electron');
 const path = require('upath');
 const fs = require('fs');
-const { startServer, stopServer, getServerPort, isServerRunning } = require('./server');
 const syncEngine = require('../sync-engine');
 const syncLogger = require('../sync-engine/logger');
 const { getServerBaseUrl } = require('./utils/utils');
+
+// Server module (ESM) - loaded dynamically
+let serverModule = null;
+const getServer = async () => {
+  if (!serverModule) {
+    serverModule = await import('./server.mjs');
+  }
+  return serverModule;
+};
+
+// Synchronous accessors for server functions (after module is loaded)
+const startServer = async (dir) => (await getServer()).startServer(dir);
+const stopServer = async () => (await getServer()).stopServer();
+const getServerPort = () => serverModule?.getServerPort() ?? 4321;
+const isServerRunning = () => serverModule?.isServerRunning() ?? false;
 
 // =============================================================================
 // APP CONFIGURATION
@@ -223,6 +237,15 @@ function getTrayMenuTemplate() {
 
   return [
     {
+      label: `Server: ${serverRunning ? 'On' : 'Off'}`,
+      enabled: false
+    },
+    {
+      label: `Sync: ${settings.syncEnabled ? 'On' : 'Off'}`,
+      enabled: false
+    },
+    { type: 'separator' },
+    {
       label: isAppVisible ? 'Hide App' : 'Show App',
       click: () => {
         if (isAppVisible) {
@@ -276,6 +299,25 @@ function getTrayMenuTemplate() {
               );
             }
           }
+        }
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Open Folder',
+      enabled: !!selectedFolder,
+      click: () => {
+        if (selectedFolder) {
+          shell.openPath(selectedFolder);
+        }
+      }
+    },
+    {
+      label: 'Open Browser',
+      enabled: serverRunning,
+      click: () => {
+        if (serverRunning) {
+          shell.openExternal(`http://localhost:${getServerPort()}`);
         }
       }
     },
@@ -672,9 +714,11 @@ function setupSyncEventHandlers() {
 
   syncEngine.on('sync-error', data => {
     mainWindow?.webContents.send('sync-update', {
-      error: data.error,
+      error: data.userMessage || data.error || data.originalError,
       priority: data.priority,
-      dismissable: data.dismissable
+      dismissable: data.dismissable,
+      type: data.type,
+      file: data.file
     });
   });
 
@@ -951,6 +995,9 @@ ipcMain.handle('resize-window', (event, height) => {
 // =============================================================================
 
 app.whenReady().then(async () => {
+  // Preload server module (ESM)
+  await getServer();
+
   // Ensure app name is set again after ready
   app.setName('Hyperclay Local');
 
