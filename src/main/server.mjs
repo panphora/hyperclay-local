@@ -1,8 +1,6 @@
 import express from 'express';
 import { promises as fs } from 'fs';
 import path from 'upath';
-import crypto from 'crypto';
-import * as cheerio from 'cheerio';
 import chokidar from 'chokidar';
 import { Edge } from 'edge.js';
 import { validateFileName } from '../sync-engine/validation.js';
@@ -106,10 +104,10 @@ function startServer(baseDir) {
 
     // Live-sync save endpoint
     app.post('/live-sync/save', async (req, res) => {
-      const { file, body, headHash, sender } = req.body;
+      const { file, html, sender } = req.body;
 
-      if (!file || typeof body !== 'string') {
-        return res.status(400).json({ error: 'file and body are required' });
+      if (!file || typeof html !== 'string') {
+        return res.status(400).json({ error: 'file and html are required' });
       }
 
       // Validate file parameter to prevent path traversal
@@ -126,7 +124,6 @@ function startServer(baseDir) {
         return res.status(400).json({ error: 'Invalid file identifier' });
       }
 
-      // Write body to file
       const filepath = path.join(baseDir, file + '.html');
 
       // Security: ensure resolved path is within baseDir
@@ -135,18 +132,13 @@ function startServer(baseDir) {
       if (!resolvedPath.startsWith(resolvedBase + path.sep)) {
         return res.status(400).json({ error: 'Path escapes base directory' });
       }
+
       try {
-        const content = await fs.readFile(filepath, 'utf8');
-
-        // Replace body content
-        const newContent = content.replace(
-          /(<body[^>]*>)([\s\S]*)(<\/body>)/i,
-          (match, openTag, oldBody, closeTag) => openTag + body + closeTag
-        );
-
         // Track sender so watcher uses it instead of 'file-system'
         lastSender.set(file, sender);
-        await fs.writeFile(filepath, newContent, 'utf8');
+
+        // Write full HTML directly (no cheerio parsing needed)
+        await fs.writeFile(filepath, html, 'utf8');
         console.log(`[LiveSync] Saved: ${file} (from: ${sender})`);
 
         // Don't broadcast here - let the watcher handle it
@@ -179,23 +171,16 @@ function startServer(baseDir) {
 
       try {
         const filepath = path.join(baseDir, filename);
-        const content = await fs.readFile(filepath, 'utf8');
 
-        // Extract head and body using cheerio
-        const $ = cheerio.load(content);
-        const head = $('head').html() || '';
-        const body = $('body').html() || '';
-
-        // Allow empty body (clearing content is valid)
-
-        // Compute headHash using SHA-256 (first 16 hex chars)
-        const headHash = crypto.createHash('sha256').update(head).digest('hex').slice(0, 16);
+        // Read full file content (no cheerio parsing needed)
+        const html = await fs.readFile(filepath, 'utf8');
 
         // Use tracked sender if this was triggered by a browser save, otherwise 'file-system'
         const sender = lastSender.get(siteId) || 'file-system';
         lastSender.delete(siteId);
 
-        liveSync.broadcast(siteId, { body, headHash, sender });
+        // Broadcast full HTML (no headHash needed)
+        liveSync.broadcast(siteId, { html, sender });
         console.log(`[LiveSync] File changed, broadcast: ${siteId} (sender: ${sender})`);
       } catch (err) {
         console.error('[LiveSync] Error broadcasting file change:', err.message);
