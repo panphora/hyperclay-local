@@ -18,6 +18,22 @@ const eta = new Eta({
 // This prevents duplicate broadcasts when browser saves trigger file watcher
 const lastSender = new Map();
 
+// Store snapshot HTML for platform sync (keyed by filename)
+// When browser saves with snapshotHtml, we cache it for the sync engine to use
+const pendingSnapshots = new Map();
+
+/**
+ * Get and clear the cached snapshot HTML for a file
+ * Called by sync engine before uploading to platform
+ * @param {string} filename - Filename without .html extension
+ * @returns {string|null} The snapshot HTML or null if not available
+ */
+function getAndClearSnapshot(filename) {
+  const snapshot = pendingSnapshots.get(filename);
+  pendingSnapshots.delete(filename);
+  return snapshot || null;
+}
+
 let server = null;
 let app = null;
 const PORT = 4321;
@@ -191,13 +207,27 @@ function startServer(baseDir) {
 
     console.log(`[LiveSync] Watching ${baseDir} for HTML changes`);
 
-    // Middleware to parse plain text body for the /save route
-    app.use('/save/:name', express.text({ type: 'text/plain', limit: '10mb' }));
+    // Middleware to parse both JSON and plain text for the /save route
+    // JSON is used by Hyperclay Local browser (includes snapshotHtml for platform sync)
+    // Plain text is used as fallback for backwards compatibility
+    // 20MB limit to accommodate both stripped content and full snapshotHtml
+    app.use('/save/:name', express.json({ limit: '20mb' }));
+    app.use('/save/:name', express.text({ type: 'text/plain', limit: '20mb' }));
 
     // POST route to save/overwrite HTML files
     app.post('/save/:name', async (req, res) => {
       const { name } = req.params;
-      const content = req.body;
+
+      // Handle both JSON and plain text requests
+      let content, snapshotHtml;
+      if (req.body && typeof req.body === 'object' && Object.hasOwn(req.body, 'content')) {
+        // JSON request from Hyperclay Local browser
+        content = req.body.content;
+        snapshotHtml = req.body.snapshotHtml;
+      } else {
+        // Plain text request (backwards compatibility)
+        content = req.body;
+      }
 
       // Validate filename: only allow alphanumeric, underscore, hyphen
       const safeNameRegex = /^[a-zA-Z0-9_-]+$/;
@@ -277,6 +307,13 @@ function startServer(baseDir) {
           await fs.mkdir(cssDir, { recursive: true });
           await fs.writeFile(path.join(cssDir, `${tailwindName}.css`), css, 'utf8');
           console.log(`Generated Tailwind CSS: tailwindcss/${tailwindName}.css`);
+        }
+
+        // Store snapshot HTML for platform sync (if provided)
+        // The sync engine will retrieve this when uploading to platform
+        if (snapshotHtml) {
+          pendingSnapshots.set(name, snapshotHtml);
+          console.log(`[Platform Sync] Cached snapshot for ${name}`);
         }
 
         res.status(200).json({
@@ -529,5 +566,6 @@ module.exports = {
   startServer,
   stopServer,
   getServerPort,
-  isServerRunning
+  isServerRunning,
+  getAndClearSnapshot  // For sync engine to get cached snapshot HTML for platform sync
 };

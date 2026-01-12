@@ -98,19 +98,32 @@ async function downloadFromServer(serverUrl, apiKey, filename) {
  * @param {string} filename - Full path WITHOUT .html extension (may include folders)
  * @param {string} content - File content
  * @param {Date} modifiedAt - Modification time
+ * @param {Object} options - Additional options
+ * @param {string} options.snapshotHtml - Full HTML for platform live sync (optional)
+ * @param {string} options.senderId - Sender ID for live sync attribution (optional)
  */
-async function uploadToServer(serverUrl, apiKey, filename, content, modifiedAt) {
+async function uploadToServer(serverUrl, apiKey, filename, content, modifiedAt, options = {}) {
+  const { snapshotHtml, senderId } = options;
+
+  const payload = {
+    filename: filename, // Full path WITHOUT .html
+    content,
+    modifiedAt: modifiedAt.toISOString()
+  };
+
+  // Include snapshot for platform live sync (if available)
+  if (snapshotHtml) {
+    payload.snapshotHtml = snapshotHtml;
+    payload.senderId = senderId || 'hyperclay-local';
+  }
+
   const response = await fetch(`${serverUrl}/sync/upload`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-API-Key': apiKey
     },
-    body: JSON.stringify({
-      filename: filename, // Full path WITHOUT .html
-      content,
-      modifiedAt: modifiedAt.toISOString()
-    })
+    body: JSON.stringify(payload)
   });
 
   if (!response.ok) {

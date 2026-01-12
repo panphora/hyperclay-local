@@ -539,12 +539,30 @@ class SyncEngine extends EventEmitter {
 
       // Upload to server (filename WITHOUT .html)
       const filenameWithoutHtml = filename.replace(/\.html$/i, '');
+
+      // Try to get cached snapshot for platform live sync
+      let snapshotHtml = null;
+      try {
+        const { getAndClearSnapshot } = require('../main/server.js');
+        snapshotHtml = getAndClearSnapshot(filenameWithoutHtml);
+        if (snapshotHtml) {
+          console.log(`[SYNC] Including snapshot for platform live sync: ${filenameWithoutHtml}`);
+        }
+      } catch (err) {
+        // Server module not available or getAndClearSnapshot not exported
+        // This is fine - just upload without snapshot
+      }
+
       await uploadToServer(
         this.serverUrl,
         this.apiKey,
         filenameWithoutHtml,
         content,
-        stat.mtime
+        stat.mtime,
+        {
+          snapshotHtml,
+          senderId: 'hyperclay-local'
+        }
       );
 
       console.log(`[SYNC] Uploaded ${filename}`);
