@@ -1,16 +1,18 @@
-import express from 'express';
-import { promises as fs } from 'fs';
-import path from 'upath';
-import chokidar from 'chokidar';
-import { Edge } from 'edge.js';
-import { validateFileName } from '../sync-engine/validation.js';
-import { createBackup } from './utils/backup.js';
-import { compileTailwind, getTailwindCssName } from 'tailwind-hyperclay';
-import { liveSync } from 'livesync-hyperclay';
+const express = require('express');
+const fs = require('fs').promises;
+const path = require('upath');
+const chokidar = require('chokidar');
+const { Eta } = require('eta');
+const { validateFileName } = require('../sync-engine/validation.js');
+const { createBackup } = require('./utils/backup.js');
+const { compileTailwind, getTailwindCssName } = require('tailwind-hyperclay');
+const { liveSync } = require('livesync-hyperclay');
 
-// Initialize Edge.js
-const edge = Edge.create();
-edge.mount(new URL('./templates', import.meta.url));
+// Initialize Eta
+const eta = new Eta({
+  views: path.join(__dirname, 'templates'),
+  cache: true
+});
 
 // Track who initiated the last save (for sender attribution in watcher)
 // This prevents duplicate broadcasts when browser saves trigger file watcher
@@ -50,7 +52,7 @@ function startServer(baseDir) {
         return res.status(404).send('Not found');
       }
       const safeName = path.basename(filename);
-      const templateDir = new URL('./templates', import.meta.url).pathname;
+      const templateDir = path.join(__dirname, 'templates');
       const cssPath = path.join(templateDir, safeName);
       try {
         const css = await fs.readFile(cssPath, 'utf8');
@@ -319,6 +321,20 @@ function startServer(baseDir) {
       next();
     });
 
+    // Tailwind CSS files - return empty CSS if not yet generated (avoids 404 on first load)
+    app.get('/tailwindcss/:name.css', async (req, res) => {
+      const cssPath = path.join(baseDir, 'tailwindcss', `${req.params.name}.css`);
+      try {
+        const css = await fs.readFile(cssPath, 'utf8');
+        res.setHeader('Content-Type', 'text/css');
+        res.send(css);
+      } catch {
+        // File doesn't exist yet, return empty CSS
+        res.setHeader('Content-Type', 'text/css');
+        res.send('');
+      }
+    });
+
     // Static file serving with extensionless HTML support
     app.use((req, res, next) => {
       const urlPath = req.path;
@@ -494,7 +510,7 @@ async function serveDirListing(res, dirPath, baseDir) {
       }
     }
 
-    const html = await edge.render('directory-listing', {
+    const html = eta.render('directory-listing', {
       displayPath,
       dirs,
       files,
@@ -509,7 +525,7 @@ async function serveDirListing(res, dirPath, baseDir) {
   }
 }
 
-export {
+module.exports = {
   startServer,
   stopServer,
   getServerPort,

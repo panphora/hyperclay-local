@@ -160,13 +160,13 @@
     "@aws-sdk/client-s3": "^3.913.0",
     "cheerio": "^1.0.0",
     "chokidar": "^3.6.0",
-    "edge.js": "^6.4.0",
+    "eta": "^3.5.0",
     "express": "^4.18.2",
     "lightningcss": "^1.30.1",
     "livesync-hyperclay": "^0.6.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "tailwind-hyperclay": "^0.1.12",
+    "tailwind-hyperclay": "^0.1.13",
     "tailwindcss": "^4.1.14",
     "upath": "^2.0.1"
   }

@@ -1,24 +1,10 @@
 const { app, BrowserWindow, dialog, shell, Menu, Tray, nativeImage, ipcMain, safeStorage } = require('electron');
 const path = require('upath');
 const fs = require('fs');
+const { startServer, stopServer, getServerPort, isServerRunning } = require('./server');
 const syncEngine = require('../sync-engine');
 const syncLogger = require('../sync-engine/logger');
 const { getServerBaseUrl } = require('./utils/utils');
-
-// Server module (ESM) - loaded dynamically
-let serverModule = null;
-const getServer = async () => {
-  if (!serverModule) {
-    serverModule = await import('./server.mjs');
-  }
-  return serverModule;
-};
-
-// Synchronous accessors for server functions (after module is loaded)
-const startServer = async (dir) => (await getServer()).startServer(dir);
-const stopServer = async () => (await getServer()).stopServer();
-const getServerPort = () => serverModule?.getServerPort() ?? 4321;
-const isServerRunning = () => serverModule?.isServerRunning() ?? false;
 
 // =============================================================================
 // APP CONFIGURATION
@@ -995,9 +981,6 @@ ipcMain.handle('resize-window', (event, height) => {
 // =============================================================================
 
 app.whenReady().then(async () => {
-  // Preload server module (ESM)
-  await getServer();
-
   // Ensure app name is set again after ready
   app.setName('Hyperclay Local');
 
