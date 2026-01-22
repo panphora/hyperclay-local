@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 require('dotenv').config();
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 
@@ -50,6 +51,45 @@ async function uploadToR2(filePath, filename) {
   await client.send(command);
   const sizeMB = (fs.statSync(filePath).size / (1024 * 1024)).toFixed(1);
   console.log(`✅ Uploaded ${filename} (${sizeMB}MB)`);
+}
+
+async function uploadReleaseInfo(uploadedFiles, publicUrl) {
+  const pkgPath = path.join(__dirname, '..', 'package.json');
+  const version = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).version;
+
+  let commit;
+  try {
+    commit = execSync('git rev-parse HEAD', { cwd: path.join(__dirname, '..'), encoding: 'utf8' }).trim();
+  } catch (error) {
+    console.log('⚠️  Could not get git commit hash. Skipping release-info.json upload.');
+    return;
+  }
+
+  const releaseInfo = {
+    version: version,
+    commit: commit,
+    date: new Date().toISOString(),
+    files: uploadedFiles.map(f => f.filename)
+  };
+
+  const client = new S3Client({
+    region: "auto",
+    endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    credentials: {
+      accessKeyId: R2_ACCESS_KEY,
+      secretAccessKey: R2_SECRET_KEY,
+    },
+  });
+
+  const command = new PutObjectCommand({
+    Bucket: R2_BUCKET,
+    Key: 'release-info.json',
+    Body: Buffer.from(JSON.stringify(releaseInfo, null, 2)),
+    ContentType: 'application/json',
+  });
+
+  await client.send(command);
+  console.log(`✅ Uploaded release-info.json (v${version}, commit: ${commit.slice(0, 7)})`);
 }
 
 function generateReport(uploadedFiles, publicUrl) {
@@ -155,6 +195,13 @@ async function main() {
   // Generate markdown report
   if (uploadedFiles.length > 0) {
     generateReport(uploadedFiles, R2_PUBLIC_URL);
+
+    // Upload release-info.json for hypercheck verification
+    try {
+      await uploadReleaseInfo(uploadedFiles, R2_PUBLIC_URL);
+    } catch (error) {
+      console.error('⚠️  Failed to upload release-info.json:', error.message);
+    }
   }
 }
 

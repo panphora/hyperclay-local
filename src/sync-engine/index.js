@@ -8,10 +8,12 @@ const path = require('upath'); // Use upath for cross-platform compatibility
 const chokidar = require('chokidar');
 const { safeStorage } = require('electron');
 const { getServerBaseUrl } = require('../main/utils/utils');
+const EventSource = require('eventsource');
 
 // Import sync engine modules
 const { SYNC_CONFIG, ERROR_PRIORITY } = require('./constants');
 const { calculateChecksum, generateTimestamp, isLocalNewer, isFutureFile, calibrateClock } = require('./utils');
+const { liveSync } = require('livesync-hyperclay');
 const { createBackupIfExists, createBinaryBackupIfExists } = require('../main/utils/backup');
 const { classifyError, formatErrorForLog } = require('./error-handler');
 const {
@@ -53,6 +55,11 @@ class SyncEngine extends EventEmitter {
     this.isRunning = false;
     this.clockOffset = 0;
     this.pollTimer = null;
+    this.sseConnection = null;
+    this.sseReconnectTimer = null;
+    this.sseWatchdog = null; // Watchdog timer for SSE heartbeat
+    this.lastSseActivity = null; // Last SSE message timestamp
+    this.deviceId = null; // Per-device identifier for multi-device sync
     this.syncQueue = new SyncQueue();
     this.serverFilesCache = null; // Cache for server files list
     this.serverFilesCacheTime = null; // When cache was last updated
@@ -85,13 +92,14 @@ class SyncEngine extends EventEmitter {
   /**
    * Initialize sync with API key and folder
    */
-  async init(apiKey, username, syncFolder, serverUrl) {
+  async init(apiKey, username, syncFolder, serverUrl, deviceId) {
     console.log(`[SYNC] Init called with:`, {
       username,
       syncFolder,
       serverUrl,
       apiKeyLength: apiKey?.length,
-      apiKeyPrefix: apiKey?.substring(0, 12)
+      apiKeyPrefix: apiKey?.substring(0, 12),
+      deviceId
     });
 
     if (this.isRunning) {
@@ -120,6 +128,7 @@ class SyncEngine extends EventEmitter {
     this.apiKey = apiKey;
     this.username = username;
     this.syncFolder = syncFolder;
+    this.deviceId = deviceId || 'hyperclay-local'; // Fallback for backwards compatibility
 
     // Set server URL with fallback to environment-based default
     this.serverUrl = getServerBaseUrl(serverUrl);
@@ -174,9 +183,11 @@ class SyncEngine extends EventEmitter {
       console.log(`[SYNC] Starting upload watcher...`);
       this.startUploadWatcher();
 
-      // Start polling for remote changes
-      console.log(`[SYNC] Starting polling...`);
-      this.startPolling();
+      // Connect to SSE stream for real-time sync (handles both live-sync and disk sync)
+      console.log(`[SYNC] Connecting to SSE stream...`);
+      this.connectToStream();
+
+      // No polling - SSE handles real-time sync for both live-sync and disk writes
 
       this.isRunning = true;
 
@@ -468,6 +479,67 @@ class SyncEngine extends EventEmitter {
   }
 
   /**
+   * Handle file-saved SSE message - write stripped content to disk
+   * @param {string} file - Site name (without .html)
+   * @param {string} content - Stripped HTML content
+   * @param {string} checksum - MD5 checksum of content
+   * @param {string} modifiedAt - ISO timestamp
+   */
+  async handleFileSaved(file, content, checksum, modifiedAt) {
+    const localFilename = file.endsWith('.html') ? file : `${file}.html`;
+    const localPath = path.join(this.syncFolder, localFilename);
+
+    try {
+      // Check if we already have this exact content (avoid unnecessary writes)
+      try {
+        const localContent = await readFile(localPath);
+        const localChecksum = await calculateChecksum(localContent);
+
+        if (localChecksum === checksum) {
+          console.log(`[SYNC] SSE file-saved: ${file} already up to date (checksums match)`);
+          return;
+        }
+      } catch (e) {
+        // File doesn't exist locally, will create
+      }
+
+      // Create backup if file exists
+      const siteName = localFilename.replace(/\.html$/i, '');
+      await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
+
+      // Ensure directory exists (for nested paths)
+      await ensureDirectory(path.dirname(localPath));
+
+      // Write file with server modification time
+      await writeFile(localPath, content, new Date(modifiedAt));
+
+      console.log(`[SYNC] SSE file-saved: Downloaded ${localFilename}`);
+      this.stats.filesDownloaded++;
+
+      // Emit success event
+      this.emit('file-synced', {
+        file: localFilename,
+        action: 'download',
+        source: 'sse'
+      });
+
+    } catch (error) {
+      console.error(`[SYNC] SSE file-saved: Failed to write ${localFilename}:`, error.message);
+
+      if (this.logger) {
+        this.logger.error('SSE', 'Failed to write file-saved', {
+          file: localFilename,
+          error
+        });
+      }
+
+      const errorInfo = classifyError(error, { filename: localFilename, action: 'sse-download' });
+      this.stats.errors.push(formatErrorForLog(error, { filename: localFilename, action: 'sse-download' }));
+      this.emit('sync-error', errorInfo);
+    }
+  }
+
+  /**
    * Upload a file to server
    * @param {string} filename - Relative path WITH .html (may include folders)
    */
@@ -561,7 +633,7 @@ class SyncEngine extends EventEmitter {
         stat.mtime,
         {
           snapshotHtml,
-          senderId: 'hyperclay-local'
+          senderId: this.deviceId
         }
       );
 
@@ -811,12 +883,29 @@ class SyncEngine extends EventEmitter {
         const normalizedPath = path.normalize(filename);
         console.log(`[SYNC] File added: ${normalizedPath}`);
         this.queueSync('add', normalizedPath);
+
+        // Notify browsers that a new file was added
+        const fileId = normalizedPath.replace(/\.html$/, '');
+        liveSync.notify(fileId, {
+          msgType: 'info',
+          msg: 'New file created',
+          action: 'reload'
+        });
       })
       .on('change', filename => {
         // Normalize path to forward slashes (fixes Windows backslash issue)
         const normalizedPath = path.normalize(filename);
         console.log(`[SYNC] File changed: ${normalizedPath}`);
         this.queueSync('change', normalizedPath);
+
+        // Notify browsers that file changed on disk
+        // File identifier is the path without .html extension
+        const fileId = normalizedPath.replace(/\.html$/, '');
+        liveSync.notify(fileId, {
+          msgType: 'warning',
+          msg: 'File changed on disk',
+          action: 'reload'
+        });
       })
       .on('unlink', filename => {
         // Normalize path to forward slashes (fixes Windows backslash issue)
@@ -1141,19 +1230,170 @@ class SyncEngine extends EventEmitter {
   }
 
   /**
-   * Start polling for remote changes
+   * Connect to SSE stream for real-time sync notifications
+   */
+  connectToStream() {
+    if (this.sseConnection) {
+      this.sseConnection.close();
+      this.sseConnection = null;
+    }
+
+    if (this.sseReconnectTimer) {
+      clearTimeout(this.sseReconnectTimer);
+      this.sseReconnectTimer = null;
+    }
+
+    const url = `${this.serverUrl}/sync/stream`;
+    console.log(`[SYNC] Connecting to SSE stream: ${url}`);
+
+    this.sseConnection = new EventSource(url, {
+      headers: {
+        'X-API-Key': this.apiKey
+      }
+    });
+
+    this.sseConnection.onopen = () => {
+      console.log('[SYNC] SSE stream connected');
+      this.lastSseActivity = Date.now();
+      this.startSseWatchdog();
+      if (this.logger) {
+        this.logger.info('SSE', 'Stream connected');
+      }
+    };
+
+    this.sseConnection.onmessage = async (event) => {
+      if (!this.isRunning) return;
+
+      // Track activity for watchdog (includes ping comments)
+      this.lastSseActivity = Date.now();
+
+      try {
+        const data = JSON.parse(event.data);
+
+        // Handle message type - default to live-sync for backward compatibility
+        const type = data.type || 'live-sync';
+
+        if (type === 'live-sync') {
+          // Live-sync: relay snapshot HTML to local browsers (no disk write)
+          const { file, html, sender } = data;
+
+          // Skip our own changes (avoid echo from what we just uploaded)
+          if (sender === this.deviceId) {
+            console.log(`[SYNC] SSE: Ignoring own live-sync for ${file}`);
+            return;
+          }
+
+          console.log(`[SYNC] SSE: Received live-sync for ${file} from ${sender}`);
+
+          // Relay to local live-sync for browser-to-browser sync
+          liveSync.broadcast(file, { html, sender });
+
+          if (this.logger) {
+            this.logger.success('SSE', 'Relayed live-sync to local browsers', { file });
+          }
+
+        } else if (type === 'file-saved') {
+          // File-saved: write stripped content to disk
+          const { file, content, checksum, modifiedAt } = data;
+
+          console.log(`[SYNC] SSE: Received file-saved for ${file}`);
+
+          await this.handleFileSaved(file, content, checksum, modifiedAt);
+
+          if (this.logger) {
+            this.logger.success('SSE', 'Handled file-saved', { file });
+          }
+        }
+      } catch (error) {
+        console.error('[SYNC] SSE: Error processing message:', error.message);
+        if (this.logger) {
+          this.logger.error('SSE', 'Error processing stream message', { error });
+        }
+      }
+    };
+
+    this.sseConnection.onerror = (error) => {
+      console.error('[SYNC] SSE stream error:', error.message || 'Connection error');
+
+      // Only attempt reconnect if we're still running
+      if (this.isRunning && !this.sseReconnectTimer) {
+        console.log('[SYNC] SSE: Will reconnect in 5 seconds...');
+        this.sseReconnectTimer = setTimeout(() => {
+          this.sseReconnectTimer = null;
+          if (this.isRunning) {
+            this.connectToStream();
+          }
+        }, 5000);
+      }
+    };
+  }
+
+  /**
+   * Disconnect from SSE stream
+   */
+  disconnectStream() {
+    if (this.sseWatchdog) {
+      clearInterval(this.sseWatchdog);
+      this.sseWatchdog = null;
+    }
+
+    if (this.sseReconnectTimer) {
+      clearTimeout(this.sseReconnectTimer);
+      this.sseReconnectTimer = null;
+    }
+
+    if (this.sseConnection) {
+      this.sseConnection.close();
+      this.sseConnection = null;
+      console.log('[SYNC] SSE stream disconnected');
+    }
+  }
+
+  /**
+   * Start SSE watchdog timer - triggers manual sync if no SSE activity
+   */
+  startSseWatchdog() {
+    if (this.sseWatchdog) {
+      clearInterval(this.sseWatchdog);
+    }
+
+    const WATCHDOG_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+    const CHECK_INTERVAL = 60 * 1000; // Check every minute
+
+    this.sseWatchdog = setInterval(() => {
+      if (!this.isRunning || !this.lastSseActivity) return;
+
+      const elapsed = Date.now() - this.lastSseActivity;
+      if (elapsed > WATCHDOG_TIMEOUT) {
+        console.log(`[SYNC] SSE watchdog: no activity for ${Math.round(elapsed / 1000)}s, checking for remote changes`);
+        if (this.logger) {
+          this.logger.info('SSE', 'Watchdog triggered - no activity', { elapsed });
+        }
+        this.checkForRemoteChanges();
+        this.lastSseActivity = Date.now(); // Reset to avoid repeated triggers
+      }
+    }, CHECK_INTERVAL);
+
+    console.log('[SYNC] SSE watchdog started (5 min timeout)');
+  }
+
+  /**
+   * Start polling for remote changes (fallback, runs less frequently with SSE)
    */
   startPolling() {
+    // With SSE, poll less frequently as a fallback (every 5 minutes instead of 30 seconds)
+    const pollInterval = SYNC_CONFIG.POLL_INTERVAL * 10; // 5 minutes
+
     this.pollTimer = setInterval(async () => {
       await this.checkForRemoteChanges();
-    }, SYNC_CONFIG.POLL_INTERVAL);
+    }, pollInterval);
 
-    console.log('[SYNC] Polling started');
+    console.log(`[SYNC] Fallback polling started (interval: ${pollInterval / 1000}s)`);
 
     // Log polling start
     if (this.logger) {
-      this.logger.info('POLL', 'Polling started', {
-        interval: SYNC_CONFIG.POLL_INTERVAL
+      this.logger.info('POLL', 'Fallback polling started', {
+        interval: pollInterval
       });
     }
   }
@@ -1307,6 +1547,9 @@ class SyncEngine extends EventEmitter {
       this.pollTimer = null;
       console.log('[SYNC] Polling timer cleared');
     }
+
+    // Disconnect SSE stream
+    this.disconnectStream();
 
     // Stop file watcher
     if (this.watcher) {

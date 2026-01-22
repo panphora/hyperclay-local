@@ -1,7 +1,6 @@
 const express = require('express');
 const fs = require('fs').promises;
 const path = require('upath');
-const chokidar = require('chokidar');
 const { Eta } = require('eta');
 const { validateFileName } = require('../sync-engine/validation.js');
 const { createBackup } = require('./utils/backup.js');
@@ -13,10 +12,6 @@ const eta = new Eta({
   views: path.join(__dirname, 'templates'),
   cache: true
 });
-
-// Track who initiated the last save (for sender attribution in watcher)
-// This prevents duplicate broadcasts when browser saves trigger file watcher
-const lastSender = new Map();
 
 // Store snapshot HTML for platform sync (keyed by filename)
 // When browser saves with snapshotHtml, we cache it for the sync engine to use
@@ -129,16 +124,18 @@ function startServer(baseDir) {
       }
 
       // Validate file parameter to prevent path traversal
+      // Allow forward slashes for subfolders, but block traversal attacks
       if (typeof file !== 'string' ||
           file.length === 0 ||
           file.length > 255 ||
           file.includes('..') ||
-          file.includes('/') ||
           file.includes('\\') ||
           file.startsWith('.') ||
+          file.startsWith('/') ||
           file.endsWith('.html') ||
           path.isAbsolute(file) ||
-          !/^[\w-]+$/.test(file)) {
+          !/^[\w/-]+$/.test(file) ||
+          file.split('/').some(seg => seg.startsWith('.') || seg.length === 0)) {
         return res.status(400).json({ error: 'Invalid file identifier' });
       }
 
@@ -152,15 +149,15 @@ function startServer(baseDir) {
       }
 
       try {
-        // Track sender so watcher uses it instead of 'file-system'
-        lastSender.set(file, sender);
+        // Ensure directory exists for subfolder files
+        await fs.mkdir(path.dirname(filepath), { recursive: true });
 
         // Write full HTML directly (no cheerio parsing needed)
         await fs.writeFile(filepath, html, 'utf8');
         console.log(`[LiveSync] Saved: ${file} (from: ${sender})`);
 
-        // Don't broadcast here - let the watcher handle it
-        // The watcher will use lastSender to attribute correctly
+        // Cache snapshot for platform sync
+        pendingSnapshots.set(file, html);
 
         res.json({ success: true });
       } catch (err) {
@@ -169,54 +166,31 @@ function startServer(baseDir) {
       }
     });
 
-    // File watcher for live-sync (broadcasts changes to connected browsers)
-    const liveSyncWatcher = chokidar.watch('**/*.html', {
-      cwd: baseDir,
-      persistent: true,
-      ignoreInitial: true,
-      ignored: ['**/node_modules/**', '**/sites-versions/**', '**/.*'],
-      awaitWriteFinish: {
-        stabilityThreshold: 300
-      }
-    });
-
-    liveSyncWatcher.on('change', async (filename) => {
-      const siteId = filename.replace(/\.html$/, '');
-      const stats = liveSync.getStats();
-
-      // Only process if there are connected clients
-      if (stats.rooms === 0) return;
-
-      try {
-        const filepath = path.join(baseDir, filename);
-
-        // Read full file content (no cheerio parsing needed)
-        const html = await fs.readFile(filepath, 'utf8');
-
-        // Use tracked sender if this was triggered by a browser save, otherwise 'file-system'
-        const sender = lastSender.get(siteId) || 'file-system';
-        lastSender.delete(siteId);
-
-        // Broadcast full HTML (no headHash needed)
-        liveSync.broadcast(siteId, { html, sender });
-        console.log(`[LiveSync] File changed, broadcast: ${siteId} (sender: ${sender})`);
-      } catch (err) {
-        console.error('[LiveSync] Error broadcasting file change:', err.message);
-      }
-    });
-
-    console.log(`[LiveSync] Watching ${baseDir} for HTML changes`);
+    // Note: File watcher for live-sync broadcast has been removed.
+    // Live-sync is now browser-to-browser only (via platform SSE relay).
+    // If you edit a file locally with a text editor, refresh the browser to see changes.
+    // Disk sync is handled by polling + /sync/download (stripped content).
+    console.log(`[LiveSync] Ready for browser-to-browser sync (no file watcher broadcast)`);
 
     // Middleware to parse both JSON and plain text for the /save route
     // JSON is used by Hyperclay Local browser (includes snapshotHtml for platform sync)
     // Plain text is used as fallback for backwards compatibility
     // 20MB limit to accommodate both stripped content and full snapshotHtml
-    app.use('/save/:name', express.json({ limit: '20mb' }));
-    app.use('/save/:name', express.text({ type: 'text/plain', limit: '20mb' }));
+    // Use /save/* to support subfolder paths (e.g., /save/folder/file)
+    app.use('/save', express.json({ limit: '20mb' }));
+    app.use('/save', express.text({ type: 'text/plain', limit: '20mb' }));
 
-    // POST route to save/overwrite HTML files
-    app.post('/save/:name', async (req, res) => {
-      const { name } = req.params;
+    // POST route to save/overwrite HTML files (supports subfolders)
+    app.post('/save/*', async (req, res) => {
+      // Extract path from URL (everything after /save/)
+      const name = req.params[0];
+
+      if (!name) {
+        return res.status(400).json({
+          msg: 'Filename required.',
+          msgType: 'error'
+        });
+      }
 
       // Handle both JSON and plain text requests
       let content, snapshotHtml;
@@ -229,19 +203,24 @@ function startServer(baseDir) {
         content = req.body;
       }
 
-      // Validate filename: only allow alphanumeric, underscore, hyphen
-      const safeNameRegex = /^[a-zA-Z0-9_-]+$/;
-      if (!safeNameRegex.test(name)) {
+      // Validate path: allow alphanumeric, underscore, hyphen, and forward slashes for subfolders
+      // Block path traversal attacks
+      if (!/^[\w/-]+$/.test(name) ||
+          name.includes('..') ||
+          name.startsWith('/') ||
+          name.split('/').some(seg => seg.startsWith('.') || seg.length === 0)) {
         return res.status(400).json({
-          msg: 'Invalid characters in filename. Only alphanumeric, underscores, and hyphens are allowed.',
+          msg: 'Invalid characters in path. Only alphanumeric, underscores, hyphens, and forward slashes allowed.',
           msgType: 'error'
         });
       }
 
+      // Get the base filename (last segment) for validation
+      const baseName = name.split('/').pop();
       const filename = `${name}.html`;
 
       // Validate against Windows reserved filenames and other restrictions
-      const validationResult = validateFileName(filename);
+      const validationResult = validateFileName(`${baseName}.html`);
       if (!validationResult.valid) {
         return res.status(400).json({
           msg: validationResult.error,
@@ -254,10 +233,10 @@ function startServer(baseDir) {
       const resolvedPath = path.resolve(filePath);
       const resolvedBaseDir = path.resolve(baseDir);
 
-      if (!resolvedPath.startsWith(resolvedBaseDir + path.sep) || path.dirname(resolvedPath) !== resolvedBaseDir) {
+      if (!resolvedPath.startsWith(resolvedBaseDir + path.sep)) {
         console.error(`Security Alert: Attempt to save outside base directory blocked for "${name}"`);
         return res.status(400).json({
-          msg: 'Invalid file path. Saving is only allowed in the base directory.',
+          msg: 'Invalid file path.',
           msgType: 'error'
         });
       }
@@ -271,6 +250,9 @@ function startServer(baseDir) {
       }
 
       try {
+        // Ensure directory exists for subfolder files
+        await fs.mkdir(path.dirname(filePath), { recursive: true });
+
         // Check if this is the first save (no versions exist yet)
         const siteVersionsDir = path.join(baseDir, 'sites-versions', name);
         let isFirstSave = false;

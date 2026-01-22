@@ -28,10 +28,10 @@ function classifyError(error, context = {}) {
     priority = ERROR_PRIORITY.CRITICAL;
     errorType = ERROR_TYPES.NAME_CONFLICT;
     if (filename) {
-      const siteName = filename.replace('.html', '');
-      userMessage = `The name "${siteName}" is already taken by another user. Please rename your local file.`;
+      const baseName = filename.split('/').pop().replace('.html', '');
+      userMessage = `The name "${baseName}" is taken. Rename your local file to sync.`;
     } else {
-      userMessage = 'This name is already taken by another user. Please rename your local file.';
+      userMessage = 'This name is taken. Rename your local file to sync.';
     }
   }
   // Network errors

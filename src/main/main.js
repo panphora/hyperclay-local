@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog, shell, Menu, Tray, nativeImage, ipcMain, safeStorage } = require('electron');
 const path = require('upath');
 const fs = require('fs');
+const crypto = require('crypto');
 const { startServer, stopServer, getServerPort, isServerRunning } = require('./server');
 const syncEngine = require('../sync-engine');
 const syncLogger = require('../sync-engine/logger');
@@ -109,9 +110,12 @@ function getDecryptedApiKey() {
 
 function loadSettings() {
   try {
+    let settings = {};
+    let needsSave = false;
+
     if (fs.existsSync(settingsPath)) {
       const data = fs.readFileSync(settingsPath, 'utf8');
-      const settings = JSON.parse(data);
+      settings = JSON.parse(data);
 
       // Keep API key encrypted - don't decrypt at startup
       // Just set a flag to indicate one exists
@@ -125,20 +129,31 @@ function loadSettings() {
           const encryptedKey = encryptApiKey(settings.apiKey);
           settings.apiKey = encryptedKey;
           settings.hasApiKey = true;
-          // Save immediately to migrate
-          const settingsToSave = { ...settings };
-          fs.writeFileSync(settingsPath, JSON.stringify(settingsToSave, null, 2));
+          needsSave = true;
         }
       } else {
         settings.hasApiKey = false;
       }
-
-      return settings;
     }
+
+    // Generate device ID if not present (for multi-device sync support)
+    if (!settings.deviceId) {
+      settings.deviceId = crypto.randomUUID();
+      console.log(`[APP] Generated new device ID: ${settings.deviceId}`);
+      needsSave = true;
+    }
+
+    // Save if any changes were made
+    if (needsSave) {
+      const settingsToSave = { ...settings };
+      fs.writeFileSync(settingsPath, JSON.stringify(settingsToSave, null, 2));
+    }
+
+    return settings;
   } catch (error) {
     console.error('Failed to load settings:', error);
   }
-  return {};
+  return { deviceId: crypto.randomUUID() };
 }
 
 function saveSettings(settings) {
@@ -745,7 +760,7 @@ async function handleSyncStart(apiKey, username, syncFolder, serverUrl) {
     syncEngine.removeAllListeners();
     setupSyncEventHandlers();
 
-    const result = await syncEngine.init(apiKey, username, syncFolder, serverUrl);
+    const result = await syncEngine.init(apiKey, username, syncFolder, serverUrl, settings.deviceId);
 
     if (result.success) {
       // Persist ALL settings including API key
@@ -1053,7 +1068,8 @@ app.whenReady().then(async () => {
         apiKey,
         settings.syncUsername,
         settings.syncFolder,
-        settings.serverUrl
+        settings.serverUrl,
+        settings.deviceId
       );
 
       if (result.success) {
