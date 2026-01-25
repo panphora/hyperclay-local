@@ -10,6 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
 // ============================================
 // CONFIGURATION
@@ -46,6 +47,57 @@ function logSuccess(msg) { console.log(`${colors.green}✓${colors.reset} ${msg}
 function logWarn(msg) { console.log(`${colors.yellow}⚠${colors.reset} ${msg}`); }
 function logError(msg) { console.log(`${colors.red}✗${colors.reset} ${msg}`); }
 function logInfo(msg) { console.log(`${colors.blue}→${colors.reset} ${msg}`); }
+
+// ============================================
+// GIT HELPERS
+// ============================================
+
+function git(repoPath, cmd) {
+  return execSync(`git ${cmd}`, { cwd: repoPath, encoding: 'utf8' }).trim();
+}
+
+function isRepoDirty(repoPath) {
+  const status = git(repoPath, 'status --porcelain');
+  return status.length > 0;
+}
+
+function stashRepo(repoPath) {
+  const repoName = path.basename(repoPath);
+  if (isRepoDirty(repoPath)) {
+    git(repoPath, 'stash push -m "temp: update-external-docs"');
+    logInfo(`Stashed changes in ${repoName}`);
+    return true;
+  }
+  return false;
+}
+
+function commitAndPushFile(filePath, version) {
+  const repoPath = findGitRoot(filePath);
+  const relativePath = path.relative(repoPath, filePath);
+  const repoName = path.basename(repoPath);
+
+  git(repoPath, `add "${relativePath}"`);
+  git(repoPath, `commit -m "chore: update Hyperclay Local download links to v${version}"`);
+  git(repoPath, 'push');
+  logSuccess(`Committed and pushed in ${repoName}`);
+}
+
+function popStash(repoPath) {
+  const repoName = path.basename(repoPath);
+  git(repoPath, 'stash pop');
+  logInfo(`Restored stashed changes in ${repoName}`);
+}
+
+function findGitRoot(filePath) {
+  let dir = path.dirname(filePath);
+  while (dir !== '/') {
+    if (fs.existsSync(path.join(dir, '.git'))) {
+      return dir;
+    }
+    dir = path.dirname(dir);
+  }
+  throw new Error(`No git repo found for ${filePath}`);
+}
 
 // ============================================
 // VERSION DETECTION
@@ -94,19 +146,17 @@ function updateVersionInContent(content, oldVersion, newVersion) {
 // ============================================
 
 function main() {
-  // Get target version
   const targetVersion = process.argv[2] || getCurrentVersion();
 
   console.log('');
   console.log(`${colors.cyan}Updating external docs to version ${targetVersion}${colors.reset}`);
   console.log('');
 
-  let updatedCount = 0;
+  // First pass: identify files that need updating
   let skippedCount = 0;
-  const updatedFiles = [];
+  const filesToUpdate = [];
 
   for (const file of EXTERNAL_FILES) {
-    // Check if file exists
     if (!fs.existsSync(file.path)) {
       logWarn(`Skipped ${file.name} (file not found)`);
       logInfo(`  Expected: ${file.path}`);
@@ -114,48 +164,64 @@ function main() {
       continue;
     }
 
-    // Read content
     const content = fs.readFileSync(file.path, 'utf8');
-
-    // Detect old version
     const oldVersion = detectOldVersion(content);
+
     if (!oldVersion) {
       logWarn(`Skipped ${file.name} (no version found in file)`);
       skippedCount++;
       continue;
     }
 
-    // Check if already up to date
     if (oldVersion === targetVersion) {
       logSuccess(`${file.name} already at ${targetVersion}`);
       continue;
     }
 
-    // Update content
     const updatedContent = updateVersionInContent(content, oldVersion, targetVersion);
-
-    // Write back
-    fs.writeFileSync(file.path, updatedContent);
-    logSuccess(`Updated ${file.name} (${oldVersion} → ${targetVersion})`);
-    updatedFiles.push(file);
-    updatedCount++;
+    filesToUpdate.push({ ...file, oldVersion, updatedContent });
   }
 
-  // Summary
-  console.log('');
-  if (updatedCount > 0) {
-    console.log(`${colors.green}Updated ${updatedCount} file(s)${colors.reset}`);
+  if (filesToUpdate.length === 0) {
     console.log('');
-    console.log(`${colors.yellow}Remember to commit these changes in their respective repos:${colors.reset}`);
-    updatedFiles.forEach(file => {
-      console.log(`  ${file.path}`);
-    });
-  } else if (skippedCount === EXTERNAL_FILES.length) {
-    logError('No files were updated (all skipped or not found)');
-    process.exit(1);
-  } else {
-    console.log('All files already up to date.');
+    if (skippedCount === EXTERNAL_FILES.length) {
+      logError('No files were updated (all skipped or not found)');
+      process.exit(1);
+    } else {
+      console.log('All files already up to date.');
+    }
+    console.log('');
+    return;
   }
+
+  // Stash dirty repos before making changes
+  const stashedRepos = new Set();
+  for (const file of filesToUpdate) {
+    const repoPath = findGitRoot(file.path);
+    if (!stashedRepos.has(repoPath) && stashRepo(repoPath)) {
+      stashedRepos.add(repoPath);
+    }
+  }
+
+  // Write updates
+  for (const file of filesToUpdate) {
+    fs.writeFileSync(file.path, file.updatedContent);
+    logSuccess(`Updated ${file.name} (${file.oldVersion} → ${targetVersion})`);
+  }
+
+  // Commit and push
+  console.log('');
+  for (const file of filesToUpdate) {
+    commitAndPushFile(file.path, targetVersion);
+  }
+
+  // Pop stashes
+  for (const repoPath of stashedRepos) {
+    popStash(repoPath);
+  }
+
+  console.log('');
+  console.log(`${colors.green}Updated and pushed ${filesToUpdate.length} file(s)${colors.reset}`);
   console.log('');
 }
 
