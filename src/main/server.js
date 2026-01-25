@@ -156,8 +156,14 @@ function startServer(baseDir) {
         await fs.writeFile(filepath, html, 'utf8');
         console.log(`[LiveSync] Saved: ${file} (from: ${sender})`);
 
+        // Mark as browser save so file watcher doesn't send redundant notification
+        liveSync.markBrowserSave(file);
+
         // Cache snapshot for platform sync
         pendingSnapshots.set(file, html);
+
+        // Broadcast to other local browsers
+        liveSync.broadcast(file, { html, sender });
 
         res.json({ success: true });
       } catch (err) {
@@ -280,6 +286,9 @@ function startServer(baseDir) {
 
         // Write file (creates if not exists, overwrites if exists)
         await fs.writeFile(filePath, content, 'utf8');
+
+        // Mark as browser save so file watcher doesn't send redundant notification
+        liveSync.markBrowserSave(name);
 
         // Generate Tailwind CSS if site uses it
         const tailwindName = getTailwindCssName(content);

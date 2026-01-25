@@ -8,7 +8,7 @@ const path = require('upath'); // Use upath for cross-platform compatibility
 const chokidar = require('chokidar');
 const { safeStorage } = require('electron');
 const { getServerBaseUrl } = require('../main/utils/utils');
-const EventSource = require('eventsource');
+const { EventSource } = require('eventsource');
 
 // Import sync engine modules
 const { SYNC_CONFIG, ERROR_PRIORITY } = require('./constants');
@@ -884,13 +884,16 @@ class SyncEngine extends EventEmitter {
         console.log(`[SYNC] File added: ${normalizedPath}`);
         this.queueSync('add', normalizedPath);
 
-        // Notify browsers that a new file was added
+        // Notify browsers that a new file was added (only for external creates)
+        // Skip if this was a browser save - they already know
         const fileId = normalizedPath.replace(/\.html$/, '');
-        liveSync.notify(fileId, {
-          msgType: 'info',
-          msg: 'New file created',
-          action: 'reload'
-        });
+        if (!liveSync.wasBrowserSave(fileId)) {
+          liveSync.notify(fileId, {
+            msgType: 'info',
+            msg: 'New file created',
+            action: 'reload'
+          });
+        }
       })
       .on('change', filename => {
         // Normalize path to forward slashes (fixes Windows backslash issue)
@@ -898,14 +901,16 @@ class SyncEngine extends EventEmitter {
         console.log(`[SYNC] File changed: ${normalizedPath}`);
         this.queueSync('change', normalizedPath);
 
-        // Notify browsers that file changed on disk
-        // File identifier is the path without .html extension
+        // Notify browsers that file changed on disk (only for external edits)
+        // Skip if this was a browser save - they already have the update
         const fileId = normalizedPath.replace(/\.html$/, '');
-        liveSync.notify(fileId, {
-          msgType: 'warning',
-          msg: 'File changed on disk',
-          action: 'reload'
-        });
+        if (!liveSync.wasBrowserSave(fileId)) {
+          liveSync.notify(fileId, {
+            msgType: 'warning',
+            msg: 'File changed on disk',
+            action: 'reload'
+          });
+        }
       })
       .on('unlink', filename => {
         // Normalize path to forward slashes (fixes Windows backslash issue)
