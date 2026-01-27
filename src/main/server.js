@@ -363,8 +363,13 @@ function startServer(baseDir) {
       }
     });
 
-    // Static file serving with extensionless HTML support
-    app.use((req, res, next) => {
+    // Known server routes that should NOT be treated as client-side routes
+    const knownServerRoutes = [
+      'save', 'live-sync', 'tailwindcss', 'sites-versions', '__templates'
+    ];
+
+    // Static file serving with extensionless HTML support and client-side routing fallback
+    app.use(async (req, res, next) => {
       const urlPath = req.path;
 
       // Clean the path and remove leading slash
@@ -379,38 +384,70 @@ function startServer(baseDir) {
         return res.status(403).send('Access denied');
       }
 
-      // Check if file exists
-      fs.stat(resolvedPath)
-        .then(stats => {
+      // Helper to serve a file with client-side routing fallback
+      const serveWithFallback = async () => {
+        try {
+          const stats = await fs.stat(resolvedPath);
           if (stats.isDirectory()) {
             // Try index.html in directory
             const indexPath = path.join(resolvedPath, 'index.html');
-            return fs.stat(indexPath)
-              .then(() => res.sendFile(indexPath))
-              .catch(() => serveDirListing(res, resolvedPath, baseDir));
+            try {
+              await fs.stat(indexPath);
+              return res.sendFile(indexPath);
+            } catch {
+              return serveDirListing(res, resolvedPath, baseDir);
+            }
           } else {
-            res.sendFile(resolvedPath);
+            return res.sendFile(resolvedPath);
           }
-        })
-        .catch(() => {
-          // If file doesn't exist, try with .html extension
-          if (!requestedPath.endsWith('.html') && requestedPath !== 'index.html') {
-            const htmlPath = path.join(baseDir, requestedPath + '.html');
-            return fs.stat(htmlPath)
-              .then(() => res.sendFile(htmlPath))
-              .catch(() => {
-                if (requestedPath === 'index.html') {
-                  serveDirListing(res, baseDir, baseDir);
-                } else {
-                  res.status(404).send('File not found');
-                }
+        } catch {
+          // File doesn't exist - try alternatives
+        }
+
+        // Try with .html extension
+        if (!requestedPath.endsWith('.html') && requestedPath !== 'index.html') {
+          const htmlPath = path.join(baseDir, requestedPath + '.html');
+          try {
+            await fs.stat(htmlPath);
+            return res.sendFile(htmlPath);
+          } catch {
+            // Continue to client-side routing fallback
+          }
+        }
+
+        // Client-side routing fallback: /appname/any/path → serve appname.html
+        // This enables single-page apps with client-side routing
+        const segments = requestedPath.split('/').filter(Boolean);
+        if (segments.length > 1) {
+          const firstSegment = segments[0];
+
+          // Skip if this looks like a known server route
+          if (!knownServerRoutes.includes(firstSegment)) {
+            const appHtmlPath = path.join(baseDir, firstSegment + '.html');
+            try {
+              await fs.stat(appHtmlPath);
+              // Update currentResource cookie to match the app being served
+              res.cookie('currentResource', firstSegment, {
+                httpOnly: false,
+                secure: false,
+                sameSite: 'lax'
               });
-          } else if (requestedPath === 'index.html') {
-            serveDirListing(res, baseDir, baseDir);
-          } else {
-            res.status(404).send('File not found');
+              return res.sendFile(appHtmlPath);
+            } catch {
+              // App file doesn't exist either
+            }
           }
-        });
+        }
+
+        // Final fallback
+        if (requestedPath === 'index.html') {
+          return serveDirListing(res, baseDir, baseDir);
+        } else {
+          return res.status(404).send('File not found');
+        }
+      };
+
+      await serveWithFallback();
     });
 
     // Start the server
