@@ -872,6 +872,7 @@ class SyncEngine extends EventEmitter {
         '**/node_modules/**',
         '**/sites-versions/**',
         '**/uploads/**',    // Uploads have their own watcher
+        '**/tailwindcss/**', // Build tooling, not user content
         '**/.*' // Ignore hidden files/folders
       ],
       awaitWriteFinish: SYNC_CONFIG.FILE_STABILIZATION
@@ -1251,10 +1252,15 @@ class SyncEngine extends EventEmitter {
     const url = `${this.serverUrl}/sync/stream`;
     console.log(`[SYNC] Connecting to SSE stream: ${url}`);
 
+    const apiKey = this.apiKey;
     this.sseConnection = new EventSource(url, {
-      headers: {
-        'X-API-Key': this.apiKey
-      }
+      fetch: (input, init) => fetch(input, {
+        ...init,
+        headers: {
+          ...init.headers,
+          'X-API-Key': apiKey
+        }
+      })
     });
 
     this.sseConnection.onopen = () => {

@@ -28,7 +28,8 @@ async function getLocalFiles(syncFolder) {
           if (!entry.name.startsWith('.') &&
               entry.name !== 'node_modules' &&
               entry.name !== 'sites-versions' &&
-              entry.name !== 'uploads') {
+              entry.name !== 'uploads' &&
+              entry.name !== 'tailwindcss') {
             // Recursively scan subdirectories
             await scanDirectory(fullPath, relPath);
           }
