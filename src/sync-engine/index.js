@@ -440,6 +440,9 @@ class SyncEngine extends EventEmitter {
       const siteName = localFilename.replace(/\.html$/i, '');
       await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
 
+      // Mark as expected write so file watcher doesn't send "File changed on disk" notification
+      liveSync.markBrowserSave(siteName);
+
       // Write file with server modification time (ensures directories exist)
       await writeFile(localPath, content, modifiedAt);
 
@@ -509,6 +512,9 @@ class SyncEngine extends EventEmitter {
 
       // Ensure directory exists (for nested paths)
       await ensureDirectory(path.dirname(localPath));
+
+      // Mark as expected write so file watcher doesn't send "File changed on disk" notification
+      liveSync.markBrowserSave(file);
 
       // Write file with server modification time
       await writeFile(localPath, content, new Date(modifiedAt));

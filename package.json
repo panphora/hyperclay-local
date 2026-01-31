@@ -167,7 +167,7 @@
     "livesync-hyperclay": "^0.7.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "tailwind-hyperclay": "^0.1.13",
+    "tailwind-hyperclay": "^0.1.14",
     "tailwindcss": "^4.1.14",
     "upath": "^2.0.1"
   }
