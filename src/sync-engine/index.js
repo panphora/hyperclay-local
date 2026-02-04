@@ -270,155 +270,21 @@ class SyncEngine extends EventEmitter {
     this.emit('sync-start', { type: 'initial' });
 
     try {
-      // Get list of files from server (and cache them)
       const serverFiles = await this.fetchAndCacheServerFiles(true);
-
-      // Get list of local files
       const localFiles = await getLocalFiles(this.syncFolder);
 
-      // Process each server file
+      this.detectDuplicateFilenames(localFiles);
+
       for (const serverFile of serverFiles) {
-        // Server returns path WITH .html (e.g., "folder1/folder2/site.html" or "site.html")
-        const relativePath = serverFile.path || `${serverFile.filename}.html`;
-        const localPath = path.join(this.syncFolder, relativePath);
-        let localExists = localFiles.has(relativePath);
-
-        if (!localExists) {
-          // No exact path match — check if the same site exists at a different local path.
-          // Site names are globally unique, so matching by name is safe.
-          const serverSiteName = relativePath.split('/').pop();
-          let movedFromPath = null;
-
-          for (const [candidatePath] of localFiles) {
-            if (candidatePath.split('/').pop() === serverSiteName && candidatePath !== relativePath) {
-              movedFromPath = candidatePath;
-              break;
-            }
-          }
-
-          if (movedFromPath) {
-            // Local file exists at a different path — move it to match server organization
-            const oldFullPath = path.join(this.syncFolder, movedFromPath);
-            try {
-              const siteName = serverSiteName.replace(/\.html$/i, '');
-              liveSync.markBrowserSave(siteName);
-
-              await moveFile(oldFullPath, localPath);
-
-              // Update the localFiles map so the upload phase doesn't see the old path
-              const localInfo = localFiles.get(movedFromPath);
-              localInfo.path = localPath;
-              localInfo.relativePath = relativePath;
-              localFiles.delete(movedFromPath);
-              localFiles.set(relativePath, localInfo);
-              localExists = true;
-
-              console.log(`[SYNC] MOVED ${movedFromPath} → ${relativePath} (matching server organization)`);
-
-              if (this.logger) {
-                this.logger.info('SYNC', 'Moved file to match server path', {
-                  from: movedFromPath,
-                  to: relativePath
-                });
-              }
-            } catch (error) {
-              console.error(`[SYNC] Failed to move ${movedFromPath} → ${relativePath}:`, error.message);
-              // Fall through to download instead
-            }
-          }
-        }
-
-        if (!localExists) {
-          // File doesn't exist locally (and no moveable match found), download it
-          try {
-            await this.downloadFile(serverFile.filename, relativePath);
-            this.stats.filesDownloaded++;
-          } catch (error) {
-            // Log the error but don't fail initial sync
-            console.error(`[SYNC] Failed to download ${relativePath} during initial sync:`, error.message);
-            // Error already logged and emitted in downloadFile
-          }
-        } else {
-          // File exists locally, check if we should update
-          try {
-            const localStat = await getFileStats(localPath);
-
-            // Check if file is intentionally future-dated
-            if (isFutureFile(localStat.mtime, this.clockOffset)) {
-              console.log(`[SYNC] PRESERVE ${relativePath} - future-dated file`);
-              this.stats.filesProtected++;
-              continue;
-            }
-
-            // Check if local is newer
-            if (isLocalNewer(localStat.mtime, serverFile.modifiedAt, this.clockOffset)) {
-              console.log(`[SYNC] PRESERVE ${relativePath} - local is newer`);
-              this.stats.filesProtected++;
-              continue;
-            }
-
-            // Check checksums
-            const localContent = await readFile(localPath);
-            const localChecksum = await calculateChecksum(localContent);
-
-            if (localChecksum === serverFile.checksum) {
-              console.log(`[SYNC] SKIP ${relativePath} - checksums match`);
-              this.stats.filesDownloadedSkipped++;
-              continue;
-            }
-
-            // Server file is different and not older, download it
-            await this.downloadFile(serverFile.filename, relativePath);
-            this.stats.filesDownloaded++;
-          } catch (error) {
-            // Log the error but don't fail initial sync
-            console.error(`[SYNC] Failed to process ${relativePath} during initial sync:`, error.message);
-            // Error already logged and emitted in downloadFile if it was a download error
-            if (!error.message.includes('Failed to download')) {
-              this.stats.errors.push(formatErrorForLog(error, { filename: relativePath, action: 'initial-sync-check' }));
-              const errorInfo = classifyError(error, { filename: relativePath, action: 'check' });
-              this.emit('sync-error', errorInfo);
-
-              // Log file processing error
-              if (this.logger) {
-                this.logger.error('SYNC', 'Initial sync file processing failed', {
-                  file: relativePath,
-                  error
-                });
-              }
-            }
-          }
-        }
+        await this.reconcileServerFile(serverFile, localFiles);
       }
 
-      // Upload local files not on server
-      for (const [relativePath, localInfo] of localFiles) {
-        const serverFile = serverFiles.find(f =>
-          (f.path === relativePath) || (`${f.filename}.html` === relativePath)
-        );
-
-        if (!serverFile) {
-          console.log(`[SYNC] LOCAL ONLY: ${relativePath} - uploading`);
-          try {
-            await this.uploadFile(relativePath);
-            this.stats.filesUploaded++;
-          } catch (error) {
-            // Log the error but don't fail initial sync
-            console.error(`[SYNC] Failed to upload ${relativePath} during initial sync:`, error.message);
-            this.stats.errors.push(formatErrorForLog(error, { filename: relativePath, action: 'initial-upload' }));
-
-            // Emit error event for UI
-            const errorInfo = classifyError(error, { filename: relativePath, action: 'upload' });
-            this.emit('sync-error', errorInfo);
-          }
-        }
-      }
+      await this.uploadLocalOnlyFiles(localFiles, serverFiles);
 
       this.stats.lastSync = new Date().toISOString();
       console.log('[SYNC] Initial sync complete');
       console.log(`[SYNC] Stats: ${JSON.stringify(this.stats)}`);
 
-      // Log initial sync completion
       if (this.logger) {
         this.logger.success('SYNC', 'Initial sync completed', {
           filesDownloaded: this.stats.filesDownloaded,
@@ -429,25 +295,21 @@ class SyncEngine extends EventEmitter {
         });
       }
 
-      // Emit completion event
       this.emit('sync-complete', {
         type: 'initial',
         stats: { ...this.stats }
       });
 
-      // Emit stats update
       this.emit('sync-stats', this.stats);
 
     } catch (error) {
       console.error('[SYNC] Initial sync failed:', error);
       this.stats.errors.push(formatErrorForLog(error, { action: 'initial-sync' }));
 
-      // Log initial sync error
       if (this.logger) {
         this.logger.error('SYNC', 'Initial sync failed', { error });
       }
 
-      // Emit error event
       this.emit('sync-error', {
         type: 'initial',
         error: error.message,
@@ -455,6 +317,206 @@ class SyncEngine extends EventEmitter {
       });
 
       throw error;
+    }
+  }
+
+  /**
+   * Detect and warn about duplicate filenames across different local folders.
+   * Site names are globally unique on the server, so local duplicates cause issues.
+   */
+  detectDuplicateFilenames(localFiles) {
+    const nameIndex = new Map();
+    for (const [relativePath] of localFiles) {
+      const name = relativePath.split('/').pop();
+      if (!nameIndex.has(name)) {
+        nameIndex.set(name, []);
+      }
+      nameIndex.get(name).push(relativePath);
+    }
+
+    for (const [name, paths] of nameIndex) {
+      if (paths.length > 1) {
+        console.log(`[SYNC] WARNING: Duplicate filename "${name}" found in ${paths.length} locations: ${paths.join(', ')}`);
+        this.emit('sync-warning', {
+          type: 'duplicate-filename',
+          filename: name,
+          paths,
+          message: `"${name}" exists in ${paths.length} folders — only one can sync`
+        });
+
+        if (this.logger) {
+          this.logger.warn('SYNC', `Duplicate filename detected: ${name}`, { paths });
+        }
+      }
+    }
+  }
+
+  /**
+   * Find the best local file to move when a server file has no exact path match.
+   * When multiple candidates share the same filename, picks the one whose checksum
+   * matches the server file. Returns the candidate's relative path, or null.
+   */
+  async findBestMoveCandidate(serverFile, localFiles) {
+    const relativePath = serverFile.path || `${serverFile.filename}.html`;
+    const serverSiteName = relativePath.split('/').pop();
+
+    const candidates = [];
+    for (const [candidatePath] of localFiles) {
+      if (candidatePath.split('/').pop() === serverSiteName && candidatePath !== relativePath) {
+        candidates.push(candidatePath);
+      }
+    }
+
+    if (candidates.length === 1) {
+      return candidates[0];
+    }
+
+    if (candidates.length > 1) {
+      for (const candidatePath of candidates) {
+        const candidateFullPath = path.join(this.syncFolder, candidatePath);
+        const candidateContent = await readFile(candidateFullPath);
+        const candidateChecksum = await calculateChecksum(candidateContent);
+        if (candidateChecksum === serverFile.checksum) {
+          return candidatePath;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Reconcile a single server file against local state: move, download, or skip.
+   * Mutates localFiles map when a file is moved.
+   */
+  async reconcileServerFile(serverFile, localFiles) {
+    const relativePath = serverFile.path || `${serverFile.filename}.html`;
+    const localPath = path.join(this.syncFolder, relativePath);
+    let localExists = localFiles.has(relativePath);
+
+    if (!localExists) {
+      const movedFromPath = await this.findBestMoveCandidate(serverFile, localFiles);
+
+      if (movedFromPath) {
+        const oldFullPath = path.join(this.syncFolder, movedFromPath);
+        const serverSiteName = relativePath.split('/').pop();
+        try {
+          const siteName = serverSiteName.replace(/\.html$/i, '');
+          liveSync.markBrowserSave(siteName);
+
+          await moveFile(oldFullPath, localPath);
+
+          const localInfo = localFiles.get(movedFromPath);
+          localInfo.path = localPath;
+          localInfo.relativePath = relativePath;
+          localFiles.delete(movedFromPath);
+          localFiles.set(relativePath, localInfo);
+          localExists = true;
+
+          console.log(`[SYNC] MOVED ${movedFromPath} → ${relativePath} (matching server organization)`);
+
+          if (this.logger) {
+            this.logger.info('SYNC', 'Moved file to match server path', {
+              from: movedFromPath,
+              to: relativePath
+            });
+          }
+        } catch (error) {
+          console.error(`[SYNC] Failed to move ${movedFromPath} → ${relativePath}:`, error.message);
+        }
+      }
+    }
+
+    if (!localExists) {
+      try {
+        await this.downloadFile(serverFile.filename, relativePath);
+        this.stats.filesDownloaded++;
+      } catch (error) {
+        console.error(`[SYNC] Failed to download ${relativePath} during initial sync:`, error.message);
+      }
+      return;
+    }
+
+    try {
+      const localStat = await getFileStats(localPath);
+
+      if (isFutureFile(localStat.mtime, this.clockOffset)) {
+        console.log(`[SYNC] PRESERVE ${relativePath} - future-dated file`);
+        this.stats.filesProtected++;
+        return;
+      }
+
+      if (isLocalNewer(localStat.mtime, serverFile.modifiedAt, this.clockOffset)) {
+        console.log(`[SYNC] PRESERVE ${relativePath} - local is newer`);
+        this.stats.filesProtected++;
+        return;
+      }
+
+      const localContent = await readFile(localPath);
+      const localChecksum = await calculateChecksum(localContent);
+
+      if (localChecksum === serverFile.checksum) {
+        console.log(`[SYNC] SKIP ${relativePath} - checksums match`);
+        this.stats.filesDownloadedSkipped++;
+        return;
+      }
+
+      await this.downloadFile(serverFile.filename, relativePath);
+      this.stats.filesDownloaded++;
+    } catch (error) {
+      console.error(`[SYNC] Failed to process ${relativePath} during initial sync:`, error.message);
+      if (!error.message.includes('Failed to download')) {
+        this.stats.errors.push(formatErrorForLog(error, { filename: relativePath, action: 'initial-sync-check' }));
+        const errorInfo = classifyError(error, { filename: relativePath, action: 'check' });
+        this.emit('sync-error', errorInfo);
+
+        if (this.logger) {
+          this.logger.error('SYNC', 'Initial sync file processing failed', {
+            file: relativePath,
+            error
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * Upload local files that don't exist on the server.
+   * Skips files whose name already exists on the server at a different path (orphan duplicates).
+   */
+  async uploadLocalOnlyFiles(localFiles, serverFiles) {
+    for (const [relativePath, localInfo] of localFiles) {
+      const serverFile = serverFiles.find(f =>
+        (f.path === relativePath) || (`${f.filename}.html` === relativePath)
+      );
+
+      if (!serverFile) {
+        const localName = relativePath.split('/').pop();
+        const nameExistsOnServer = serverFiles.some(f => {
+          const serverName = (f.path || `${f.filename}.html`).split('/').pop();
+          return serverName === localName;
+        });
+
+        if (nameExistsOnServer) {
+          console.log(`[SYNC] SKIP ${relativePath} - duplicate name already exists on server`);
+          if (this.logger) {
+            this.logger.warn('SYNC', 'Skipped upload - duplicate name on server', { file: relativePath });
+          }
+          continue;
+        }
+
+        console.log(`[SYNC] LOCAL ONLY: ${relativePath} - uploading`);
+        try {
+          await this.uploadFile(relativePath);
+          this.stats.filesUploaded++;
+        } catch (error) {
+          console.error(`[SYNC] Failed to upload ${relativePath} during initial sync:`, error.message);
+          this.stats.errors.push(formatErrorForLog(error, { filename: relativePath, action: 'initial-upload' }));
+
+          const errorInfo = classifyError(error, { filename: relativePath, action: 'upload' });
+          this.emit('sync-error', errorInfo);
+        }
+      }
     }
   }
 
