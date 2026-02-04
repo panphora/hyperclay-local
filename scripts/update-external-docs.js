@@ -194,14 +194,14 @@ function main() {
     return;
   }
 
-  // // Stash dirty repos before making changes
-  // const stashedRepos = new Set();
-  // for (const file of filesToUpdate) {
-  //   const repoPath = findGitRoot(file.path);
-  //   if (!stashedRepos.has(repoPath) && stashRepo(repoPath)) {
-  //     stashedRepos.add(repoPath);
-  //   }
-  // }
+  // Stash dirty repos before making changes
+  const stashedRepos = new Set();
+  for (const file of filesToUpdate) {
+    const repoPath = findGitRoot(file.path);
+    if (!stashedRepos.has(repoPath) && stashRepo(repoPath)) {
+      stashedRepos.add(repoPath);
+    }
+  }
 
   // Write updates
   for (const file of filesToUpdate) {
@@ -209,16 +209,16 @@ function main() {
     logSuccess(`Updated ${file.name} (${file.oldVersion} → ${targetVersion})`);
   }
 
-  // // Commit and push
-  // console.log('');
-  // for (const file of filesToUpdate) {
-  //   commitAndPushFile(file.path, targetVersion);
-  // }
+  // Commit and push
+  console.log('');
+  for (const file of filesToUpdate) {
+    commitAndPushFile(file.path, targetVersion);
+  }
 
-  // // Pop stashes
-  // for (const repoPath of stashedRepos) {
-  //   popStash(repoPath);
-  // }
+  // Pop stashes
+  for (const repoPath of stashedRepos) {
+    popStash(repoPath);
+  }
 
   console.log('');
   console.log(`${colors.green}Updated and pushed ${filesToUpdate.length} file(s)${colors.reset}`);
