@@ -23,6 +23,7 @@ const {
   fileExists,
   getFileStats,
   ensureDirectory,
+  moveFile,
   // Upload-specific
   getLocalUploads,
   readFileBuffer,
@@ -280,10 +281,55 @@ class SyncEngine extends EventEmitter {
         // Server returns path WITH .html (e.g., "folder1/folder2/site.html" or "site.html")
         const relativePath = serverFile.path || `${serverFile.filename}.html`;
         const localPath = path.join(this.syncFolder, relativePath);
-        const localExists = localFiles.has(relativePath);
+        let localExists = localFiles.has(relativePath);
 
         if (!localExists) {
-          // File doesn't exist locally, download it
+          // No exact path match — check if the same site exists at a different local path.
+          // Site names are globally unique, so matching by name is safe.
+          const serverSiteName = relativePath.split('/').pop();
+          let movedFromPath = null;
+
+          for (const [candidatePath] of localFiles) {
+            if (candidatePath.split('/').pop() === serverSiteName && candidatePath !== relativePath) {
+              movedFromPath = candidatePath;
+              break;
+            }
+          }
+
+          if (movedFromPath) {
+            // Local file exists at a different path — move it to match server organization
+            const oldFullPath = path.join(this.syncFolder, movedFromPath);
+            try {
+              const siteName = serverSiteName.replace(/\.html$/i, '');
+              liveSync.markBrowserSave(siteName);
+
+              await moveFile(oldFullPath, localPath);
+
+              // Update the localFiles map so the upload phase doesn't see the old path
+              const localInfo = localFiles.get(movedFromPath);
+              localInfo.path = localPath;
+              localInfo.relativePath = relativePath;
+              localFiles.delete(movedFromPath);
+              localFiles.set(relativePath, localInfo);
+              localExists = true;
+
+              console.log(`[SYNC] MOVED ${movedFromPath} → ${relativePath} (matching server organization)`);
+
+              if (this.logger) {
+                this.logger.info('SYNC', 'Moved file to match server path', {
+                  from: movedFromPath,
+                  to: relativePath
+                });
+              }
+            } catch (error) {
+              console.error(`[SYNC] Failed to move ${movedFromPath} → ${relativePath}:`, error.message);
+              // Fall through to download instead
+            }
+          }
+        }
+
+        if (!localExists) {
+          // File doesn't exist locally (and no moveable match found), download it
           try {
             await this.downloadFile(serverFile.filename, relativePath);
             this.stats.filesDownloaded++;

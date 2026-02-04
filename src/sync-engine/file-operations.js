@@ -107,6 +107,26 @@ async function copyFile(source, destination) {
 }
 
 /**
+ * Move file from source to destination, creating parent directories as needed.
+ * Falls back to copy+delete for cross-device moves.
+ */
+async function moveFile(source, destination) {
+  const dir = path.dirname(destination);
+  await fs.mkdir(dir, { recursive: true });
+
+  try {
+    await fs.rename(source, destination);
+  } catch (error) {
+    if (error.code === 'EXDEV') {
+      await fs.copyFile(source, destination);
+      await fs.unlink(source);
+    } else {
+      throw error;
+    }
+  }
+}
+
+/**
  * Delete file
  */
 async function deleteFile(filePath) {
@@ -214,6 +234,7 @@ module.exports = {
   getFileStats,
   ensureDirectory,
   copyFile,
+  moveFile,
   deleteFile,
   readDirectory,
   // Upload-specific
