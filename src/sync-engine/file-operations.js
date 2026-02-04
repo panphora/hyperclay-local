@@ -28,7 +28,6 @@ async function getLocalFiles(syncFolder) {
           if (!entry.name.startsWith('.') &&
               entry.name !== 'node_modules' &&
               entry.name !== 'sites-versions' &&
-              entry.name !== 'uploads' &&
               entry.name !== 'tailwindcss') {
             // Recursively scan subdirectories
             await scanDirectory(fullPath, relPath);
@@ -136,23 +135,17 @@ async function readDirectory(dirPath) {
  * @returns {Map<string, {path: string, relativePath: string, mtime: Date, size: number}>}
  */
 async function getLocalUploads(syncFolder) {
-  const uploadsDir = path.join(syncFolder, 'uploads');
   const files = new Map();
-
-  // Return empty if uploads folder doesn't exist
-  if (!fsSync.existsSync(uploadsDir)) {
-    return files;
-  }
 
   async function scanDirectory(dirPath, relativePath = '') {
     try {
       const entries = await fs.readdir(dirPath, { withFileTypes: true });
 
       for (const entry of entries) {
-        // Skip hidden files and system directories
         if (entry.name.startsWith('.') ||
             entry.name === 'node_modules' ||
-            entry.name === 'sites-versions') {
+            entry.name === 'sites-versions' ||
+            entry.name === 'tailwindcss') {
           continue;
         }
 
@@ -163,9 +156,8 @@ async function getLocalUploads(syncFolder) {
 
         if (entry.isDirectory()) {
           await scanDirectory(fullPath, relPath);
-        } else if (entry.isFile()) {
+        } else if (entry.isFile() && !entry.name.endsWith('.html')) {
           const stats = await fs.stat(fullPath);
-          // relPath is normalized by upath.join() to forward slashes
           files.set(relPath, {
             path: fullPath,
             relativePath: relPath,
@@ -179,7 +171,7 @@ async function getLocalUploads(syncFolder) {
     }
   }
 
-  await scanDirectory(uploadsDir);
+  await scanDirectory(syncFolder);
   return files;
 }
 

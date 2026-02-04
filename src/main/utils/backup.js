@@ -124,8 +124,8 @@ async function createBinaryBackup(baseDir, uploadPath, content, emit, logger = n
 
     // Build backup directory: sites-versions/uploads/<path>/<basename>/
     const backupSubdir = pathParts.length > 0
-      ? path.join('uploads', ...pathParts, basename)
-      : path.join('uploads', basename);
+      ? path.join(...pathParts, basename)
+      : basename;
     const uploadVersionsDir = path.join(versionsDir, backupSubdir);
 
     // Create directory if it doesn't exist

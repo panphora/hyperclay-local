@@ -143,7 +143,6 @@ describe('createBinaryBackup', () => {
 
     const backupPath = await createBinaryBackup(tempDir, uploadPath, content);
 
-    expect(backupPath).toContain('uploads');
     expect(backupPath).toContain('folder');
     expect(backupPath).toContain('subfolder');
     expect(backupPath).toEndWith('.pdf');
@@ -156,7 +155,7 @@ describe('createBinaryBackup', () => {
     const backupPath = await createBinaryBackup(tempDir, uploadPath, content);
 
     expect(backupPath).toBeTruthy();
-    expect(backupPath).toContain('uploads');
+    expect(backupPath).toContain('document');
     expect(backupPath).toEndWith('.txt');
   });
 

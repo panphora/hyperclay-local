@@ -84,15 +84,16 @@ describe('getLocalFiles', () => {
     expect(files.has('site.html')).toBe(true);
   });
 
-  test('ignores uploads directory', async () => {
+  test('finds HTML files inside uploads directory', async () => {
     await fs.mkdir(path.join(tempDir, 'uploads'));
     await fs.writeFile(path.join(tempDir, 'uploads', 'file.html'), 'content');
     await fs.writeFile(path.join(tempDir, 'site.html'), 'content');
 
     const files = await getLocalFiles(tempDir);
 
-    expect(files.size).toBe(1);
+    expect(files.size).toBe(2);
     expect(files.has('site.html')).toBe(true);
+    expect(files.has('uploads/file.html')).toBe(true);
   });
 
   test('returns file metadata', async () => {
@@ -126,10 +127,9 @@ describe('getLocalUploads', () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  test('finds all files in uploads directory', async () => {
-    await fs.mkdir(path.join(tempDir, 'uploads'));
-    await fs.writeFile(path.join(tempDir, 'uploads', 'image.png'), 'content');
-    await fs.writeFile(path.join(tempDir, 'uploads', 'document.pdf'), 'content');
+  test('finds non-HTML files in sync folder', async () => {
+    await fs.writeFile(path.join(tempDir, 'image.png'), 'content');
+    await fs.writeFile(path.join(tempDir, 'document.pdf'), 'content');
 
     const files = await getLocalUploads(tempDir);
 
@@ -139,8 +139,8 @@ describe('getLocalUploads', () => {
   });
 
   test('finds files in subdirectories', async () => {
-    await fs.mkdir(path.join(tempDir, 'uploads', 'folder'), { recursive: true });
-    await fs.writeFile(path.join(tempDir, 'uploads', 'folder', 'nested.png'), 'content');
+    await fs.mkdir(path.join(tempDir, 'folder'));
+    await fs.writeFile(path.join(tempDir, 'folder', 'nested.png'), 'content');
 
     const files = await getLocalUploads(tempDir);
 
@@ -149,10 +149,9 @@ describe('getLocalUploads', () => {
   });
 
   test('ignores hidden files', async () => {
-    await fs.mkdir(path.join(tempDir, 'uploads'));
-    await fs.writeFile(path.join(tempDir, 'uploads', '.DS_Store'), 'content');
-    await fs.writeFile(path.join(tempDir, 'uploads', '.hidden'), 'content');
-    await fs.writeFile(path.join(tempDir, 'uploads', 'visible.png'), 'content');
+    await fs.writeFile(path.join(tempDir, '.DS_Store'), 'content');
+    await fs.writeFile(path.join(tempDir, '.hidden'), 'content');
+    await fs.writeFile(path.join(tempDir, 'visible.png'), 'content');
 
     const files = await getLocalUploads(tempDir);
 
@@ -160,7 +159,17 @@ describe('getLocalUploads', () => {
     expect(files.has('visible.png')).toBe(true);
   });
 
-  test('returns empty map when uploads folder does not exist', async () => {
+  test('excludes HTML files', async () => {
+    await fs.writeFile(path.join(tempDir, 'site.html'), 'content');
+    await fs.writeFile(path.join(tempDir, 'image.png'), 'content');
+
+    const files = await getLocalUploads(tempDir);
+
+    expect(files.size).toBe(1);
+    expect(files.has('image.png')).toBe(true);
+  });
+
+  test('returns empty map for empty directory', async () => {
     const files = await getLocalUploads(tempDir);
     expect(files.size).toBe(0);
   });

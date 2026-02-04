@@ -155,11 +155,6 @@ class SyncEngine extends EventEmitter {
       console.log(`[SYNC] Ensuring sync folder exists: ${syncFolder}`);
       await ensureDirectory(syncFolder);
 
-      // Ensure uploads folder exists
-      const uploadsFolder = path.join(syncFolder, 'uploads');
-      console.log(`[SYNC] Ensuring uploads folder exists: ${uploadsFolder}`);
-      await ensureDirectory(uploadsFolder);
-
       // Calibrate clock with server
       console.log(`[SYNC] Calibrating clock with server...`);
       this.clockOffset = await calibrateClock(this.serverUrl, this.apiKey);
@@ -804,7 +799,7 @@ class SyncEngine extends EventEmitter {
               let filePath;
               if (retryItem.filename.startsWith('upload:')) {
                 const uploadPath = retryItem.filename.replace('upload:', '');
-                filePath = path.join(this.syncFolder, 'uploads', uploadPath);
+                filePath = path.join(this.syncFolder, uploadPath);
               } else {
                 filePath = path.join(this.syncFolder, retryItem.filename);
               }
@@ -877,9 +872,8 @@ class SyncEngine extends EventEmitter {
       ignored: [
         '**/node_modules/**',
         '**/sites-versions/**',
-        '**/uploads/**',    // Uploads have their own watcher
-        '**/tailwindcss/**', // Build tooling, not user content
-        '**/.*' // Ignore hidden files/folders
+        '**/tailwindcss/**',
+        '**/.*'
       ],
       awaitWriteFinish: SYNC_CONFIG.FILE_STABILIZATION
     });
@@ -962,7 +956,7 @@ class SyncEngine extends EventEmitter {
 
       // Download server uploads not present locally
       for (const serverUpload of serverUploads) {
-        const localPath = path.join(this.syncFolder, 'uploads', serverUpload.path);
+        const localPath = path.join(this.syncFolder, serverUpload.path);
         const localExists = localUploads.has(serverUpload.path);
 
         if (!localExists) {
@@ -1048,7 +1042,7 @@ class SyncEngine extends EventEmitter {
         serverPath
       );
 
-      const localPath = path.join(this.syncFolder, 'uploads', serverPath);
+      const localPath = path.join(this.syncFolder, serverPath);
 
       // Create binary backup if file exists (preserves images, PDFs, etc.)
       await createBinaryBackupIfExists(localPath, serverPath, this.syncFolder, this.emit.bind(this), this.logger);
@@ -1096,7 +1090,7 @@ class SyncEngine extends EventEmitter {
         return;
       }
 
-      const localPath = path.join(this.syncFolder, 'uploads', relativePath);
+      const localPath = path.join(this.syncFolder, relativePath);
       const content = await readFileBuffer(localPath);
       const stat = await getFileStats(localPath);
 
@@ -1163,18 +1157,18 @@ class SyncEngine extends EventEmitter {
    * Start watching upload files
    */
   startUploadWatcher() {
-    const uploadsDir = path.join(this.syncFolder, 'uploads');
-
     this.uploadWatcher = chokidar.watch('**/*', {
-      cwd: uploadsDir,
+      cwd: this.syncFolder,
       persistent: true,
       ignoreInitial: true,
       ignored: [
         '**/node_modules/**',
         '**/sites-versions/**',
-        '**/.*',           // Hidden files
+        '**/tailwindcss/**',
+        '**/.*',
         '**/.DS_Store',
-        '**/Thumbs.db'
+        '**/Thumbs.db',
+        '**/*.html'
       ],
       awaitWriteFinish: SYNC_CONFIG.FILE_STABILIZATION
     });
@@ -1191,7 +1185,6 @@ class SyncEngine extends EventEmitter {
         this.queueUploadSync('change', normalizedPath);
       })
       .on('unlink', filename => {
-        // Intentionally ignore deletes (same as sites)
         console.log(`[SYNC] Upload deleted locally (not syncing): ${filename}`);
       })
       .on('error', error => {
@@ -1203,7 +1196,7 @@ class SyncEngine extends EventEmitter {
 
     if (this.logger) {
       this.logger.info('WATCHER', 'Upload watcher started', {
-        uploadsDir: this.logger.sanitizePath(uploadsDir)
+        syncFolder: this.logger.sanitizePath(this.syncFolder)
       });
     }
   }
@@ -1493,7 +1486,7 @@ class SyncEngine extends EventEmitter {
       for (const serverUpload of serverUploads) {
         if (!this.isRunning) return;
 
-        const localPath = path.join(this.syncFolder, 'uploads', serverUpload.path);
+        const localPath = path.join(this.syncFolder, serverUpload.path);
         const localExists = localUploads.has(serverUpload.path);
 
         if (!localExists) {
