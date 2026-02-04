@@ -6,6 +6,34 @@ const path = require('path');
 const readline = require('readline');
 
 // ============================================
+// CLI ARGUMENT PARSING
+// ============================================
+
+let VERSION_TYPE = '';
+for (const arg of process.argv.slice(2)) {
+  switch (arg) {
+    case '--major': VERSION_TYPE = 'major'; break;
+    case '--minor': VERSION_TYPE = 'minor'; break;
+    case '--patch': VERSION_TYPE = 'patch'; break;
+    case '--help':
+    case '-h':
+      console.log('Usage: node scripts/release.js [--major|--minor|--patch]');
+      console.log('');
+      console.log('Options:');
+      console.log('  --major    Major version bump (breaking changes)');
+      console.log('  --minor    Minor version bump (new features)');
+      console.log('  --patch    Patch version bump (bug fixes)');
+      console.log('');
+      console.log('If no option is provided, you\'ll be prompted to choose.');
+      process.exit(0);
+    default:
+      console.error(`Unknown argument: ${arg}`);
+      console.error('Use --help for usage information');
+      process.exit(1);
+  }
+}
+
+// ============================================
 // CONFIGURATION
 // ============================================
 
@@ -444,23 +472,44 @@ async function main() {
 
   const currentVersion = getCurrentVersion();
   log(`Current version: ${currentVersion}`);
-  log('');
-  log('Select version bump:');
-  log('  1) patch  (bug fixes)');
-  log('  2) minor  (new features)');
-  log('  3) major  (breaking changes)');
-  log('');
-
-  const choice = await prompt('Enter choice [1-3]: ');
 
   let bumpType;
-  switch (choice) {
-    case '1': bumpType = 'patch'; break;
-    case '2': bumpType = 'minor'; break;
-    case '3': bumpType = 'major'; break;
-    default:
-      logError('Invalid choice');
+  if (VERSION_TYPE) {
+    bumpType = VERSION_TYPE;
+    logSuccess(`Using version type from argument: ${bumpType}`);
+  } else {
+    logInfo('Asking Claude Code for version bump recommendation...');
+
+    const lastTag = execSafe('git tag --sort=-version:refname | head -1').trim();
+    let gitLog = '';
+    if (lastTag) {
+      gitLog = execSafe(`git log ${lastTag}..HEAD --pretty=format:"%s"`).trim();
+    } else {
+      gitLog = execSafe('git log --pretty=format:"%s" -20').trim();
+    }
+
+    if (!gitLog) {
+      logError('No commits found to analyze');
       process.exit(1);
+    }
+
+    try {
+      const recommendation = execSafe(
+        `echo ${JSON.stringify(gitLog)} | npx @anthropic-ai/claude-code -p "Based on these git commit messages, should this be a patch or minor release? Reply with a single word: patch or minor"`,
+        { stdio: 'pipe' }
+      ).trim().toLowerCase();
+
+      if (recommendation === 'patch' || recommendation === 'minor') {
+        bumpType = recommendation;
+        logSuccess(`Claude recommends: ${bumpType}`);
+      } else {
+        logError(`Unexpected response from Claude: "${recommendation}"`);
+        process.exit(1);
+      }
+    } catch (error) {
+      logError('Claude Code failed');
+      process.exit(1);
+    }
   }
 
   const newVersion = bumpVersion(currentVersion, bumpType);
