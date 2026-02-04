@@ -1,6 +1,6 @@
 # Hyperclay Local Server (Electron App)
 
-A beautiful, cross-platform desktop application for running your Hyperclay HTML apps locally with zero configuration.
+A beautiful, cross-platform desktop application for running your malleable HTML files locally with zero configuration.
 
 ## ✨ Features
 
@@ -16,18 +16,18 @@ A beautiful, cross-platform desktop application for running your Hyperclay HTML 
 
 ## What is Hyperclay?
 
-Hyperclay lets you create **malleable HTML applications** - powerful, self-contained web apps that you fully own and control. Think of it as combining the simplicity of Google Docs with the power of custom web applications.
+Hyperclay lets you create **malleable HTML files** - powerful, self-contained files that you fully own and control. Think of it as combining the simplicity of Google Docs with the power of custom web applications.
 
 ### The Big Idea
 - **Own Your Stack**: No vendor lock-in. Download your apps and run them anywhere.
-- **Malleable**: Your HTML apps can modify themselves and save changes instantly.
+- **Malleable**: Your HTML files can modify themselves and save changes instantly.
 - **Shareable**: Send a link, and others can view or clone your app with one click.
 - **Future-Proof**: Built on standard HTML/CSS/JavaScript - no proprietary frameworks.
 
 ### How Hyperclay Apps Work
 
-#### Self-Modifying HTML
-Your HTML applications can edit themselves in real-time. Change text, add features, modify layouts - everything saves automatically and becomes part of the app. Each app is a complete HTML document that includes:
+#### Malleable HTML Files
+Your malleable HTML files can edit themselves in real-time. Change text, add features, modify layouts - everything saves automatically and becomes part of the app. Each app is a complete HTML document that includes:
 - Your content and data
 - Styling (CSS) 
 - Behavior (JavaScript)
@@ -73,7 +73,7 @@ This local server provides the core functionality needed to run and edit your Hy
 
 2. **Install** and run the app
 
-3. **Select your folder** containing HTML apps
+3. **Select your folder** containing malleable HTML files
 
 4. **Click "Start Server"**
 
@@ -259,5 +259,5 @@ Contributions welcome! Areas that need help:
 
 ---
 
-**Made with ❤️ for Hyperclay** - The platform for malleable HTML applications  
+**Made with ❤️ for Hyperclay** - The platform for malleable HTML files  
 Get the full experience at [hyperclay.com](https://hyperclay.com)

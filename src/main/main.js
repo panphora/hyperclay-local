@@ -600,7 +600,7 @@ function createMenu() {
               type: 'info',
               title: 'About Hyperclay Local',
               message: 'Hyperclay Local Server v1.1.0',
-              detail: 'A local server for running your Hyperclay HTML apps offline.\n\nMade with ❤️ for the Hyperclay platform.',
+              detail: 'A local server for running your malleable HTML files offline.\n\nMade with ❤️ for the Hyperclay platform.',
               buttons: ['OK'],
               icon: iconPath || undefined
             });
@@ -645,7 +645,7 @@ function createMenu() {
 async function handleSelectFolder() {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openDirectory'],
-    title: 'Select folder containing your HTML apps'
+    title: 'Select folder containing your malleable HTML files'
   });
 
   if (!result.canceled && result.filePaths.length > 0) {
