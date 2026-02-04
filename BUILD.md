@@ -1,5 +1,41 @@
 # Building & Releasing HyperclayLocal
 
+## Release (One Command)
+
+This is the only command you need to run for a full cross-platform release:
+
+```bash
+npm run release
+```
+
+It handles everything end-to-end:
+
+1. Checks for a clean working directory
+2. Prompts for version bump type (patch / minor / major)
+3. Updates version in `package.json`, `README.md`, and `src/main/main.js`
+4. Commits and pushes the version bump
+5. Triggers the Windows build on GitHub Actions (Azure Trusted Signing)
+6. Builds macOS and Linux locally in parallel
+7. Signs macOS builds with Developer ID certificate
+8. Submits to Apple for notarization and polls until accepted
+9. Staples notarization tickets to the macOS DMGs
+10. Moves all executables to `executables/`
+11. Updates README with actual file sizes
+12. Uploads all builds to the R2 CDN
+13. Updates the download page in `hyperclay/server-pages/hyperclay-local.edge`
+
+After it finishes, download the signed Windows installer separately:
+
+```bash
+npm run win-build:status    # check if the GitHub Actions build is done
+npm run win-build:download  # download signed .exe to executables/
+npm run upload-to-r2        # re-upload to include the Windows installer
+```
+
+The sections below document individual build commands for reference, but `npm run release` is the default workflow.
+
+---
+
 ## Quick Reference
 
 | Platform | Build Command | Signing Method |
