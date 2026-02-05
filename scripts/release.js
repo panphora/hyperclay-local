@@ -597,6 +597,20 @@ async function main() {
   updateReadmeSizes(newVersion);
   logSuccess('README sizes updated');
 
+  // Install to local Applications folder
+  logInfo('Installing to /Applications...');
+  const dmgPath = path.join(ROOT_DIR, 'executables', `HyperclayLocal-${newVersion}-arm64.dmg`);
+  try {
+    execSafe(`hdiutil attach "${dmgPath}" -nobrowse -quiet`);
+    execSafe('rm -rf "/Applications/HyperclayLocal.app"');
+    execSafe('cp -R "/Volumes/HyperclayLocal/HyperclayLocal.app" "/Applications/HyperclayLocal.app"');
+    execSafe('hdiutil detach "/Volumes/HyperclayLocal" -quiet');
+    logSuccess('Installed to /Applications');
+  } catch (error) {
+    try { execSafe('hdiutil detach "/Volumes/HyperclayLocal" -quiet'); } catch {}
+    logWarn(`Could not install locally: ${error.message}`);
+  }
+
   // ==========================================
   // STEP 8: Upload to R2
   // ==========================================
