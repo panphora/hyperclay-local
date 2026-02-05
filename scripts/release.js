@@ -600,14 +600,15 @@ async function main() {
   // Install to local Applications folder
   logInfo('Installing to /Applications...');
   const dmgPath = path.join(ROOT_DIR, 'executables', `HyperclayLocal-${newVersion}-arm64.dmg`);
+  const volumeName = `HyperclayLocal ${newVersion}-arm64`;
   try {
     execSafe(`hdiutil attach "${dmgPath}" -nobrowse -quiet`);
     execSafe('rm -rf "/Applications/HyperclayLocal.app"');
-    execSafe('cp -R "/Volumes/HyperclayLocal/HyperclayLocal.app" "/Applications/HyperclayLocal.app"');
-    execSafe('hdiutil detach "/Volumes/HyperclayLocal" -quiet');
+    execSafe(`cp -R "/Volumes/${volumeName}/HyperclayLocal.app" "/Applications/HyperclayLocal.app"`);
+    execSafe(`hdiutil detach "/Volumes/${volumeName}" -quiet`);
     logSuccess('Installed to /Applications');
   } catch (error) {
-    try { execSafe('hdiutil detach "/Volumes/HyperclayLocal" -quiet'); } catch {}
+    try { execSafe(`hdiutil detach "/Volumes/${volumeName}" -quiet`); } catch {}
     logWarn(`Could not install locally: ${error.message}`);
   }
 
