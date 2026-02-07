@@ -8,6 +8,16 @@ const path = require('upath'); // Use upath for cross-platform compatibility
 const crypto = require('crypto');
 
 /**
+ * Check if a directory entry should be skipped during scanning
+ */
+function shouldSkipEntry(name) {
+  return name.startsWith('.') ||
+         name === 'node_modules' ||
+         name === 'sites-versions' ||
+         name === 'tailwindcss';
+}
+
+/**
  * Get all local HTML files recursively with relative paths
  */
 async function getLocalFiles(syncFolder) {
@@ -24,12 +34,7 @@ async function getLocalFiles(syncFolder) {
           : entry.name;
 
         if (entry.isDirectory()) {
-          // Skip system directories and uploads folder (uploads have their own sync)
-          if (!entry.name.startsWith('.') &&
-              entry.name !== 'node_modules' &&
-              entry.name !== 'sites-versions' &&
-              entry.name !== 'tailwindcss') {
-            // Recursively scan subdirectories
+          if (!shouldSkipEntry(entry.name)) {
             await scanDirectory(fullPath, relPath);
           }
         } else if (entry.isFile() && entry.name.endsWith('.html')) {
@@ -162,10 +167,7 @@ async function getLocalUploads(syncFolder) {
       const entries = await fs.readdir(dirPath, { withFileTypes: true });
 
       for (const entry of entries) {
-        if (entry.name.startsWith('.') ||
-            entry.name === 'node_modules' ||
-            entry.name === 'sites-versions' ||
-            entry.name === 'tailwindcss') {
+        if (shouldSkipEntry(entry.name)) {
           continue;
         }
 
