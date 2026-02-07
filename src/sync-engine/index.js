@@ -1017,7 +1017,8 @@ class SyncEngine extends EventEmitter {
           liveSync.notify(fileId, {
             msgType: 'warning',
             msg: 'File changed on disk',
-            action: 'reload'
+            action: 'reload',
+            persistent: true
           });
         }
       })
