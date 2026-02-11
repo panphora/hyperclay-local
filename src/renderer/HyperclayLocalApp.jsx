@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import ErrorQueue from './components/ErrorQueue';
+import ErrorsPage from './components/ErrorsPage';
 
 const HyperclayLocalApp = () => {
   const [currentState, setCurrentState] = useState({
@@ -41,7 +41,7 @@ const HyperclayLocalApp = () => {
   const errorIdCounter = useRef(0);
 
   // Navigation state
-  const [currentView, setCurrentView] = useState('main'); // 'main' | 'sync'
+  const [currentView, setCurrentView] = useState('main'); // 'main' | 'sync' | 'errors'
 
   // Update notification state
   const [updateAvailable, setUpdateAvailable] = useState(false);
@@ -50,6 +50,8 @@ const HyperclayLocalApp = () => {
   // Ref for content container to measure height
   const contentRef = useRef(null);
 
+  const unreadCount = errorQueue.filter(e => !e.read).length;
+
   // Error management functions
   const addError = (errorData) => {
     const errorId = errorIdCounter.current++;
@@ -57,25 +59,35 @@ const HyperclayLocalApp = () => {
     const error = {
       id: errorId,
       ...errorData,
+      read: false,
       timestamp: errorData.timestamp || Date.now()
     };
 
     setErrorQueue(prev => {
-      const filtered = prev.filter(e => {
-        // Don't duplicate identical recent errors
-        if (e.error === error.error && e.type === error.type) {
-          const timeDiff = error.timestamp - e.timestamp;
-          return timeDiff > 5000; // Keep if older than 5 seconds
-        }
-        return true;
-      });
+      const isDuplicate = prev.some(e =>
+        e.error === error.error && e.type === error.type &&
+        (error.timestamp - e.timestamp) <= 5000
+      );
 
-      return [...filtered, error].slice(-20); // Keep max 20 errors
+      if (isDuplicate) return prev;
+
+      return [...prev, error].slice(-50);
     });
   };
+  window.__addError = addError;
 
-  const dismissError = (errorId) => {
-    setErrorQueue(prev => prev.filter(e => e.id !== errorId));
+  const markErrorRead = (errorId) => {
+    setErrorQueue(prev => prev.map(e =>
+      e.id === errorId ? { ...e, read: true } : e
+    ));
+  };
+
+  const markAllRead = () => {
+    setErrorQueue(prev => prev.map(e => ({ ...e, read: true })));
+  };
+
+  const clearAllErrors = () => {
+    setErrorQueue([]);
   };
 
   // Initialize app state
@@ -420,6 +432,29 @@ const HyperclayLocalApp = () => {
       {/* top bar */}
       <div className="flex justify-end gap-3 p-[16px_24px_15px_24px]" style={{WebkitAppRegion: 'drag'}}>
         <div className="flex items-stretch gap-3" style={{WebkitAppRegion: 'no-drag'}}>
+          <button
+            className="relative flex items-center justify-center px-2 cursor-pointer bg-[#181F28] rounded-full hover:bg-[#232D3A]"
+            onClick={() => setCurrentView(currentView === 'errors' ? 'main' : 'main')}
+            title="Home"
+          >
+            <svg className="w-[18px] h-[18px] text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 12 8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
+            </svg>
+          </button>
+          <button
+            className="relative flex items-center justify-center px-2 cursor-pointer bg-[#181F28] rounded-full hover:bg-[#232D3A]"
+            onClick={() => setCurrentView(currentView === 'errors' ? 'main' : 'errors')}
+            title="Notifications"
+          >
+            <svg className="w-[18px] h-[18px] text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
+            </svg>
+            {unreadCount > 0 && (
+              <span className="absolute top-0 right-0 translate-x-[37.5%] -translate-y-[37.5%] flex items-center justify-center min-w-[18px] h-[18px] px-1 regular-font !text-[12px] font-bold text-white bg-[#425062] rounded-full">
+                {unreadCount > 9 ? '9+' : unreadCount}
+              </span>
+            )}
+          </button>
           {updateAvailable && (
             <button
               className="relative group h-full aspect-square flex items-center justify-center font-bold text-white bg-[#1E8136] rounded-full cursor-pointer hover:bg-[#23973F] border-2 border-[#0B0C11]"
@@ -448,6 +483,15 @@ const HyperclayLocalApp = () => {
 
       {/* main area */}
       <div ref={contentRef} className="p-[16px_24px_30px_24px]">
+        {currentView === 'errors' ? (
+          <ErrorsPage
+            errors={errorQueue}
+            onMarkRead={markAllRead}
+            onMarkErrorRead={markErrorRead}
+            onClearAll={clearAllErrors}
+          />
+        ) : (
+        <>
         {/* heading */}
         <div className="flex gap-2 items-center mb-2.5">
           <h1 className="text-[36px]">Hyperclay Local</h1>
@@ -690,14 +734,9 @@ const HyperclayLocalApp = () => {
             )}
           </div>
         </div>
+        </>
+        )}
       </div>
-
-      {/* Error Queue Display */}
-      <ErrorQueue
-        errors={errorQueue}
-        onDismiss={dismissError}
-        maxVisible={3}
-      />
     </div>
   );
 };
