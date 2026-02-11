@@ -44,7 +44,7 @@ function validateSiteName(name) {
   if (!name || name.trim() === '') {
     return {
       valid: false,
-      error: 'Site name cannot be empty'
+      error: `Invalid site name: "${name}". Site name cannot be empty`
     };
   }
 
@@ -55,13 +55,13 @@ function validateSiteName(name) {
   if (baseName.length < 1) {
     return {
       valid: false,
-      error: 'Site name is too short'
+      error: `Invalid site name: "${name}". Site name is too short`
     };
   }
   if (baseName.length > 63) {
     return {
       valid: false,
-      error: 'Site name is too long (max 63 characters)'
+      error: `Invalid site name: "${name}". Site name is too long (max 63 characters)`
     };
   }
 
@@ -69,7 +69,7 @@ function validateSiteName(name) {
   if (!baseName.match(/^[a-zA-Z0-9-]+$/)) {
     return {
       valid: false,
-      error: 'Site name can only contain letters (A-Z), numbers (0-9), and hyphens (-)'
+      error: `Invalid site name: "${name}". Can only contain letters (A-Z), numbers (0-9), and hyphens (-)`
     };
   }
 
@@ -77,7 +77,7 @@ function validateSiteName(name) {
   if (baseName.startsWith('-') || baseName.endsWith('-')) {
     return {
       valid: false,
-      error: 'Site name cannot start or end with a hyphen'
+      error: `Invalid site name: "${name}". Cannot start or end with a hyphen`
     };
   }
 
@@ -85,7 +85,7 @@ function validateSiteName(name) {
   if (baseName.includes('--')) {
     return {
       valid: false,
-      error: 'Site name cannot contain consecutive hyphens'
+      error: `Invalid site name: "${name}". Cannot contain consecutive hyphens`
     };
   }
 
