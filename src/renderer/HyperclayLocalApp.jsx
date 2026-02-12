@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ErrorsPage from './components/ErrorsPage';
+import Tooltip from './components/Tooltip';
 
 const HyperclayLocalApp = () => {
   const [currentState, setCurrentState] = useState({
@@ -456,17 +457,16 @@ const HyperclayLocalApp = () => {
             )}
           </button>
           {updateAvailable && (
-            <button
-              className="relative group h-full aspect-square flex items-center justify-center font-bold text-white bg-[#1E8136] rounded-full cursor-pointer hover:bg-[#23973F] border-2 border-[#0B0C11]"
-              onClick={() => window.electronAPI?.openBrowser('https://hyperclay.com/hyperclay-local')}
-            >
-              <svg className="w-[15px] h-[15px]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="3" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18" />
-              </svg>
-              <div className="absolute bottom-[-42px] left-1/2 transform -translate-x-1/2 hidden group-hover:block whitespace-nowrap bg-[#1D1F2F] border-2 border-[#4F5A97] px-3 py-1 text-sm pointer-events-none z-50">
-                update available
-              </div>
-            </button>
+            <Tooltip label="update available">
+              <button
+                className="relative h-full aspect-square flex items-center justify-center font-bold text-white bg-[#1E8136] rounded-full cursor-pointer hover:bg-[#23973F] border-2 border-[#0B0C11]"
+                onClick={() => window.electronAPI?.openBrowser('https://hyperclay.com/hyperclay-local')}
+              >
+                <svg className="w-[15px] h-[15px]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="3" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18" />
+                </svg>
+              </button>
+            </Tooltip>
           )}
           <div className={getServerStatusClass()}>
             {currentState.serverRunning ? 'server on' : 'server off'}
@@ -520,18 +520,20 @@ const HyperclayLocalApp = () => {
         {/* Folder selector - shared across tabs */}
         <div className="flex gap-2 mb-6">
           <div className="my-auto">Folder:</div>
-          <div className="grow flex items-center min-w-0 border-[2px] border-[#4F5A97]">
-            <span className="grow truncate px-2">
-              {currentState.selectedFolder || 'No folder selected'}
-            </span>
-          </div>
+          <Tooltip label={currentState.selectedFolder} disabled={!currentState.selectedFolder}>
+            <div className="grow min-w-0 border-[2px] border-[#4F5A97] overflow-hidden whitespace-nowrap text-ellipsis px-2 leading-[42px]" style={{ direction: 'rtl' }}>
+              <span style={{ direction: 'ltr', unicodeBidi: 'plaintext' }}>
+                {currentState.selectedFolder || 'No folder selected'}
+              </span>
+            </div>
+          </Tooltip>
           {/* button: select folder */}
           <button
             className="group p-[4px_17px_7px] text-center text-[20px] cursor-pointer bg-[#1D1F2F] border-[3px] border-t-[#474C65] border-r-[#131725] border-b-[#131725] border-l-[#474C65] hover:bg-[#232639] active:border-b-[#474C65] active:border-l-[#131725] active:border-t-[#131725] active:border-r-[#474C65] sm:p-[4px_19px_7px] sm:text-[21px]"
             onClick={handleSelectFolder}
           >
             <span className="whitespace-nowrap select-none inline-block group-active:translate-x-[1.5px] group-active:translate-y-[1.5px]">
-              select folder
+              select
             </span>
           </button>
         </div>
@@ -631,7 +633,7 @@ const HyperclayLocalApp = () => {
                   <input
                     type="password"
                     className="w-full p-2 border-[2px] border-[#4F5A97] bg-[#111220] text-white focus:border-[#69AEFE] focus:outline-none"
-                    placeholder="Paste your sync key from hyperclay.com"
+                    placeholder="Your sync key from hyperclay.com"
                     value={syncApiKey}
                     onChange={(e) => setSyncApiKey(e.target.value)}
                   />

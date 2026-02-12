@@ -1,1 +1,6 @@
 @import "tailwindcss";
+
+::placeholder {
+  color: #B9BFE4;
+  opacity: 0.5;
+}

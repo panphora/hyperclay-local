@@ -15,6 +15,13 @@ const { getServerBaseUrl } = require('./utils/utils');
 app.setName('Hyperclay Local');
 app.name = 'Hyperclay Local';
 
+// Separate dev settings from production — different userData directory means
+// different settings.json, API key, device ID, logs, everything.
+const isDev = !app.isPackaged;
+if (isDev) {
+  app.setPath('userData', app.getPath('userData') + '-dev');
+}
+
 // Set app info for About panel on macOS
 if (process.platform === 'darwin') {
   const iconPath = path.join(__dirname, '../../assets/icons/icon.png');
