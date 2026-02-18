@@ -596,9 +596,11 @@ class SyncEngine extends EventEmitter {
     const localPath = path.join(this.syncFolder, localFilename);
 
     try {
-      // Check if we already have this exact content (avoid unnecessary writes)
+      // Check if we already have this exact content at the target path
+      let existsAtTarget = false;
       try {
         const localContent = await readFile(localPath);
+        existsAtTarget = true;
         const localChecksum = await calculateChecksum(localContent);
 
         if (localChecksum === checksum) {
@@ -606,7 +608,28 @@ class SyncEngine extends EventEmitter {
           return;
         }
       } catch (e) {
-        // File doesn't exist locally, will create
+        // File doesn't exist at target path
+      }
+
+      // If file doesn't exist at target, check if same filename exists elsewhere (moved on server)
+      if (!existsAtTarget) {
+        const basename = localFilename.split('/').pop();
+        const localFiles = await getLocalFiles(this.syncFolder);
+
+        for (const [candidatePath, candidateInfo] of localFiles) {
+          if (candidatePath.split('/').pop() === basename && candidatePath !== localFilename) {
+            const oldFullPath = path.join(this.syncFolder, candidatePath);
+            try {
+              liveSync.markBrowserSave(candidatePath.replace(/\.html$/i, ''));
+              await ensureDirectory(path.dirname(localPath));
+              await moveFile(oldFullPath, localPath);
+              console.log(`[SYNC] SSE file-saved: MOVED ${candidatePath} → ${localFilename}`);
+            } catch (e) {
+              console.error(`[SYNC] SSE file-saved: Failed to move ${candidatePath} → ${localFilename}:`, e.message);
+            }
+            break;
+          }
+        }
       }
 
       // Create backup if file exists

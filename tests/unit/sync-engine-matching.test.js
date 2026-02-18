@@ -598,3 +598,151 @@ describe('handleFileSaved — SSE with duplicate on disk', () => {
     expect(syncEngine.stats.filesDownloaded).toBe(1);
   });
 });
+
+describe('handleFileSaved — SSE folder path preservation', () => {
+  beforeEach(() => {
+    fileOps.readFile.mockRejectedValue(new Error('ENOENT'));
+    fileOps.writeFile.mockResolvedValue();
+    fileOps.ensureDirectory.mockResolvedValue();
+    syncEngine.syncFolder = '/test/sync';
+    syncEngine.isRunning = true;
+  });
+
+  test('file with folder prefix writes to subfolder', async () => {
+    const content = '<html>blog post</html>';
+    const cs = checksum(content);
+
+    await syncEngine.handleFileSaved('blog/hyperclay-is-ready', content, cs, '2024-06-01T00:00:00Z');
+
+    expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/blog');
+    expect(fileOps.writeFile).toHaveBeenCalledWith(
+      '/test/sync/blog/hyperclay-is-ready.html',
+      content,
+      new Date('2024-06-01T00:00:00Z')
+    );
+  });
+
+  test('file without folder prefix writes to root', async () => {
+    const content = '<html>root site</html>';
+    const cs = checksum(content);
+
+    await syncEngine.handleFileSaved('my-site', content, cs, '2024-06-01T00:00:00Z');
+
+    expect(fileOps.writeFile).toHaveBeenCalledWith(
+      '/test/sync/my-site.html',
+      content,
+      new Date('2024-06-01T00:00:00Z')
+    );
+  });
+
+  test('deeply nested folder path creates full directory structure', async () => {
+    const content = '<html>deep site</html>';
+    const cs = checksum(content);
+
+    await syncEngine.handleFileSaved('projects/2026/launch/deep-site', content, cs, '2024-06-01T00:00:00Z');
+
+    expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/projects/2026/launch');
+    expect(fileOps.writeFile).toHaveBeenCalledWith(
+      '/test/sync/projects/2026/launch/deep-site.html',
+      content,
+      new Date('2024-06-01T00:00:00Z')
+    );
+  });
+
+  test('file with .html extension does not double-append', async () => {
+    const content = '<html>already has ext</html>';
+    const cs = checksum(content);
+
+    await syncEngine.handleFileSaved('blog/my-post.html', content, cs, '2024-06-01T00:00:00Z');
+
+    expect(fileOps.writeFile).toHaveBeenCalledWith(
+      '/test/sync/blog/my-post.html',
+      content,
+      new Date('2024-06-01T00:00:00Z')
+    );
+  });
+
+  test('skips write when checksums match (file already up to date)', async () => {
+    const content = '<html>existing content</html>';
+    const cs = checksum(content);
+
+    fileOps.readFile.mockResolvedValue(content);
+
+    await syncEngine.handleFileSaved('blog/my-post', content, cs, '2024-06-01T00:00:00Z');
+
+    expect(fileOps.writeFile).not.toHaveBeenCalled();
+  });
+
+  test('moves file from old path when same filename exists elsewhere', async () => {
+    const content = '<html>moved site</html>';
+    const cs = checksum(content);
+
+    // Target path doesn't exist
+    fileOps.readFile.mockRejectedValue(new Error('ENOENT'));
+
+    // Local scan finds the file at root
+    fileOps.getLocalFiles.mockResolvedValue(new Map([
+      ['a.html', { path: '/test/sync/a.html', relativePath: 'a.html', mtime: new Date('2024-05-01'), size: 100 }]
+    ]));
+
+    await syncEngine.handleFileSaved('blog/a', content, cs, '2024-06-01T00:00:00Z');
+
+    // Should move the old file to the new location
+    expect(fileOps.moveFile).toHaveBeenCalledWith(
+      '/test/sync/a.html',
+      '/test/sync/blog/a.html'
+    );
+
+    // Should still write the new content on top
+    expect(fileOps.writeFile).toHaveBeenCalledWith(
+      '/test/sync/blog/a.html',
+      content,
+      new Date('2024-06-01T00:00:00Z')
+    );
+  });
+
+  test('does not move when file already exists at target path', async () => {
+    const content = '<html>updated content</html>';
+    const cs = checksum(content);
+
+    // Target path exists with different content
+    fileOps.readFile.mockResolvedValue('<html>old content</html>');
+
+    await syncEngine.handleFileSaved('blog/a', content, cs, '2024-06-01T00:00:00Z');
+
+    // Should NOT scan for candidates — file exists at target
+    expect(fileOps.getLocalFiles).not.toHaveBeenCalled();
+    expect(fileOps.moveFile).not.toHaveBeenCalled();
+
+    // Should write the new content
+    expect(fileOps.writeFile).toHaveBeenCalledWith(
+      '/test/sync/blog/a.html',
+      content,
+      new Date('2024-06-01T00:00:00Z')
+    );
+  });
+
+  test('does not move when no matching filename found elsewhere', async () => {
+    const content = '<html>new site</html>';
+    const cs = checksum(content);
+
+    // Target path doesn't exist
+    fileOps.readFile.mockRejectedValue(new Error('ENOENT'));
+
+    // Local scan finds no matching filename
+    fileOps.getLocalFiles.mockResolvedValue(new Map([
+      ['other.html', { path: '/test/sync/other.html', relativePath: 'other.html', mtime: new Date('2024-05-01'), size: 100 }]
+    ]));
+
+    await syncEngine.handleFileSaved('blog/a', content, cs, '2024-06-01T00:00:00Z');
+
+    expect(fileOps.moveFile).not.toHaveBeenCalled();
+
+    // Should still write the file
+    expect(fileOps.writeFile).toHaveBeenCalledWith(
+      '/test/sync/blog/a.html',
+      content,
+      new Date('2024-06-01T00:00:00Z')
+    );
+  });
+});
