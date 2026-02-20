@@ -173,6 +173,9 @@
   .relative {
     position: relative;
   }
+  .static {
+    position: static;
+  }
   .top-0 {
     top: calc(var(--spacing) * 0);
   }
@@ -562,6 +565,9 @@
   .bg-\[\#7B2525\] {
     background-color: #7B2525;
   }
+  .bg-\[\#8B2020\] {
+    background-color: #8B2020;
+  }
   .bg-\[\#181F28\] {
     background-color: #181F28;
   }
@@ -573,9 +579,6 @@
   }
   .bg-\[\#281818\] {
     background-color: #281818;
-  }
-  .bg-\[\#425062\] {
-    background-color: #425062;
   }
   .p-2 {
     padding: calc(var(--spacing) * 2);
