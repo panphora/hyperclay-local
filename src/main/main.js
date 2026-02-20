@@ -649,6 +649,34 @@ function createMenu() {
 // SERVER HANDLERS
 // =============================================================================
 
+const EXAMPLE_APPS = [
+  { url: 'https://kanban.hyperclay.com/download?file=1', filename: 'kanban.html' },
+  { url: 'https://devlog.hyperclay.com/download?file=1', filename: 'devlog.html' },
+  { url: 'https://landing.hyperclay.com/download?file=1', filename: 'landing.html' },
+  { url: 'https://writer.hyperclay.com/download?file=1', filename: 'writer.html' },
+];
+
+async function populateExampleApps(folderPath) {
+  const entries = fs.readdirSync(folderPath);
+  const hasHtml = entries.some(f => f.endsWith('.html'));
+  if (hasHtml) return;
+
+  const results = await Promise.allSettled(
+    EXAMPLE_APPS.map(async ({ url, filename }) => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      const html = await res.text();
+      fs.writeFileSync(path.join(folderPath, filename), html, 'utf-8');
+    })
+  );
+
+  for (const r of results) {
+    if (r.status === 'rejected') {
+      console.error('Failed to download example app:', r.reason.message);
+    }
+  }
+}
+
 async function handleSelectFolder() {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openDirectory'],
@@ -662,6 +690,7 @@ async function handleSelectFolder() {
     settings.selectedFolder = selectedFolder;
     saveSettings(settings);
 
+    await populateExampleApps(selectedFolder);
     updateUI();
   }
 }

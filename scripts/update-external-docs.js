@@ -19,16 +19,28 @@ const { execSync } = require('child_process');
 const ROOT_DIR = path.join(__dirname, '..');
 const PARENT_DIR = path.join(ROOT_DIR, '..');
 
-const EXTERNAL_FILES = [
+const STATIC_FILES = [
   {
     path: path.join(PARENT_DIR, 'hyperclay/server-pages/hyperclay-local.edge'),
     name: 'hyperclay-local.edge'
-  },
-  {
-    path: path.join(PARENT_DIR, 'hyperclay-website/vault/DOCS/12 Hyperclay Local - Desktop App Documentation.md'),
-    name: 'Hyperclay Local Documentation.md'
   }
 ];
+
+const DOCS_DIR = path.join(PARENT_DIR, 'hyperclay-website/vault/DOCS');
+
+function findDocsFile() {
+  if (!fs.existsSync(DOCS_DIR)) return null;
+  const files = fs.readdirSync(DOCS_DIR).filter(f =>
+    f.endsWith('.md') && /hyperclay local/i.test(f)
+  );
+  for (const file of files) {
+    const content = fs.readFileSync(path.join(DOCS_DIR, file), 'utf8');
+    if (/HyperclayLocal-\d+\.\d+\.\d+/.test(content)) {
+      return { path: path.join(DOCS_DIR, file), name: file };
+    }
+  }
+  return null;
+}
 
 // ============================================
 // COLORS
@@ -152,11 +164,20 @@ function main() {
   console.log(`${colors.cyan}Updating external docs to version ${targetVersion}${colors.reset}`);
   console.log('');
 
+  // Build file list: static files + dynamically discovered docs file
+  const allFiles = [...STATIC_FILES];
+  const docsFile = findDocsFile();
+  if (docsFile) {
+    allFiles.push(docsFile);
+  } else {
+    logWarn('No "Hyperclay Local" docs file with download links found in vault/DOCS/');
+  }
+
   // First pass: identify files that need updating
   let skippedCount = 0;
   const filesToUpdate = [];
 
-  for (const file of EXTERNAL_FILES) {
+  for (const file of allFiles) {
     if (!fs.existsSync(file.path)) {
       logWarn(`Skipped ${file.name} (file not found)`);
       logInfo(`  Expected: ${file.path}`);
@@ -184,7 +205,7 @@ function main() {
 
   if (filesToUpdate.length === 0) {
     console.log('');
-    if (skippedCount === EXTERNAL_FILES.length) {
+    if (skippedCount === allFiles.length) {
       logError('No files were updated (all skipped or not found)');
       process.exit(1);
     } else {

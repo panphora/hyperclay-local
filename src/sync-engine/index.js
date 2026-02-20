@@ -43,6 +43,10 @@ const {
 const SyncQueue = require('./sync-queue');
 const { validateFileName, validateFullPath, validateUploadPath } = require('./validation');
 
+function hasHiddenSegment(filePath) {
+  return filePath.split('/').some(segment => segment.startsWith('.'));
+}
+
 class SyncEngine extends EventEmitter {
   constructor() {
     super();
@@ -828,6 +832,9 @@ class SyncEngine extends EventEmitter {
     // Don't queue if sync is not running
     if (!this.isRunning) return;
 
+    // Silently skip hidden files/folders (e.g. .git, .DS_Store)
+    if (hasHiddenSegment(filename)) return;
+
     // Validate filename before queueing (for add/change operations)
     if (type === 'add' || type === 'change') {
       const validationResult = filename.includes('/')
@@ -1004,7 +1011,8 @@ class SyncEngine extends EventEmitter {
         '**/node_modules/**',
         '**/sites-versions/**',
         '**/tailwindcss/**',
-        '**/.*'
+        '**/.*',
+        '**/.*/**'
       ],
       awaitWriteFinish: SYNC_CONFIG.FILE_STABILIZATION
     });
@@ -1298,6 +1306,7 @@ class SyncEngine extends EventEmitter {
         '**/sites-versions/**',
         '**/tailwindcss/**',
         '**/.*',
+        '**/.*/**',
         '**/.DS_Store',
         '**/Thumbs.db',
         '**/*.html'
@@ -1338,6 +1347,9 @@ class SyncEngine extends EventEmitter {
    */
   queueUploadSync(type, filename) {
     if (!this.isRunning) return;
+
+    // Silently skip hidden files/folders (e.g. .git, .DS_Store)
+    if (hasHiddenSegment(filename)) return;
 
     // Validate before queueing
     const validationResult = validateUploadPath(filename);
