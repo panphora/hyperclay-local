@@ -16,7 +16,11 @@ const HyperclayLocalApp = () => {
         filesDownloaded: 0,
         filesUploaded: 0,
         filesDownloadedSkipped: 0,
-        filesUploadedSkipped: 0, // Placeholder for future upload skip feature
+        filesUploadedSkipped: 0,
+        uploadsDownloaded: 0,
+        uploadsUploaded: 0,
+        uploadsProtected: 0,
+        uploadsSkipped: 0,
         lastSync: null,
         recentErrors: []
       }
@@ -40,6 +44,10 @@ const HyperclayLocalApp = () => {
   // Error queue state
   const [errorQueue, setErrorQueue] = useState([]);
   const errorIdCounter = useRef(0);
+
+  // Recent synced files
+  const [recentDownloads, setRecentDownloads] = useState([]);
+  const [recentUploads, setRecentUploads] = useState([]);
 
   // Navigation state
   const [currentView, setCurrentView] = useState('main'); // 'main' | 'sync' | 'errors'
@@ -152,6 +160,19 @@ const HyperclayLocalApp = () => {
             stats: stats
           }
         }));
+      });
+
+      // Listen for file synced events (track recent downloads/uploads)
+      window.electronAPI.onFileSynced((data) => {
+        const entry = {
+          file: (data.file || '').replace(/\.html$/i, ''),
+          timestamp: Date.now()
+        };
+        if (data.action === 'download') {
+          setRecentDownloads(prev => [entry, ...prev.filter(e => e.file !== entry.file)].slice(0, 100));
+        } else if (data.action === 'upload') {
+          setRecentUploads(prev => [entry, ...prev.filter(e => e.file !== entry.file)].slice(0, 100));
+        }
       });
 
       // Listen for retry events
@@ -685,7 +706,6 @@ const HyperclayLocalApp = () => {
                   <div className="mb-3 text-[18px] text-[#28C83E]">✓ Sync Active</div>
                   <div className="text-[14px] text-[#B8BFE5] space-y-1">
                     <div>Username: {currentState.syncStatus.username}</div>
-                    <div>Folder: {currentState.syncStatus.syncFolder || currentState.selectedFolder}</div>
                     {currentState.syncStatus.stats.lastSync && (
                       <div>Last sync: {new Date(currentState.syncStatus.stats.lastSync).toLocaleString()}</div>
                     )}
@@ -697,25 +717,43 @@ const HyperclayLocalApp = () => {
                       <div className="text-[#8A92BB] mb-1">Downloaded / Skipped</div>
                       <div className="text-[20px] flex items-center gap-1">
                         <span style={{ color: '#ffffff' }}>
-                          {currentState.syncStatus.stats.filesDownloaded}
+                          {currentState.syncStatus.stats.filesDownloaded + (currentState.syncStatus.stats.uploadsDownloaded || 0)}
                         </span>
                         <span style={{ color: '#8A92BB' }}>/</span>
                         <span style={{ color: '#ffffff' }}>
-                          {currentState.syncStatus.stats.filesProtected + currentState.syncStatus.stats.filesDownloadedSkipped}
+                          {currentState.syncStatus.stats.filesProtected + currentState.syncStatus.stats.filesDownloadedSkipped + (currentState.syncStatus.stats.uploadsProtected || 0) + (currentState.syncStatus.stats.uploadsSkipped || 0)}
                         </span>
                       </div>
+                      {recentDownloads.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-[#292F52] overflow-y-auto overflow-x-auto" style={{ maxHeight: '108px' }}>
+                          {recentDownloads.map((entry, i) => (
+                            <div key={entry.file} className="text-[12px] text-[#8A92BB] whitespace-nowrap leading-[20px]">
+                              <span className="text-[#4F5A97] mr-1">&bull;</span>{entry.file}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <div className="p-2 bg-[#0B0C12] border-2 border-[#292F52]">
                       <div className="text-[#8A92BB] mb-1">Uploaded / Skipped</div>
                       <div className="text-[20px] flex items-center gap-1">
                         <span style={{ color: '#ffffff' }}>
-                          {currentState.syncStatus.stats.filesUploaded}
+                          {currentState.syncStatus.stats.filesUploaded + (currentState.syncStatus.stats.uploadsUploaded || 0)}
                         </span>
                         <span style={{ color: '#8A92BB' }}>/</span>
                         <span style={{ color: '#ffffff' }}>
-                          {currentState.syncStatus.stats.filesUploadedSkipped || 0}
+                          {(currentState.syncStatus.stats.filesUploadedSkipped || 0)}
                         </span>
                       </div>
+                      {recentUploads.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-[#292F52] overflow-y-auto overflow-x-auto" style={{ maxHeight: '108px' }}>
+                          {recentUploads.map((entry, i) => (
+                            <div key={entry.file} className="text-[12px] text-[#8A92BB] whitespace-nowrap leading-[20px]">
+                              <span className="text-[#4F5A97] mr-1">&bull;</span>{entry.file}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>

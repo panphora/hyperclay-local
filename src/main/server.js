@@ -308,7 +308,7 @@ function startServer(baseDir) {
         }
 
         res.status(200).json({
-          msg: `File ${filename} saved successfully.`,
+          msg: 'Saved',
           msgType: 'success'
         });
         console.log(`Saved: ${filename}`);
