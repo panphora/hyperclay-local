@@ -341,8 +341,11 @@ function getTrayMenuTemplate() {
 
 function updateTrayMenu() {
   if (tray) {
-    const contextMenu = Menu.buildFromTemplate(getTrayMenuTemplate());
-    tray.setContextMenu(contextMenu);
+    if (process.platform !== 'darwin') {
+      const contextMenu = Menu.buildFromTemplate(getTrayMenuTemplate());
+      tray.setContextMenu(contextMenu);
+    }
+    // On macOS, context menu is built fresh on each right-click via popUpContextMenu
   }
 }
 
@@ -454,16 +457,21 @@ function createWindow() {
   mainWindow = new BrowserWindow(getWindowOptions());
   mainWindow.loadFile(path.join(__dirname, '../renderer/app.html'));
 
-  // Show window when ready
+  // Show window when ready — start hidden unless first launch
   mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
-
-    // Focus the window on macOS
-    if (process.platform === 'darwin') {
-      app.focus();
+    if (!settings.syncEnabled && !settings.selectedFolder && !settings.syncFolder) {
+      // First launch — show window for setup
+      mainWindow.show();
+      if (process.platform === 'darwin') {
+        app.focus();
+      }
+    } else {
+      // Returning user — start hidden in tray
+      if (process.platform === 'darwin') {
+        app.dock.hide();
+      }
     }
 
-    // Update UI with loaded settings
     updateUI();
   });
 
@@ -511,34 +519,41 @@ function createWindow() {
   createMenu();
 }
 
+function toggleWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isVisible()) {
+    if (process.platform === 'darwin') {
+      app.dock.hide();
+    }
+    mainWindow.hide();
+  } else {
+    if (process.platform === 'darwin') {
+      app.dock.show();
+    }
+    mainWindow.show();
+    mainWindow.focus();
+  }
+}
+
 function createTray() {
   tray = new Tray(getTrayIcon());
   tray.setToolTip('Hyperclay Local Server');
 
-  const contextMenu = Menu.buildFromTemplate(getTrayMenuTemplate());
-  tray.setContextMenu(contextMenu);
-
-  // Double click to show/hide window
-  tray.on('double-click', () => {
-    if (mainWindow) {
-      if (mainWindow.isVisible()) {
-        // Hide from Dock and Cmd+Tab on macOS
-        if (process.platform === 'darwin') {
-          app.dock.hide();
-          mainWindow.hide();
-        } else {
-          mainWindow.hide();
-        }
-      } else {
-        // Show in Dock and Cmd+Tab on macOS
-        if (process.platform === 'darwin') {
-          app.dock.show();
-        }
-        mainWindow.show();
-        mainWindow.focus();
-      }
-    }
+  // Left-click toggles window, right-click opens context menu
+  tray.on('click', () => {
+    toggleWindow();
   });
+
+  tray.on('right-click', () => {
+    const contextMenu = Menu.buildFromTemplate(getTrayMenuTemplate());
+    tray.popUpContextMenu(contextMenu);
+  });
+
+  // On non-macOS, also set context menu normally (left-click doesn't steal menu there)
+  if (process.platform !== 'darwin') {
+    const contextMenu = Menu.buildFromTemplate(getTrayMenuTemplate());
+    tray.setContextMenu(contextMenu);
+  }
 }
 
 function createMenu() {
@@ -704,6 +719,11 @@ async function handleStartServer() {
   try {
     await startServer(selectedFolder);
     serverRunning = isServerRunning();
+
+    settings.serverEnabled = true;
+    settings.serverFolder = selectedFolder;
+    saveSettings(settings);
+
     updateUI();
     updateTrayMenu();
 
@@ -719,11 +739,15 @@ async function handleStopServer() {
   try {
     await stopServer();
     serverRunning = isServerRunning();
+
+    settings.serverEnabled = false;
+    saveSettings(settings);
+
     updateUI();
     updateTrayMenu();
   } catch (error) {
     console.error('Error stopping server:', error);
-    serverRunning = isServerRunning(); // Ensure state is accurate
+    serverRunning = isServerRunning();
     updateUI();
     updateTrayMenu();
     dialog.showErrorBox('Server Error', `Failed to stop server: ${error.message}`);
@@ -1126,6 +1150,22 @@ app.whenReady().then(async () => {
     updateUI();
   }
 
+  // Auto-restart server if it was enabled before quit
+  if (settings.serverEnabled && settings.serverFolder) {
+    console.log('[APP] Auto-restarting server from previous session...');
+    try {
+      selectedFolder = settings.serverFolder;
+      await startServer(selectedFolder);
+      serverRunning = isServerRunning();
+      updateTrayMenu();
+      console.log('[APP] Server auto-restart successful');
+    } catch (err) {
+      console.error('[APP] Failed to auto-start server:', err);
+      settings.serverEnabled = false;
+      saveSettings(settings);
+    }
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
@@ -1149,16 +1189,11 @@ app.on('before-quit', async (event) => {
     event.preventDefault(); // Prevent immediate quit
 
     try {
-      // Stop sync engine if running
+      // Stop sync engine if running (keep syncEnabled true for auto-restart on next launch)
       if (syncEngine.isRunning) {
         console.log('[APP] Stopping sync engine before quit...');
         await syncEngine.stop();
         syncEngine.clearApiKey();
-
-        // Ensure syncEnabled is set to false and persisted
-        settings.syncEnabled = false;
-        saveSettings(settings);
-        // Give filesystem time to flush
         await new Promise(resolve => setTimeout(resolve, 100));
       }
 
