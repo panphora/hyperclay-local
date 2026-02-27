@@ -327,11 +327,53 @@ async function uploadUploadToServer(serverUrl, apiKey, filePath, content, modifi
   return response.json();
 }
 
+async function deleteFileOnServer(serverUrl, apiKey, nodeId) {
+  const res = await fetch(`${serverUrl}/sync/file`, {
+    method: 'DELETE',
+    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nodeId })
+  });
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => res.statusText);
+    throw new Error(`Delete failed (${res.status}): ${parseErrorMessage(errorText, res.statusText)}`);
+  }
+  return res.json();
+}
+
+async function renameFileOnServer(serverUrl, apiKey, nodeId, newName) {
+  const res = await fetch(`${serverUrl}/sync/file/rename`, {
+    method: 'PATCH',
+    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nodeId, newName })
+  });
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => res.statusText);
+    throw new Error(`Rename failed (${res.status}): ${parseErrorMessage(errorText, res.statusText)}`);
+  }
+  return res.json();
+}
+
+async function moveFileOnServer(serverUrl, apiKey, nodeId, targetFolderPath) {
+  const res = await fetch(`${serverUrl}/sync/file/move`, {
+    method: 'PATCH',
+    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nodeId, targetFolderPath })
+  });
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => res.statusText);
+    throw new Error(`Move failed (${res.status}): ${parseErrorMessage(errorText, res.statusText)}`);
+  }
+  return res.json();
+}
+
 module.exports = {
   fetchServerFiles,
   downloadFromServer,
   uploadToServer,
   getServerStatus,
+  deleteFileOnServer,
+  renameFileOnServer,
+  moveFileOnServer,
   // Upload sync
   fetchServerUploads,
   downloadUpload,
