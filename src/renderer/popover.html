@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hyperclay Local</title>
+  <style>
+    @font-face {
+      font-family: 'Berkeley Mono';
+      src: url('../../assets/fonts/BerkeleyMonoVariable-Regular.woff2') format('woff2');
+      font-weight: 100 900;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: 'Fixedsys';
+      src: url('../../assets/fonts/fixedsys-webfont.woff2') format('woff2');
+      font-weight: 400;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    *, *::before, *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      overflow: hidden;
+      background: transparent;
+      font-family: "Berkeley Mono", monospace;
+      font-size: 14px;
+      font-weight: 400;
+      color: #fff;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body button {
+      font-family: "Fixedsys";
+      font-weight: 400;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="../../dist/popover-bundle.js"></script>
+</body>
+</html>

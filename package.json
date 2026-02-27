@@ -48,8 +48,10 @@
       "src/main/**/*",
       "src/sync-engine/**/*",
       "src/renderer/app.html",
+      "src/renderer/popover.html",
       "src/renderer/styles/renderer.css",
       "dist/bundle.js",
+      "dist/popover-bundle.js",
       "assets/**/*"
     ],
     "extraFiles": [],

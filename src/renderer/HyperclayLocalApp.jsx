@@ -199,9 +199,18 @@ const HyperclayLocalApp = () => {
         setUpdateAvailable(true);
         setUpdateVersion(data.latestVersion);
       });
+
+      // Listen for tab navigation from popover
+      window.electronAPI.onNavigateTab((tab) => {
+        setCurrentView(tab);
+      });
     }
 
     initializeApp();
+
+    return () => {
+      window.electronAPI?.removeAllListeners('navigate-tab');
+    };
   }, []);
 
   // Update button states based on current state
@@ -515,7 +524,7 @@ const HyperclayLocalApp = () => {
         <>
         {/* heading */}
         <div className="flex gap-2 items-center mb-2.5">
-          <h1 className="text-[36px]">Hyperclay Local</h1>
+          <h1 className="text-[36px]">Settings</h1>
           <div className="ml-auto flex gap-2" style={{WebkitAppRegion: 'no-drag'}}>
             <span className={`text-[24px] text-[#292F52] ${!currentState.selectedFolder || !currentState.serverRunning ? 'hidden' : ''}`}> &middot;</span>
             <button className={`regular-font group flex gap-2 items-center text-[#69AEFE] ${!currentState.selectedFolder ? 'hidden' : ''}`} onClick={handleOpenFolder}>

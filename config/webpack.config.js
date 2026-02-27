@@ -2,10 +2,13 @@ const path = require('path');
 
 module.exports = {
   mode: 'development',
-  entry: './src/renderer/index.js',
+  entry: {
+    bundle: './src/renderer/index.js',
+    'popover-bundle': './src/renderer/popover-index.js',
+  },
   output: {
     path: path.resolve(__dirname, '../dist'),
-    filename: 'bundle.js',
+    filename: '[name].js',
   },
   module: {
     rules: [

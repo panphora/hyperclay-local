@@ -64,6 +64,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('update-available', (_event, data) => callback(data));
   },
 
+  onNavigateTab: (callback) => {
+    ipcRenderer.on('navigate-tab', (_event, tab) => callback(tab));
+  },
+
   // Remove listeners
   removeAllListeners: (channel) => {
     ipcRenderer.removeAllListeners(channel);

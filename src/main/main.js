@@ -6,6 +6,7 @@ const { startServer, stopServer, getServerPort, isServerRunning } = require('./s
 const syncEngine = require('../sync-engine');
 const syncLogger = require('../sync-engine/logger');
 const { getServerBaseUrl } = require('./utils/utils');
+const popover = require('./popover');
 
 // =============================================================================
 // APP CONFIGURATION
@@ -257,24 +258,12 @@ function getTrayMenuTemplate() {
       label: isAppVisible ? 'Hide App' : 'Show App',
       click: () => {
         if (isAppVisible) {
-          // Hide from Dock and Cmd+Tab
           if (process.platform === 'darwin') {
             app.dock.hide();
-            mainWindow?.hide();
-          } else {
-            mainWindow?.hide();
           }
+          mainWindow?.hide();
         } else {
-          // Show in Dock and Cmd+Tab
-          if (process.platform === 'darwin') {
-            app.dock.show();
-          }
-          if (mainWindow) {
-            mainWindow.show();
-            mainWindow.focus();
-          } else {
-            createWindow();
-          }
+          showMainWindow();
         }
       }
     },
@@ -354,19 +343,25 @@ function updateTrayMenu() {
 // =============================================================================
 
 function updateUI() {
-  if (mainWindow) {
-    const syncStatus = syncEngine.getStatus();
+  const syncStatus = syncEngine.getStatus();
+  const statePayload = {
+    selectedFolder,
+    serverRunning,
+    serverPort: getServerPort(),
+    syncEnabled: settings.syncEnabled,
+    syncStatus: syncStatus,
+    syncStats: syncStatus.stats,
+    syncUsername: settings.syncUsername,
+    syncFolder: settings.syncFolder
+  };
 
-    mainWindow.webContents.send('update-state', {
-      selectedFolder,
-      serverRunning,
-      serverPort: getServerPort(),
-      syncEnabled: settings.syncEnabled,
-      syncStatus: syncStatus,
-      syncStats: syncStatus.stats,
-      syncUsername: settings.syncUsername,
-      syncFolder: settings.syncFolder
-    });
+  if (mainWindow) {
+    mainWindow.webContents.send('update-state', statePayload);
+  }
+
+  const popoverWin = popover.getPopoverWindow();
+  if (popoverWin && !popoverWin.isDestroyed()) {
+    popoverWin.webContents.send('update-state', statePayload);
   }
 }
 
@@ -475,7 +470,17 @@ function createWindow() {
     updateUI();
   });
 
-  // Handle window closed
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+      if (process.platform === 'darwin') {
+        app.dock.hide();
+      }
+      return;
+    }
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -519,29 +524,21 @@ function createWindow() {
   createMenu();
 }
 
-function toggleWindow() {
-  if (!mainWindow) return;
-  if (mainWindow.isVisible()) {
-    if (process.platform === 'darwin') {
-      app.dock.hide();
-    }
-    mainWindow.hide();
-  } else {
-    if (process.platform === 'darwin') {
-      app.dock.show();
-    }
-    mainWindow.show();
-    mainWindow.focus();
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  if (process.platform === 'darwin') {
+    app.dock.show();
   }
+  mainWindow.show();
+  mainWindow.focus();
 }
 
 function createTray() {
   tray = new Tray(getTrayIcon());
   tray.setToolTip('Hyperclay Local Server');
 
-  // Left-click toggles window, right-click opens context menu
-  tray.on('click', () => {
-    toggleWindow();
+  tray.on('click', (event, bounds) => {
+    popover.togglePopover(bounds || tray.getBounds());
   });
 
   tray.on('right-click', () => {
@@ -582,7 +579,13 @@ function createMenu() {
         { type: 'separator' },
         process.platform === 'darwin' ?
           { label: 'Close', accelerator: 'CmdOrCtrl+W', role: 'close' } :
-          { label: 'Quit', accelerator: 'CmdOrCtrl+Q', role: 'quit' }
+          {
+            label: 'Close',
+            accelerator: 'CmdOrCtrl+Q',
+            click: () => {
+              if (mainWindow) mainWindow.hide();
+            }
+          }
       ]
     },
     {
@@ -651,7 +654,16 @@ function createMenu() {
         { label: 'Hide Others', accelerator: 'Command+Alt+H', role: 'hideothers' },
         { label: 'Show All', role: 'unhide' },
         { type: 'separator' },
-        { label: 'Quit', accelerator: 'Command+Q', role: 'quit' }
+        {
+          label: 'Quit',
+          accelerator: 'Command+Q',
+          click: () => {
+            if (mainWindow) {
+              mainWindow.hide();
+              app.dock.hide();
+            }
+          }
+        }
       ]
     });
   }
@@ -758,23 +770,25 @@ async function handleStopServer() {
 // SYNC EVENT HANDLERS
 // =============================================================================
 
+function sendToAll(channel, data) {
+  mainWindow?.webContents.send(channel, data);
+  const popoverWin = popover.getPopoverWindow();
+  if (popoverWin && !popoverWin.isDestroyed()) {
+    popoverWin.webContents.send(channel, data);
+  }
+}
+
 function setupSyncEventHandlers() {
   syncEngine.on('sync-start', data => {
-    mainWindow?.webContents.send('sync-update', {
-      syncing: true,
-      ...data
-    });
+    sendToAll('sync-update', { syncing: true, ...data });
   });
 
   syncEngine.on('sync-complete', data => {
-    mainWindow?.webContents.send('sync-update', {
-      syncing: false,
-      ...data
-    });
+    sendToAll('sync-update', { syncing: false, ...data });
   });
 
   syncEngine.on('sync-error', data => {
-    mainWindow?.webContents.send('sync-update', {
+    sendToAll('sync-update', {
       error: data.userMessage || data.error || data.originalError,
       priority: data.priority,
       dismissable: data.dismissable,
@@ -784,23 +798,23 @@ function setupSyncEventHandlers() {
   });
 
   syncEngine.on('file-synced', data => {
-    mainWindow?.webContents.send('file-synced', data);
+    sendToAll('file-synced', data);
   });
 
   syncEngine.on('sync-stats', data => {
-    mainWindow?.webContents.send('sync-stats', data);
+    sendToAll('sync-stats', data);
   });
 
   syncEngine.on('backup-created', data => {
-    mainWindow?.webContents.send('backup-created', data);
+    sendToAll('backup-created', data);
   });
 
   syncEngine.on('sync-retry', data => {
-    mainWindow?.webContents.send('sync-retry', data);
+    sendToAll('sync-retry', data);
   });
 
   syncEngine.on('sync-failed', data => {
-    mainWindow?.webContents.send('sync-failed', data);
+    sendToAll('sync-failed', data);
   });
 }
 
@@ -1037,6 +1051,24 @@ ipcMain.handle('toggle-sync', async (event, enabled) => {
   }
 });
 
+// Popover IPC handlers
+ipcMain.handle('open-settings', async (event, tab) => {
+  popover.hidePopover();
+  showMainWindow();
+  const targetTab = tab || 'main';
+  if (mainWindow) {
+    const wc = mainWindow.webContents;
+    if (wc.isLoading()) {
+      await new Promise(resolve => wc.once('did-finish-load', resolve));
+    }
+    wc.send('navigate-tab', targetTab);
+  }
+});
+
+ipcMain.handle('quit-app', () => {
+  app.quit();
+});
+
 // Window resize IPC handler
 ipcMain.handle('resize-window', (event, height) => {
   if (mainWindow && height) {
@@ -1183,6 +1215,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', async (event) => {
   isQuitting = true;
+  popover.destroyPopover();
 
   // Stop both server and sync engine before quitting
   if (isServerRunning() || syncEngine.isRunning) {
