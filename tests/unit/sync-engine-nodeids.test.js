@@ -56,6 +56,7 @@ beforeEach(() => {
   });
 
   syncEngine.syncFolder = '/test/sync';
+  syncEngine.metaDir = '/test/meta';
   syncEngine.serverUrl = 'http://localhost:3000';
   syncEngine.apiKey = 'hcsk_test';
   syncEngine.username = 'testuser';
@@ -246,7 +247,7 @@ describe('offline delete reconciliation', () => {
     await syncEngine.performInitialSync();
 
     expect(nodeMapModule.saveState).toHaveBeenCalledWith(
-      '/test/sync',
+      '/test/meta',
       expect.objectContaining({ lastSyncedAt: expect.any(Number) })
     );
     expect(syncEngine.lastSyncedAt).toBeGreaterThan(0);

@@ -172,24 +172,15 @@ function startServer(baseDir) {
       if (validated.error) {
         return res.status(400).json({ error: validated.error });
       }
-      const filepath = validated.filePath;
 
       try {
-        // Ensure directory exists for subfolder files
-        await fs.mkdir(path.dirname(filepath), { recursive: true });
-
-        // Write full HTML directly (no cheerio parsing needed)
-        await fs.writeFile(filepath, html, 'utf8');
-        console.log(`[LiveSync] Saved: ${file} (from: ${sender})`);
-
-        // Mark as browser save so file watcher doesn't send redundant notification
-        liveSync.markBrowserSave(file);
-
-        // Cache snapshot for platform sync
+        // Cache snapshot for platform sync (consumed by uploadFile via getAndClearSnapshot)
         pendingSnapshots.set(file, html);
 
         // Broadcast to other local browsers
         liveSync.broadcast(file, { html, sender });
+
+        console.log(`[LiveSync] Broadcast: ${file} (from: ${sender})`);
 
         res.json({ success: true });
       } catch (err) {
@@ -309,7 +300,7 @@ function startServer(baseDir) {
           msg: 'Saved',
           msgType: 'success'
         });
-        console.log(`Saved: ${filename}`);
+        console.log(`Saved: ${name}`);
       } catch (error) {
         console.error(`Error saving file ${name}:`, error);
         errorLogger.error('Server', `Save error: ${name}`, error);

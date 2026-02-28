@@ -34,9 +34,10 @@ describe('node map load/save', () => {
     expect(loaded.get('73')).toEqual({ path: 'blog/hello.html', checksum: 'def456', inode: 67890 });
   });
 
-  test('creates .sync-meta directory if missing', async () => {
-    await save(tmpDir, new Map([['1', { path: 'test.html', checksum: null, inode: null }]]));
-    const stat = await fs.stat(path.join(tmpDir, '.sync-meta'));
+  test('creates meta directory if missing', async () => {
+    const metaDir = path.join(tmpDir, 'nested', 'meta');
+    await save(metaDir, new Map([['1', { path: 'test.html', checksum: null, inode: null }]]));
+    const stat = await fs.stat(metaDir);
     expect(stat.isDirectory()).toBe(true);
   });
 
@@ -51,9 +52,8 @@ describe('node map load/save', () => {
   });
 
   test('returns empty map on corrupt JSON', async () => {
-    const dir = path.join(tmpDir, '.sync-meta');
-    await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(path.join(dir, 'node-map.json'), '{not valid json');
+    await fs.mkdir(tmpDir, { recursive: true });
+    await fs.writeFile(path.join(tmpDir, 'node-map.json'), '{not valid json');
 
     const map = await load(tmpDir);
     expect(map.size).toBe(0);
@@ -62,10 +62,9 @@ describe('node map load/save', () => {
 
 describe('node map migration from old format', () => {
   test('migrates plain string values to object format', async () => {
-    const dir = path.join(tmpDir, '.sync-meta');
-    await fs.mkdir(dir, { recursive: true });
+    await fs.mkdir(tmpDir, { recursive: true });
     await fs.writeFile(
-      path.join(dir, 'node-map.json'),
+      path.join(tmpDir, 'node-map.json'),
       JSON.stringify({ '42': 'index.html', '73': 'blog/hello.html' })
     );
 
@@ -77,10 +76,9 @@ describe('node map migration from old format', () => {
   });
 
   test('handles mixed old and new format entries', async () => {
-    const dir = path.join(tmpDir, '.sync-meta');
-    await fs.mkdir(dir, { recursive: true });
+    await fs.mkdir(tmpDir, { recursive: true });
     await fs.writeFile(
-      path.join(dir, 'node-map.json'),
+      path.join(tmpDir, 'node-map.json'),
       JSON.stringify({
         '42': 'old-format.html',
         '73': { path: 'new-format.html', checksum: 'abc', inode: 999 }
@@ -135,9 +133,8 @@ describe('sync state load/save', () => {
   });
 
   test('returns empty object on corrupt JSON', async () => {
-    const dir = path.join(tmpDir, '.sync-meta');
-    await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(path.join(dir, 'sync-state.json'), 'broken');
+    await fs.mkdir(tmpDir, { recursive: true });
+    await fs.writeFile(path.join(tmpDir, 'sync-state.json'), 'broken');
 
     const state = await loadState(tmpDir);
     expect(state).toEqual({});

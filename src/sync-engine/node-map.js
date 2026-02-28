@@ -2,7 +2,6 @@ const fs = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 
-const META_DIR = '.sync-meta';
 const MAP_FILE = 'node-map.json';
 const STATE_FILE = 'sync-state.json';
 
@@ -12,8 +11,8 @@ async function atomicWrite(filePath, data) {
   await fs.rename(tmpPath, filePath);
 }
 
-async function load(syncFolder) {
-  const filePath = path.join(syncFolder, META_DIR, MAP_FILE);
+async function load(metaDir) {
+  const filePath = path.join(metaDir, MAP_FILE);
   let data;
   try {
     data = await fs.readFile(filePath, 'utf8');
@@ -40,15 +39,14 @@ async function load(syncFolder) {
   return map;
 }
 
-async function save(syncFolder, map) {
-  const dir = path.join(syncFolder, META_DIR);
-  await fs.mkdir(dir, { recursive: true });
+async function save(metaDir, map) {
+  await fs.mkdir(metaDir, { recursive: true });
   const obj = Object.fromEntries(map);
-  await atomicWrite(path.join(dir, MAP_FILE), JSON.stringify(obj, null, 2));
+  await atomicWrite(path.join(metaDir, MAP_FILE), JSON.stringify(obj, null, 2));
 }
 
-async function loadState(syncFolder) {
-  const filePath = path.join(syncFolder, META_DIR, STATE_FILE);
+async function loadState(metaDir) {
+  const filePath = path.join(metaDir, STATE_FILE);
   let data;
   try {
     data = await fs.readFile(filePath, 'utf8');
@@ -64,10 +62,9 @@ async function loadState(syncFolder) {
   }
 }
 
-async function saveState(syncFolder, state) {
-  const dir = path.join(syncFolder, META_DIR);
-  await fs.mkdir(dir, { recursive: true });
-  await atomicWrite(path.join(dir, STATE_FILE), JSON.stringify(state, null, 2));
+async function saveState(metaDir, state) {
+  await fs.mkdir(metaDir, { recursive: true });
+  await atomicWrite(path.join(metaDir, STATE_FILE), JSON.stringify(state, null, 2));
 }
 
 async function getInode(filePath) {

@@ -74,6 +74,7 @@ class SyncEngine extends EventEmitter {
     this.lastSseActivity = null; // Last SSE message timestamp
     this.deviceId = null; // Per-device identifier for multi-device sync
     this.syncQueue = new SyncQueue();
+    this.metaDir = null; // Path to sync metadata directory (in userData)
     this.nodeMap = new Map(); // nodeId → { path, checksum, inode }
     this.pendingActions = new Set(); // SSE echo suppression: "delete:42", "rename:42", "move:42"
     this.pendingUnlinks = new Map(); // watcher rename/move detection: relativePath → { timerId, nodeId, entry }
@@ -118,7 +119,7 @@ class SyncEngine extends EventEmitter {
   /**
    * Initialize sync with API key and folder
    */
-  async init(apiKey, username, syncFolder, serverUrl, deviceId) {
+  async init(apiKey, username, syncFolder, serverUrl, deviceId, metaDir) {
     console.log(`[SYNC] Init called with:`, {
       username,
       syncFolder,
@@ -155,6 +156,7 @@ class SyncEngine extends EventEmitter {
     this.username = username;
     this.syncFolder = syncFolder;
     this.deviceId = deviceId || 'hyperclay-local'; // Fallback for backwards compatibility
+    this.metaDir = metaDir;
 
     // Set server URL with fallback to environment-based default
     this.serverUrl = getServerBaseUrl(serverUrl);
@@ -187,8 +189,8 @@ class SyncEngine extends EventEmitter {
       console.log(`[SYNC] Clock offset: ${this.clockOffset}ms`);
 
       // Load node map (nodeId ↔ local path) and sync state
-      this.nodeMap = await nodeMap.load(syncFolder);
-      const syncState = await nodeMap.loadState(syncFolder);
+      this.nodeMap = await nodeMap.load(this.metaDir);
+      const syncState = await nodeMap.loadState(this.metaDir);
       this.lastSyncedAt = syncState.lastSyncedAt || null;
       console.log(`[SYNC] Loaded node map: ${this.nodeMap.size} entries, lastSyncedAt: ${this.lastSyncedAt || 'never'}`);
 
@@ -346,18 +348,18 @@ class SyncEngine extends EventEmitter {
         }
       }
 
-      await nodeMap.save(this.syncFolder, this.nodeMap);
+      await nodeMap.save(this.metaDir, this.nodeMap);
 
       // Detect local structural changes (delete/move/rename) that happened while offline
       if (this.lastSyncedAt) {
         await this.detectLocalChanges(serverFiles, localFiles);
-        await nodeMap.save(this.syncFolder, this.nodeMap);
+        await nodeMap.save(this.metaDir, this.nodeMap);
       }
 
       await this.uploadLocalOnlyFiles(localFiles, serverFiles);
 
       this.lastSyncedAt = Date.now();
-      await nodeMap.saveState(this.syncFolder, { lastSyncedAt: this.lastSyncedAt });
+      await nodeMap.saveState(this.metaDir, { lastSyncedAt: this.lastSyncedAt });
       this.stats.lastSync = new Date().toISOString();
       console.log('[SYNC] Initial sync complete');
       console.log(`[SYNC] Stats: ${JSON.stringify(this.stats)}`);
@@ -817,7 +819,7 @@ class SyncEngine extends EventEmitter {
         const inode = await nodeMap.getInode(localPath);
         const cs = await calculateChecksum(content);
         this.nodeMap.set(String(sseNodeId), { path: localFilename, checksum: cs, inode });
-        await nodeMap.save(this.syncFolder, this.nodeMap);
+        await nodeMap.save(this.metaDir, this.nodeMap);
       }
 
       console.log(`[SYNC] SSE file-saved: Downloaded ${localFilename}`);
@@ -869,7 +871,7 @@ class SyncEngine extends EventEmitter {
 
     const inode = await nodeMap.getInode(newLocalPath);
     this.nodeMap.set(String(nodeId), { path: newLocalFilename, checksum: entry.checksum, inode });
-    await nodeMap.save(this.syncFolder, this.nodeMap);
+    await nodeMap.save(this.metaDir, this.nodeMap);
 
     console.log(`[SYNC] SSE file-renamed: ${currentPath} → ${newLocalFilename}`);
   }
@@ -891,7 +893,7 @@ class SyncEngine extends EventEmitter {
       }
       const inode = await nodeMap.getInode(newLocalPath);
       this.nodeMap.set(String(nodeId), { path: toPath, checksum: entry?.checksum || null, inode });
-      await nodeMap.save(this.syncFolder, this.nodeMap);
+      await nodeMap.save(this.metaDir, this.nodeMap);
       return;
     }
 
@@ -902,7 +904,7 @@ class SyncEngine extends EventEmitter {
 
     const movedInode = await nodeMap.getInode(newLocalPath);
     this.nodeMap.set(String(nodeId), { path: toPath, checksum: entry?.checksum || null, inode: movedInode });
-    await nodeMap.save(this.syncFolder, this.nodeMap);
+    await nodeMap.save(this.metaDir, this.nodeMap);
 
     console.log(`[SYNC] SSE file-moved: ${currentPath} → ${toPath}`);
   }
@@ -920,7 +922,7 @@ class SyncEngine extends EventEmitter {
       if (!exists) {
         console.log(`[SYNC] SSE file-deleted: ${localFilename} not found locally`);
         this.nodeMap.delete(String(nodeId));
-        await nodeMap.save(this.syncFolder, this.nodeMap);
+        await nodeMap.save(this.metaDir, this.nodeMap);
         return;
       }
 
@@ -929,7 +931,7 @@ class SyncEngine extends EventEmitter {
       await moveFile(localPath, trashPath);
 
       this.nodeMap.delete(String(nodeId));
-      await nodeMap.save(this.syncFolder, this.nodeMap);
+      await nodeMap.save(this.metaDir, this.nodeMap);
 
       console.log(`[SYNC] SSE file-deleted: Trashed ${localFilename}`);
       this.emit('file-synced', { file: localFilename, action: 'trash', source: 'sse' });
@@ -1040,7 +1042,7 @@ class SyncEngine extends EventEmitter {
         const localChecksum = await calculateChecksum(content);
         const inode = await nodeMap.getInode(path.join(this.syncFolder, filename));
         this.nodeMap.set(String(result.nodeId), { path: filename, checksum: localChecksum, inode });
-        await nodeMap.save(this.syncFolder, this.nodeMap);
+        await nodeMap.save(this.metaDir, this.nodeMap);
       }
 
       console.log(`[SYNC] Uploaded ${filename}`);
@@ -1283,7 +1285,6 @@ class SyncEngine extends EventEmitter {
         '**/tailwindcss/**',
         '**/.*',
         '**/.*/**',
-        '**/.sync-meta/**',
         '**/.trash/**'
       ],
       awaitWriteFinish: SYNC_CONFIG.FILE_STABILIZATION
@@ -1342,7 +1343,7 @@ class SyncEngine extends EventEmitter {
                   await deleteFileOnServer(self.serverUrl, self.apiKey, parseInt(pending.nodeId));
                   self.invalidateServerFilesCache();
                   self.nodeMap.delete(pending.nodeId);
-                  await nodeMap.save(self.syncFolder, self.nodeMap);
+                  await nodeMap.save(self.metaDir, self.nodeMap);
                 } catch (err) {
                   console.error(`[SYNC] Watcher: Failed to sync delete for ${oldPath}:`, err.message);
                 }
@@ -1373,7 +1374,7 @@ class SyncEngine extends EventEmitter {
 
                 self.invalidateServerFilesCache();
                 self.nodeMap.set(pending.nodeId, { path: normalizedPath, checksum: pending.entry.checksum, inode: newInode });
-                await nodeMap.save(self.syncFolder, self.nodeMap);
+                await nodeMap.save(self.metaDir, self.nodeMap);
               } catch (err) {
                 console.error(`[SYNC] Watcher: Failed to sync ${isMove ? 'move' : isRename ? 'rename' : 'move+rename'} for ${oldPath}:`, err.message);
               }
@@ -1396,12 +1397,36 @@ class SyncEngine extends EventEmitter {
           }
         }
       })
-      .on('change', filename => {
+      .on('change', async (filename) => {
         const normalizedPath = path.normalize(filename);
+        const fileId = normalizedPath.replace(/\.html$/, '');
+
+        // Content comparison: skip if file content hasn't actually changed
+        try {
+          const localPath = path.join(this.syncFolder, normalizedPath);
+          const content = await readFile(localPath);
+          const newChecksum = await calculateChecksum(content);
+
+          let storedChecksum = null;
+          for (const [, entry] of this.nodeMap) {
+            if (entry.path === normalizedPath) {
+              storedChecksum = entry.checksum;
+              break;
+            }
+          }
+
+          if (storedChecksum && storedChecksum === newChecksum) {
+            console.log(`[SYNC] File changed but content identical (skipping): ${normalizedPath}`);
+            return;
+          }
+        } catch (e) {
+          // File read failed (deleted between events, etc.) — fall through
+        }
+
         console.log(`[SYNC] File changed: ${normalizedPath}`);
         this.queueSync('change', normalizedPath);
 
-        const fileId = normalizedPath.replace(/\.html$/, '');
+        // Only notify browser if this wasn't a browser-originated save
         if (!liveSync.wasBrowserSave(fileId)) {
           liveSync.notify(fileId, {
             msgType: 'warning',
@@ -1439,7 +1464,7 @@ class SyncEngine extends EventEmitter {
             await deleteFileOnServer(this.serverUrl, this.apiKey, parseInt(foundNodeId));
             this.invalidateServerFilesCache();
             this.nodeMap.delete(foundNodeId);
-            await nodeMap.save(this.syncFolder, this.nodeMap);
+            await nodeMap.save(this.metaDir, this.nodeMap);
           } catch (err) {
             console.error(`[SYNC] Watcher: Failed to sync delete for ${normalizedPath}:`, err.message);
           }
@@ -1699,7 +1724,6 @@ class SyncEngine extends EventEmitter {
         '**/.DS_Store',
         '**/Thumbs.db',
         '**/*.html',
-        '**/.sync-meta/**',
         '**/.trash/**'
       ],
       awaitWriteFinish: SYNC_CONFIG.FILE_STABILIZATION

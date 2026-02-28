@@ -548,7 +548,10 @@ async function handleSyncStart(apiKey, username, syncFolder, serverUrl) {
     syncEngine.removeAllListeners();
     setupSyncEventHandlers();
 
-    const result = await syncEngine.init(apiKey, username, syncFolder, serverUrl, settings.deviceId);
+    const folderHash = crypto.createHash('sha256').update(syncFolder).digest('hex').slice(0, 12);
+    const metaDir = path.join(userData, 'sync-meta', folderHash);
+
+    const result = await syncEngine.init(apiKey, username, syncFolder, serverUrl, settings.deviceId, metaDir);
 
     if (result.success) {
       settings.syncEnabled = true;
