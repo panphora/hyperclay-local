@@ -124,10 +124,10 @@ function cleanAll() {
 
     items.forEach(item => {
       const itemPath = path.join(distDir, item);
-      // Skip bundle.js and related webpack output
-      if (item === 'bundle.js' ||
-          item === 'bundle.js.map' ||
-          item === 'bundle.js.LICENSE.txt') {
+      // Skip popover-bundle.js and related webpack output
+      if (item === 'popover-bundle.js' ||
+          item === 'popover-bundle.js.map' ||
+          item === 'popover-bundle.js.LICENSE.txt') {
         return;
       }
 
@@ -140,7 +140,7 @@ function cleanAll() {
     });
 
     if (!cleaned) {
-      console.log(`  ${colors.yellow}→${colors.reset} No artifacts found to clean (bundle.js preserved)`);
+      console.log(`  ${colors.yellow}→${colors.reset} No artifacts found to clean (popover-bundle.js preserved)`);
     }
   } else {
     console.log(`  ${colors.yellow}→${colors.reset} dist/ folder doesn't exist`);

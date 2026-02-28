@@ -12,7 +12,7 @@
     "test:watch": "jest --watch",
     "start": "npm run build-react && cross-env NODE_ENV=production electron .",
     "dev": "concurrently \"npm run dev-css\" \"npm run dev-react\" \"npm run electron-dev\"",
-    "electron-dev": "wait-on dist/bundle.js && cross-env NODE_ENV=development electron . --dev",
+    "electron-dev": "wait-on dist/popover-bundle.js && cross-env NODE_ENV=development electron . --dev",
     "build": "npm run build-css && npm run build-react && electron-builder",
     "build-css": "npx @tailwindcss/cli -i ./src/renderer/styles/src.css -o ./src/renderer/styles/renderer.css",
     "dev-css": "npx @tailwindcss/cli -i ./src/renderer/styles/src.css -o ./src/renderer/styles/renderer.css --watch",
@@ -47,10 +47,8 @@
     "files": [
       "src/main/**/*",
       "src/sync-engine/**/*",
-      "src/renderer/app.html",
       "src/renderer/popover.html",
       "src/renderer/styles/renderer.css",
-      "dist/bundle.js",
       "dist/popover-bundle.js",
       "assets/**/*"
     ],
