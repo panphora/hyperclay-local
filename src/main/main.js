@@ -5,35 +5,42 @@ const crypto = require('crypto');
 const { startServer, stopServer, getServerPort, isServerRunning } = require('./server');
 const syncEngine = require('../sync-engine');
 const syncLogger = require('../sync-engine/logger');
+const errorLogger = require('./error-logger');
 const { getServerBaseUrl } = require('./utils/utils');
 const popover = require('./popover');
+
+process.on('uncaughtException', (error) => {
+  console.error('[FATAL] Uncaught exception:', error);
+  errorLogger.fatal('Process', 'Uncaught exception', error);
+});
+
+process.on('unhandledRejection', (reason) => {
+  const error = reason instanceof Error ? reason : new Error(String(reason));
+  console.error('[FATAL] Unhandled rejection:', error);
+  errorLogger.fatal('Process', 'Unhandled rejection', error);
+});
 
 // =============================================================================
 // APP CONFIGURATION
 // =============================================================================
 
-// Set app name immediately for CMD+Tab on macOS - must be before app.whenReady()
 app.setName('Hyperclay Local');
 app.name = 'Hyperclay Local';
 
-// Separate dev settings from production — different userData directory means
-// different settings.json, API key, device ID, logs, everything.
 const isDev = !app.isPackaged;
 if (isDev) {
   app.setPath('userData', app.getPath('userData') + '-dev');
 }
 
-// Set app info for About panel on macOS
 if (process.platform === 'darwin') {
   const iconPath = path.join(__dirname, '../../assets/icons/icon.png');
   const aboutOptions = {
     applicationName: 'Hyperclay Local',
-    applicationVersion: '1.11.0',
-    version: '1.11.0',
+    applicationVersion: app.getVersion(),
+    version: app.getVersion(),
     copyright: 'Made with ❤️ for Hyperclay'
   };
 
-  // Add icon if it exists
   if (fs.existsSync(iconPath)) {
     aboutOptions.iconPath = iconPath;
   }
@@ -41,7 +48,6 @@ if (process.platform === 'darwin') {
   app.setAboutPanelOptions(aboutOptions);
 }
 
-// Enable live reload for development
 if (process.argv.includes('--dev')) {
   require('electron-reload')(__dirname, {
     electron: path.join(__dirname, '../../node_modules', '.bin', 'electron'),
@@ -53,19 +59,16 @@ if (process.argv.includes('--dev')) {
 // STATE AND STORAGE
 // =============================================================================
 
-let mainWindow = null;
 let tray = null;
 let serverRunning = false;
 let selectedFolder = null;
 let settings = {};
 let isQuitting = false;
+let availableUpdate = null;
 
 const userData = app.getPath('userData');
 const settingsPath = path.join(userData, 'settings.json');
 
-/**
- * Encrypt API key using electron safeStorage
- */
 function encryptApiKey(apiKey) {
   if (!apiKey) return null;
 
@@ -78,18 +81,13 @@ function encryptApiKey(apiKey) {
     console.error('Failed to encrypt API key:', error);
   }
 
-  // Fallback to plaintext if encryption fails
   return apiKey;
 }
 
-/**
- * Decrypt API key using electron safeStorage
- */
 function decryptApiKey(encryptedKey) {
   if (!encryptedKey) return null;
 
   try {
-    // Check if key is already plaintext (migration case)
     if (typeof encryptedKey === 'string' && encryptedKey.startsWith('hcsk_')) {
       console.log('[SECURITY] Migrating plaintext API key to encrypted storage');
       return encryptedKey;
@@ -103,14 +101,9 @@ function decryptApiKey(encryptedKey) {
     console.error('Failed to decrypt API key:', error);
   }
 
-  // Fallback to assuming it's plaintext
   return encryptedKey;
 }
 
-/**
- * Get decrypted API key from settings (only when needed)
- * This triggers keychain access - use sparingly!
- */
 function getDecryptedApiKey() {
   if (!settings.apiKey) return null;
   return decryptApiKey(settings.apiKey);
@@ -118,46 +111,40 @@ function getDecryptedApiKey() {
 
 function loadSettings() {
   try {
-    let settings = {};
+    let loaded = {};
     let needsSave = false;
 
     if (fs.existsSync(settingsPath)) {
       const data = fs.readFileSync(settingsPath, 'utf8');
-      settings = JSON.parse(data);
+      loaded = JSON.parse(data);
 
-      // Keep API key encrypted - don't decrypt at startup
-      // Just set a flag to indicate one exists
-      if (settings.apiKey) {
-        settings.hasApiKey = true;
+      if (loaded.apiKey) {
+        loaded.hasApiKey = true;
 
-        // Check if this is a plaintext key that needs migration
-        if (settings.apiKey.startsWith && settings.apiKey.startsWith('hcsk_')) {
+        if (loaded.apiKey.startsWith && loaded.apiKey.startsWith('hcsk_')) {
           console.log('[SECURITY] Detected plaintext API key - will encrypt on next save');
-          // Encrypt it now and save immediately
-          const encryptedKey = encryptApiKey(settings.apiKey);
-          settings.apiKey = encryptedKey;
-          settings.hasApiKey = true;
+          const encryptedKey = encryptApiKey(loaded.apiKey);
+          loaded.apiKey = encryptedKey;
+          loaded.hasApiKey = true;
           needsSave = true;
         }
       } else {
-        settings.hasApiKey = false;
+        loaded.hasApiKey = false;
       }
     }
 
-    // Generate device ID if not present (for multi-device sync support)
-    if (!settings.deviceId) {
-      settings.deviceId = crypto.randomUUID();
-      console.log(`[APP] Generated new device ID: ${settings.deviceId}`);
+    if (!loaded.deviceId) {
+      loaded.deviceId = crypto.randomUUID();
+      console.log(`[APP] Generated new device ID: ${loaded.deviceId}`);
       needsSave = true;
     }
 
-    // Save if any changes were made
     if (needsSave) {
-      const settingsToSave = { ...settings };
+      const settingsToSave = { ...loaded };
       fs.writeFileSync(settingsPath, JSON.stringify(settingsToSave, null, 2));
     }
 
-    return settings;
+    return loaded;
   } catch (error) {
     console.error('Failed to load settings:', error);
   }
@@ -166,17 +153,17 @@ function loadSettings() {
 
 function saveSettings(settings) {
   try {
-    // Ensure userData directory exists
     if (!fs.existsSync(userData)) {
       fs.mkdirSync(userData, { recursive: true });
     }
 
-    // Clone settings to avoid mutating original
     const settingsToSave = { ...settings };
 
-    // Encrypt API key before saving and set hasApiKey flag
     if (settingsToSave.apiKey) {
-      settingsToSave.apiKey = encryptApiKey(settingsToSave.apiKey);
+      // Only encrypt if the key is plaintext — avoid double-encrypting
+      if (settingsToSave.apiKey.startsWith('hcsk_')) {
+        settingsToSave.apiKey = encryptApiKey(settingsToSave.apiKey);
+      }
       settingsToSave.hasApiKey = true;
     } else {
       settingsToSave.hasApiKey = false;
@@ -211,29 +198,23 @@ function getTrayIcon() {
   const mainIconPath = path.join(__dirname, '../../assets/icons/icon.png');
 
   try {
-    // Try tray-specific icon first
-    // Note: Electron automatically loads @2x variant (tray-icon@2x.png) on Retina displays
     if (fs.existsSync(trayIconPath)) {
       const icon = nativeImage.createFromPath(trayIconPath);
 
-      // On macOS, mark as template image so it adapts to light/dark menu bar
       if (process.platform === 'darwin') {
         icon.setTemplateImage(true);
       }
 
       return icon;
     } else if (fs.existsSync(mainIconPath)) {
-      // Fall back to main icon and resize it for tray
       const icon = nativeImage.createFromPath(mainIconPath);
       const size = process.platform === 'darwin' ? 22 : 16;
       return icon.resize({ width: size, height: size });
     }
   } catch (error) {
-    // Fallback to a simple colored square
     console.error('Failed to load tray icon:', error);
   }
 
-  // Return a simple fallback icon
   return nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAAdgAAAHYBTnsmCAAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAAFYSURBVDiNpZM9SwNBEIafgwQSCxsLwcJCG1sLG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sL');
 }
 
@@ -242,8 +223,6 @@ function getTrayIcon() {
 // =============================================================================
 
 function getTrayMenuTemplate() {
-  const isAppVisible = mainWindow && mainWindow.isVisible();
-
   return [
     {
       label: `Server: ${serverRunning ? 'On' : 'Off'}`,
@@ -254,19 +233,6 @@ function getTrayMenuTemplate() {
       enabled: false
     },
     { type: 'separator' },
-    {
-      label: isAppVisible ? 'Hide App' : 'Show App',
-      click: () => {
-        if (isAppVisible) {
-          if (process.platform === 'darwin') {
-            app.dock.hide();
-          }
-          mainWindow?.hide();
-        } else {
-          showMainWindow();
-        }
-      }
-    },
     {
       label: serverRunning ? 'Stop Server' : 'Start Server',
       click: () => {
@@ -285,7 +251,6 @@ function getTrayMenuTemplate() {
           await handleSyncStop();
         } else {
           if (settings.hasApiKey && settings.syncFolder) {
-            // Decrypt API key only when starting sync (triggers keychain prompt)
             const apiKey = getDecryptedApiKey();
             if (apiKey) {
               await handleSyncStart(
@@ -334,13 +299,19 @@ function updateTrayMenu() {
       const contextMenu = Menu.buildFromTemplate(getTrayMenuTemplate());
       tray.setContextMenu(contextMenu);
     }
-    // On macOS, context menu is built fresh on each right-click via popUpContextMenu
   }
 }
 
 // =============================================================================
 // UI UPDATE
 // =============================================================================
+
+function sendToPopover(channel, data) {
+  const popoverWin = popover.getPopoverWindow();
+  if (popoverWin && !popoverWin.isDestroyed()) {
+    popoverWin.webContents.send(channel, data);
+  }
+}
 
 function updateUI() {
   const syncStatus = syncEngine.getStatus();
@@ -355,24 +326,13 @@ function updateUI() {
     syncFolder: settings.syncFolder
   };
 
-  if (mainWindow) {
-    mainWindow.webContents.send('update-state', statePayload);
-  }
-
-  const popoverWin = popover.getPopoverWindow();
-  if (popoverWin && !popoverWin.isDestroyed()) {
-    popoverWin.webContents.send('update-state', statePayload);
-  }
+  sendToPopover('update-state', statePayload);
 }
 
 // =============================================================================
 // VERSION CHECK
 // =============================================================================
 
-/**
- * Compare two semver version strings
- * Returns: 1 if v1 > v2, -1 if v1 < v2, 0 if equal
- */
 function compareVersions(v1, v2) {
   const parts1 = v1.split('.').map(Number);
   const parts2 = v2.split('.').map(Number);
@@ -386,9 +346,6 @@ function compareVersions(v1, v2) {
   return 0;
 }
 
-/**
- * Check for updates from CDN
- */
 async function checkForUpdates() {
   try {
     const response = await fetch('https://cdn.jsdelivr.net/gh/panphora/hyperclay-local@main/package.json');
@@ -406,132 +363,19 @@ async function checkForUpdates() {
 
     if (compareVersions(remoteVersion, currentVersion) > 0) {
       console.log('[UPDATE] New version available!');
-      if (mainWindow) {
-        mainWindow.webContents.send('update-available', {
-          currentVersion,
-          latestVersion: remoteVersion
-        });
-      }
+      availableUpdate = { currentVersion, latestVersion: remoteVersion };
+      sendToPopover('update-available', availableUpdate);
     } else {
       console.log('[UPDATE] App is up to date');
     }
   } catch (error) {
-    // Silently fail - don't bother user if check fails
     console.log('[UPDATE] Update check failed:', error.message);
   }
 }
 
 // =============================================================================
-// WINDOW CREATION
+// TRAY CREATION
 // =============================================================================
-
-function getWindowOptions() {
-  const iconPath = getAppIcon();
-  const options = {
-    title: 'Hyperclay Local',
-    width: 720,
-    height: 710,
-    resizable: true,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      preload: path.join(__dirname, 'preload.js')
-    },
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-    show: false
-  };
-
-  if (iconPath) {
-    options.icon = iconPath;
-  }
-
-  return options;
-}
-
-function createWindow() {
-  mainWindow = new BrowserWindow(getWindowOptions());
-  mainWindow.loadFile(path.join(__dirname, '../renderer/app.html'));
-
-  // Show window when ready — start hidden unless first launch
-  mainWindow.once('ready-to-show', () => {
-    if (!settings.syncEnabled && !settings.selectedFolder && !settings.syncFolder) {
-      // First launch — show window for setup
-      mainWindow.show();
-      if (process.platform === 'darwin') {
-        app.focus();
-      }
-    } else {
-      // Returning user — start hidden in tray
-      if (process.platform === 'darwin') {
-        app.dock.hide();
-      }
-    }
-
-    updateUI();
-  });
-
-  mainWindow.on('close', (event) => {
-    if (!isQuitting) {
-      event.preventDefault();
-      mainWindow.hide();
-      if (process.platform === 'darwin') {
-        app.dock.hide();
-      }
-      return;
-    }
-  });
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-
-  // Update tray menu when window visibility changes
-  mainWindow.on('show', () => {
-    updateTrayMenu();
-  });
-
-  mainWindow.on('hide', () => {
-    updateTrayMenu();
-  });
-
-  // Handle external links
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
-    return { action: 'deny' };
-  });
-
-  // Add context menu with copy functionality
-  mainWindow.webContents.on('context-menu', (event, params) => {
-    const { selectionText, isEditable } = params;
-
-    if (selectionText || isEditable) {
-      const contextMenu = Menu.buildFromTemplate([
-        { label: 'Copy', role: 'copy', enabled: selectionText.length > 0 },
-        { label: 'Cut', role: 'cut', enabled: isEditable && selectionText.length > 0 },
-        { label: 'Paste', role: 'paste', enabled: isEditable },
-        { type: 'separator' },
-        { label: 'Select All', role: 'selectAll' }
-      ]);
-
-      contextMenu.popup();
-    }
-  });
-
-  // Create system tray
-  createTray();
-
-  // Create menu
-  createMenu();
-}
-
-function showMainWindow() {
-  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
-  if (process.platform === 'darwin') {
-    app.dock.show();
-  }
-  mainWindow.show();
-  mainWindow.focus();
-}
 
 function createTray() {
   tray = new Tray(getTrayIcon());
@@ -546,130 +390,10 @@ function createTray() {
     tray.popUpContextMenu(contextMenu);
   });
 
-  // On non-macOS, also set context menu normally (left-click doesn't steal menu there)
   if (process.platform !== 'darwin') {
     const contextMenu = Menu.buildFromTemplate(getTrayMenuTemplate());
     tray.setContextMenu(contextMenu);
   }
-}
-
-function createMenu() {
-  const template = [
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'Select Folder...',
-          accelerator: 'CmdOrCtrl+O',
-          click: handleSelectFolder
-        },
-        { type: 'separator' },
-        {
-          label: 'Start Server',
-          accelerator: 'CmdOrCtrl+R',
-          click: handleStartServer,
-          enabled: !serverRunning
-        },
-        {
-          label: 'Stop Server',
-          accelerator: 'CmdOrCtrl+S',
-          click: handleStopServer,
-          enabled: serverRunning
-        },
-        { type: 'separator' },
-        process.platform === 'darwin' ?
-          { label: 'Close', accelerator: 'CmdOrCtrl+W', role: 'close' } :
-          {
-            label: 'Close',
-            accelerator: 'CmdOrCtrl+Q',
-            click: () => {
-              if (mainWindow) mainWindow.hide();
-            }
-          }
-      ]
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', role: 'undo' },
-        { label: 'Redo', accelerator: 'Shift+CmdOrCtrl+Z', role: 'redo' },
-        { type: 'separator' },
-        { label: 'Cut', accelerator: 'CmdOrCtrl+X', role: 'cut' },
-        { label: 'Copy', accelerator: 'CmdOrCtrl+C', role: 'copy' },
-        { label: 'Paste', accelerator: 'CmdOrCtrl+V', role: 'paste' },
-        { label: 'Select All', accelerator: 'CmdOrCtrl+A', role: 'selectAll' }
-      ]
-    },
-    {
-      label: 'View',
-      submenu: [
-        { label: 'Reload', accelerator: 'CmdOrCtrl+R', role: 'reload' },
-        { label: 'Force Reload', accelerator: 'CmdOrCtrl+Shift+R', role: 'forceReload' },
-        { label: 'Toggle Developer Tools', accelerator: 'F12', role: 'toggleDevTools' },
-        { type: 'separator' },
-        { label: 'Actual Size', accelerator: 'CmdOrCtrl+0', role: 'resetZoom' },
-        { label: 'Zoom In', accelerator: 'CmdOrCtrl+Plus', role: 'zoomIn' },
-        { label: 'Zoom Out', accelerator: 'CmdOrCtrl+-', role: 'zoomOut' },
-        { type: 'separator' },
-        { label: 'Toggle Fullscreen', accelerator: 'F11', role: 'togglefullscreen' }
-      ]
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'About Hyperclay Local',
-          click: () => {
-            const iconPath = getAppIcon();
-            dialog.showMessageBox(mainWindow, {
-              type: 'info',
-              title: 'About Hyperclay Local',
-              message: 'Hyperclay Local Server v1.1.0',
-              detail: 'A local server for running your malleable HTML files offline.\n\nMade with ❤️ for the Hyperclay platform.',
-              buttons: ['OK'],
-              icon: iconPath || undefined
-            });
-          }
-        },
-        {
-          label: 'Visit Hyperclay.com',
-          click: () => {
-            shell.openExternal('https://hyperclay.com');
-          }
-        }
-      ]
-    }
-  ];
-
-  // macOS specific menu adjustments
-  if (process.platform === 'darwin') {
-    template.unshift({
-      label: app.getName(),
-      submenu: [
-        { label: 'About ' + app.getName(), role: 'about' },
-        { type: 'separator' },
-        { label: 'Services', role: 'services', submenu: [] },
-        { type: 'separator' },
-        { label: 'Hide ' + app.getName(), accelerator: 'Command+H', role: 'hide' },
-        { label: 'Hide Others', accelerator: 'Command+Alt+H', role: 'hideothers' },
-        { label: 'Show All', role: 'unhide' },
-        { type: 'separator' },
-        {
-          label: 'Quit',
-          accelerator: 'Command+Q',
-          click: () => {
-            if (mainWindow) {
-              mainWindow.hide();
-              app.dock.hide();
-            }
-          }
-        }
-      ]
-    });
-  }
-
-  const menu = Menu.buildFromTemplate(template);
-  Menu.setApplicationMenu(menu);
 }
 
 // =============================================================================
@@ -704,8 +428,9 @@ async function populateExampleApps(folderPath) {
   }
 }
 
-async function handleSelectFolder() {
-  const result = await dialog.showOpenDialog(mainWindow, {
+async function handleSelectFolder(event) {
+  const parentWin = event ? BrowserWindow.fromWebContents(event.sender) : null;
+  const result = await dialog.showOpenDialog(parentWin, {
     properties: ['openDirectory'],
     title: 'Select folder containing your malleable HTML files'
   });
@@ -713,13 +438,15 @@ async function handleSelectFolder() {
   if (!result.canceled && result.filePaths.length > 0) {
     selectedFolder = result.filePaths[0];
 
-    // Save to persistent storage
     settings.selectedFolder = selectedFolder;
     saveSettings(settings);
 
     await populateExampleApps(selectedFolder);
     updateUI();
+    return { success: true, folder: selectedFolder };
   }
+
+  return { success: false };
 }
 
 async function handleStartServer() {
@@ -739,10 +466,8 @@ async function handleStartServer() {
     updateUI();
     updateTrayMenu();
 
-    // Auto-open browser
-    shell.openExternal(`http://localhost:${getServerPort()}`);
-
   } catch (error) {
+    errorLogger.error('App', 'Failed to start server', error);
     dialog.showErrorBox('Server Error', `Failed to start server: ${error.message}`);
   }
 }
@@ -759,6 +484,7 @@ async function handleStopServer() {
     updateTrayMenu();
   } catch (error) {
     console.error('Error stopping server:', error);
+    errorLogger.error('App', 'Failed to stop server', error);
     serverRunning = isServerRunning();
     updateUI();
     updateTrayMenu();
@@ -770,25 +496,17 @@ async function handleStopServer() {
 // SYNC EVENT HANDLERS
 // =============================================================================
 
-function sendToAll(channel, data) {
-  mainWindow?.webContents.send(channel, data);
-  const popoverWin = popover.getPopoverWindow();
-  if (popoverWin && !popoverWin.isDestroyed()) {
-    popoverWin.webContents.send(channel, data);
-  }
-}
-
 function setupSyncEventHandlers() {
   syncEngine.on('sync-start', data => {
-    sendToAll('sync-update', { syncing: true, ...data });
+    sendToPopover('sync-update', { syncing: true, ...data });
   });
 
   syncEngine.on('sync-complete', data => {
-    sendToAll('sync-update', { syncing: false, ...data });
+    sendToPopover('sync-update', { syncing: false, ...data });
   });
 
   syncEngine.on('sync-error', data => {
-    sendToAll('sync-update', {
+    sendToPopover('sync-update', {
       error: data.userMessage || data.error || data.originalError,
       priority: data.priority,
       dismissable: data.dismissable,
@@ -798,23 +516,23 @@ function setupSyncEventHandlers() {
   });
 
   syncEngine.on('file-synced', data => {
-    sendToAll('file-synced', data);
+    sendToPopover('file-synced', data);
   });
 
   syncEngine.on('sync-stats', data => {
-    sendToAll('sync-stats', data);
+    sendToPopover('sync-stats', data);
   });
 
   syncEngine.on('backup-created', data => {
-    sendToAll('backup-created', data);
+    sendToPopover('backup-created', data);
   });
 
   syncEngine.on('sync-retry', data => {
-    sendToAll('sync-retry', data);
+    sendToPopover('sync-retry', data);
   });
 
   syncEngine.on('sync-failed', data => {
-    sendToAll('sync-failed', data);
+    sendToPopover('sync-failed', data);
   });
 }
 
@@ -824,23 +542,18 @@ function setupSyncEventHandlers() {
 
 async function handleSyncStart(apiKey, username, syncFolder, serverUrl) {
   try {
-    // Initialize logger with sync folder
     await syncLogger.init(syncFolder);
-
-    // Set logger on sync engine
     syncEngine.setLogger(syncLogger);
 
-    // Wire up event handlers before starting
     syncEngine.removeAllListeners();
     setupSyncEventHandlers();
 
     const result = await syncEngine.init(apiKey, username, syncFolder, serverUrl, settings.deviceId);
 
     if (result.success) {
-      // Persist ALL settings including API key
       settings.syncEnabled = true;
       settings.apiKey = apiKey;
-      settings.hasApiKey = true; // Update flag in memory
+      settings.hasApiKey = true;
       settings.syncUsername = username;
       settings.syncFolder = syncFolder;
       settings.serverUrl = serverUrl;
@@ -862,7 +575,6 @@ async function handleSyncStop() {
   try {
     const result = await syncEngine.stop();
 
-    // Update settings but keep API key for potential restart
     settings.syncEnabled = false;
     saveSettings(settings);
 
@@ -884,8 +596,7 @@ async function handleSyncStop() {
 // IPC HANDLERS
 // =============================================================================
 
-// Server IPC handlers
-ipcMain.handle('select-folder', handleSelectFolder);
+ipcMain.handle('select-folder', (event) => handleSelectFolder(event));
 ipcMain.handle('start-server', handleStartServer);
 ipcMain.handle('stop-server', handleStopServer);
 
@@ -893,7 +604,9 @@ ipcMain.handle('get-state', () => ({
   selectedFolder,
   serverRunning,
   serverPort: getServerPort(),
-  syncStatus: syncEngine.getStatus()
+  syncEnabled: settings.syncEnabled,
+  syncStatus: syncEngine.getStatus(),
+  availableUpdate
 }));
 
 ipcMain.handle('open-folder', () => {
@@ -903,10 +616,16 @@ ipcMain.handle('open-folder', () => {
 });
 
 ipcMain.handle('open-logs', () => {
-  // Open the sync logs directory
   const logsPath = app.getPath('logs');
   const syncLogsPath = path.join(logsPath, 'sync');
   shell.openPath(syncLogsPath);
+});
+
+ipcMain.handle('open-error-logs', async () => {
+  const logsPath = app.getPath('logs');
+  const errorLogsPath = path.join(logsPath, 'errors');
+  await fs.promises.mkdir(errorLogsPath, { recursive: true });
+  shell.openPath(errorLogsPath);
 });
 
 ipcMain.handle('open-browser', (event, url) => {
@@ -927,13 +646,11 @@ ipcMain.handle('sync-stop', async () => {
 });
 
 ipcMain.handle('sync-resume', async (event, selectedFolder, username) => {
-  // Resume sync with stored credentials (decrypts API key - triggers keychain)
-  // Use provided values if available, fallback to saved settings
   const folderToSync = selectedFolder || settings.syncFolder;
   const usernameToUse = username || settings.syncUsername;
 
   if (!settings.hasApiKey) {
-    return { error: 'No stored credentials to resume sync' };
+    return { error: 'no-api-key' };
   }
 
   if (!folderToSync) {
@@ -941,8 +658,11 @@ ipcMain.handle('sync-resume', async (event, selectedFolder, username) => {
   }
 
   const apiKey = getDecryptedApiKey();
-  if (!apiKey) {
-    return { error: 'Failed to decrypt stored API key' };
+  if (!apiKey || !apiKey.startsWith('hcsk_')) {
+    delete settings.apiKey;
+    settings.hasApiKey = false;
+    saveSettings(settings);
+    return { error: 'no-api-key' };
   }
 
   return await handleSyncStart(
@@ -972,7 +692,6 @@ ipcMain.handle('set-api-key', async (event, key, serverUrl) => {
     const baseUrl = getServerBaseUrl(serverUrl);
     console.log(`[SYNC] Validating API key with server: ${baseUrl}`);
 
-    // Validate key with server
     const response = await fetch(`${baseUrl}/sync/status`, {
       headers: { 'X-API-Key': key }
     });
@@ -983,7 +702,6 @@ ipcMain.handle('set-api-key', async (event, key, serverUrl) => {
 
     const data = await response.json();
 
-    // Store settings
     settings.apiKey = key;
     settings.hasApiKey = true;
     settings.syncUsername = data.username;
@@ -1019,7 +737,6 @@ ipcMain.handle('remove-api-key', () => {
 });
 
 ipcMain.handle('toggle-sync', async (event, enabled) => {
-  // Use selectedFolder (current folder) as priority, fallback to saved syncFolder
   const folderToSync = selectedFolder || settings.syncFolder;
 
   if (enabled && !folderToSync) {
@@ -1027,41 +744,38 @@ ipcMain.handle('toggle-sync', async (event, enabled) => {
   }
 
   if (enabled && !settings.hasApiKey) {
-    return { error: 'Please connect with API key first' };
+    return { error: 'no-api-key' };
   }
 
   if (enabled) {
-    // Decrypt API key (triggers keychain prompt)
     const apiKey = getDecryptedApiKey();
 
-    if (!apiKey) {
-      return { error: 'Failed to decrypt API key' };
+    if (!apiKey || !apiKey.startsWith('hcsk_')) {
+      // Key is corrupted or decryption failed — clear it so user can re-enter
+      delete settings.apiKey;
+      settings.hasApiKey = false;
+      saveSettings(settings);
+      return { error: 'no-api-key' };
     }
 
-    // Start sync with existing settings
-    return await handleSyncStart(
+    const result = await handleSyncStart(
       apiKey,
       settings.syncUsername,
-      folderToSync,  // Use the current selected folder
+      folderToSync,
       settings.serverUrl
     );
-  } else {
-    // Stop sync
-    return await handleSyncStop();
-  }
-});
 
-// Popover IPC handlers
-ipcMain.handle('open-settings', async (event, tab) => {
-  popover.hidePopover();
-  showMainWindow();
-  const targetTab = tab || 'main';
-  if (mainWindow) {
-    const wc = mainWindow.webContents;
-    if (wc.isLoading()) {
-      await new Promise(resolve => wc.once('did-finish-load', resolve));
+    // If sync start fails due to invalid key, clear stored key
+    if (!result.success && result.error && /invalid|expired|unauthorized|api.key/i.test(result.error)) {
+      delete settings.apiKey;
+      settings.hasApiKey = false;
+      saveSettings(settings);
+      return { error: 'no-api-key' };
     }
-    wc.send('navigate-tab', targetTab);
+
+    return result;
+  } else {
+    return await handleSyncStop();
   }
 });
 
@@ -1069,18 +783,74 @@ ipcMain.handle('quit-app', () => {
   app.quit();
 });
 
-// Window resize IPC handler
-ipcMain.handle('resize-window', (event, height) => {
-  if (mainWindow && height) {
-    const currentSize = mainWindow.getSize();
-    const minHeight = 500;
-    const maxHeight = 900;
+// Options menu IPC handler
+ipcMain.handle('show-options-menu', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const template = [
+    {
+      label: 'Select Folder...',
+      click: () => handleSelectFolder(event)
+    },
+    {
+      label: 'Open Folder',
+      enabled: !!selectedFolder,
+      click: () => {
+        if (selectedFolder) shell.openPath(selectedFolder);
+      }
+    },
+    {
+      label: 'Open in Browser',
+      enabled: serverRunning,
+      click: () => {
+        if (serverRunning) shell.openExternal(`http://localhost:${getServerPort()}`);
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Enter API Key for Sync',
+      click: () => {
+        sendToPopover('show-credentials', {});
+      }
+    },
+    {
+      label: 'View Sync Logs',
+      click: () => {
+        const logsPath = app.getPath('logs');
+        const syncLogsPath = path.join(logsPath, 'sync');
+        shell.openPath(syncLogsPath);
+      }
+    },
+    {
+      label: 'View Error Logs',
+      click: () => {
+        const logsPath = app.getPath('logs');
+        const errorLogsPath = path.join(logsPath, 'errors');
+        shell.openPath(errorLogsPath);
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'About Hyperclay Local',
+      click: () => {
+        if (process.platform === 'darwin') {
+          app.showAboutPanel();
+        } else {
+          const iconPath = getAppIcon();
+          dialog.showMessageBox(win, {
+            type: 'info',
+            title: 'About Hyperclay Local',
+            message: `Hyperclay Local Server v${app.getVersion()}`,
+            detail: 'A local server for running your malleable HTML files offline.\n\nMade with \u2764\ufe0f for the Hyperclay platform.',
+            buttons: ['OK'],
+            icon: iconPath || undefined
+          });
+        }
+      }
+    }
+  ];
 
-    // Clamp height between min and max
-    const newHeight = Math.max(minHeight, Math.min(maxHeight, height));
-
-    mainWindow.setSize(currentSize[0], newHeight, true); // true = animate
-  }
+  const menu = Menu.buildFromTemplate(template);
+  menu.popup({ window: win });
 });
 
 // =============================================================================
@@ -1088,98 +858,66 @@ ipcMain.handle('resize-window', (event, height) => {
 // =============================================================================
 
 app.whenReady().then(async () => {
-  // Ensure app name is set again after ready
   app.setName('Hyperclay Local');
 
-  // Log environment mode
   const baseUrl = getServerBaseUrl();
-  const isDev = baseUrl.includes('localhyperclay');
-  console.log(`[APP] Running in ${isDev ? 'DEVELOPMENT' : 'PRODUCTION'} mode`);
+  const isDevServer = baseUrl.includes('localhyperclay');
+  console.log(`[APP] Running in ${isDevServer ? 'DEVELOPMENT' : 'PRODUCTION'} mode`);
   console.log(`[APP] Sync will use: ${baseUrl}`);
 
-  // Handle certificate errors for local development
-  if (isDev) {
-    // Allow self-signed certificates for localhyperclay.com in development
+  if (isDevServer) {
     app.on('certificate-error', (event, webContents, url, error, certificate, callback) => {
       if (url.startsWith('https://localhyperclay.com')) {
-        // Ignore certificate error for local development
         event.preventDefault();
         callback(true);
       } else {
-        // Use default behavior for other URLs
         callback(false);
       }
     });
 
-    // For Node.js fetch in main process, we need to configure it differently
-    // This is a workaround for development with self-signed certificates
     process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = 0;
     console.log('[APP] Disabled certificate validation for local development');
   }
 
-  // Load settings on startup
   settings = loadSettings();
   selectedFolder = settings.selectedFolder || null;
 
-  // Set app icon for dock/taskbar
-  const iconPath = getAppIcon();
-  if (iconPath) {
-    const icon = nativeImage.createFromPath(iconPath);
-    app.dock?.setIcon(icon); // macOS dock
+  // Hide dock icon — app lives in tray only
+  if (process.platform === 'darwin') {
+    app.dock.hide();
   }
 
-  createWindow();
+  createTray();
 
-  // Check for updates on startup
   checkForUpdates();
 
   // Auto-restart sync if it was enabled before quit
   if (settings.syncEnabled && settings.hasApiKey && settings.syncFolder) {
     console.log('[APP] Auto-restarting sync from previous session...');
 
-    try {
-      // Decrypt API key (this triggers keychain prompt during auto-restart)
-      const apiKey = getDecryptedApiKey();
-
-      if (!apiKey) {
-        throw new Error('Failed to decrypt API key');
-      }
-
-      // Initialize logger with sync folder
-      await syncLogger.init(settings.syncFolder);
-
-      // Set logger on sync engine
-      syncEngine.setLogger(syncLogger);
-
-      // Wire up event handlers using the shared function
-      syncEngine.removeAllListeners();
-      setupSyncEventHandlers();
-
-      // Initialize sync
-      const result = await syncEngine.init(
+    const apiKey = getDecryptedApiKey();
+    if (apiKey) {
+      const result = await handleSyncStart(
         apiKey,
         settings.syncUsername,
         settings.syncFolder,
-        settings.serverUrl,
-        settings.deviceId
+        settings.serverUrl
       );
 
       if (result.success) {
         console.log('[APP] Sync auto-restart successful');
-        // Note: Settings are already saved from previous session, no need to save again
       } else {
         console.error('[APP] Sync auto-restart failed:', result);
-        // Clear sync settings on failure
+        errorLogger.error('App', 'Sync auto-restart failed', result);
         settings.syncEnabled = false;
         saveSettings(settings);
       }
-    } catch (error) {
-      console.error('[APP] Failed to auto-restart sync:', error);
+    } else {
+      console.error('[APP] Failed to auto-restart sync: could not decrypt API key');
+      errorLogger.error('App', 'Failed to auto-restart sync: could not decrypt API key');
       settings.syncEnabled = false;
       saveSettings(settings);
     }
-
-    updateUI();
   }
 
   // Auto-restart server if it was enabled before quit
@@ -1193,36 +931,34 @@ app.whenReady().then(async () => {
       console.log('[APP] Server auto-restart successful');
     } catch (err) {
       console.error('[APP] Failed to auto-start server:', err);
+      errorLogger.error('App', 'Failed to auto-start server', err);
       settings.serverEnabled = false;
       saveSettings(settings);
     }
   }
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
-  });
+  // On first launch, auto-show popover so user isn't staring at an empty tray
+  if (!settings.selectedFolder && !settings.syncFolder) {
+    setTimeout(() => {
+      if (tray) {
+        popover.showPopover(tray.getBounds());
+      }
+    }, 500);
+  }
 });
 
 app.on('window-all-closed', () => {
-  // If we're quitting, let the quit proceed
-  // Otherwise keep app running in system tray
-  if (isQuitting) {
-    app.quit();
-  }
+  // Keep app running in tray — popover is not a persistent window
 });
 
 app.on('before-quit', async (event) => {
   isQuitting = true;
   popover.destroyPopover();
 
-  // Stop both server and sync engine before quitting
   if (isServerRunning() || syncEngine.isRunning) {
-    event.preventDefault(); // Prevent immediate quit
+    event.preventDefault();
 
     try {
-      // Stop sync engine if running (keep syncEnabled true for auto-restart on next launch)
       if (syncEngine.isRunning) {
         console.log('[APP] Stopping sync engine before quit...');
         await syncEngine.stop();
@@ -1230,17 +966,17 @@ app.on('before-quit', async (event) => {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
 
-      // Stop server if running
       if (isServerRunning()) {
         console.log('[APP] Stopping server before quit...');
         await stopServer();
         serverRunning = isServerRunning();
       }
 
-      app.quit(); // Now quit after cleanup
+      app.quit();
     } catch (error) {
       console.error('Error during quit cleanup:', error);
-      app.quit(); // Quit anyway
+      errorLogger.error('App', 'Error during quit cleanup', error);
+      app.quit();
     }
   }
 });

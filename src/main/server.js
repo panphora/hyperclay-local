@@ -6,6 +6,7 @@ const { validateFileName } = require('../sync-engine/validation.js');
 const { createBackup } = require('./utils/backup.js');
 const { compileTailwind, getTailwindCssName } = require('tailwind-hyperclay');
 const { liveSync } = require('livesync-hyperclay');
+const errorLogger = require('./error-logger');
 
 // Initialize Eta
 const eta = new Eta({
@@ -34,6 +35,38 @@ let app = null;
 const PORT = 4321;
 let connections = new Set();
 
+function validateAndResolvePath(name, baseDir) {
+  if (typeof name !== 'string' ||
+      name.length === 0 ||
+      name.length > 255 ||
+      name.includes('..') ||
+      name.includes('\\') ||
+      name.startsWith('.') ||
+      name.startsWith('/') ||
+      name.endsWith('.html') ||
+      path.isAbsolute(name) ||
+      !/^[\w/-]+$/.test(name) ||
+      name.split('/').some(seg => seg.startsWith('.') || seg.length === 0)) {
+    return { error: 'Invalid file path' };
+  }
+
+  const baseName = name.split('/').pop();
+  const result = validateFileName(`${baseName}.html`);
+  if (!result.valid) {
+    return { error: result.error };
+  }
+
+  const filePath = path.join(baseDir, name + '.html');
+  const resolvedPath = path.resolve(filePath);
+  const resolvedBase = path.resolve(baseDir);
+
+  if (!resolvedPath.startsWith(resolvedBase + path.sep)) {
+    return { error: 'Path escapes base directory' };
+  }
+
+  return { filePath, resolvedPath, baseName };
+}
+
 function startServer(baseDir) {
   return new Promise((resolve, reject) => {
     if (server) {
@@ -54,6 +87,18 @@ function startServer(baseDir) {
       res.cookie('isAdminOfCurrentResource', 'true', cookieOptions);
       res.cookie('isLoggedIn', 'true', cookieOptions);
       next();
+    });
+
+    // Serve favicon (ico → legacy, svg → theme-adaptive, png → fallback)
+    const assetsDir = path.join(__dirname, '../../assets');
+    app.get('/favicon.ico', (req, res) => {
+      res.sendFile(path.join(assetsDir, 'favicon.ico'));
+    });
+    app.get('/favicon.svg', (req, res) => {
+      res.sendFile(path.join(assetsDir, 'favicon.svg'));
+    });
+    app.get('/favicon.png', (req, res) => {
+      res.sendFile(path.join(assetsDir, 'favicon.png'));
     });
 
     // Serve template CSS files
@@ -123,30 +168,11 @@ function startServer(baseDir) {
         return res.status(400).json({ error: 'file and html are required' });
       }
 
-      // Validate file parameter to prevent path traversal
-      // Allow forward slashes for subfolders, but block traversal attacks
-      if (typeof file !== 'string' ||
-          file.length === 0 ||
-          file.length > 255 ||
-          file.includes('..') ||
-          file.includes('\\') ||
-          file.startsWith('.') ||
-          file.startsWith('/') ||
-          file.endsWith('.html') ||
-          path.isAbsolute(file) ||
-          !/^[\w/-]+$/.test(file) ||
-          file.split('/').some(seg => seg.startsWith('.') || seg.length === 0)) {
-        return res.status(400).json({ error: 'Invalid file identifier' });
+      const validated = validateAndResolvePath(file, baseDir);
+      if (validated.error) {
+        return res.status(400).json({ error: validated.error });
       }
-
-      const filepath = path.join(baseDir, file + '.html');
-
-      // Security: ensure resolved path is within baseDir
-      const resolvedPath = path.resolve(filepath);
-      const resolvedBase = path.resolve(baseDir);
-      if (!resolvedPath.startsWith(resolvedBase + path.sep)) {
-        return res.status(400).json({ error: 'Path escapes base directory' });
-      }
+      const filepath = validated.filePath;
 
       try {
         // Ensure directory exists for subfolder files
@@ -168,6 +194,7 @@ function startServer(baseDir) {
         res.json({ success: true });
       } catch (err) {
         console.error('[LiveSync] Save error:', err.message);
+        errorLogger.error('LiveSync', `Save error: ${file}`, err);
         res.status(500).json({ error: 'Failed to save file' });
       }
     });
@@ -209,43 +236,14 @@ function startServer(baseDir) {
         content = req.body;
       }
 
-      // Validate path: allow alphanumeric, underscore, hyphen, and forward slashes for subfolders
-      // Block path traversal attacks
-      if (!/^[\w/-]+$/.test(name) ||
-          name.includes('..') ||
-          name.startsWith('/') ||
-          name.split('/').some(seg => seg.startsWith('.') || seg.length === 0)) {
+      const validated = validateAndResolvePath(name, baseDir);
+      if (validated.error) {
         return res.status(400).json({
-          msg: 'Invalid characters in path. Only alphanumeric, underscores, hyphens, and forward slashes allowed.',
+          msg: validated.error,
           msgType: 'error'
         });
       }
-
-      // Get the base filename (last segment) for validation
-      const baseName = name.split('/').pop();
-      const filename = `${name}.html`;
-
-      // Validate against Windows reserved filenames and other restrictions
-      const validationResult = validateFileName(`${baseName}.html`);
-      if (!validationResult.valid) {
-        return res.status(400).json({
-          msg: validationResult.error,
-          msgType: 'error'
-        });
-      }
-      const filePath = path.join(baseDir, filename);
-
-      // Security check: Ensure the final path resolves within the base directory
-      const resolvedPath = path.resolve(filePath);
-      const resolvedBaseDir = path.resolve(baseDir);
-
-      if (!resolvedPath.startsWith(resolvedBaseDir + path.sep)) {
-        console.error(`Security Alert: Attempt to save outside base directory blocked for "${name}"`);
-        return res.status(400).json({
-          msg: 'Invalid file path.',
-          msgType: 'error'
-        });
-      }
+      const filePath = validated.filePath;
 
       // Ensure body content is a string
       if (typeof content !== 'string') {
@@ -313,7 +311,8 @@ function startServer(baseDir) {
         });
         console.log(`Saved: ${filename}`);
       } catch (error) {
-        console.error(`Error saving file ${filename}:`, error);
+        console.error(`Error saving file ${name}:`, error);
+        errorLogger.error('Server', `Save error: ${name}`, error);
         res.status(500).json({
           msg: `Server error saving file: ${error.message}`,
           msgType: 'error'
@@ -380,7 +379,7 @@ function startServer(baseDir) {
       const resolvedPath = path.resolve(filePath);
       const resolvedBaseDir = path.resolve(baseDir);
 
-      if (!resolvedPath.startsWith(resolvedBaseDir)) {
+      if (!resolvedPath.startsWith(resolvedBaseDir + path.sep) && resolvedPath !== resolvedBaseDir) {
         return res.status(403).send('Access denied');
       }
 
@@ -450,6 +449,13 @@ function startServer(baseDir) {
       await serveWithFallback();
     });
 
+    // Catch-all error handler for unhandled Express errors
+    app.use((err, req, res, next) => {
+      console.error('[Server] Unhandled error:', err);
+      errorLogger.error('Server', `Unhandled error: ${req.method} ${req.path}`, err);
+      res.status(500).send('Internal server error');
+    });
+
     // Start the server
     server = app.listen(PORT, 'localhost', (err) => {
       if (err) {
@@ -470,6 +476,7 @@ function startServer(baseDir) {
     });
 
     server.on('error', (err) => {
+      errorLogger.error('Server', 'Server error', err);
       server = null;
       connections.clear();
       reject(err);
@@ -586,6 +593,7 @@ async function serveDirListing(res, dirPath, baseDir) {
     res.send(html);
   } catch (error) {
     console.error('Error rendering directory listing:', error);
+    errorLogger.error('Server', 'Directory listing error', error);
     res.status(500).send('Error reading directory');
   }
 }
