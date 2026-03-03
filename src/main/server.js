@@ -7,6 +7,7 @@ const { createBackup } = require('./utils/backup.js');
 const { compileTailwind, getTailwindCssName } = require('tailwind-hyperclay');
 const { liveSync } = require('livesync-hyperclay');
 const errorLogger = require('./error-logger');
+const formatHtml = require('./format-html');
 
 // Initialize Eta
 const eta = new Eta({
@@ -269,6 +270,9 @@ function startServer(baseDir) {
             // File doesn't exist yet, that's OK
           }
         }
+
+        // Format HTML to match platform output (consistent checksums)
+        content = formatHtml(content);
 
         // Create backup of the new content
         await createBackup(baseDir, name, content);

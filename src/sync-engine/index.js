@@ -78,6 +78,7 @@ class SyncEngine extends EventEmitter {
     this.nodeMap = new Map(); // nodeId → { path, checksum, inode }
     this.pendingActions = new Set(); // SSE echo suppression: "delete:42", "rename:42", "move:42"
     this.pendingUnlinks = new Map(); // watcher rename/move detection: relativePath → { timerId, nodeId, entry }
+    this.recentSseFileSaves = new Map(); // fileId → timestamp, tracks recent SSE file-saved events for toast suppression
     this.lastSyncedAt = null; // Timestamp of last successful sync
     this.serverFilesCache = null; // Cache for server files list
     this.serverFilesCacheTime = null; // When cache was last updated
@@ -1427,13 +1428,17 @@ class SyncEngine extends EventEmitter {
         this.queueSync('change', normalizedPath);
 
         // Only notify browser if this wasn't a browser-originated save
-        if (!liveSync.wasBrowserSave(fileId)) {
+        // or a recent SSE file-saved (browser already has the update via live-sync)
+        const recentSseSave = this.recentSseFileSaves.has(fileId);
+        if (!liveSync.wasBrowserSave(fileId) && !recentSseSave) {
           liveSync.notify(fileId, {
             msgType: 'warning',
             msg: 'File changed on disk',
             action: 'reload',
             persistent: true
           });
+        } else if (recentSseSave) {
+          console.log(`[SYNC] Suppressing toast for ${fileId} (recent SSE file-saved)`);
         }
       })
       .on('unlink', filename => {
@@ -1853,6 +1858,8 @@ class SyncEngine extends EventEmitter {
       },
       'file-saved': async (data) => {
         console.log(`[SYNC] SSE: Received file-saved for ${data.file}`);
+        this.recentSseFileSaves.set(data.file, Date.now());
+        setTimeout(() => this.recentSseFileSaves.delete(data.file), 5000);
         await this.handleFileSaved(data.file, data.content, data.checksum, data.modifiedAt, data.nodeId);
         if (this.logger) this.logger.success('SSE', 'Handled file-saved', { file: data.file });
       },
@@ -2156,6 +2163,7 @@ class SyncEngine extends EventEmitter {
       clearTimeout(timerId);
     }
     this.pendingUnlinks.clear();
+    this.recentSseFileSaves.clear();
 
     // Clear caches
     this.invalidateServerFilesCache();
