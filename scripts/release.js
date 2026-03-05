@@ -612,6 +612,13 @@ async function main() {
     logWarn(`Could not install locally: ${error.message}`);
   }
 
+  // Commit README size updates so release-info.json points to final state
+  logInfo('Committing README size updates...');
+  execSafe('git add README.md');
+  execSafe(`git commit -m "chore: update download sizes for v${newVersion}"`);
+  execSafe('git push origin HEAD');
+  logSuccess('README sizes committed and pushed');
+
   // ==========================================
   // STEP 8: Upload to R2
   // ==========================================
@@ -648,8 +655,6 @@ async function main() {
   log(`  Linux:         https://local.hyperclay.com/HyperclayLocal-${newVersion}.AppImage`);
   log('');
   logSuccess('All platforms built, signed, and uploaded!');
-  log('');
-  logWarn('Remember to commit changes in hyperclay and hyperclay-website repos!');
   log('');
   log(`Full log: ${LOG_FILE}`);
 }
