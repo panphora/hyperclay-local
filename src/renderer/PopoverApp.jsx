@@ -78,6 +78,7 @@ const BevelButton = ({ label, onClick, variant, disabled, small, style: extraSty
 
 const PopoverApp = () => {
   const [arrowX, setArrowX] = useState(null);
+  const [arrowPosition, setArrowPosition] = useState('top');
   const [hasStoredApiKey, setHasStoredApiKey] = useState(false);
   const [currentView, setCurrentView] = useState('home');
   const [updateAvailable, setUpdateAvailable] = useState(false);
@@ -158,6 +159,7 @@ const PopoverApp = () => {
     });
 
     window.electronAPI.onArrowX((x) => setArrowX(x));
+    window.electronAPI.onArrowPosition((pos) => setArrowPosition(pos));
 
     window.electronAPI.onStateUpdate((s) => {
       setState((prev) => ({
@@ -219,7 +221,7 @@ const PopoverApp = () => {
     return () => {
       const channels = [
         'update-state', 'sync-update', 'sync-stats', 'file-synced',
-        'sync-retry', 'sync-failed', 'popover-arrow-x',
+        'sync-retry', 'sync-failed', 'popover-arrow-x', 'popover-arrow-position',
         'show-credentials', 'update-available'
       ];
       channels.forEach(ch => window.electronAPI.removeAllListeners(ch));
@@ -364,24 +366,38 @@ const PopoverApp = () => {
     }
   };
 
+  const arrowOnBottom = arrowPosition === 'bottom';
+
+  const arrowStyle = {
+    position: 'absolute',
+    left: arrowX != null ? arrowX : '50%',
+    transform: `translateX(-${ARROW_HALF_WIDTH}px)`,
+    width: 0,
+    height: 0,
+    borderLeft: `${ARROW_HALF_WIDTH}px solid transparent`,
+    borderRight: `${ARROW_HALF_WIDTH}px solid transparent`,
+    zIndex: 10,
+  };
+
+  if (arrowOnBottom) {
+    arrowStyle.bottom = 0;
+    arrowStyle.borderTop = `${ARROW_HALF_WIDTH}px solid #151722`;
+    arrowStyle.filter = 'drop-shadow(0 2px 3px rgba(0,0,0,0.3))';
+  } else {
+    arrowStyle.top = 2;
+    arrowStyle.borderBottom = `${ARROW_HALF_WIDTH}px solid #151722`;
+    arrowStyle.filter = 'drop-shadow(0 -2px 3px rgba(0,0,0,0.3))';
+  }
+
   return (
-    <div style={{ padding: `${ARROW_HEIGHT}px 0 0 0`, width: '100%', height: '100%' }}>
-      {/* Arrow */}
-      <div
-        style={{
-          position: 'absolute',
-          top: 2,
-          left: arrowX != null ? arrowX : '50%',
-          transform: `translateX(-${ARROW_HALF_WIDTH}px)`,
-          width: 0,
-          height: 0,
-          borderLeft: `${ARROW_HALF_WIDTH}px solid transparent`,
-          borderRight: `${ARROW_HALF_WIDTH}px solid transparent`,
-          borderBottom: `${ARROW_HALF_WIDTH}px solid #151722`,
-          filter: 'drop-shadow(0 -2px 3px rgba(0,0,0,0.3))',
-          zIndex: 10,
-        }}
-      />
+    <div style={{
+      padding: arrowOnBottom ? 0 : `${ARROW_HEIGHT}px 0 0 0`,
+      width: '100%',
+      height: '100%',
+      position: 'relative',
+    }}>
+      {/* Arrow (only shown when at top, i.e. macOS) */}
+      {!arrowOnBottom && <div style={arrowStyle} />}
 
       {/* Panel body */}
       <div
@@ -389,7 +405,7 @@ const PopoverApp = () => {
           background: '#151722',
           borderRadius: 10,
           overflow: 'hidden',
-          height: `calc(100% - ${ARROW_HEIGHT}px)`,
+          height: arrowOnBottom ? '100%' : `calc(100% - ${ARROW_HEIGHT}px)`,
           boxShadow: '0 12px 40px rgba(0,0,0,0.5), 0 0 0 1px rgba(79,90,151,0.3)',
           display: 'flex',
           flexDirection: 'column',

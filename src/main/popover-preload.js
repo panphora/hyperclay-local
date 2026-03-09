@@ -54,6 +54,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('popover-arrow-x', (_event, x) => callback(x));
   },
 
+  onArrowPosition: (callback) => {
+    ipcRenderer.on('popover-arrow-position', (_event, pos) => callback(pos));
+  },
+
   onShowCredentials: (callback) => {
     ipcRenderer.on('show-credentials', (_event) => callback());
   },

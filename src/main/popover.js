@@ -68,16 +68,36 @@ function positionPopover(trayBounds) {
   const { width, height } = popoverWindow.getBounds();
 
   let x = Math.round(trayBounds.x + trayBounds.width / 2 - width / 2);
-  let y = Math.round(trayBounds.y + trayBounds.height + MARGIN_Y);
+
+  // Detect whether the tray is in the bottom or top half of the screen
+  // to decide whether the popover should appear above or below it
+  const displayBounds = display.bounds;
+  const trayCenterY = trayBounds.y + trayBounds.height / 2;
+  const screenMidY = displayBounds.y + displayBounds.height / 2;
+  const trayAtBottom = trayCenterY > screenMidY;
+
+  let y;
+  let arrowPosition;
+  if (trayAtBottom) {
+    y = Math.round(trayBounds.y - height - MARGIN_Y);
+    arrowPosition = 'bottom';
+  } else {
+    y = Math.round(trayBounds.y + trayBounds.height + MARGIN_Y);
+    arrowPosition = 'top';
+  }
 
   x = clamp(x, workArea.x, workArea.x + workArea.width - width);
-  y = clamp(y, workArea.y, workArea.y + workArea.height - height);
+  // When the tray is at the bottom, use full display bounds for the y clamp
+  // since the tray itself is outside the workArea (which excludes the taskbar)
+  const yBounds = trayAtBottom ? displayBounds : workArea;
+  y = clamp(y, yBounds.y, yBounds.y + yBounds.height - height);
 
   popoverWindow.setPosition(x, y, false);
 
   const rawArrowX = Math.round(trayBounds.x + trayBounds.width / 2 - x);
   const arrowX = clamp(rawArrowX, 16, width - 16);
   popoverWindow.webContents.send('popover-arrow-x', arrowX);
+  popoverWindow.webContents.send('popover-arrow-position', arrowPosition);
 }
 
 function showPopover(trayBounds) {
