@@ -779,6 +779,19 @@ const ErrorsView = ({ errors, onMarkRead, onMarkErrorRead, onClearAll }) => {
 // TRANSFERS VIEW
 // =============================================================================
 
+const TransfersTab = ({ active, label, onClick }) => (
+  <button
+    onClick={onClick}
+    className={`cursor-pointer px-3 py-1.5 text-[13px] font-["Berkeley_Mono",monospace] text-white rounded-none -mb-px ${
+      active
+        ? 'bg-[#151722] border border-[#292F52] border-b-[#151722] z-[1]'
+        : 'bg-transparent border border-transparent'
+    }`}
+  >
+    {label}
+  </button>
+);
+
 const TransfersView = ({ uploads, downloads, onClear }) => {
   const [tab, setTab] = useState('uploads');
   const [, setTick] = useState(0);
@@ -791,68 +804,33 @@ const TransfersView = ({ uploads, downloads, onClear }) => {
   const items = tab === 'uploads' ? uploads : downloads;
   const emptyText = tab === 'uploads' ? 'No uploads yet' : 'No downloads yet';
 
-  const tabStyle = (active) => ({
-    background: active ? '#151722' : 'transparent',
-    color: '#fff',
-    fontSize: 13,
-    fontFamily: '"Berkeley Mono", monospace',
-    padding: '6px 12px',
-    cursor: 'pointer',
-    border: active ? '1px solid #292F52' : '1px solid transparent',
-    borderBottom: active ? '1px solid #151722' : '1px solid transparent',
-    marginBottom: -1,
-    zIndex: active ? 1 : 0,
-    borderRadius: 0,
-  });
-
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
-      <div style={{ padding: '8px 14px 0', display: 'flex', alignItems: 'center' }}>
-        <span style={{ fontSize: 15, fontWeight: 600, color: '#fff' }}>Transfers</span>
-        <div style={{ marginLeft: 'auto' }}>
+    <div className="flex flex-col flex-1 overflow-hidden">
+      <div className="flex items-center pt-2 px-3.5">
+        <span className="text-[15px] font-semibold text-white">Transfers</span>
+        <div className="ml-auto">
           <BevelButton label="clear" onClick={onClear} variant="danger" small />
         </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, borderBottom: '1px solid #292F52', padding: '8px 14px 0' }}>
-        <button onClick={() => setTab('uploads')} style={tabStyle(tab === 'uploads')}>
-          Uploads
-        </button>
-        <button onClick={() => setTab('downloads')} style={tabStyle(tab === 'downloads')}>
-          Downloads
-        </button>
+      <div className="flex items-end gap-2 border-b border-[#292F52] pt-2 px-3.5">
+        <TransfersTab active={tab === 'uploads'} label="Uploads" onClick={() => setTab('uploads')} />
+        <TransfersTab active={tab === 'downloads'} label="Downloads" onClick={() => setTab('downloads')} />
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '0 14px 10px' }}>
+      <div className="flex-1 overflow-auto px-3.5 pb-2.5">
         {items.length === 0 ? (
-          <div style={{ padding: '40px 0', textAlign: 'center', color: '#6B7194', fontSize: 13 }}>
+          <div className="py-10 text-center text-[#6B7194] text-[13px]">
             {emptyText}
           </div>
         ) : (
           items.map((item, i) => (
-            <div
-              key={item.file + '-' + i}
-              style={{
-                display: 'flex',
-                gap: 8,
-                alignItems: 'center',
-                padding: '7px 0',
-                borderBottom: '1px solid #1D1F2F',
-              }}
-            >
-              <div style={{
-                flex: 1,
-                minWidth: 0,
-                fontSize: 12,
-                color: '#D1D5E8',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}>
-                {item.file}
+            <div key={item.file + '-' + i} className="flex gap-2 items-center py-[7px] border-b border-[#1D1F2F]">
+              <div className="shrink-0 text-[11px] text-gray-500 tabular-nums">
+                {formatShortTime(item.timestamp)}
               </div>
-              <div style={{ flexShrink: 0, fontSize: 11, color: '#6B7280', fontVariantNumeric: 'tabular-nums' }}>
-                {formatRelativeTime(item.timestamp)}
+              <div className="text-[12px] text-[#D1D5E8] whitespace-nowrap pr-3.5">
+                {item.file}
               </div>
             </div>
           ))
@@ -1007,6 +985,24 @@ function formatRelativeTime(timestamp) {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
+}
+
+function formatShortTime(timestamp) {
+  const diff = Date.now() - new Date(timestamp).getTime();
+  const seconds = Math.floor(diff / 1000);
+  let str;
+  if (seconds < 10) str = 'now';
+  else if (seconds < 60) str = `${seconds}s`;
+  else {
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) str = `${minutes}m`;
+    else {
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) str = `${hours}h`;
+      else str = `${Math.floor(hours / 24)}d`;
+    }
+  }
+  return str.padStart(3, '\u00A0');
 }
 
 export default PopoverApp;
