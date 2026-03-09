@@ -833,6 +833,17 @@ ipcMain.handle('show-options-menu', (event) => {
     },
     { type: 'separator' },
     {
+      label: 'Autostart on Login',
+      type: 'checkbox',
+      checked: settings.autoStartEnabled || false,
+      click: (menuItem) => {
+        settings.autoStartEnabled = menuItem.checked;
+        saveSettings(settings);
+        app.setLoginItemSettings({ openAtLogin: menuItem.checked });
+      }
+    },
+    { type: 'separator' },
+    {
       label: 'About Hyperclay Local',
       click: () => {
         if (process.platform === 'darwin') {
@@ -884,6 +895,8 @@ app.whenReady().then(async () => {
 
   settings = loadSettings();
   selectedFolder = settings.selectedFolder || null;
+
+  app.setLoginItemSettings({ openAtLogin: settings.autoStartEnabled || false });
 
   // Hide dock icon — app lives in tray only
   if (process.platform === 'darwin') {

@@ -97,6 +97,13 @@ const PopoverApp = () => {
   const errorIdCounter = useRef(0);
   const unreadCount = errorQueue.filter(e => !e.read).length;
 
+  // Transfers
+  const [recentUploads, setRecentUploads] = useState([]);
+  const [recentDownloads, setRecentDownloads] = useState([]);
+  const [unseenTransfers, setUnseenTransfers] = useState(0);
+  const currentViewRef = useRef(currentView);
+  currentViewRef.current = currentView;
+
   // Credentials form
   const [credUsername, setCredUsername] = useState('');
   const [credApiKey, setCredApiKey] = useState('');
@@ -211,6 +218,18 @@ const PopoverApp = () => {
 
     window.electronAPI.onShowCredentials(() => {
       setCurrentView('credentials');
+    });
+
+    window.electronAPI.onFileSynced((data) => {
+      const entry = { file: data.file, timestamp: Date.now() };
+      if (data.action === 'download') {
+        setRecentDownloads(prev => [entry, ...prev.filter(e => e.file !== entry.file)].slice(0, 100));
+      } else if (data.action === 'upload') {
+        setRecentUploads(prev => [entry, ...prev.filter(e => e.file !== entry.file)].slice(0, 100));
+      }
+      if (currentViewRef.current !== 'transfers') {
+        setUnseenTransfers(prev => prev + 1);
+      }
     });
 
     window.electronAPI.onUpdateAvailable((data) => {
@@ -366,6 +385,21 @@ const PopoverApp = () => {
     }
   };
 
+  const toggleTransfers = () => {
+    if (currentView === 'transfers') {
+      setCurrentView('home');
+    } else {
+      setCurrentView('transfers');
+      setUnseenTransfers(0);
+    }
+  };
+
+  const clearTransfers = () => {
+    setRecentUploads([]);
+    setRecentDownloads([]);
+    setUnseenTransfers(0);
+  };
+
   const arrowOnBottom = arrowPosition === 'bottom';
 
   const arrowStyle = {
@@ -455,7 +489,47 @@ const PopoverApp = () => {
             </button>
           )}
 
-          <div style={{ marginLeft: 'auto' }}>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+            <button
+              onClick={toggleTransfers}
+              title="Transfers"
+              style={{
+                position: 'relative',
+                background: currentView === 'transfers' ? '#232D3A' : '#181F28',
+                border: 'none',
+                borderRadius: 20,
+                padding: '4px 8px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <svg style={{ width: 14, height: 14 }} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 1118 1118">
+                <path fill="#fff" d="M544.357 648.648c19.531 19.531 19.531 51.172 0 70.703l-150 150c-9.765 9.765-22.562 14.645-35.354 14.645s-25.588-4.885-35.355-14.651l-150-150c-19.531-19.53-19.531-51.172 0-70.702s51.172-19.531 70.703 0l64.65 64.65V284c0-27.636 22.386-50 50-50s50 22.364 50 50v429.293l64.651-64.65c19.531-19.527 51.172-19.527 70.703.005zm400-250c19.531 19.531 19.531 51.172 0 70.703-9.765 9.765-22.562 14.645-35.354 14.645s-25.588-4.885-35.355-14.651L809.003 404.7v429.293c0 27.636-22.386 50-50 50s-50-22.364-50-50V404.7l-64.651 64.651c-19.531 19.53-51.172 19.53-70.703 0-19.53-19.531-19.53-51.172 0-70.703l150-150c19.531-19.531 51.172-19.531 70.703 0z"/>
+              </svg>
+              {unseenTransfers > 0 && (
+                <span style={{
+                  position: 'absolute',
+                  top: -2,
+                  right: -4,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  minWidth: 16,
+                  height: 16,
+                  padding: '0 4px',
+                  fontSize: 11,
+                  fontWeight: 700,
+                  fontFamily: '"Berkeley Mono", monospace',
+                  color: '#fff',
+                  background: '#1D498E',
+                  borderRadius: 20,
+                }}>
+                  {unseenTransfers > 9 ? '9+' : unseenTransfers}
+                </span>
+              )}
+            </button>
             <button
               onClick={toggleErrors}
               title="Notifications"
@@ -521,6 +595,14 @@ const PopoverApp = () => {
               onMarkRead={markAllRead}
               onMarkErrorRead={markErrorRead}
               onClearAll={clearAllErrors}
+            />
+          )}
+
+          {currentView === 'transfers' && (
+            <TransfersView
+              uploads={recentUploads}
+              downloads={recentDownloads}
+              onClear={clearTransfers}
             />
           )}
 
@@ -684,6 +766,93 @@ const ErrorsView = ({ errors, onMarkRead, onMarkErrorRead, onClearAll }) => {
               </div>
               <div style={{ flexShrink: 0, fontSize: 11, color: '#6B7280', fontVariantNumeric: 'tabular-nums' }}>
                 {formatRelativeTime(error.timestamp)}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+};
+
+// =============================================================================
+// TRANSFERS VIEW
+// =============================================================================
+
+const TransfersView = ({ uploads, downloads, onClear }) => {
+  const [tab, setTab] = useState('uploads');
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => setTick(t => t + 1), 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const items = tab === 'uploads' ? uploads : downloads;
+  const emptyText = tab === 'uploads' ? 'No uploads yet' : 'No downloads yet';
+
+  const tabStyle = (active) => ({
+    background: active ? '#151722' : 'transparent',
+    color: '#fff',
+    fontSize: 13,
+    fontFamily: '"Berkeley Mono", monospace',
+    padding: '6px 12px',
+    cursor: 'pointer',
+    border: active ? '1px solid #292F52' : '1px solid transparent',
+    borderBottom: active ? '1px solid #151722' : '1px solid transparent',
+    marginBottom: -1,
+    zIndex: active ? 1 : 0,
+    borderRadius: 0,
+  });
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+      <div style={{ padding: '8px 14px 0', display: 'flex', alignItems: 'center' }}>
+        <span style={{ fontSize: 15, fontWeight: 600, color: '#fff' }}>Transfers</span>
+        <div style={{ marginLeft: 'auto' }}>
+          <BevelButton label="clear" onClick={onClear} variant="danger" small />
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, borderBottom: '1px solid #292F52', padding: '8px 14px 0' }}>
+        <button onClick={() => setTab('uploads')} style={tabStyle(tab === 'uploads')}>
+          Uploads
+        </button>
+        <button onClick={() => setTab('downloads')} style={tabStyle(tab === 'downloads')}>
+          Downloads
+        </button>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto', padding: '0 14px 10px' }}>
+        {items.length === 0 ? (
+          <div style={{ padding: '40px 0', textAlign: 'center', color: '#6B7194', fontSize: 13 }}>
+            {emptyText}
+          </div>
+        ) : (
+          items.map((item, i) => (
+            <div
+              key={item.file + '-' + i}
+              style={{
+                display: 'flex',
+                gap: 8,
+                alignItems: 'center',
+                padding: '7px 0',
+                borderBottom: '1px solid #1D1F2F',
+              }}
+            >
+              <div style={{
+                flex: 1,
+                minWidth: 0,
+                fontSize: 12,
+                color: '#D1D5E8',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}>
+                {item.file}
+              </div>
+              <div style={{ flexShrink: 0, fontSize: 11, color: '#6B7280', fontVariantNumeric: 'tabular-nums' }}>
+                {formatRelativeTime(item.timestamp)}
               </div>
             </div>
           ))
