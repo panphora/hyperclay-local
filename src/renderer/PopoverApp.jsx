@@ -440,7 +440,7 @@ const PopoverApp = () => {
         <div className="flex items-center px-3.5 pt-3 pb-2.5 border-b border-[#292F52]">
           <button
             onClick={currentView !== 'home' ? navigateHome : undefined}
-            className={`bg-transparent border-none text-white text-base font-semibold tracking-wide p-0 font-["Berkeley_Mono",monospace] ${currentView !== 'home' ? 'cursor-pointer' : 'cursor-default'}`}
+            className={`bg-transparent border-none text-white text-[16px] font-semibold tracking-wide p-0 font-["Berkeley_Mono",monospace] ${currentView !== 'home' ? 'cursor-pointer' : 'cursor-default'}`}
           >
             Hyperclay Local
           </button>
@@ -461,9 +461,9 @@ const PopoverApp = () => {
             <button
               onClick={toggleTransfers}
               title="Transfers"
-              className={`relative border-none rounded-[20px] px-2 py-1 cursor-pointer flex items-center justify-center ${currentView === 'transfers' ? 'bg-[#232D3A]' : 'bg-[#181F28]'}`}
+              className={`relative border-none rounded-[20px] px-2 py-1 cursor-pointer flex items-center justify-center ${currentView === 'transfers' ? 'bg-[#2D3847]' : 'bg-[#232D3A] hover:bg-[#2D3847]'}`}
             >
-              <svg className="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 1118 1118">
+              <svg className="w-[14px] h-[14px]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 1118 1118">
                 <path fill="#fff" d="M544.357 648.648c19.531 19.531 19.531 51.172 0 70.703l-150 150c-9.765 9.765-22.562 14.645-35.354 14.645s-25.588-4.885-35.355-14.651l-150-150c-19.531-19.53-19.531-51.172 0-70.702s51.172-19.531 70.703 0l64.65 64.65V284c0-27.636 22.386-50 50-50s50 22.364 50 50v429.293l64.651-64.65c19.531-19.527 51.172-19.527 70.703.005zm400-250c19.531 19.531 19.531 51.172 0 70.703-9.765 9.765-22.562 14.645-35.354 14.645s-25.588-4.885-35.355-14.651L809.003 404.7v429.293c0 27.636-22.386 50-50 50s-50-22.364-50-50V404.7l-64.651 64.651c-19.531 19.53-51.172 19.53-70.703 0-19.53-19.531-19.53-51.172 0-70.703l150-150c19.531-19.531 51.172-19.531 70.703 0z"/>
               </svg>
               {unseenTransfers > 0 && (
@@ -475,9 +475,9 @@ const PopoverApp = () => {
             <button
               onClick={toggleErrors}
               title="Notifications"
-              className={`relative border-none rounded-[20px] px-2 py-1 cursor-pointer flex items-center justify-center ${currentView === 'errors' ? 'bg-[#232D3A]' : 'bg-[#181F28]'}`}
+              className={`relative border-none rounded-[20px] px-2 py-1 cursor-pointer flex items-center justify-center ${currentView === 'errors' ? 'bg-[#2D3847]' : 'bg-[#232D3A] hover:bg-[#2D3847]'}`}
             >
-              <svg className="w-3.5 h-3.5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
+              <svg className="w-[14px] h-[14px] text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
               </svg>
               {unreadCount > 0 && (
@@ -799,7 +799,7 @@ const CredentialsView = ({ username, apiKey, error, loading, onUsernameChange, o
 
 const FooterButton = ({ label, onClick }) => (
   <button
-    className="bg-transparent border-none text-[#6B7194] hover:text-[#B8BFE5] text-[12px] cursor-pointer px-1 py-0.5 font-['Berkeley_Mono',monospace]"
+    className="bg-transparent border-none text-[#6B7194] hover:text-[#B8BFE5] text-[13px] cursor-pointer px-1 py-0.5 font-['Berkeley_Mono',monospace]"
     onClick={onClick}
   >
     {label}

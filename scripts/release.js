@@ -602,7 +602,8 @@ async function main() {
   const dmgPath = path.join(ROOT_DIR, 'executables', `HyperclayLocal-${newVersion}-arm64.dmg`);
   const volumeName = `HyperclayLocal ${newVersion}-arm64`;
   try {
-    try { execSafe('pkill -x HyperclayLocal'); } catch {}
+    try { execSafe('pkill -f "HyperclayLocal.app"'); } catch {}
+    await sleep(1000);
     execSafe(`hdiutil attach "${dmgPath}" -nobrowse -quiet`);
     execSafe('rm -rf "/Applications/HyperclayLocal.app"');
     execSafe(`cp -R "/Volumes/${volumeName}/HyperclayLocal.app" "/Applications/HyperclayLocal.app"`);
