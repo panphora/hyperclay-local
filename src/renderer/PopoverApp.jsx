@@ -4,16 +4,7 @@ const ARROW_HEIGHT = 10;
 const ARROW_HALF_WIDTH = 8;
 
 const StatusDot = ({ active }) => (
-  <span
-    style={{
-      display: 'inline-block',
-      width: 8,
-      height: 8,
-      borderRadius: '50%',
-      backgroundColor: active ? '#28C83E' : '#F73D48',
-      flexShrink: 0,
-    }}
-  />
+  <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${active ? 'bg-[#28C83E]' : 'bg-[#F73D48]'}`} />
 );
 
 const BevelButton = ({ label, onClick, variant, disabled, small, style: extraStyle }) => {
@@ -446,20 +437,10 @@ const PopoverApp = () => {
         }}
       >
         {/* Header */}
-        <div style={{ padding: '12px 14px 9px', borderBottom: '1px solid #292F52', display: 'flex', alignItems: 'center' }}>
+        <div className="flex items-center px-3.5 pt-3 pb-2.5 border-b border-[#292F52]">
           <button
             onClick={currentView !== 'home' ? navigateHome : undefined}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: '#fff',
-              fontSize: 16,
-              fontWeight: 600,
-              letterSpacing: '0.02em',
-              cursor: currentView !== 'home' ? 'pointer' : 'default',
-              padding: 0,
-              fontFamily: '"Berkeley Mono", monospace',
-            }}
+            className={`bg-transparent border-none text-white text-base font-semibold tracking-wide p-0 font-["Berkeley_Mono",monospace] ${currentView !== 'home' ? 'cursor-pointer' : 'cursor-default'}`}
           >
             Hyperclay Local
           </button>
@@ -468,64 +449,25 @@ const PopoverApp = () => {
             <button
               onClick={() => window.electronAPI?.openBrowser('https://hyperclay.com/hyperclay-local')}
               title={`Update available: v${updateVersion}`}
-              style={{
-                marginLeft: 8,
-                background: '#1E8136',
-                border: '1.5px solid #56B96C',
-                borderRadius: '50%',
-                width: 20,
-                height: 20,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: 'pointer',
-                padding: 0,
-                flexShrink: 0,
-              }}
+              className="ml-2 bg-[#1E8136] border-[1.5px] border-[#56B96C] rounded-full w-5 h-5 flex items-center justify-center cursor-pointer p-0 shrink-0"
             >
-              <svg style={{ width: 11, height: 11 }} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="3" stroke="#fff">
+              <svg className="w-[11px] h-[11px]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="3" stroke="#fff">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18" />
               </svg>
             </button>
           )}
 
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+          <div className="ml-auto flex gap-1">
             <button
               onClick={toggleTransfers}
               title="Transfers"
-              style={{
-                position: 'relative',
-                background: currentView === 'transfers' ? '#232D3A' : '#181F28',
-                border: 'none',
-                borderRadius: 20,
-                padding: '4px 8px',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
+              className={`relative border-none rounded-[20px] px-2 py-1 cursor-pointer flex items-center justify-center ${currentView === 'transfers' ? 'bg-[#232D3A]' : 'bg-[#181F28]'}`}
             >
-              <svg style={{ width: 14, height: 14 }} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 1118 1118">
+              <svg className="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 1118 1118">
                 <path fill="#fff" d="M544.357 648.648c19.531 19.531 19.531 51.172 0 70.703l-150 150c-9.765 9.765-22.562 14.645-35.354 14.645s-25.588-4.885-35.355-14.651l-150-150c-19.531-19.53-19.531-51.172 0-70.702s51.172-19.531 70.703 0l64.65 64.65V284c0-27.636 22.386-50 50-50s50 22.364 50 50v429.293l64.651-64.65c19.531-19.527 51.172-19.527 70.703.005zm400-250c19.531 19.531 19.531 51.172 0 70.703-9.765 9.765-22.562 14.645-35.354 14.645s-25.588-4.885-35.355-14.651L809.003 404.7v429.293c0 27.636-22.386 50-50 50s-50-22.364-50-50V404.7l-64.651 64.651c-19.531 19.53-51.172 19.53-70.703 0-19.53-19.531-19.53-51.172 0-70.703l150-150c19.531-19.531 51.172-19.531 70.703 0z"/>
               </svg>
               {unseenTransfers > 0 && (
-                <span style={{
-                  position: 'absolute',
-                  top: -2,
-                  right: -4,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  minWidth: 16,
-                  height: 16,
-                  padding: '0 4px',
-                  fontSize: 11,
-                  fontWeight: 700,
-                  fontFamily: '"Berkeley Mono", monospace',
-                  color: '#fff',
-                  background: '#1D498E',
-                  borderRadius: 20,
-                }}>
+                <span className="absolute -top-0.5 -right-1 flex items-center justify-center min-w-4 h-4 px-1 text-[11px] font-bold font-['Berkeley_Mono',monospace] text-white bg-[#1D498E] rounded-[20px]">
                   {unseenTransfers > 9 ? '9+' : unseenTransfers}
                 </span>
               )}
@@ -533,39 +475,13 @@ const PopoverApp = () => {
             <button
               onClick={toggleErrors}
               title="Notifications"
-              style={{
-                position: 'relative',
-                background: currentView === 'errors' ? '#232D3A' : '#181F28',
-                border: 'none',
-                borderRadius: 20,
-                padding: '4px 8px',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
+              className={`relative border-none rounded-[20px] px-2 py-1 cursor-pointer flex items-center justify-center ${currentView === 'errors' ? 'bg-[#232D3A]' : 'bg-[#181F28]'}`}
             >
-              <svg style={{ width: 14, height: 14, color: '#fff' }} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
+              <svg className="w-3.5 h-3.5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
               </svg>
               {unreadCount > 0 && (
-                <span style={{
-                  position: 'absolute',
-                  top: -2,
-                  right: -4,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  minWidth: 16,
-                  height: 16,
-                  padding: '0 4px',
-                  fontSize: 11,
-                  fontWeight: 700,
-                  fontFamily: '"Berkeley Mono", monospace',
-                  color: '#fff',
-                  background: '#8B2020',
-                  borderRadius: 20,
-                }}>
+                <span className="absolute -top-0.5 -right-1 flex items-center justify-center min-w-4 h-4 px-1 text-[11px] font-bold font-['Berkeley_Mono',monospace] text-white bg-[#8B2020] rounded-[20px]">
                   {unreadCount > 9 ? '9+' : unreadCount}
                 </span>
               )}
@@ -574,7 +490,7 @@ const PopoverApp = () => {
         </div>
 
         {/* View content */}
-        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <div className="flex-1 overflow-hidden flex flex-col">
           {currentView === 'home' && (
             <HomeView
               state={state}
@@ -621,15 +537,7 @@ const PopoverApp = () => {
         </div>
 
         {/* Footer */}
-        <div
-          style={{
-            padding: '8px 14px',
-            borderTop: '1px solid #292F52',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
+        <div className="flex justify-between items-center px-3.5 py-2 border-t border-[#292F52]">
           <FooterButton label="Options" onClick={handleOptions} />
           <FooterButton label="Quit" onClick={handleQuit} />
         </div>
@@ -643,19 +551,17 @@ const PopoverApp = () => {
 // =============================================================================
 
 const HomeView = ({ state, lastSyncText, serverLoading, syncLoading, onStartServer, onStopServer, onToggleSync, onOpenBrowser, onOpenFolder }) => (
-  <div style={{ padding: '10px 14px', flex: 1, overflowY: 'auto' }}>
-    {/* Server status */}
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+  <div className="flex-1 overflow-y-auto px-3.5 py-2.5">
+    <div className="flex items-center gap-2 mb-2">
       <StatusDot active={state.serverRunning} />
-      <span style={{ color: '#B8BFE5', fontSize: 13 }}>
+      <span className="text-[#B8BFE5] text-[13px]">
         Server: {state.serverRunning ? `On (port ${state.serverPort})` : 'Off'}
       </span>
     </div>
 
-    {/* Sync status */}
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+    <div className="flex items-center gap-2 mb-1">
       <StatusDot active={state.syncEnabled} />
-      <span style={{ color: '#B8BFE5', fontSize: 13 }}>
+      <span className="text-[#B8BFE5] text-[13px]">
         Sync: {state.syncEnabled
           ? `Active${state.syncStatus?.username ? ` (${state.syncStatus.username})` : ''}`
           : 'Off'}
@@ -663,16 +569,14 @@ const HomeView = ({ state, lastSyncText, serverLoading, syncLoading, onStartServ
     </div>
 
     {lastSyncText && state.syncEnabled && (
-      <div style={{ color: '#6B7194', fontSize: 11, marginLeft: 16, marginBottom: 4 }}>
+      <div className="text-[#6B7194] text-[11px] ml-4 mb-1">
         Last sync: {lastSyncText}
       </div>
     )}
 
-    {/* Divider */}
-    <div style={{ borderTop: '1px solid #292F52', margin: '10px 0' }} />
+    <div className="border-t border-[#292F52] my-2.5" />
 
-    {/* Action buttons */}
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+    <div className="flex flex-col gap-[5px]">
       {state.serverRunning ? (
         <BevelButton label="Stop Server" onClick={onStopServer} variant="danger" disabled={serverLoading} />
       ) : (
@@ -711,60 +615,39 @@ const ErrorsView = ({ errors, onMarkRead, onMarkErrorRead, onClearAll }) => {
   const sortedErrors = [...errors].sort((a, b) => b.timestamp - a.timestamp);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
-      {/* Errors header */}
-      <div style={{ padding: '10px 14px 8px', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontSize: 15, fontWeight: 600, color: '#fff' }}>Notices</span>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+    <div className="flex flex-col flex-1 overflow-hidden">
+      <div className="flex items-center gap-2 px-3.5 pt-2.5 pb-2">
+        <span className="text-[15px] font-semibold text-white">Notices</span>
+        <div className="ml-auto flex gap-1">
           <BevelButton label="mark read" onClick={onMarkRead} variant="neutral" small />
           <BevelButton label="clear" onClick={onClearAll} variant="danger" small />
         </div>
       </div>
 
-      {/* Error list */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '0 14px 10px' }}>
+      <div className="flex-1 overflow-y-auto px-3.5 pb-2.5">
         {sortedErrors.length === 0 ? (
-          <div style={{ padding: '40px 0', textAlign: 'center', color: '#6B7194', fontSize: 13 }}>
+          <div className="py-10 text-center text-[#6B7194] text-[13px]">
             No notices
           </div>
         ) : (
           sortedErrors.map(error => (
-            <div
-              key={error.id}
-              style={{
-                display: 'flex',
-                gap: 8,
-                alignItems: 'flex-start',
-                padding: '8px 0',
-                borderBottom: '1px solid #1D1F2F',
-              }}
-            >
+            <div key={error.id} className="flex gap-2 items-start py-2 border-b border-[#1D1F2F]">
               {!error.read ? (
                 <button
                   onClick={() => onMarkErrorRead(error.id)}
                   title="Mark as read"
-                  style={{
-                    flexShrink: 0,
-                    marginTop: 5,
-                    width: 7,
-                    height: 7,
-                    borderRadius: '50%',
-                    background: '#6B7280',
-                    border: 'none',
-                    cursor: 'pointer',
-                    padding: 0,
-                  }}
+                  className="shrink-0 mt-[5px] w-[7px] h-[7px] rounded-full bg-gray-500 border-none cursor-pointer p-0"
                 />
               ) : (
-                <div style={{ flexShrink: 0, width: 7 }} />
+                <div className="shrink-0 w-[7px]" />
               )}
-              <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: '#D1D5E8', wordBreak: 'break-word', lineHeight: 1.4 }}>
+              <div className="flex-1 min-w-0 text-[12px] text-[#D1D5E8] break-words leading-[1.4]">
                 {error.error}
                 {error.file && (
-                  <div style={{ marginTop: 2, fontSize: 11, color: '#6B7194' }}>{error.file}</div>
+                  <div className="mt-0.5 text-[11px] text-[#6B7194]">{error.file}</div>
                 )}
               </div>
-              <div style={{ flexShrink: 0, fontSize: 11, color: '#6B7280', fontVariantNumeric: 'tabular-nums' }}>
+              <div className="shrink-0 text-[11px] text-gray-500 tabular-nums">
                 {formatRelativeTime(error.timestamp)}
               </div>
             </div>
@@ -850,55 +733,37 @@ const CredentialsView = ({ username, apiKey, error, loading, onUsernameChange, o
   };
 
   return (
-    <div style={{ padding: '14px 14px 10px', flex: 1 }}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: '#fff', marginBottom: 12 }}>
+    <div className="flex-1 px-3.5 pt-3.5 pb-2.5">
+      <div className="text-sm font-semibold text-white mb-3">
         Connect to Hyperclay
       </div>
 
-      <div style={{ marginBottom: 10 }}>
-        <label style={{ display: 'block', marginBottom: 3, fontSize: 12, color: '#8A92BB' }}>Username</label>
+      <div className="mb-2.5">
+        <label className="block mb-[3px] text-[12px] text-[#8A92BB]">Username</label>
         <input
           type="text"
           value={username}
           onChange={(e) => onUsernameChange(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Your hyperclay.com username"
-          style={{
-            width: '100%',
-            padding: '6px 8px',
-            fontSize: 13,
-            fontFamily: '"Berkeley Mono", monospace',
-            background: '#111220',
-            border: '2px solid #4F5A97',
-            color: '#fff',
-            outline: 'none',
-          }}
+          className="w-full px-2 py-1.5 text-[13px] font-['Berkeley_Mono',monospace] bg-[#111220] border-2 border-[#4F5A97] text-white outline-none"
         />
       </div>
 
-      <div style={{ marginBottom: 12 }}>
-        <label style={{ display: 'block', marginBottom: 3, fontSize: 12, color: '#8A92BB' }}>API Key</label>
+      <div className="mb-3">
+        <label className="block mb-[3px] text-[12px] text-[#8A92BB]">API Key</label>
         <input
           type="password"
           value={apiKey}
           onChange={(e) => onApiKeyChange(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="hcsk_..."
-          style={{
-            width: '100%',
-            padding: '6px 8px',
-            fontSize: 13,
-            fontFamily: '"Berkeley Mono", monospace',
-            background: '#111220',
-            border: '2px solid #4F5A97',
-            color: '#fff',
-            outline: 'none',
-          }}
+          className="w-full px-2 py-1.5 text-[13px] font-['Berkeley_Mono',monospace] bg-[#111220] border-2 border-[#4F5A97] text-white outline-none"
         />
       </div>
 
       {error && (
-        <div style={{ marginBottom: 8, fontSize: 12, color: '#FE5F58', textAlign: 'center' }}>
+        <div className="mb-2 text-[12px] text-[#FE5F58] text-center">
           {error}
         </div>
       )}
@@ -910,32 +775,16 @@ const CredentialsView = ({ username, apiKey, error, loading, onUsernameChange, o
         disabled={loading}
       />
 
-      <div style={{ marginTop: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div className="mt-2.5 flex justify-between items-center">
         <button
           onClick={onCancel}
-          style={{
-            background: 'none',
-            border: 'none',
-            color: '#6B7194',
-            fontSize: 12,
-            cursor: 'pointer',
-            padding: '2px 0',
-            fontFamily: '"Berkeley Mono", monospace',
-          }}
+          className="bg-transparent border-none text-[#6B7194] text-[12px] cursor-pointer py-0.5 font-['Berkeley_Mono',monospace]"
         >
           Cancel
         </button>
         <button
           onClick={() => window.electronAPI?.openBrowser('https://hyperclay.com/dashboard')}
-          style={{
-            background: 'none',
-            border: 'none',
-            color: '#69AEFE',
-            fontSize: 12,
-            cursor: 'pointer',
-            padding: '2px 0',
-            fontFamily: '"Berkeley Mono", monospace',
-          }}
+          className="bg-transparent border-none text-[#69AEFE] text-[12px] cursor-pointer py-0.5 font-['Berkeley_Mono',monospace]"
         >
           Get API key
         </button>
@@ -948,28 +797,14 @@ const CredentialsView = ({ username, apiKey, error, loading, onUsernameChange, o
 // FOOTER BUTTON
 // =============================================================================
 
-const FooterButton = ({ label, onClick }) => {
-  const [hover, setHover] = useState(false);
-
-  return (
-    <button
-      style={{
-        background: 'none',
-        border: 'none',
-        color: hover ? '#B8BFE5' : '#6B7194',
-        fontSize: 12,
-        cursor: 'pointer',
-        padding: '2px 4px',
-        fontFamily: '"Berkeley Mono", monospace',
-      }}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      onClick={onClick}
-    >
-      {label}
-    </button>
-  );
-};
+const FooterButton = ({ label, onClick }) => (
+  <button
+    className="bg-transparent border-none text-[#6B7194] hover:text-[#B8BFE5] text-[12px] cursor-pointer px-1 py-0.5 font-['Berkeley_Mono',monospace]"
+    onClick={onClick}
+  >
+    {label}
+  </button>
+);
 
 // =============================================================================
 // HELPERS
