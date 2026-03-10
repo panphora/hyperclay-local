@@ -808,6 +808,7 @@ ipcMain.handle('show-options-menu', (event) => {
       type: 'checkbox',
       checked: settings.autoStartEnabled || false,
       click: (menuItem) => {
+        if (isDev) return;
         settings.autoStartEnabled = menuItem.checked;
         saveSettings(settings);
         app.setLoginItemSettings({ openAtLogin: menuItem.checked });
@@ -830,6 +831,13 @@ ipcMain.handle('show-options-menu', (event) => {
             icon: iconPath || undefined
           });
         }
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      click: () => {
+        app.quit();
       }
     }
   ];
@@ -867,7 +875,9 @@ app.whenReady().then(async () => {
   settings = loadSettings();
   selectedFolder = settings.selectedFolder || null;
 
-  app.setLoginItemSettings({ openAtLogin: settings.autoStartEnabled || false });
+  if (!isDev) {
+    app.setLoginItemSettings({ openAtLogin: settings.autoStartEnabled || false });
+  }
 
   // Hide dock icon — app lives in tray only
   if (process.platform === 'darwin') {
