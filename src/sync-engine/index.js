@@ -1291,7 +1291,7 @@ class SyncEngine extends EventEmitter {
       awaitWriteFinish: SYNC_CONFIG.FILE_STABILIZATION
     });
 
-    const UNLINK_GRACE_PERIOD = 500;
+    const UNLINK_GRACE_PERIOD = 1500;
 
     this.watcher
       .on('add', filename => {
