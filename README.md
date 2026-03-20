@@ -66,10 +66,10 @@ This local server provides the core functionality needed to run and edit your Hy
 ### Download Pre-built App
 
 1. **Download** the app for your platform:
-   - **macOS (Apple Silicon)**: [HyperclayLocal-1.13.4-arm64.dmg](https://local.hyperclay.com/HyperclayLocal-1.13.4-arm64.dmg) (101.6MB)
-   - **macOS (Intel)**: [HyperclayLocal-1.13.4.dmg](https://local.hyperclay.com/HyperclayLocal-1.13.4.dmg) (109.3MB)
-   - **Windows**: [HyperclayLocal-Setup-1.13.4.exe](https://local.hyperclay.com/HyperclayLocal-Setup-1.13.4.exe) (~81.9MB)
-   - **Linux**: [HyperclayLocal-1.13.4.AppImage](https://local.hyperclay.com/HyperclayLocal-1.13.4.AppImage) (119.9MB)
+   - **macOS (Apple Silicon)**: [HyperclayLocal-1.14.0-arm64.dmg](https://local.hyperclay.com/HyperclayLocal-1.14.0-arm64.dmg) (101.6MB)
+   - **macOS (Intel)**: [HyperclayLocal-1.14.0.dmg](https://local.hyperclay.com/HyperclayLocal-1.14.0.dmg) (109.3MB)
+   - **Windows**: [HyperclayLocal-Setup-1.14.0.exe](https://local.hyperclay.com/HyperclayLocal-Setup-1.14.0.exe) (~81.9MB)
+   - **Linux**: [HyperclayLocal-1.14.0.AppImage](https://local.hyperclay.com/HyperclayLocal-1.14.0.AppImage) (119.9MB)
 
 2. **Install** and run the app
 
