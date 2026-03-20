@@ -619,9 +619,14 @@ async function main() {
   // Commit README size updates so release-info.json points to final state
   logInfo('Committing README size updates...');
   execSafe('git add README.md');
-  execSafe(`git commit -m "chore: update download sizes for v${newVersion}"`);
-  execSafe('git push origin HEAD');
-  logSuccess('README sizes committed and pushed');
+  const stagedChanges = execSafe('git diff --cached --name-only').trim();
+  if (stagedChanges) {
+    execSafe(`git commit -m "chore: update download sizes for v${newVersion}"`);
+    execSafe('git push origin HEAD');
+    logSuccess('README sizes committed and pushed');
+  } else {
+    logInfo('No README size changes to commit, skipping');
+  }
 
   // ==========================================
   // STEP 8: Upload to R2
