@@ -12,6 +12,8 @@ A beautiful, cross-platform desktop application for running your malleable HTML 
 - 🔔 **System tray integration** - Runs in background, accessible from tray
 - 🎨 **Beautiful UI** - Modern, responsive interface
 - 🔗 **Quick links** - Easy access to Hyperclay.com and docs
+- 🔄 **Cloud sync** - Sync your local files with hyperclay.com using an API key
+- 📦 **Update notifications** - Automatically checks for new versions
 - ⚡ **Cross-platform** - Works on macOS, Windows, and Linux
 
 ## What is Hyperclay?
@@ -90,25 +92,17 @@ For building and releasing, see [BUILD.md](./BUILD.md).
 
 ## 🎯 User Interface
 
-### Main Window
-- **Header**: Shows app name and server status indicator
-- **Folder Selection**: Visual folder picker with current selection display
-- **Server Controls**: Start/stop buttons and browser launcher
-- **Server Info**: Shows URL and folder path when running
-- **Instructions**: Step-by-step usage guide
-- **Quick Links**: Links to Hyperclay.com and documentation
+### Tray Popover
+The app lives in your system tray. Click the tray icon to open a popover panel with:
+- **Server controls**: Start/stop server and open browser
+- **Folder selection**: Choose which folder to serve
+- **Sync status**: Cloud sync controls and status indicators
+- **Options menu**: Folder management, sync settings, auto-start, and about info
 
 ### System Tray
-- **Status indicator**: Green (running) / Red (stopped)
-- **Quick actions**: Start/stop server, show/hide window
-- **Background operation**: App continues running when window closed
-
-### Keyboard Shortcuts
-- `Cmd/Ctrl + O`: Select folder
-- `Cmd/Ctrl + R`: Start server
-- `Cmd/Ctrl + S`: Stop server
-- `Cmd/Ctrl + W`: Close window (app stays in tray)
-- `Cmd/Ctrl + Q`: Quit app (macOS only)
+- **Status labels**: Shows server and sync state (On/Off) in the context menu
+- **Quick actions**: Start/stop server, toggle sync, open folder, open browser
+- **Background operation**: App runs entirely from the tray with no dock icon (macOS)
 
 ## 🔧 How It Works
 
@@ -127,8 +121,13 @@ The app runs an embedded Express.js server (same as the Node.js version) with:
 
 ### Browser Integration
 - **Auto-launch**: Opens default browser when server starts
-- **URL copying**: One-click copy of server URL
 - **External links**: Opens external links in default browser
+
+### Cloud Sync
+- **API key authentication**: Securely encrypted with Electron's safeStorage
+- **Two-way sync**: Syncs local files with your hyperclay.com account
+- **Auto-resume**: Sync restarts automatically on app launch if previously enabled
+- **Sync queue**: Changes are queued and synced reliably with conflict handling
 
 ## 🛡️ Security Features
 
@@ -137,19 +136,36 @@ The app runs an embedded Express.js server (same as the Node.js version) with:
 - **Path validation**: Prevents access to files outside selected folder
 - **Filename sanitization**: Only allows safe characters in saved files
 - **Content validation**: Validates file content before saving
+- **Encrypted credentials**: API keys stored using Electron's safeStorage
 
 ## 📁 Project Structure
 
 ```
-electron/
-├── main.js              # Main Electron process
-├── server.js            # Express server implementation  
-├── preload.js           # Secure IPC bridge
-├── renderer.html        # Main UI
-├── renderer.css         # UI styling
-├── package.json         # Dependencies and build config
-├── assets/              # App icons and images
-└── dist/               # Built applications (after build)
+src/
+├── main/
+│   ├── main.js              # Electron main process
+│   ├── server.js            # Express server
+│   ├── popover.js           # Tray popover window
+│   ├── popover-preload.js   # Secure IPC bridge
+│   ├── format-html.js       # HTML formatting
+│   ├── error-logger.js      # Error logging
+│   ├── templates/           # Eta.js templates for directory listings
+│   └── utils/               # Backup and utility functions
+├── renderer/
+│   ├── popover.html         # Popover UI shell
+│   ├── PopoverApp.jsx       # React UI component
+│   ├── popover-index.js     # Renderer entry point
+│   └── styles/              # Tailwind CSS source and output
+└── sync-engine/             # Cloud sync with hyperclay.com
+    ├── index.js             # Sync engine entry point
+    ├── api-client.js        # API communication
+    ├── file-operations.js   # File sync operations
+    ├── sync-queue.js        # Sync queue management
+    └── ...                  # Validation, logging, utilities
+assets/                      # App icons, tray icons, fonts
+build-scripts/               # Build, notarize, and release tooling
+config/                      # Webpack configuration
+tests/                       # Unit tests
 ```
 
 ## 🔧 Development
@@ -161,7 +177,6 @@ npm run dev
 
 Development mode features:
 - **Hot reload**: Automatically restarts on file changes
-- **Developer tools**: Press F12 to open DevTools
 
 For building signed installers, see [BUILD.md](./BUILD.md).
 
@@ -198,7 +213,7 @@ xattr -cr "/Applications/HyperclayLocal.app"
 
 **Linux permission denied**:
 ```bash
-chmod +x Hyperclay-Local-1.1.0.AppImage
+chmod +x HyperclayLocal-*.AppImage
 ```
 
 ### Runtime Issues
@@ -228,7 +243,6 @@ chmod +x Hyperclay-Local-1.1.0.AppImage
 **App feels slow**:
 - This is normal for Electron apps
 - Close other resource-intensive applications
-- Consider using the Go binary for better performance
 
 **High memory usage**:
 - Electron apps use more memory than native apps
@@ -239,8 +253,8 @@ chmod +x Hyperclay-Local-1.1.0.AppImage
 
 Planned features for future versions:
 
-- **Auto-updater**: Automatic app updates
-- **Multiple servers**: Run multiple folders simultaneously  
+- **Auto-updater**: Automatic app updates (update checking already exists, auto-install planned)
+- **Multiple servers**: Run multiple folders simultaneously
 - **Custom ports**: Configure server port in settings
 - **HTTPS support**: Local SSL certificates
 - **File watcher**: Auto-refresh browser on file changes
