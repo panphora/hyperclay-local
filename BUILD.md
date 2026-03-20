@@ -24,13 +24,7 @@ It handles everything end-to-end:
 12. Uploads all builds to the R2 CDN
 13. Updates the download page in `hyperclay/server-pages/hyperclay-local.edge`
 
-After it finishes, download the signed Windows installer separately:
-
-```bash
-npm run win-build:status    # check if the GitHub Actions build is done
-npm run win-build:download  # download signed .exe to executables/
-npm run upload-to-r2        # re-upload to include the Windows installer
-```
+The Windows build on GitHub Actions automatically uploads to Cloudflare R2.
 
 The sections below document individual build commands for reference, but `npm run release` is the default workflow.
 
@@ -127,12 +121,9 @@ npm run win-build:run
 
 # Check build status
 npm run win-build:status
-
-# Download signed installer when complete
-npm run win-build:download
 ```
 
-The signed installer will be downloaded to `executables/`.
+The signed installer is automatically uploaded to Cloudflare R2 by the GitHub Actions workflow.
 
 ### Manual Trigger
 
@@ -177,11 +168,12 @@ npm run linux-build:run
 npm run win-build:run
 ```
 
-### 3. Download Windows Installer
+### 3. Windows Installer
+
+The Windows build automatically uploads to Cloudflare R2 via GitHub Actions.
 
 ```bash
-npm run win-build:status  # Wait for completion
-npm run win-build:download
+npm run win-build:status  # Check if the build is done
 ```
 
 ### 4. Upload to CDN
@@ -202,8 +194,7 @@ npm run upload-to-r2
 ### Main Build Commands
 - `npm run mac-build:run` - Build signed macOS DMG
 - `npm run mac-build:local` - Build unsigned macOS DMG (for testing)
-- `npm run win-build:run` - Trigger Windows build on GitHub Actions
-- `npm run win-build:download` - Download signed Windows installer
+- `npm run win-build:run` - Trigger Windows build on GitHub Actions (auto-uploads to R2)
 - `npm run linux-build:run` - Build Linux AppImage
 - `npm run build-all` - Build macOS and Linux (not Windows)
 
@@ -213,7 +204,6 @@ npm run upload-to-r2
 ### Utility
 - `npm run clean` - Clean all dist files
 - `npm run clean-mac` - Clean macOS builds only
-- `npm run clean-windows` - Clean Windows builds only
 - `npm run clean-linux` - Clean Linux builds only
 
 ---

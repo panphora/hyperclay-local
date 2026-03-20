@@ -22,7 +22,6 @@
     "build-icons": "node build-scripts/generate-icons.js",
     "clean": "node build-scripts/clean-dist.js",
     "clean-mac": "node build-scripts/clean-dist.js mac",
-    "clean-windows": "node build-scripts/clean-dist.js windows",
     "clean-linux": "node build-scripts/clean-dist.js linux",
     "build-all": "npm test && npm run build-icons && npm run clean && npm run build-css && npm run build-react-prod && electron-builder --mac --linux && node build-scripts/move-executables.js linux",
     "linux-build:run": "npm test && npm run build-icons && npm run clean-linux && npm run build-css && npm run build-react-prod && electron-builder --linux && node build-scripts/move-executables.js linux",
@@ -31,7 +30,6 @@
     "mac-build:finalize": "node build-scripts/check-notarization.js",
     "win-build:run": "gh workflow run build-and-sign-windows.yml",
     "win-build:status": "gh run list --workflow=build-and-sign-windows.yml --limit 5",
-    "win-build:download": "npm run clean-windows && gh run download --name hyperclay-local-windows-signed --dir executables",
     "upload-to-r2": "node build-scripts/post-build.js",
     "release": "node scripts/release.js",
     "update-external-docs": "node scripts/update-external-docs.js"
