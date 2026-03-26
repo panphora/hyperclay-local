@@ -68,6 +68,17 @@ function validateAndResolvePath(name, baseDir) {
   return { filePath, resolvedPath, baseName };
 }
 
+async function serveHtmlWithAppname(res, filePath, appName) {
+  let html = await fs.readFile(filePath, 'utf8');
+  if (/<html[^>]*\sappname="/.test(html)) {
+    html = html.replace(/(<html[^>]*)\sappname="[^"]*"/, `$1 appname="${appName}"`);
+  } else {
+    html = html.replace(/<html(\s|>)/, `<html appname="${appName}"$1`);
+  }
+  res.set('Content-Type', 'text/html');
+  return res.send(html);
+}
+
 function startServer(baseDir) {
   return new Promise((resolve, reject) => {
     if (server) {
@@ -325,10 +336,10 @@ function startServer(baseDir) {
         appName = 'index';
       } else {
         const cleanPath = urlPath.substring(1); // Remove leading slash
-        if (cleanPath.endsWith('.html')) {
-          // Get just the filename without the path, then remove .html extension
+        if (cleanPath.endsWith('.html') || cleanPath.endsWith('.htmlclay')) {
           const filename = path.basename(cleanPath);
-          appName = filename.slice(0, -5); // Remove .html extension
+          const ext = path.extname(filename);
+          appName = filename.slice(0, -ext.length);
         } else if (!cleanPath.includes('.')) {
           // Extensionless HTML file - get just the basename
           appName = path.basename(cleanPath);
@@ -387,23 +398,36 @@ function startServer(baseDir) {
             const indexPath = path.join(resolvedPath, 'index.html');
             try {
               await fs.stat(indexPath);
-              return res.sendFile(indexPath);
+              return serveHtmlWithAppname(res, indexPath, 'index');
             } catch {
               return serveDirListing(res, resolvedPath, baseDir);
             }
           } else {
+            if (resolvedPath.endsWith('.html')) {
+              return serveHtmlWithAppname(res, resolvedPath, path.basename(resolvedPath, '.html'));
+            }
+            if (resolvedPath.endsWith('.htmlclay')) {
+              return serveHtmlWithAppname(res, resolvedPath, path.basename(resolvedPath, '.htmlclay'));
+            }
             return res.sendFile(resolvedPath);
           }
         } catch {
           // File doesn't exist - try alternatives
         }
 
-        // Try with .html extension
-        if (!requestedPath.endsWith('.html') && requestedPath !== 'index.html') {
+        // Try with .html or .htmlclay extension
+        if (!requestedPath.endsWith('.html') && !requestedPath.endsWith('.htmlclay') && requestedPath !== 'index.html') {
           const htmlPath = path.join(baseDir, requestedPath + '.html');
           try {
             await fs.stat(htmlPath);
-            return res.sendFile(htmlPath);
+            return serveHtmlWithAppname(res, htmlPath, path.basename(requestedPath));
+          } catch {
+            // Try .htmlclay
+          }
+          const htmlclayPath = path.join(baseDir, requestedPath + '.htmlclay');
+          try {
+            await fs.stat(htmlclayPath);
+            return serveHtmlWithAppname(res, htmlclayPath, path.basename(requestedPath));
           } catch {
             // Continue to client-side routing fallback
           }
@@ -417,18 +441,28 @@ function startServer(baseDir) {
 
           // Skip if this looks like a known server route
           if (!knownServerRoutes.includes(firstSegment)) {
-            const appHtmlPath = path.join(baseDir, firstSegment + '.html');
+            // Try .html first, then .htmlclay
+            let appFilePath = null;
+            const htmlPath = path.join(baseDir, firstSegment + '.html');
+            const htmlclayPath = path.join(baseDir, firstSegment + '.htmlclay');
             try {
-              await fs.stat(appHtmlPath);
-              // Update currentResource cookie to match the app being served
+              await fs.stat(htmlPath);
+              appFilePath = htmlPath;
+            } catch {
+              try {
+                await fs.stat(htmlclayPath);
+                appFilePath = htmlclayPath;
+              } catch {
+                // Neither exists
+              }
+            }
+            if (appFilePath) {
               res.cookie('currentResource', firstSegment, {
                 httpOnly: false,
                 secure: false,
                 sameSite: 'lax'
               });
-              return res.sendFile(appHtmlPath);
-            } catch {
-              // App file doesn't exist either
+              return serveHtmlWithAppname(res, appFilePath, firstSegment);
             }
           }
         }
@@ -560,7 +594,7 @@ async function serveDirListing(res, dirPath, baseDir) {
         name: entry.name,
         displayName: addWordBreaks(entry.name),
         path: displayPath ? `${displayPath}/${entry.name}` : entry.name,
-        isHtml: entry.name.endsWith('.html')
+        isHtml: entry.name.endsWith('.html') || entry.name.endsWith('.htmlclay')
       }));
 
     // Build breadcrumbs array

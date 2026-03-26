@@ -52,7 +52,7 @@ function hasHiddenSegment(filePath) {
 }
 
 function toFileId(relPath) {
-  return path.normalize(relPath).replace(/\.html$/i, '');
+  return path.normalize(relPath).replace(/\.(html|htmlclay)$/i, '');
 }
 
 class SyncEngine extends EventEmitter {
@@ -337,7 +337,7 @@ class SyncEngine extends EventEmitter {
 
               const trashPath = path.join(this.syncFolder, '.trash', localRelPath);
               await ensureDirectory(path.dirname(trashPath));
-              const siteName = localRelPath.split('/').pop().replace(/\.html$/i, '');
+              const siteName = localRelPath.split('/').pop().replace(/\.(html|htmlclay)$/i, '');
               liveSync.markBrowserSave(siteName);
               await moveFile(fullPath, trashPath);
               localFiles.delete(localRelPath);
@@ -446,7 +446,7 @@ class SyncEngine extends EventEmitter {
       const knownPath = knownEntry?.path;
       if (knownPath && knownPath !== relativePath && localFiles.has(knownPath)) {
         const oldFullPath = path.join(this.syncFolder, knownPath);
-        const siteName = relativePath.split('/').pop().replace(/\.html$/i, '');
+        const siteName = relativePath.split('/').pop().replace(/\.(html|htmlclay)$/i, '');
         try {
           liveSync.markBrowserSave(siteName);
           await moveFile(oldFullPath, localPath);
@@ -620,7 +620,7 @@ class SyncEngine extends EventEmitter {
           match: async (localFile) => path.basename(localFile) === expectedBasename,
           apply: async (localFile) => {
             const targetFolder = path.dirname(localFile);
-            const folderPath = targetFolder === '.' ? '' : targetFolder.replace(/\.html$/, '');
+            const folderPath = targetFolder === '.' ? '' : targetFolder.replace(/\.(html|htmlclay)$/, '');
             await moveFileOnServer(this.serverUrl, this.apiKey, parseInt(nid), folderPath);
             const inode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
             const content = await readFile(path.join(this.syncFolder, localFile)).catch(() => null);
@@ -636,7 +636,7 @@ class SyncEngine extends EventEmitter {
             return localInode && entry.inode && localInode === entry.inode;
           },
           apply: async (localFile) => {
-            const newName = path.basename(localFile).replace(/\.html$/, '');
+            const newName = path.basename(localFile).replace(/\.(html|htmlclay)$/, '');
             await renameFileOnServer(this.serverUrl, this.apiKey, parseInt(nid), newName);
             const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
             return { path: localFile, checksum: entry.checksum, inode: localInode };
@@ -652,7 +652,7 @@ class SyncEngine extends EventEmitter {
             return (await calculateChecksum(content)) === entry.checksum;
           },
           apply: async (localFile) => {
-            const newName = path.basename(localFile).replace(/\.html$/, '');
+            const newName = path.basename(localFile).replace(/\.(html|htmlclay)$/, '');
             await renameFileOnServer(this.serverUrl, this.apiKey, parseInt(nid), newName);
             const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
             const content = await readFile(path.join(this.syncFolder, localFile)).catch(() => null);
@@ -729,7 +729,7 @@ class SyncEngine extends EventEmitter {
 
       // Create backup if file exists locally
       // Remove .html extension for siteName (matches server.js behavior)
-      const siteName = localFilename.replace(/\.html$/i, '');
+      const siteName = localFilename.replace(/\.(html|htmlclay)$/i, '');
       await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
 
       // Mark as expected write so file watcher doesn't send "File changed on disk" notification
@@ -804,7 +804,7 @@ class SyncEngine extends EventEmitter {
       }
 
       // Create backup if file exists
-      const siteName = localFilename.replace(/\.html$/i, '');
+      const siteName = localFilename.replace(/\.(html|htmlclay)$/i, '');
       await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
 
       // Ensure directory exists (for nested paths)
@@ -990,7 +990,7 @@ class SyncEngine extends EventEmitter {
       // Check if server already has this exact content using cached data
       try {
         const serverFiles = await this.fetchAndCacheServerFiles(false);
-        const filenameWithoutHtml = filename.replace(/\.html$/i, '');
+        const filenameWithoutHtml = filename.replace(/\.(html|htmlclay)$/i, '');
         const serverFile = serverFiles.find(f => f.filename === filenameWithoutHtml);
 
         if (serverFile && serverFile.checksum === localChecksum) {
@@ -1012,7 +1012,7 @@ class SyncEngine extends EventEmitter {
       }
 
       // Upload to server (filename WITHOUT .html)
-      const filenameWithoutHtml = filename.replace(/\.html$/i, '');
+      const filenameWithoutHtml = filename.replace(/\.(html|htmlclay)$/i, '');
 
       // Try to get cached snapshot for platform live sync
       let snapshotHtml = null;
@@ -1276,7 +1276,7 @@ class SyncEngine extends EventEmitter {
    */
   startFileWatcher() {
     // Watch recursively for all HTML files (excluding uploads folder)
-    this.watcher = chokidar.watch('**/*.html', {
+    this.watcher = chokidar.watch(['**/*.html', '**/*.htmlclay'], {
       cwd: this.syncFolder,
       persistent: true,
       ignoreInitial: true,
@@ -1359,12 +1359,12 @@ class SyncEngine extends EventEmitter {
                   self.pendingActions.add(`move:${pending.nodeId}`);
                   await moveFileOnServer(self.serverUrl, self.apiKey, parseInt(pending.nodeId), targetFolder);
                 } else if (isRename) {
-                  const newName = addBasename.replace(/\.html$/, '');
+                  const newName = addBasename.replace(/\.(html|htmlclay)$/, '');
                   console.log(`[SYNC] Watcher: Local rename detected: ${oldPath} → ${normalizedPath}`);
                   self.pendingActions.add(`rename:${pending.nodeId}`);
                   await renameFileOnServer(self.serverUrl, self.apiKey, parseInt(pending.nodeId), newName);
                 } else {
-                  const newName = addBasename.replace(/\.html$/, '');
+                  const newName = addBasename.replace(/\.(html|htmlclay)$/, '');
                   const targetFolder = addDirname === '.' ? '' : addDirname;
                   console.log(`[SYNC] Watcher: Local move+rename detected: ${oldPath} → ${normalizedPath}`);
                   self.pendingActions.add(`rename:${pending.nodeId}`);
@@ -1388,7 +1388,7 @@ class SyncEngine extends EventEmitter {
           console.log(`[SYNC] File added: ${normalizedPath}`);
           this.queueSync('add', normalizedPath);
 
-          const fileId = normalizedPath.replace(/\.html$/, '');
+          const fileId = normalizedPath.replace(/\.(html|htmlclay)$/, '');
           if (!liveSync.wasBrowserSave(fileId)) {
             liveSync.notify(fileId, {
               msgType: 'info',
@@ -1400,7 +1400,7 @@ class SyncEngine extends EventEmitter {
       })
       .on('change', async (filename) => {
         const normalizedPath = path.normalize(filename);
-        const fileId = normalizedPath.replace(/\.html$/, '');
+        const fileId = normalizedPath.replace(/\.(html|htmlclay)$/, '');
 
         // Content comparison: skip if file content hasn't actually changed
         try {
