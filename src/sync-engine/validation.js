@@ -48,8 +48,8 @@ function validateSiteName(name) {
     };
   }
 
-  // Strip .html extension if present (we add it back later)
-  const baseName = name.replace(/\.html$/i, '');
+  // Strip .html/.htmlclay extension if present
+  const baseName = name.replace(/\.html(clay)?$/i, '');
 
   // Check length
   if (baseName.length < 1) {
@@ -218,8 +218,8 @@ function getFileType(filename, isDirectory = false) {
     return 'folder';
   }
 
-  // Sites have .html extension
-  if (filename.endsWith('.html')) {
+  // Sites have .html or .htmlclay extension
+  if (filename.endsWith('.html') || filename.endsWith('.htmlclay')) {
     return 'site';
   }
 
@@ -234,9 +234,9 @@ function getFileType(filename, isDirectory = false) {
 function validateFileName(filename, isDirectory = false) {
   const type = getFileType(filename, isDirectory);
 
-  // Remove .html extension for site validation
+  // Remove .html/.htmlclay extension for site validation
   const nameToValidate = type === 'site'
-    ? filename.replace(/\.html$/i, '')
+    ? filename.replace(/\.html(clay)?$/i, '')
     : filename;
 
   let result;

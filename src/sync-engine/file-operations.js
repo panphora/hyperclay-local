@@ -37,7 +37,7 @@ async function getLocalFiles(syncFolder) {
           if (!shouldSkipEntry(entry.name)) {
             await scanDirectory(fullPath, relPath);
           }
-        } else if (entry.isFile() && entry.name.endsWith('.html')) {
+        } else if (entry.isFile() && (entry.name.endsWith('.html') || entry.name.endsWith('.htmlclay'))) {
           const stats = await fs.stat(fullPath);
 
           // relPath is already normalized by upath.join() to forward slashes

@@ -44,20 +44,20 @@ function validateAndResolvePath(name, baseDir) {
       name.includes('\\') ||
       name.startsWith('.') ||
       name.startsWith('/') ||
-      name.endsWith('.html') ||
+      (!name.endsWith('.html') && !name.endsWith('.htmlclay')) ||
       path.isAbsolute(name) ||
-      !/^[\w/-]+$/.test(name) ||
+      !/^[\w/.-]+$/.test(name) ||
       name.split('/').some(seg => seg.startsWith('.') || seg.length === 0)) {
     return { error: 'Invalid file path' };
   }
 
   const baseName = name.split('/').pop();
-  const result = validateFileName(`${baseName}.html`);
+  const result = validateFileName(baseName);
   if (!result.valid) {
     return { error: result.error };
   }
 
-  const filePath = path.join(baseDir, name + '.html');
+  const filePath = path.join(baseDir, name);
   const resolvedPath = path.resolve(filePath);
   const resolvedBase = path.resolve(baseDir);
 
@@ -68,15 +68,28 @@ function validateAndResolvePath(name, baseDir) {
   return { filePath, resolvedPath, baseName };
 }
 
-async function serveHtmlWithAppname(res, filePath, appName) {
-  let html = await fs.readFile(filePath, 'utf8');
-  if (/<html[^>]*\sappname="/.test(html)) {
-    html = html.replace(/(<html[^>]*)\sappname="[^"]*"/, `$1 appname="${appName}"`);
-  } else {
-    html = html.replace(/<html(\s|>)/, `<html appname="${appName}"$1`);
-  }
+async function serveHtml(res, filePath) {
+  const html = await fs.readFile(filePath, 'utf8');
   res.set('Content-Type', 'text/html');
   return res.send(html);
+}
+
+function resolveResourceFromHref(href) {
+  let pathname;
+  try {
+    pathname = new URL(href).pathname;
+  } catch {
+    pathname = href;
+  }
+
+  if (pathname === '/') return 'index.html';
+
+  pathname = pathname.replace(/^\//, '');
+
+  const htmlMatch = pathname.match(/^(.*?\.html(?:clay)?)/);
+  if (htmlMatch) return htmlMatch[1];
+
+  return pathname;
 }
 
 function startServer(baseDir) {
@@ -174,7 +187,12 @@ function startServer(baseDir) {
 
     // Live-sync save endpoint
     app.post('/live-sync/save', async (req, res) => {
-      const { file, html, sender } = req.body;
+      const { html, sender } = req.body;
+      const pageUrl = req.headers['page-url'];
+      if (!pageUrl) {
+        return res.status(400).json({ error: 'Page-URL header is required' });
+      }
+      const file = resolveResourceFromHref(pageUrl);
 
       if (!file || typeof html !== 'string') {
         return res.status(400).json({ error: 'file and html are required' });
@@ -189,10 +207,11 @@ function startServer(baseDir) {
         // Cache snapshot for platform sync (consumed by uploadFile via getAndClearSnapshot)
         pendingSnapshots.set(file, html);
 
-        // Broadcast to other local browsers
-        liveSync.broadcast(file, { html, sender });
+        // Broadcast to other local browsers (extensionless key matches detectCurrentFile)
+        const fileId = file.replace(/\.(html|htmlclay)$/i, '');
+        liveSync.broadcast(fileId, { html, sender });
 
-        console.log(`[LiveSync] Broadcast: ${file} (from: ${sender})`);
+        console.log(`[LiveSync] Broadcast: ${fileId} (from: ${sender})`);
 
         res.json({ success: true });
       } catch (err) {
@@ -212,21 +231,19 @@ function startServer(baseDir) {
     // JSON is used by Hyperclay Local browser (includes snapshotHtml for platform sync)
     // Plain text is used as fallback for backwards compatibility
     // 20MB limit to accommodate both stripped content and full snapshotHtml
-    // Use /save/* to support subfolder paths (e.g., /save/folder/file)
     app.use('/save', express.json({ limit: '20mb' }));
     app.use('/save', express.text({ type: 'text/plain', limit: '20mb' }));
 
     // POST route to save/overwrite HTML files (supports subfolders)
-    app.post('/save/*', async (req, res) => {
-      // Extract path from URL (everything after /save/)
-      const name = req.params[0];
-
-      if (!name) {
+    app.post('/save', async (req, res) => {
+      const pageUrl = req.headers['page-url'];
+      if (!pageUrl) {
         return res.status(400).json({
-          msg: 'Filename required.',
+          msg: 'Page-URL header required.',
           msgType: 'error'
         });
       }
+      const name = resolveResourceFromHref(pageUrl);
 
       // Handle both JSON and plain text requests
       let content, snapshotHtml;
@@ -260,8 +277,11 @@ function startServer(baseDir) {
         // Ensure directory exists for subfolder files
         await fs.mkdir(path.dirname(filePath), { recursive: true });
 
+        // Strip extension for backup paths and liveSync keys (backward compat)
+        const backupName = name.replace(/\.(html|htmlclay)$/, '');
+
         // Check if this is the first save (no versions exist yet)
-        const siteVersionsDir = path.join(baseDir, 'sites-versions', name);
+        const siteVersionsDir = path.join(baseDir, 'sites-versions', backupName);
         let isFirstSave = false;
         try {
           const versionFiles = await fs.readdir(siteVersionsDir);
@@ -275,8 +295,8 @@ function startServer(baseDir) {
         if (isFirstSave) {
           try {
             const existingContent = await fs.readFile(filePath, 'utf8');
-            await createBackup(baseDir, name, existingContent);
-            console.log(`Created initial backup of existing ${name}.html`);
+            await createBackup(baseDir, backupName, existingContent);
+            console.log(`Created initial backup of existing ${name}`);
           } catch (error) {
             // File doesn't exist yet, that's OK
           }
@@ -286,13 +306,13 @@ function startServer(baseDir) {
         content = formatHtml(content);
 
         // Create backup of the new content
-        await createBackup(baseDir, name, content);
+        await createBackup(baseDir, backupName, content);
 
         // Write file (creates if not exists, overwrites if exists)
         await fs.writeFile(filePath, content, 'utf8');
 
         // Mark as browser save so file watcher doesn't send redundant notification
-        liveSync.markBrowserSave(name);
+        liveSync.markBrowserSave(backupName);
 
         // Generate Tailwind CSS if site uses it
         const tailwindName = getTailwindCssName(content);
@@ -326,34 +346,6 @@ function startServer(baseDir) {
       }
     });
 
-    // Set currentResource cookie based on requested HTML file
-    app.use((req, res, next) => {
-      const urlPath = req.path;
-
-      // Extract app name from URL path (just the filename, not the full path)
-      let appName = null;
-      if (urlPath === '/') {
-        appName = 'index';
-      } else {
-        const cleanPath = urlPath.substring(1); // Remove leading slash
-        if (cleanPath.endsWith('.html') || cleanPath.endsWith('.htmlclay')) {
-          const filename = path.basename(cleanPath);
-          const ext = path.extname(filename);
-          appName = filename.slice(0, -ext.length);
-        } else if (!cleanPath.includes('.')) {
-          // Extensionless HTML file - get just the basename
-          appName = path.basename(cleanPath);
-        }
-      }
-
-      // Set currentResource cookie if this is an HTML app request
-      if (appName) {
-        res.cookie('currentResource', appName, cookieOptions);
-      }
-
-      next();
-    });
-
     // Tailwind CSS files - return empty CSS if not yet generated (avoids 404 on first load)
     app.get('/tailwindcss/:name.css', async (req, res) => {
       const cssPath = path.join(baseDir, 'tailwindcss', `${req.params.name}.css`);
@@ -368,114 +360,55 @@ function startServer(baseDir) {
       }
     });
 
-    // Known server routes that should NOT be treated as client-side routes
-    const knownServerRoutes = [
-      'save', 'live-sync', 'tailwindcss', 'sites-versions', '__templates'
-    ];
-
-    // Static file serving with extensionless HTML support and client-side routing fallback
+    // Static file serving with SPA routing support
+    // URLs with .html/.htmlclay extension: everything after the extension is a SPA route
+    // e.g. /blog/app.htmlclay/dashboard → serves blog/app.htmlclay, SPA route: /dashboard
     app.use(async (req, res, next) => {
       const urlPath = req.path;
-
-      // Clean the path and remove leading slash
-      const requestedPath = urlPath === '/' ? 'index.html' : urlPath.substring(1);
-      const filePath = path.join(baseDir, requestedPath);
-
-      // Security check
-      const resolvedPath = path.resolve(filePath);
       const resolvedBaseDir = path.resolve(baseDir);
+
+      // Root always shows directory listing
+      if (urlPath === '/') {
+        return serveDirListing(res, baseDir, baseDir);
+      }
+
+      const requestedPath = urlPath.substring(1);
+
+      // Check if URL contains an .html or .htmlclay segment (SPA-aware routing)
+      const htmlMatch = requestedPath.match(/^(.*?\.html(?:clay)?)(\/.*)?$/);
+      if (htmlMatch) {
+        const filePath = path.join(baseDir, htmlMatch[1]);
+        const resolvedPath = path.resolve(filePath);
+
+        if (!resolvedPath.startsWith(resolvedBaseDir + path.sep)) {
+          return res.status(403).send('Access denied');
+        }
+
+        try {
+          await fs.stat(resolvedPath);
+          return serveHtml(res, resolvedPath);
+        } catch {
+          return res.status(404).send('File not found');
+        }
+      }
+
+      // No HTML extension in URL — serve static files or directory listings
+      const filePath = path.join(baseDir, requestedPath);
+      const resolvedPath = path.resolve(filePath);
 
       if (!resolvedPath.startsWith(resolvedBaseDir + path.sep) && resolvedPath !== resolvedBaseDir) {
         return res.status(403).send('Access denied');
       }
 
-      // Helper to serve a file with client-side routing fallback
-      const serveWithFallback = async () => {
-        try {
-          const stats = await fs.stat(resolvedPath);
-          if (stats.isDirectory()) {
-            // Try index.html in directory
-            const indexPath = path.join(resolvedPath, 'index.html');
-            try {
-              await fs.stat(indexPath);
-              return serveHtmlWithAppname(res, indexPath, 'index');
-            } catch {
-              return serveDirListing(res, resolvedPath, baseDir);
-            }
-          } else {
-            if (resolvedPath.endsWith('.html')) {
-              return serveHtmlWithAppname(res, resolvedPath, path.basename(resolvedPath, '.html'));
-            }
-            if (resolvedPath.endsWith('.htmlclay')) {
-              return serveHtmlWithAppname(res, resolvedPath, path.basename(resolvedPath, '.htmlclay'));
-            }
-            return res.sendFile(resolvedPath);
-          }
-        } catch {
-          // File doesn't exist - try alternatives
+      try {
+        const stats = await fs.stat(resolvedPath);
+        if (stats.isDirectory()) {
+          return serveDirListing(res, resolvedPath, baseDir);
         }
-
-        // Try with .html or .htmlclay extension
-        if (!requestedPath.endsWith('.html') && !requestedPath.endsWith('.htmlclay') && requestedPath !== 'index.html') {
-          const htmlPath = path.join(baseDir, requestedPath + '.html');
-          try {
-            await fs.stat(htmlPath);
-            return serveHtmlWithAppname(res, htmlPath, path.basename(requestedPath));
-          } catch {
-            // Try .htmlclay
-          }
-          const htmlclayPath = path.join(baseDir, requestedPath + '.htmlclay');
-          try {
-            await fs.stat(htmlclayPath);
-            return serveHtmlWithAppname(res, htmlclayPath, path.basename(requestedPath));
-          } catch {
-            // Continue to client-side routing fallback
-          }
-        }
-
-        // Client-side routing fallback: /appname/any/path → serve appname.html
-        // This enables single-page apps with client-side routing
-        const segments = requestedPath.split('/').filter(Boolean);
-        if (segments.length > 1) {
-          const firstSegment = segments[0];
-
-          // Skip if this looks like a known server route
-          if (!knownServerRoutes.includes(firstSegment)) {
-            // Try .html first, then .htmlclay
-            let appFilePath = null;
-            const htmlPath = path.join(baseDir, firstSegment + '.html');
-            const htmlclayPath = path.join(baseDir, firstSegment + '.htmlclay');
-            try {
-              await fs.stat(htmlPath);
-              appFilePath = htmlPath;
-            } catch {
-              try {
-                await fs.stat(htmlclayPath);
-                appFilePath = htmlclayPath;
-              } catch {
-                // Neither exists
-              }
-            }
-            if (appFilePath) {
-              res.cookie('currentResource', firstSegment, {
-                httpOnly: false,
-                secure: false,
-                sameSite: 'lax'
-              });
-              return serveHtmlWithAppname(res, appFilePath, firstSegment);
-            }
-          }
-        }
-
-        // Final fallback
-        if (requestedPath === 'index.html') {
-          return serveDirListing(res, baseDir, baseDir);
-        } else {
-          return res.status(404).send('File not found');
-        }
-      };
-
-      await serveWithFallback();
+        return res.sendFile(resolvedPath);
+      } catch {
+        return res.status(404).send('File not found');
+      }
     });
 
     // Catch-all error handler for unhandled Express errors
@@ -632,5 +565,8 @@ module.exports = {
   stopServer,
   getServerPort,
   isServerRunning,
-  getAndClearSnapshot  // For sync engine to get cached snapshot HTML for platform sync
+  getAndClearSnapshot,  // For sync engine to get cached snapshot HTML for platform sync
+  // Exported for testing
+  resolveResourceFromHref,
+  validateAndResolvePath
 };

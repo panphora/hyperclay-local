@@ -402,7 +402,10 @@ class SyncEngine extends EventEmitter {
 
   /**
    * Detect and warn about duplicate filenames across different local folders.
+   * Also detects .html/.htmlclay extension collisions (same fileId).
    * Site names are globally unique on the server, so local duplicates cause issues.
+   * When .html and .htmlclay variants both exist, .html is preferred for sync
+   * and the .htmlclay entry is removed from localFiles.
    */
   detectDuplicateFilenames(localFiles) {
     const nameIndex = new Map();
@@ -428,6 +431,27 @@ class SyncEngine extends EventEmitter {
           this.logger.warn('SYNC', `Duplicate filename detected: ${name}`, { paths });
         }
       }
+    }
+
+    // Detect .html/.htmlclay extension collisions — prefer .html for sync
+    for (const [relativePath] of localFiles) {
+      if (!relativePath.endsWith('.htmlclay')) continue;
+      const htmlPath = relativePath.replace(/\.htmlclay$/, '.html');
+      if (!localFiles.has(htmlPath)) continue;
+
+      const fileId = toFileId(relativePath);
+      console.log(`[SYNC] WARNING: "${fileId}" exists as both .html and .htmlclay — syncing .html only`);
+      this.emit('sync-warning', {
+        type: 'extension-collision',
+        fileId,
+        preferred: htmlPath,
+        skipped: relativePath,
+        message: `"${fileId}" exists as both .html and .htmlclay — syncing .html only`
+      });
+      if (this.logger) {
+        this.logger.warn('SYNC', `Extension collision: ${fileId}`, { preferred: htmlPath, skipped: relativePath });
+      }
+      localFiles.delete(relativePath);
     }
   }
 
@@ -1018,7 +1042,7 @@ class SyncEngine extends EventEmitter {
       let snapshotHtml = null;
       try {
         const { getAndClearSnapshot } = require('../main/server.js');
-        snapshotHtml = getAndClearSnapshot(filenameWithoutHtml);
+        snapshotHtml = getAndClearSnapshot(filename);
         if (snapshotHtml) {
           console.log(`[SYNC] Including snapshot for platform live sync: ${filenameWithoutHtml}`);
         }
