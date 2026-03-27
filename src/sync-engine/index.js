@@ -312,8 +312,6 @@ class SyncEngine extends EventEmitter {
       const serverFiles = await this.fetchAndCacheServerFiles(true);
       const localFiles = await getLocalFiles(this.syncFolder);
 
-      this.detectDuplicateFilenames(localFiles);
-
       for (const serverFile of serverFiles) {
         await this.reconcileServerFile(serverFile, localFiles);
       }
@@ -401,66 +399,11 @@ class SyncEngine extends EventEmitter {
   }
 
   /**
-   * Detect and warn about duplicate filenames across different local folders.
-   * Also detects .html/.htmlclay extension collisions (same fileId).
-   * Site names are globally unique on the server, so local duplicates cause issues.
-   * When .html and .htmlclay variants both exist, .html is preferred for sync
-   * and the .htmlclay entry is removed from localFiles.
-   */
-  detectDuplicateFilenames(localFiles) {
-    const nameIndex = new Map();
-    for (const [relativePath] of localFiles) {
-      const name = relativePath.split('/').pop();
-      if (!nameIndex.has(name)) {
-        nameIndex.set(name, []);
-      }
-      nameIndex.get(name).push(relativePath);
-    }
-
-    for (const [name, paths] of nameIndex) {
-      if (paths.length > 1) {
-        console.log(`[SYNC] WARNING: Duplicate filename "${name}" found in ${paths.length} locations: ${paths.join(', ')}`);
-        this.emit('sync-warning', {
-          type: 'duplicate-filename',
-          filename: name,
-          paths,
-          message: `"${name}" exists in ${paths.length} folders — only one can sync`
-        });
-
-        if (this.logger) {
-          this.logger.warn('SYNC', `Duplicate filename detected: ${name}`, { paths });
-        }
-      }
-    }
-
-    // Detect .html/.htmlclay extension collisions — prefer .html for sync
-    for (const [relativePath] of localFiles) {
-      if (!relativePath.endsWith('.htmlclay')) continue;
-      const htmlPath = relativePath.replace(/\.htmlclay$/, '.html');
-      if (!localFiles.has(htmlPath)) continue;
-
-      const fileId = toFileId(relativePath);
-      console.log(`[SYNC] WARNING: "${fileId}" exists as both .html and .htmlclay — syncing .html only`);
-      this.emit('sync-warning', {
-        type: 'extension-collision',
-        fileId,
-        preferred: htmlPath,
-        skipped: relativePath,
-        message: `"${fileId}" exists as both .html and .htmlclay — syncing .html only`
-      });
-      if (this.logger) {
-        this.logger.warn('SYNC', `Extension collision: ${fileId}`, { preferred: htmlPath, skipped: relativePath });
-      }
-      localFiles.delete(relativePath);
-    }
-  }
-
-  /**
    * Reconcile a single server file against local state: move, download, or skip.
    * Mutates localFiles map when a file is moved.
    */
   async reconcileServerFile(serverFile, localFiles) {
-    const relativePath = serverFile.path || `${serverFile.filename}.html`;
+    const relativePath = serverFile.path || serverFile.filename;
     this.resolveContainedPath(relativePath);
     const localPath = path.join(this.syncFolder, relativePath);
     let localExists = localFiles.has(relativePath);
@@ -566,20 +509,23 @@ class SyncEngine extends EventEmitter {
   async uploadLocalOnlyFiles(localFiles, serverFiles) {
     for (const [relativePath, localInfo] of localFiles) {
       const serverFile = serverFiles.find(f =>
-        (f.path === relativePath) || (`${f.filename}.html` === relativePath)
+        (f.path === relativePath) || (f.filename === relativePath)
       );
 
       if (!serverFile) {
         const localName = relativePath.split('/').pop();
-        const nameExistsOnServer = serverFiles.some(f => {
-          const serverName = (f.path || `${f.filename}.html`).split('/').pop();
-          return serverName === localName;
+        const localFolder = relativePath.split('/').slice(0, -1).join('/');
+        const nameExistsInSameFolder = serverFiles.some(f => {
+          const serverPath = f.path || f.filename;
+          const serverName = serverPath.split('/').pop();
+          const serverFolder = serverPath.split('/').slice(0, -1).join('/');
+          return serverName === localName && serverFolder === localFolder;
         });
 
-        if (nameExistsOnServer) {
-          console.log(`[SYNC] SKIP ${relativePath} - duplicate name already exists on server`);
+        if (nameExistsInSameFolder) {
+          console.log(`[SYNC] SKIP ${relativePath} - same name already exists in folder on server`);
           if (this.logger) {
-            this.logger.warn('SYNC', 'Skipped upload - duplicate name on server', { file: relativePath });
+            this.logger.warn('SYNC', 'Skipped upload - name exists in same folder on server', { file: relativePath });
           }
           continue;
         }
@@ -625,7 +571,7 @@ class SyncEngine extends EventEmitter {
       if (!serverNodeIds.has(nid)) continue; // already handled by server-side delete reconciliation
 
       const serverFile = serverFilesByNodeId.get(nid);
-      const serverPath = serverFile.path || `${serverFile.filename}.html`;
+      const serverPath = serverFile.path || serverFile.filename;
 
       // Only run local change detection for nodeIds where the server hasn't changed the path
       // (server wins for move/rename conflicts)
@@ -660,7 +606,7 @@ class SyncEngine extends EventEmitter {
             return localInode && entry.inode && localInode === entry.inode;
           },
           apply: async (localFile) => {
-            const newName = path.basename(localFile).replace(/\.(html|htmlclay)$/, '');
+            const newName = path.basename(localFile);
             await renameFileOnServer(this.serverUrl, this.apiKey, parseInt(nid), newName);
             const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
             return { path: localFile, checksum: entry.checksum, inode: localInode };
@@ -676,7 +622,7 @@ class SyncEngine extends EventEmitter {
             return (await calculateChecksum(content)) === entry.checksum;
           },
           apply: async (localFile) => {
-            const newName = path.basename(localFile).replace(/\.(html|htmlclay)$/, '');
+            const newName = path.basename(localFile);
             await renameFileOnServer(this.serverUrl, this.apiKey, parseInt(nid), newName);
             const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
             const content = await readFile(path.join(this.syncFolder, localFile)).catch(() => null);
@@ -734,20 +680,18 @@ class SyncEngine extends EventEmitter {
 
   /**
    * Download a file from server
-   * @param {string} filename - Filename WITHOUT .html (may include folders)
-   * @param {string} relativePath - Full path WITH .html for local storage
+   * @param {string} filename - Full filename including extension (may include folders)
+   * @param {string} relativePath - Full path for local storage
    */
   async downloadFile(filename, relativePath) {
     try {
-      // Server expects filename WITHOUT .html
       const { content, modifiedAt } = await downloadFromServer(
         this.serverUrl,
         this.apiKey,
         filename
       );
 
-      // Use provided relativePath or construct it
-      const localFilename = relativePath || (filename.endsWith('.html') ? filename : `${filename}.html`);
+      const localFilename = relativePath || filename;
       this.resolveContainedPath(localFilename);
       const localPath = path.join(this.syncFolder, localFilename);
 
@@ -805,7 +749,7 @@ class SyncEngine extends EventEmitter {
    * @param {string} modifiedAt - ISO timestamp
    */
   async handleFileSaved(file, content, checksum, modifiedAt, sseNodeId) {
-    const localFilename = file.endsWith('.html') ? file : `${file}.html`;
+    const localFilename = /\.(html|htmlclay)$/.test(file) ? file : `${file}.html`;
     this.resolveContainedPath(localFilename);
     const localPath = path.join(this.syncFolder, localFilename);
 
@@ -882,10 +826,8 @@ class SyncEngine extends EventEmitter {
     const currentPath = entry.path;
 
     const localPath = path.join(this.syncFolder, currentPath);
-    const newLocalFilename = currentPath.replace(
-      new RegExp(`${oldName}\\.html$`),
-      `${newName}.html`
-    );
+    const dir = path.dirname(currentPath);
+    const newLocalFilename = dir === '.' ? newName : `${dir}/${newName}`;
     this.resolveContainedPath(newLocalFilename);
     const newLocalPath = path.join(this.syncFolder, newLocalFilename);
 
@@ -937,7 +879,7 @@ class SyncEngine extends EventEmitter {
   async handleFileDeleted(nodeId, file) {
     const entry = this.nodeMap.get(String(nodeId));
     const localFilename = entry?.path
-      || (file.endsWith('.html') ? file : `${file}.html`);
+      || (/\.(html|htmlclay)$/.test(file) ? file : `${file}.html`);
     this.resolveContainedPath(localFilename);
     const localPath = path.join(this.syncFolder, localFilename);
     const trashPath = path.join(this.syncFolder, '.trash', localFilename);
@@ -1014,8 +956,7 @@ class SyncEngine extends EventEmitter {
       // Check if server already has this exact content using cached data
       try {
         const serverFiles = await this.fetchAndCacheServerFiles(false);
-        const filenameWithoutHtml = filename.replace(/\.(html|htmlclay)$/i, '');
-        const serverFile = serverFiles.find(f => f.filename === filenameWithoutHtml);
+        const serverFile = serverFiles.find(f => f.filename === filename);
 
         if (serverFile && serverFile.checksum === localChecksum) {
           console.log(`[SYNC] SKIP upload ${filename} - server has same checksum`);
@@ -1035,26 +976,22 @@ class SyncEngine extends EventEmitter {
         console.log(`[SYNC] Could not verify server checksum, proceeding with upload: ${error.message}`);
       }
 
-      // Upload to server (filename WITHOUT .html)
-      const filenameWithoutHtml = filename.replace(/\.(html|htmlclay)$/i, '');
-
       // Try to get cached snapshot for platform live sync
       let snapshotHtml = null;
       try {
         const { getAndClearSnapshot } = require('../main/server.js');
         snapshotHtml = getAndClearSnapshot(filename);
         if (snapshotHtml) {
-          console.log(`[SYNC] Including snapshot for platform live sync: ${filenameWithoutHtml}`);
+          console.log(`[SYNC] Including snapshot for platform live sync: ${filename}`);
         }
       } catch (err) {
         // Server module not available or getAndClearSnapshot not exported
-        // This is fine - just upload without snapshot
       }
 
       const result = await uploadToServer(
         this.serverUrl,
         this.apiKey,
-        filenameWithoutHtml,
+        filename,
         content,
         stat.mtime,
         {
@@ -1383,12 +1320,12 @@ class SyncEngine extends EventEmitter {
                   self.pendingActions.add(`move:${pending.nodeId}`);
                   await moveFileOnServer(self.serverUrl, self.apiKey, parseInt(pending.nodeId), targetFolder);
                 } else if (isRename) {
-                  const newName = addBasename.replace(/\.(html|htmlclay)$/, '');
+                  const newName = addBasename;
                   console.log(`[SYNC] Watcher: Local rename detected: ${oldPath} → ${normalizedPath}`);
                   self.pendingActions.add(`rename:${pending.nodeId}`);
                   await renameFileOnServer(self.serverUrl, self.apiKey, parseInt(pending.nodeId), newName);
                 } else {
-                  const newName = addBasename.replace(/\.(html|htmlclay)$/, '');
+                  const newName = addBasename;
                   const targetFolder = addDirname === '.' ? '' : addDirname;
                   console.log(`[SYNC] Watcher: Local move+rename detected: ${oldPath} → ${normalizedPath}`);
                   self.pendingActions.add(`rename:${pending.nodeId}`);
@@ -2046,7 +1983,7 @@ class SyncEngine extends EventEmitter {
           return;
         }
         // Server returns path WITH .html (e.g., "folder1/folder2/site.html" or "site.html")
-        const relativePath = serverFile.path || `${serverFile.filename}.html`;
+        const relativePath = serverFile.path || serverFile.filename;
         const localPath = path.join(this.syncFolder, relativePath);
         const localExists = localFiles.has(relativePath);
 

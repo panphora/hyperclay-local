@@ -277,7 +277,7 @@ function startServer(baseDir) {
         // Ensure directory exists for subfolder files
         await fs.mkdir(path.dirname(filePath), { recursive: true });
 
-        // Strip extension for backup paths and liveSync keys (backward compat)
+        // Use base name (without extension) for backup directory paths
         const backupName = name.replace(/\.(html|htmlclay)$/, '');
 
         // Check if this is the first save (no versions exist yet)

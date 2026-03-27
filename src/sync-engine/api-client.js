@@ -63,11 +63,11 @@ async function fetchServerFiles(serverUrl, apiKey) {
  * Download file content from server
  * @param {string} serverUrl - Server base URL
  * @param {string} apiKey - API key for authentication
- * @param {string} filename - Full path WITHOUT .html extension (may include folders)
+ * @param {string} filename - Full path including extension (may include folders)
  */
 async function downloadFromServer(serverUrl, apiKey, filename) {
-  // NO encoding - send raw path with slashes
-  const downloadUrl = `${serverUrl}/sync/download/${filename}`;
+  const encodedPath = filename.split('/').map(s => encodeURIComponent(s)).join('/');
+  const downloadUrl = `${serverUrl}/sync/download/${encodedPath}`;
   console.log(`[API] Downloading from: ${downloadUrl}`);
 
   const response = await fetch(downloadUrl, {

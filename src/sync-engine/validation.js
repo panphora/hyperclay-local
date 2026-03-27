@@ -36,11 +36,9 @@ function validateFolderName(name) {
 }
 
 /**
- * Validate site name
- * Must follow hyperclay rules for site names
+ * Validate site name — must include .html or .htmlclay extension
  */
 function validateSiteName(name) {
-  // Check if empty
   if (!name || name.trim() === '') {
     return {
       valid: false,
@@ -48,32 +46,22 @@ function validateSiteName(name) {
     };
   }
 
-  // Strip .html/.htmlclay extension if present
-  const baseName = name.replace(/\.html(clay)?$/i, '');
-
-  // Check length
-  if (baseName.length < 1) {
+  if (name.length > 255) {
     return {
       valid: false,
-      error: `Invalid site name: "${name}". Site name is too short`
-    };
-  }
-  if (baseName.length > 63) {
-    return {
-      valid: false,
-      error: `Invalid site name: "${name}". Site name is too long (max 63 characters)`
+      error: `Invalid site name: "${name}". Site name is too long (max 255 characters)`
     };
   }
 
-  // Check format - only letters, numbers, and hyphens
-  if (!baseName.match(/^[a-zA-Z0-9-]+$/)) {
+  if (!/^[a-z0-9_-]+\.(html|htmlclay)$/.test(name)) {
     return {
       valid: false,
-      error: `Invalid site name: "${name}". Can only contain letters (A-Z), numbers (0-9), and hyphens (-)`
+      error: `Invalid site name: "${name}". Must be lowercase letters, numbers, hyphens, underscores, ending with .html or .htmlclay`
     };
   }
 
-  // Cannot start or end with hyphen
+  const baseName = name.replace(/\.(html|htmlclay)$/, '');
+
   if (baseName.startsWith('-') || baseName.endsWith('-')) {
     return {
       valid: false,
@@ -81,7 +69,6 @@ function validateSiteName(name) {
     };
   }
 
-  // Check for consecutive hyphens
   if (baseName.includes('--')) {
     return {
       valid: false,
@@ -89,18 +76,16 @@ function validateSiteName(name) {
     };
   }
 
-  // Check for Windows reserved filenames (critical for cross-platform compatibility)
-  const lowerName = baseName.toLowerCase();
   const windowsReservedNames = [
     'con', 'prn', 'aux', 'nul',
     'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
     'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9'
   ];
 
-  if (windowsReservedNames.includes(lowerName)) {
+  if (windowsReservedNames.includes(baseName)) {
     return {
       valid: false,
-      error: `"${baseName}" is a reserved system name and cannot be used on Windows`
+      error: `"${baseName}" is a reserved system name`
     };
   }
 
@@ -234,10 +219,7 @@ function getFileType(filename, isDirectory = false) {
 function validateFileName(filename, isDirectory = false) {
   const type = getFileType(filename, isDirectory);
 
-  // Remove .html/.htmlclay extension for site validation
-  const nameToValidate = type === 'site'
-    ? filename.replace(/\.html(clay)?$/i, '')
-    : filename;
+  const nameToValidate = filename;
 
   let result;
   switch (type) {
