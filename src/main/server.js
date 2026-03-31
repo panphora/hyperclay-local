@@ -353,17 +353,30 @@ function startServer(baseDir) {
       }
     });
 
-    // Tailwind CSS files - return empty CSS if not yet generated (avoids 404 on first load)
+    // Tailwind CSS — serve from disk or auto-generate on first request
     app.get('/tailwindcss/:name.css', async (req, res) => {
-      const cssPath = path.join(baseDir, 'tailwindcss', `${path.basename(req.params.name)}.css`);
+      res.setHeader('Content-Type', 'text/css');
+      const name = path.basename(req.params.name);
+      const cssPath = path.join(baseDir, 'tailwindcss', `${name}.css`);
+
+      // Try pre-compiled CSS first
       try {
         const css = await fs.readFile(cssPath, 'utf8');
-        res.setHeader('Content-Type', 'text/css');
-        res.send(css);
+        return res.send(css);
+      } catch {}
+
+      // Auto-generate: find the HTML file, compile Tailwind, write to disk
+      try {
+        const htmlPath = path.join(baseDir, `${name}.html`);
+        const html = await fs.readFile(htmlPath, 'utf8');
+        const css = await compileTailwind(html);
+        const cssDir = path.join(baseDir, 'tailwindcss');
+        await fs.mkdir(cssDir, { recursive: true });
+        await fs.writeFile(cssPath, css, 'utf8');
+        console.log(`Auto-generated Tailwind CSS: tailwindcss/${name}.css`);
+        return res.send(css);
       } catch {
-        // File doesn't exist yet, return empty CSS
-        res.setHeader('Content-Type', 'text/css');
-        res.send('');
+        return res.send('');
       }
     });
 
