@@ -19,16 +19,23 @@ const eta = new Eta({
 // When browser saves with snapshotHtml, we cache it for the sync engine to use
 const pendingSnapshots = new Map();
 
+setInterval(() => {
+  const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+  for (const [key, entry] of pendingSnapshots) {
+    if (entry.timestamp < fiveMinutesAgo) pendingSnapshots.delete(key);
+  }
+}, 60 * 1000);
+
 /**
  * Get and clear the cached snapshot HTML for a file
  * Called by sync engine before uploading to platform
- * @param {string} filename - Filename without .html extension
+ * @param {string} filename - Filename including extension
  * @returns {string|null} The snapshot HTML or null if not available
  */
 function getAndClearSnapshot(filename) {
-  const snapshot = pendingSnapshots.get(filename);
+  const entry = pendingSnapshots.get(filename);
   pendingSnapshots.delete(filename);
-  return snapshot || null;
+  return entry?.html || null;
 }
 
 let server = null;
@@ -205,7 +212,7 @@ function startServer(baseDir) {
 
       try {
         // Cache snapshot for platform sync (consumed by uploadFile via getAndClearSnapshot)
-        pendingSnapshots.set(file, html);
+        pendingSnapshots.set(file, { html, timestamp: Date.now() });
 
         // Broadcast to other local browsers (extensionless key matches detectCurrentFile)
         const fileId = file.replace(/\.(html|htmlclay)$/i, '');
@@ -327,7 +334,7 @@ function startServer(baseDir) {
         // Store snapshot HTML for platform sync (if provided)
         // The sync engine will retrieve this when uploading to platform
         if (snapshotHtml) {
-          pendingSnapshots.set(name, snapshotHtml);
+          pendingSnapshots.set(name, { html: snapshotHtml, timestamp: Date.now() });
           console.log(`[Platform Sync] Cached snapshot for ${name}`);
         }
 
@@ -348,7 +355,7 @@ function startServer(baseDir) {
 
     // Tailwind CSS files - return empty CSS if not yet generated (avoids 404 on first load)
     app.get('/tailwindcss/:name.css', async (req, res) => {
-      const cssPath = path.join(baseDir, 'tailwindcss', `${req.params.name}.css`);
+      const cssPath = path.join(baseDir, 'tailwindcss', `${path.basename(req.params.name)}.css`);
       try {
         const css = await fs.readFile(cssPath, 'utf8');
         res.setHeader('Content-Type', 'text/css');

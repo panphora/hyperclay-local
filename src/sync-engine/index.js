@@ -1001,7 +1001,6 @@ class SyncEngine extends EventEmitter {
       );
 
       if (result.nodeId) {
-        const localChecksum = await calculateChecksum(content);
         const inode = await nodeMap.getInode(path.join(this.syncFolder, filename));
         this.nodeMap.set(String(result.nodeId), { path: filename, checksum: localChecksum, inode });
         await nodeMap.save(this.metaDir, this.nodeMap);
@@ -1340,7 +1339,7 @@ class SyncEngine extends EventEmitter {
               } catch (err) {
                 console.error(`[SYNC] Watcher: Failed to sync ${isMove ? 'move' : isRename ? 'rename' : 'move+rename'} for ${oldPath}:`, err.message);
               }
-            })();
+            })().catch(err => console.error('[Watcher] Error in add handler:', err));
             break;
           }
         }
@@ -1690,6 +1689,7 @@ class SyncEngine extends EventEmitter {
         '**/.DS_Store',
         '**/Thumbs.db',
         '**/*.html',
+        '**/*.htmlclay',
         '**/.trash/**'
       ],
       awaitWriteFinish: SYNC_CONFIG.FILE_STABILIZATION
@@ -1992,6 +1992,10 @@ class SyncEngine extends EventEmitter {
           await this.downloadFile(serverFile.filename, relativePath);
           this.stats.filesDownloaded++;
           changesFound = true;
+          if (serverFile.nodeId) {
+            const inode = await nodeMap.getInode(path.join(this.syncFolder, relativePath));
+            this.nodeMap.set(String(serverFile.nodeId), { path: relativePath, checksum: serverFile.checksum, inode });
+          }
         } else {
           const localInfo = localFiles.get(relativePath);
           const localContent = await readFile(localPath);
@@ -2008,10 +2012,16 @@ class SyncEngine extends EventEmitter {
               await this.downloadFile(serverFile.filename, relativePath);
               this.stats.filesDownloaded++;
               changesFound = true;
+              if (serverFile.nodeId) {
+                const inode = await nodeMap.getInode(path.join(this.syncFolder, relativePath));
+                this.nodeMap.set(String(serverFile.nodeId), { path: relativePath, checksum: serverFile.checksum, inode });
+              }
             }
           }
         }
       }
+
+      await nodeMap.save(this.metaDir, this.nodeMap);
 
       // Also check for upload changes
       if (!this.isRunning) return;

@@ -21,7 +21,7 @@ function parseErrorMessage(errorText, fallback) {
 async function fetchServerFiles(serverUrl, apiKey) {
   const url = `${serverUrl}/sync/files`;
   console.log(`[API] Fetching files from: ${url}`);
-  console.log(`[API] Using API key: ${apiKey.substring(0, 12)}...`);
+  console.log(`[API] Using API key: ${apiKey.substring(0, 4)}...`);
 
   try {
     const response = await fetch(url, {
@@ -95,7 +95,7 @@ async function downloadFromServer(serverUrl, apiKey, filename) {
  * Upload file content to server
  * @param {string} serverUrl - Server base URL
  * @param {string} apiKey - API key for authentication
- * @param {string} filename - Full path WITHOUT .html extension (may include folders)
+ * @param {string} filename - Full path including extension (may include folders)
  * @param {string} content - File content
  * @param {Date} modifiedAt - Modification time
  * @param {Object} options - Additional options
@@ -106,7 +106,7 @@ async function uploadToServer(serverUrl, apiKey, filename, content, modifiedAt, 
   const { snapshotHtml, senderId } = options;
 
   const payload = {
-    filename: filename, // Full path WITHOUT .html
+    filename: filename,
     content,
     modifiedAt: modifiedAt.toISOString()
   };
@@ -172,7 +172,7 @@ async function uploadToServer(serverUrl, apiKey, filename, content, modifiedAt, 
 async function getServerStatus(serverUrl, apiKey) {
   const url = `${serverUrl}/sync/status`;
   console.log(`[API] Getting server status from: ${url}`);
-  console.log(`[API] Using API key: ${apiKey.substring(0, 12)}...`);
+  console.log(`[API] Using API key: ${apiKey.substring(0, 4)}...`);
 
   try {
     const response = await fetch(url, {

@@ -3,6 +3,12 @@
  * Platform-specific restrictions (reserved names) are validated server-side during sync
  */
 
+const WINDOWS_RESERVED = [
+  'con', 'prn', 'aux', 'nul',
+  'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
+  'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9'
+];
+
 /**
  * Validate folder name
  * Must be lowercase letters, numbers, underscore, hyphen only
@@ -76,13 +82,7 @@ function validateSiteName(name) {
     };
   }
 
-  const windowsReservedNames = [
-    'con', 'prn', 'aux', 'nul',
-    'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
-    'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9'
-  ];
-
-  if (windowsReservedNames.includes(baseName)) {
+  if (WINDOWS_RESERVED.includes(baseName)) {
     return {
       valid: false,
       error: `"${baseName}" is a reserved system name`
@@ -135,13 +135,7 @@ function validateUploadName(name) {
   // Check for Windows reserved names
   const lowerName = name.toLowerCase();
   const baseName = lowerName.split('.')[0];
-  const problematicNames = [
-    'con', 'prn', 'aux', 'nul',
-    'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
-    'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9'
-  ];
-
-  if (problematicNames.includes(baseName)) {
+  if (WINDOWS_RESERVED.includes(baseName)) {
     return {
       valid: false,
       error: 'This file name is reserved by the system'
