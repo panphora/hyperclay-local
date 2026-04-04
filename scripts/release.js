@@ -636,6 +636,9 @@ async function main() {
 
   uploadToR2();
 
+  fs.writeFileSync(path.join(ROOT_DIR, '.deploy'), execSafe('git rev-parse HEAD').trim() + '\n');
+  logSuccess('Wrote .deploy tracking file');
+
   // ==========================================
   // STEP 9: Update external docs
   // ==========================================

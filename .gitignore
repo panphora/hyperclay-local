@@ -44,3 +44,4 @@ logs
 package-lock.json (optional - remove this line if you want to commit it)
 .notarization-submissions-*.json
 UPLOAD_REPORT.md
+.deploy
