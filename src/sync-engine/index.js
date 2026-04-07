@@ -76,7 +76,8 @@ class SyncEngine extends EventEmitter {
     this.syncQueue = new SyncQueue();
     this.metaDir = null; // Path to sync metadata directory (in userData)
     this.nodeMap = new Map(); // nodeId → { path, checksum, inode }
-    this.pendingActions = new Set(); // SSE echo suppression: "delete:42", "rename:42", "move:42"
+    this.pendingActions = new Map(); // SSE echo suppression: key -> timestamp ms (e.g. "delete:42" -> 1712345678901)
+    this.PENDING_ACTION_TTL_MS = 30000; // each pendingAction key lives 30s from when it was added
     this.pendingUnlinks = new Map(); // watcher rename/move detection: relativePath → { timerId, nodeId, entry }
     this.recentSseFileSaves = new Map(); // fileId → timestamp, tracks recent SSE file-saved events for toast suppression
     this.lastSyncedAt = null; // Timestamp of last successful sync
@@ -219,10 +220,15 @@ class SyncEngine extends EventEmitter {
 
       // No polling - SSE handles real-time sync for both live-sync and disk writes
 
-      // Periodic cleanup of stale pendingActions (30s TTL)
+      // Periodic cleanup of stale pendingActions — evict entries older than the TTL
       this.pendingActionsCleanupTimer = setInterval(() => {
-        this.pendingActions.clear();
-      }, 30000);
+        const cutoff = Date.now() - this.PENDING_ACTION_TTL_MS;
+        for (const [key, ts] of this.pendingActions) {
+          if (ts < cutoff) {
+            this.pendingActions.delete(key);
+          }
+        }
+      }, 10000);
 
       this.isRunning = true;
 
@@ -638,7 +644,7 @@ class SyncEngine extends EventEmitter {
           if (await strategy.match(localFile)) {
             try {
               console.log(`[SYNC] Local ${strategy.name} detected: ${entry.path} → ${localFile} (nodeId ${nid})`);
-              this.pendingActions.add(strategy.pendingKey);
+              this.pendingActions.set(strategy.pendingKey, Date.now());
               const newEntry = await strategy.apply(localFile);
               this.invalidateServerFilesCache();
               this.nodeMap.set(nid, newEntry);
@@ -668,7 +674,7 @@ class SyncEngine extends EventEmitter {
 
       try {
         console.log(`[SYNC] Local delete detected: ${entry.path} (nodeId ${nid})`);
-        this.pendingActions.add(`delete:${nid}`);
+        this.pendingActions.set(`delete:${nid}`, Date.now());
         await deleteFileOnServer(this.serverUrl, this.apiKey, parseInt(nid));
         this.invalidateServerFilesCache();
         this.nodeMap.delete(nid);
@@ -1300,7 +1306,7 @@ class SyncEngine extends EventEmitter {
               if (!isSameFile) {
                 console.log(`[SYNC] Watcher: Identity mismatch for ${oldPath} → ${normalizedPath}, treating as delete+add`);
                 try {
-                  self.pendingActions.add(`delete:${pending.nodeId}`);
+                  self.pendingActions.set(`delete:${pending.nodeId}`, Date.now());
                   await deleteFileOnServer(self.serverUrl, self.apiKey, parseInt(pending.nodeId));
                   self.invalidateServerFilesCache();
                   self.nodeMap.delete(pending.nodeId);
@@ -1316,20 +1322,20 @@ class SyncEngine extends EventEmitter {
                 if (isMove) {
                   const targetFolder = addDirname === '.' ? '' : addDirname;
                   console.log(`[SYNC] Watcher: Local move detected: ${oldPath} → ${normalizedPath}`);
-                  self.pendingActions.add(`move:${pending.nodeId}`);
+                  self.pendingActions.set(`move:${pending.nodeId}`, Date.now());
                   await moveFileOnServer(self.serverUrl, self.apiKey, parseInt(pending.nodeId), targetFolder);
                 } else if (isRename) {
                   const newName = addBasename;
                   console.log(`[SYNC] Watcher: Local rename detected: ${oldPath} → ${normalizedPath}`);
-                  self.pendingActions.add(`rename:${pending.nodeId}`);
+                  self.pendingActions.set(`rename:${pending.nodeId}`, Date.now());
                   await renameFileOnServer(self.serverUrl, self.apiKey, parseInt(pending.nodeId), newName);
                 } else {
                   const newName = addBasename;
                   const targetFolder = addDirname === '.' ? '' : addDirname;
                   console.log(`[SYNC] Watcher: Local move+rename detected: ${oldPath} → ${normalizedPath}`);
-                  self.pendingActions.add(`rename:${pending.nodeId}`);
+                  self.pendingActions.set(`rename:${pending.nodeId}`, Date.now());
                   await renameFileOnServer(self.serverUrl, self.apiKey, parseInt(pending.nodeId), newName);
-                  self.pendingActions.add(`move:${pending.nodeId}`);
+                  self.pendingActions.set(`move:${pending.nodeId}`, Date.now());
                   await moveFileOnServer(self.serverUrl, self.apiKey, parseInt(pending.nodeId), targetFolder);
                 }
 
@@ -1425,7 +1431,7 @@ class SyncEngine extends EventEmitter {
           this.pendingUnlinks.delete(normalizedPath);
           console.log(`[SYNC] Watcher: Local delete detected: ${normalizedPath} (nodeId ${foundNodeId})`);
           try {
-            this.pendingActions.add(`delete:${foundNodeId}`);
+            this.pendingActions.set(`delete:${foundNodeId}`, Date.now());
             await deleteFileOnServer(this.serverUrl, this.apiKey, parseInt(foundNodeId));
             this.invalidateServerFilesCache();
             this.nodeMap.delete(foundNodeId);

@@ -25,7 +25,7 @@ jest.mock('../../src/main/utils/backup', () => ({
 }));
 
 jest.mock('../../src/main/utils/utils', () => ({
-  getServerBaseUrl: (url) => url || 'http://localhost:3000'
+  getServerBaseUrl: (url) => url || 'http://localhyperclay.com'
 }));
 
 const fileOps = require('../../src/sync-engine/file-operations');
@@ -57,7 +57,7 @@ beforeEach(() => {
 
   syncEngine.syncFolder = '/test/sync';
   syncEngine.metaDir = '/test/meta';
-  syncEngine.serverUrl = 'http://localhost:3000';
+  syncEngine.serverUrl = 'http://localhyperclay.com';
   syncEngine.apiKey = 'hcsk_test';
   syncEngine.username = 'testuser';
   syncEngine.clockOffset = 0;
@@ -139,7 +139,7 @@ describe('reconcileServerFile — nodeId move detection', () => {
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
     expect(apiClient.downloadFromServer).toHaveBeenCalledWith(
-      'http://localhost:3000',
+      'http://localhyperclay.com',
       'hcsk_test',
       'new-site'
     );

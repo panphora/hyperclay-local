@@ -25,7 +25,7 @@ jest.mock('../../src/main/utils/backup', () => ({
 }));
 
 jest.mock('../../src/main/utils/utils', () => ({
-  getServerBaseUrl: (url) => url || 'http://localhost:3000'
+  getServerBaseUrl: (url) => url || 'http://localhyperclay.com'
 }));
 
 const fileOps = require('../../src/sync-engine/file-operations');
@@ -55,7 +55,7 @@ beforeEach(() => {
   });
 
   syncEngine.syncFolder = '/test/sync';
-  syncEngine.serverUrl = 'http://localhost:3000';
+  syncEngine.serverUrl = 'http://localhyperclay.com';
   syncEngine.apiKey = 'hcsk_test';
   syncEngine.username = 'testuser';
   syncEngine.clockOffset = 0;
@@ -113,7 +113,7 @@ describe('detectLocalChanges — local delete', () => {
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
 
     expect(apiClient.deleteFileOnServer).toHaveBeenCalledWith(
-      'http://localhost:3000', 'hcsk_test', 42
+      'http://localhyperclay.com', 'hcsk_test', 42
     );
     expect(syncEngine.nodeMap.has('42')).toBe(false);
   });
@@ -131,7 +131,7 @@ describe('detectLocalChanges — local delete', () => {
 
     expect(apiClient.deleteFileOnServer).not.toHaveBeenCalled();
     expect(apiClient.downloadFromServer).toHaveBeenCalledWith(
-      'http://localhost:3000', 'hcsk_test', 'my-site'
+      'http://localhyperclay.com', 'hcsk_test', 'my-site'
     );
     expect(syncEngine.nodeMap.has('42')).toBe(true);
   });
@@ -164,7 +164,7 @@ describe('detectLocalChanges — local move', () => {
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
 
     expect(apiClient.moveFileOnServer).toHaveBeenCalledWith(
-      'http://localhost:3000', 'hcsk_test', 42, 'blog'
+      'http://localhyperclay.com', 'hcsk_test', 42, 'blog'
     );
     expect(syncEngine.nodeMap.get('42').path).toBe('blog/my-site.html');
   });
@@ -184,7 +184,7 @@ describe('detectLocalChanges — local move', () => {
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
 
     expect(apiClient.moveFileOnServer).toHaveBeenCalledWith(
-      'http://localhost:3000', 'hcsk_test', 42, ''
+      'http://localhyperclay.com', 'hcsk_test', 42, ''
     );
   });
 });
@@ -206,7 +206,7 @@ describe('detectLocalChanges — local rename (inode match)', () => {
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
 
     expect(apiClient.renameFileOnServer).toHaveBeenCalledWith(
-      'http://localhost:3000', 'hcsk_test', 42, 'new-name'
+      'http://localhyperclay.com', 'hcsk_test', 42, 'new-name.html'
     );
     expect(syncEngine.nodeMap.get('42').path).toBe('new-name.html');
   });
@@ -231,7 +231,7 @@ describe('detectLocalChanges — local rename (checksum match)', () => {
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
 
     expect(apiClient.renameFileOnServer).toHaveBeenCalledWith(
-      'http://localhost:3000', 'hcsk_test', 42, 'renamed'
+      'http://localhyperclay.com', 'hcsk_test', 42, 'renamed.html'
     );
   });
 });
@@ -275,7 +275,7 @@ describe('detectLocalChanges — skips on first sync', () => {
 describe('SSE echo suppression', () => {
   test('skips handleFileDeleted when pendingActions has matching key', async () => {
     syncEngine.nodeMap = new Map([['42', entry('my-site.html')]]);
-    syncEngine.pendingActions.add('delete:42');
+    syncEngine.pendingActions.set('delete:42', Date.now());
     fileOps.fileExists.mockResolvedValue(true);
 
     const data = { type: 'file-deleted', nodeId: 42, file: 'my-site' };
@@ -294,7 +294,7 @@ describe('SSE echo suppression', () => {
 
   test('skips handleFileRenamed when pendingActions has matching key', async () => {
     syncEngine.nodeMap = new Map([['42', entry('old.html')]]);
-    syncEngine.pendingActions.add('rename:42');
+    syncEngine.pendingActions.set('rename:42', Date.now());
 
     const data = { type: 'file-renamed', nodeId: 42, oldName: 'old', newName: 'new' };
 
@@ -311,7 +311,7 @@ describe('SSE echo suppression', () => {
 
   test('skips handleFileMoved when pendingActions has matching key', async () => {
     syncEngine.nodeMap = new Map([['42', entry('my-site.html')]]);
-    syncEngine.pendingActions.add('move:42');
+    syncEngine.pendingActions.set('move:42', Date.now());
 
     const data = { type: 'file-moved', nodeId: 42, file: 'my-site', fromPath: 'my-site.html', toPath: 'blog/my-site.html' };
 
@@ -449,5 +449,54 @@ describe('detectLocalChanges — API error handling', () => {
     expect(apiClient.deleteFileOnServer).toHaveBeenCalledTimes(2);
     expect(syncEngine.nodeMap.has('42')).toBe(true);
     expect(syncEngine.nodeMap.has('43')).toBe(false);
+  });
+});
+
+describe('pendingActions TTL', () => {
+  test('keys persist past the cleanup interval if within TTL', () => {
+    syncEngine.pendingActions = new Map();
+    syncEngine.PENDING_ACTION_TTL_MS = 30000;
+
+    const addedAt = Date.now();
+    syncEngine.pendingActions.set('rename:42', addedAt);
+
+    // Simulate cleanup tick at +15s — within TTL, key should survive
+    const cutoff = (addedAt + 15000) - syncEngine.PENDING_ACTION_TTL_MS;
+    for (const [key, ts] of syncEngine.pendingActions) {
+      if (ts < cutoff) syncEngine.pendingActions.delete(key);
+    }
+
+    expect(syncEngine.pendingActions.has('rename:42')).toBe(true);
+  });
+
+  test('keys are evicted after the TTL elapses', () => {
+    syncEngine.pendingActions = new Map();
+    syncEngine.PENDING_ACTION_TTL_MS = 30000;
+
+    // Pretend the key was added 31s ago
+    syncEngine.pendingActions.set('rename:42', Date.now() - 31000);
+
+    const cutoff = Date.now() - syncEngine.PENDING_ACTION_TTL_MS;
+    for (const [key, ts] of syncEngine.pendingActions) {
+      if (ts < cutoff) syncEngine.pendingActions.delete(key);
+    }
+
+    expect(syncEngine.pendingActions.has('rename:42')).toBe(false);
+  });
+
+  test('only stale keys are evicted; fresh ones survive', () => {
+    syncEngine.pendingActions = new Map();
+    syncEngine.PENDING_ACTION_TTL_MS = 30000;
+
+    syncEngine.pendingActions.set('rename:42', Date.now() - 31000); // stale
+    syncEngine.pendingActions.set('move:43', Date.now());            // fresh
+
+    const cutoff = Date.now() - syncEngine.PENDING_ACTION_TTL_MS;
+    for (const [key, ts] of syncEngine.pendingActions) {
+      if (ts < cutoff) syncEngine.pendingActions.delete(key);
+    }
+
+    expect(syncEngine.pendingActions.has('rename:42')).toBe(false);
+    expect(syncEngine.pendingActions.has('move:43')).toBe(true);
   });
 });

@@ -25,7 +25,7 @@ jest.mock('../../src/main/utils/backup', () => ({
 }));
 
 jest.mock('../../src/main/utils/utils', () => ({
-  getServerBaseUrl: (url) => url || 'http://localhost:3000'
+  getServerBaseUrl: (url) => url || 'http://localhyperclay.com'
 }));
 
 const fileOps = require('../../src/sync-engine/file-operations');
@@ -58,7 +58,7 @@ beforeEach(() => {
 
   // Set up minimal state so performInitialSync can run
   syncEngine.syncFolder = '/test/sync';
-  syncEngine.serverUrl = 'http://localhost:3000';
+  syncEngine.serverUrl = 'http://localhyperclay.com';
   syncEngine.apiKey = 'hcsk_test';
   syncEngine.username = 'testuser';
   syncEngine.clockOffset = 0;
@@ -146,7 +146,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
     expect(apiClient.downloadFromServer).toHaveBeenCalledWith(
-      'http://localhost:3000',
+      'http://localhyperclay.com',
       'hcsk_test',
       'new-site'
     );
@@ -241,7 +241,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
 
     // Move failed, should fall back to downloading
     expect(apiClient.downloadFromServer).toHaveBeenCalledWith(
-      'http://localhost:3000',
+      'http://localhyperclay.com',
       'hcsk_test',
       'blog/my-site'
     );
@@ -389,7 +389,7 @@ describe('performInitialSync — duplicate filename handling', () => {
     );
     // Move failed, should fall back to downloading
     expect(apiClient.downloadFromServer).toHaveBeenCalledWith(
-      'http://localhost:3000',
+      'http://localhyperclay.com',
       'hcsk_test',
       'projects/blog'
     );
