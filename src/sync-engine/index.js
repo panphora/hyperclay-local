@@ -1584,6 +1584,9 @@ class SyncEngine extends EventEmitter {
           try {
             await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
             this.stats.uploadsDownloaded++;
+            if (serverUpload.nodeId) {
+              this.nodeMap.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null });
+            }
           } catch (error) {
             console.error(`[SYNC] Failed to download upload ${serverUpload.path}:`, error.message);
             this.stats.errors.push(formatErrorForLog(error, { filename: serverUpload.path, action: 'initial-upload-download' }));
@@ -1596,6 +1599,9 @@ class SyncEngine extends EventEmitter {
             if (isFutureFile(localInfo.mtime, this.clockOffset)) {
               console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - future-dated`);
               this.stats.uploadsProtected++;
+              if (serverUpload.nodeId) {
+                this.nodeMap.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: null, inode: null });
+              }
               continue;
             }
 
@@ -1603,6 +1609,9 @@ class SyncEngine extends EventEmitter {
             if (isLocalNewer(localInfo.mtime, serverUpload.modifiedAt, this.clockOffset)) {
               console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - local is newer`);
               this.stats.uploadsProtected++;
+              if (serverUpload.nodeId) {
+                this.nodeMap.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: null, inode: null });
+              }
               continue;
             }
 
@@ -1613,12 +1622,18 @@ class SyncEngine extends EventEmitter {
             if (localChecksum === serverUpload.checksum) {
               console.log(`[SYNC] SKIP upload ${serverUpload.path} - checksums match`);
               this.stats.uploadsSkipped++;
+              if (serverUpload.nodeId) {
+                this.nodeMap.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: localChecksum, inode: null });
+              }
               continue;
             }
 
             // Server is newer, download it
             await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
             this.stats.uploadsDownloaded++;
+            if (serverUpload.nodeId) {
+              this.nodeMap.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null });
+            }
           } catch (error) {
             console.error(`[SYNC] Failed to process upload ${serverUpload.path}:`, error.message);
             this.stats.errors.push(formatErrorForLog(error, { filename: serverUpload.path, action: 'initial-upload-check' }));
@@ -1641,6 +1656,8 @@ class SyncEngine extends EventEmitter {
           }
         }
       }
+
+      await nodeMap.save(this.metaDir, this.nodeMap);
 
       console.log('[SYNC] Initial upload sync complete');
       this.emit('sync-complete', { type: 'initial-uploads', stats: this.stats });
@@ -1753,6 +1770,7 @@ class SyncEngine extends EventEmitter {
         }
       }
 
+      let resultNodeId = existingNodeId;
       if (existingNodeId) {
         await putNodeContent(
           this.serverUrl,
@@ -1767,13 +1785,19 @@ class SyncEngine extends EventEmitter {
         const folderPath = pathParts.slice(0, -1).join('/');
         const parentId = await this.resolveParentIdByPath(folderPath);
 
-        await createNode(this.serverUrl, this.apiKey, {
+        const createdNode = await createNode(this.serverUrl, this.apiKey, {
           type: 'upload',
           name,
           parentId,
           content,
           modifiedAt: stat.mtime
         });
+        resultNodeId = createdNode.id;
+      }
+
+      if (resultNodeId) {
+        this.nodeMap.set(String(resultNodeId), { path: relativePath, checksum: localChecksum, inode: null });
+        await nodeMap.save(this.metaDir, this.nodeMap);
       }
 
       console.log(`[SYNC] Uploaded: ${relativePath}`);
@@ -2165,6 +2189,9 @@ class SyncEngine extends EventEmitter {
           await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
           this.stats.uploadsDownloaded++;
           changesFound = true;
+          if (serverUpload.nodeId) {
+            this.nodeMap.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null });
+          }
         } else {
           const localInfo = localUploads.get(serverUpload.path);
           const localContent = await readFileBuffer(localPath);
@@ -2178,10 +2205,15 @@ class SyncEngine extends EventEmitter {
               await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
               this.stats.uploadsDownloaded++;
               changesFound = true;
+              if (serverUpload.nodeId) {
+                this.nodeMap.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null });
+              }
             }
           }
         }
       }
+
+      await nodeMap.save(this.metaDir, this.nodeMap);
 
       if (changesFound) {
         this.emit('sync-stats', this.stats);
