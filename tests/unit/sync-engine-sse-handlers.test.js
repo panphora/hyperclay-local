@@ -38,6 +38,7 @@ const apiClient = require('../../src/sync-engine/api-client');
 const nodeMapModule = require('../../src/sync-engine/node-map');
 const Outbox = require('../../src/sync-engine/state/outbox');
 const CascadeSuppression = require('../../src/sync-engine/state/cascade-suppression');
+const EchoWindow = require('../../src/sync-engine/state/echo-window');
 
 let syncEngine;
 
@@ -57,7 +58,7 @@ beforeEach(() => {
   syncEngine.isRunning = true;
   syncEngine.nodeMap = new Map();
   syncEngine.outbox = new Outbox();
-  syncEngine.recentSseNodeSaves = new Map();
+  syncEngine.echoWindow = new EchoWindow();
   syncEngine.cascade = new CascadeSuppression();
   syncEngine.stats = {
     filesProtected: 0,

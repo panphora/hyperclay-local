@@ -42,9 +42,7 @@ module.exports = {
   async handleNodeSaved(data) {
     if (this._skipIfEcho('save', data.nodeId)) return;
 
-    const trackingKey = `${data.nodeType}:${data.nodeId}`;
-    this.recentSseNodeSaves.set(trackingKey, Date.now() + 5000);
-    setTimeout(() => this.recentSseNodeSaves.delete(trackingKey), 5000);
+    this.echoWindow.mark(data.nodeType, data.nodeId);
 
     console.log(`[SYNC] SSE: node-saved (${data.nodeType}) for ${data.path} (nodeId ${data.nodeId})`);
 

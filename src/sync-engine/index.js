@@ -18,6 +18,7 @@ const nodeMap = require('./node-map');
 const { classifyPath } = require('./path-helpers');
 const Outbox = require('./state/outbox');
 const CascadeSuppression = require('./state/cascade-suppression');
+const EchoWindow = require('./state/echo-window');
 
 class SyncEngine extends EventEmitter {
   constructor() {
@@ -41,7 +42,7 @@ class SyncEngine extends EventEmitter {
     this.nodeMap = new Map(); // nodeId → { type, path, checksum?, inode?, parentId? }
     this.outbox = new Outbox(); // SSE echo suppression: tracks in-flight mutations
     this.pendingUnlinks = new Map(); // watcher rename/move detection: relativePath → { timerId, nodeId, type, entry }
-    this.recentSseNodeSaves = new Map(); // `${nodeType}:${nodeId}` → expiresAt ms, tracks recent SSE node-saved events for toast suppression
+    this.echoWindow = new EchoWindow(); // tracks recent SSE node-saved events for toast suppression in the watcher
     // Cascade suppression (S5-Q1, extended in Step 6): when a folder operation
     // (rename, move, or delete) is detected locally OR applied via SSE, we
     // pre-mark the chokidar paths that will fire as a result so they get
@@ -278,7 +279,7 @@ class SyncEngine extends EventEmitter {
       clearTimeout(timerId);
     }
     this.pendingUnlinks.clear();
-    this.recentSseNodeSaves.clear();
+    this.echoWindow.clear();
 
     this.cascade.clear();
 

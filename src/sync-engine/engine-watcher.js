@@ -480,7 +480,7 @@ module.exports = {
 
     // Toast suppression: don't notify the browser if this change is the local
     // observation of an SSE-driven save we just applied.
-    const recentSseSave = foundNodeId && this.recentSseNodeSaves.has(`site:${foundNodeId}`);
+    const recentSseSave = foundNodeId && this.echoWindow.isRecent('site', foundNodeId);
     if (!liveSync.wasBrowserSave(fileId) && !recentSseSave) {
       liveSync.notify(fileId, {
         msgType: 'warning',
