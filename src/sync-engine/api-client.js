@@ -1,10 +1,14 @@
 /**
- * API client for server communication
+ * API client for server communication.
+ *
+ * All functions except getServerStatus mirror the unified /sync/nodes endpoints
+ * from hyperclay/ Step 2. Each function is stateless — pass serverUrl + apiKey
+ * on every call.
  */
 
 /**
- * Parse error message from server response
- * Server may return JSON with msg, message, or error field
+ * Parse error message from server response. Server may return JSON with
+ * msg/message/error field, or plain text.
  */
 function parseErrorMessage(errorText, fallback) {
   try {
@@ -16,150 +20,34 @@ function parseErrorMessage(errorText, fallback) {
 }
 
 /**
- * Fetch list of files from server
+ * Standard fetch wrapper: throws on non-2xx with a parsed error message,
+ * attaches statusCode + details to the thrown Error.
  */
-async function fetchServerFiles(serverUrl, apiKey) {
-  const url = `${serverUrl}/sync/files`;
-  console.log(`[API] Fetching files from: ${url}`);
-  console.log(`[API] Using API key: ${apiKey.substring(0, 4)}...`);
-
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'X-API-Key': apiKey
-      }
-    });
-
-    console.log(`[API] Response status: ${response.status}`);
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unable to read error');
-      console.error(`[API] Error response: ${errorText}`);
-      throw new Error(parseErrorMessage(errorText, `Server returned ${response.status}`));
-    }
-
-    const data = await response.json();
-    console.log(`[API] Fetched ${data.files?.length || 0} files from server`);
-
-    // Log each file for debugging
-    if (data.files && data.files.length > 0) {
-      console.log(`[API] Server files:`);
-      data.files.forEach(file => {
-        console.log(`[API]   - ${file.filename} (path: ${file.path}, checksum: ${file.checksum})`);
-      });
-    }
-
-    return data.files || [];
-  } catch (error) {
-    console.error(`[API] Fetch failed:`, error);
-    console.error(`[API] Error type: ${error.name}`);
-    console.error(`[API] Error message: ${error.message}`);
-    console.error(`[API] Full error:`, error);
-    throw error;
-  }
-}
-
-/**
- * Download file content from server
- * @param {string} serverUrl - Server base URL
- * @param {string} apiKey - API key for authentication
- * @param {string} filename - Full path including extension (may include folders)
- */
-async function downloadFromServer(serverUrl, apiKey, filename) {
-  const encodedPath = filename.split('/').map(s => encodeURIComponent(s)).join('/');
-  const downloadUrl = `${serverUrl}/sync/download/${encodedPath}`;
-  console.log(`[API] Downloading from: ${downloadUrl}`);
-
-  const response = await fetch(downloadUrl, {
-    headers: {
-      'X-API-Key': apiKey
-    }
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => response.statusText);
-    console.error(`[API] Download failed (${response.status}): ${errorText}`);
-    throw new Error(`Failed to download ${filename}: ${errorText}`);
-  }
-
-  const data = await response.json();
-
-  return {
-    content: data.content,
-    modifiedAt: data.modifiedAt,
-    checksum: data.checksum
-  };
-}
-
-/**
- * Upload file content to server
- * @param {string} serverUrl - Server base URL
- * @param {string} apiKey - API key for authentication
- * @param {string} filename - Full path including extension (may include folders)
- * @param {string} content - File content
- * @param {Date} modifiedAt - Modification time
- * @param {Object} options - Additional options
- * @param {string} options.snapshotHtml - Full HTML for platform live sync (optional)
- * @param {string} options.senderId - Sender ID for live sync attribution (optional)
- */
-async function uploadToServer(serverUrl, apiKey, filename, content, modifiedAt, options = {}) {
-  const { snapshotHtml, senderId } = options;
-
-  const payload = {
-    filename: filename,
-    content,
-    modifiedAt: modifiedAt.toISOString()
-  };
-
-  // Include snapshot for platform live sync (if available)
-  if (snapshotHtml) {
-    payload.snapshotHtml = snapshotHtml;
-    payload.senderId = senderId || 'hyperclay-local';
-  }
-
-  const response = await fetch(`${serverUrl}/sync/upload`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-API-Key': apiKey
-    },
-    body: JSON.stringify(payload)
-  });
+async function apiFetch(url, init, { errorPrefix } = {}) {
+  const response = await fetch(url, init);
 
   if (!response.ok) {
     let errorMessage = `Server returned ${response.status}`;
     let errorDetails = null;
 
     try {
-      // Clone response so we can try multiple parsing strategies
       const errorData = await response.clone().json();
       errorMessage = errorData.msg || errorData.message || errorData.error || errorMessage;
       errorDetails = errorData.details;
-
-      // Log the parsed error for debugging
-      console.error(`[API] Upload error (${response.status}):`, errorMessage);
-      if (errorDetails) {
-        console.error(`[API] Error details:`, errorDetails);
-      }
-    } catch (parseError) {
-      // If JSON parsing fails, try to get text
+    } catch {
       try {
         const errorText = await response.text();
-        if (errorText) {
-          errorMessage = errorText;
-          console.error(`[API] Upload error (${response.status}):`, errorText);
-        }
-      } catch (textError) {
-        // Use default error message
-        console.error(`[API] Upload error (${response.status}): Unable to parse response`);
+        if (errorText) errorMessage = errorText;
+      } catch {
+        // Use default message
       }
     }
 
-    const error = new Error(errorMessage);
+    const prefixedMessage = errorPrefix ? `${errorPrefix}: ${errorMessage}` : errorMessage;
+    console.error(`[API] ${prefixedMessage} (${response.status})`);
+    const error = new Error(prefixedMessage);
     error.statusCode = response.status;
-    if (errorDetails) {
-      error.details = errorDetails;
-    }
+    if (errorDetails) error.details = errorDetails;
     throw error;
   }
 
@@ -167,215 +55,229 @@ async function uploadToServer(serverUrl, apiKey, filename, content, modifiedAt, 
 }
 
 /**
- * Get server status and time (for clock calibration)
+ * Content encoding helpers. The unified API carries both strings (sites) and
+ * binary (uploads) over the same endpoints.
+ *
+ * - On send: Buffer → base64 string; string passes through unchanged.
+ * - On receive: if the response's nodeType is 'upload', decode base64 to Buffer.
  */
-async function getServerStatus(serverUrl, apiKey) {
-  const url = `${serverUrl}/sync/status`;
-  console.log(`[API] Getting server status from: ${url}`);
-  console.log(`[API] Using API key: ${apiKey.substring(0, 4)}...`);
+function encodeContent(content) {
+  if (Buffer.isBuffer(content)) return content.toString('base64');
+  return content;  // string passes through
+}
 
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'X-API-Key': apiKey
-      }
-    });
+function decodeContent(content, nodeType) {
+  if (nodeType === 'upload') return Buffer.from(content, 'base64');
+  return content;
+}
 
-    console.log(`[API] Response status: ${response.status}`);
+// ============================================================================
+// NODE OPERATIONS (mirror the /sync/nodes/* endpoints)
+// ============================================================================
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unable to read error');
-      console.error(`[API] Error response: ${errorText}`);
-      throw new Error(parseErrorMessage(errorText, `Server returned ${response.status}`));
-    }
+/**
+ * List all nodes (sites + uploads + folders) owned by the authenticated user.
+ * @param {string} serverUrl
+ * @param {string} apiKey
+ * @returns {Promise<Array<{ id, type, name, parentId, path, size?, modifiedAt?, checksum? }>>}
+ */
+async function listNodes(serverUrl, apiKey) {
+  const url = `${serverUrl}/sync/nodes`;
+  console.log(`[API] Listing nodes from: ${url}`);
 
-    const data = await response.json();
-    console.log(`[API] Server time: ${data.serverTime}`);
-    return data;
-  } catch (error) {
-    console.error(`[API] Fetch failed:`, error);
-    console.error(`[API] Error type: ${error.name}`);
-    console.error(`[API] Error message: ${error.message}`);
-    console.error(`[API] Full error:`, error);
-    throw error;
+  const data = await apiFetch(url, {
+    headers: { 'X-API-Key': apiKey }
+  }, { errorPrefix: 'List nodes failed' });
+
+  const nodes = data.nodes || [];
+  console.log(`[API] Fetched ${nodes.length} nodes from server`);
+  return nodes;
+}
+
+/**
+ * Create a new Node (site, upload, or folder). Optionally writes content in the
+ * same request for sites/uploads.
+ *
+ * @param {string} serverUrl
+ * @param {string} apiKey
+ * @param {Object} options
+ * @param {'site'|'upload'|'folder'} options.type
+ * @param {string} options.name
+ * @param {number|string} options.parentId - numeric Node id or 'root' / 0 for root
+ * @param {string|Buffer} [options.content] - HTML string for sites, Buffer or base64 for uploads, omitted for folders
+ * @param {string|Date} [options.modifiedAt] - file modification time
+ * @returns {Promise<{ id, type, name, parentId, path }>}
+ */
+async function createNode(serverUrl, apiKey, { type, name, parentId, content, modifiedAt }) {
+  const url = `${serverUrl}/sync/nodes`;
+  console.log(`[API] Creating ${type} node: ${name} (parentId=${parentId})`);
+
+  const body = { type, name, parentId };
+  if (content !== undefined && content !== null) {
+    body.content = encodeContent(content);
   }
-}
-
-// =============================================================================
-// UPLOAD SYNC API FUNCTIONS
-// =============================================================================
-
-/**
- * Fetch list of uploads from server
- */
-async function fetchServerUploads(serverUrl, apiKey) {
-  const url = `${serverUrl}/sync/uploads`;
-  console.log(`[API] Fetching uploads from: ${url}`);
-
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'X-API-Key': apiKey
-      }
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unable to read error');
-      console.error(`[API] Error response: ${errorText}`);
-      throw new Error(parseErrorMessage(errorText, `Server returned ${response.status}`));
-    }
-
-    const data = await response.json();
-    console.log(`[API] Fetched ${data.uploads?.length || 0} uploads from server`);
-
-    return data.uploads || [];
-  } catch (error) {
-    console.error(`[API] Fetch uploads failed:`, error);
-    throw error;
-  }
-}
-
-/**
- * Encode path segments for URL (preserves slashes, encodes each segment)
- */
-function encodePathSegments(filePath) {
-  return filePath.split('/').map(segment => encodeURIComponent(segment)).join('/');
-}
-
-/**
- * Download upload content from server
- * @param {string} serverUrl - Server base URL
- * @param {string} apiKey - API key for authentication
- * @param {string} filePath - Full path including filename
- * @returns {Promise<{content: Buffer, modifiedAt: string, checksum: string}>}
- */
-async function downloadUpload(serverUrl, apiKey, filePath) {
-  const encodedPath = encodePathSegments(filePath);
-  const downloadUrl = `${serverUrl}/sync/uploads/${encodedPath}`;
-  console.log(`[API] Downloading upload from: ${downloadUrl}`);
-
-  const response = await fetch(downloadUrl, {
-    headers: {
-      'X-API-Key': apiKey
-    }
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => response.statusText);
-    console.error(`[API] Download upload failed (${response.status}): ${errorText}`);
-    throw new Error(`Failed to download upload ${filePath}: ${errorText}`);
+  if (modifiedAt) {
+    body.modifiedAt = modifiedAt instanceof Date ? modifiedAt.toISOString() : modifiedAt;
   }
 
-  const data = await response.json();
-
-  // Decode base64 content to Buffer
-  return {
-    content: Buffer.from(data.content, 'base64'),
-    modifiedAt: data.modifiedAt,
-    checksum: data.checksum
-  };
-}
-
-/**
- * Upload file content to server (for uploads, not sites)
- * @param {string} serverUrl - Server base URL
- * @param {string} apiKey - API key for authentication
- * @param {string} filePath - Full path including filename
- * @param {Buffer} content - File content as Buffer
- * @param {Date} modifiedAt - Modification time
- */
-async function uploadUploadToServer(serverUrl, apiKey, filePath, content, modifiedAt) {
-  console.log(`[API] Uploading upload to server: ${filePath}`);
-
-  const response = await fetch(`${serverUrl}/sync/uploads`, {
+  const data = await apiFetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-API-Key': apiKey
     },
-    body: JSON.stringify({
-      path: filePath,
-      content: content.toString('base64'),
-      modifiedAt: modifiedAt.toISOString()
-    })
-  });
+    body: JSON.stringify(body)
+  }, { errorPrefix: `Create ${type} failed` });
 
-  if (!response.ok) {
-    let errorMessage = `Server returned ${response.status}`;
-
-    try {
-      const errorData = await response.clone().json();
-      errorMessage = errorData.msg || errorData.message || errorData.error || errorMessage;
-      console.error(`[API] Upload error (${response.status}):`, errorMessage);
-    } catch (parseError) {
-      try {
-        const errorText = await response.text();
-        if (errorText) {
-          errorMessage = errorText;
-          console.error(`[API] Upload error (${response.status}):`, errorText);
-        }
-      } catch (textError) {
-        console.error(`[API] Upload error (${response.status}): Unable to parse response`);
-      }
-    }
-
-    const error = new Error(errorMessage);
-    error.statusCode = response.status;
-    throw error;
-  }
-
-  return response.json();
+  return data.node;
 }
 
-async function deleteFileOnServer(serverUrl, apiKey, nodeId) {
-  const res = await fetch(`${serverUrl}/sync/file`, {
+/**
+ * Download a Node's content by id.
+ * @param {string} serverUrl
+ * @param {string} apiKey
+ * @param {number} nodeId
+ * @returns {Promise<{ content: string|Buffer, nodeType: string, modifiedAt: string, checksum: string, size: number }>}
+ */
+async function getNodeContent(serverUrl, apiKey, nodeId) {
+  const url = `${serverUrl}/sync/nodes/${nodeId}/content`;
+  console.log(`[API] Downloading content for node ${nodeId}`);
+
+  const data = await apiFetch(url, {
+    headers: { 'X-API-Key': apiKey }
+  }, { errorPrefix: `Download node ${nodeId} failed` });
+
+  return {
+    content: decodeContent(data.content, data.nodeType),
+    nodeType: data.nodeType,
+    modifiedAt: data.modifiedAt,
+    checksum: data.checksum,
+    size: data.size
+  };
+}
+
+/**
+ * Write/replace a Node's content by id.
+ * @param {string} serverUrl
+ * @param {string} apiKey
+ * @param {number} nodeId
+ * @param {string|Buffer} content - HTML string for sites, Buffer or base64 for uploads
+ * @param {Object} [options]
+ * @param {string|Date} [options.modifiedAt]
+ * @param {string} [options.snapshotHtml] - for platform live-sync (sites only)
+ * @param {string} [options.senderId] - for platform live-sync attribution
+ * @returns {Promise<{ nodeId: number, checksum: string, size?: number }>}
+ */
+async function putNodeContent(serverUrl, apiKey, nodeId, content, options = {}) {
+  const url = `${serverUrl}/sync/nodes/${nodeId}/content`;
+  console.log(`[API] Writing content for node ${nodeId}`);
+
+  const body = { content: encodeContent(content) };
+  if (options.modifiedAt) {
+    body.modifiedAt = options.modifiedAt instanceof Date
+      ? options.modifiedAt.toISOString()
+      : options.modifiedAt;
+  }
+  if (options.snapshotHtml) body.snapshotHtml = options.snapshotHtml;
+  if (options.senderId) body.senderId = options.senderId;
+
+  return apiFetch(url, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': apiKey
+    },
+    body: JSON.stringify(body)
+  }, { errorPrefix: `Write node ${nodeId} failed` });
+}
+
+/**
+ * Rename a Node.
+ * @param {string} serverUrl
+ * @param {string} apiKey
+ * @param {number} nodeId
+ * @param {string} newName
+ * @returns {Promise<{ nodeId: number, oldName: string, newName: string }>}
+ */
+async function renameNode(serverUrl, apiKey, nodeId, newName) {
+  const url = `${serverUrl}/sync/nodes/${nodeId}/rename`;
+  console.log(`[API] Renaming node ${nodeId} → ${newName}`);
+
+  return apiFetch(url, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': apiKey
+    },
+    body: JSON.stringify({ newName })
+  }, { errorPrefix: `Rename node ${nodeId} failed` });
+}
+
+/**
+ * Move a Node to a new parent folder.
+ * @param {string} serverUrl
+ * @param {string} apiKey
+ * @param {number} nodeId
+ * @param {number|string} targetParentId - numeric Node id, or 0 / 'root' for root
+ * @returns {Promise<{ nodeId: number, fromPath: string, toPath: string }>}
+ */
+async function moveNode(serverUrl, apiKey, nodeId, targetParentId) {
+  const url = `${serverUrl}/sync/nodes/${nodeId}/move`;
+  console.log(`[API] Moving node ${nodeId} → parent ${targetParentId}`);
+
+  return apiFetch(url, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': apiKey
+    },
+    body: JSON.stringify({ targetParentId })
+  }, { errorPrefix: `Move node ${nodeId} failed` });
+}
+
+/**
+ * Delete a Node.
+ * @param {string} serverUrl
+ * @param {string} apiKey
+ * @param {number} nodeId
+ * @returns {Promise<{ nodeId: number, type: string }>}
+ */
+async function deleteNode(serverUrl, apiKey, nodeId) {
+  const url = `${serverUrl}/sync/nodes/${nodeId}`;
+  console.log(`[API] Deleting node ${nodeId}`);
+
+  return apiFetch(url, {
     method: 'DELETE',
-    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ nodeId })
-  });
-  if (!res.ok) {
-    const errorText = await res.text().catch(() => res.statusText);
-    throw new Error(`Delete failed (${res.status}): ${parseErrorMessage(errorText, res.statusText)}`);
-  }
-  return res.json();
+    headers: { 'X-API-Key': apiKey }
+  }, { errorPrefix: `Delete node ${nodeId} failed` });
 }
 
-async function renameFileOnServer(serverUrl, apiKey, nodeId, newName) {
-  const res = await fetch(`${serverUrl}/sync/file/rename`, {
-    method: 'PATCH',
-    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ nodeId, newName })
-  });
-  if (!res.ok) {
-    const errorText = await res.text().catch(() => res.statusText);
-    throw new Error(`Rename failed (${res.status}): ${parseErrorMessage(errorText, res.statusText)}`);
-  }
-  return res.json();
-}
+// ============================================================================
+// STATUS (unchanged from the old API)
+// ============================================================================
 
-async function moveFileOnServer(serverUrl, apiKey, nodeId, targetFolderPath) {
-  const res = await fetch(`${serverUrl}/sync/file/move`, {
-    method: 'PATCH',
-    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ nodeId, targetFolderPath })
-  });
-  if (!res.ok) {
-    const errorText = await res.text().catch(() => res.statusText);
-    throw new Error(`Move failed (${res.status}): ${parseErrorMessage(errorText, res.statusText)}`);
-  }
-  return res.json();
+/**
+ * Get server status and time (for clock calibration).
+ */
+async function getServerStatus(serverUrl, apiKey) {
+  const url = `${serverUrl}/sync/status`;
+  console.log(`[API] Getting server status from: ${url}`);
+
+  const data = await apiFetch(url, {
+    headers: { 'X-API-Key': apiKey }
+  }, { errorPrefix: 'Get status failed' });
+
+  console.log(`[API] Server time: ${data.serverTime}`);
+  return data;
 }
 
 module.exports = {
-  fetchServerFiles,
-  downloadFromServer,
-  uploadToServer,
-  getServerStatus,
-  deleteFileOnServer,
-  renameFileOnServer,
-  moveFileOnServer,
-  // Upload sync
-  fetchServerUploads,
-  downloadUpload,
-  uploadUploadToServer
+  listNodes,
+  createNode,
+  getNodeContent,
+  putNodeContent,
+  renameNode,
+  moveNode,
+  deleteNode,
+  getServerStatus
 };

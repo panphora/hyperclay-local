@@ -84,16 +84,19 @@ beforeEach(() => {
   fileOps.readFile.mockResolvedValue('<html>content</html>');
   fileOps.getFileStats.mockResolvedValue({ mtime: new Date('2024-01-01'), size: 100 });
   fileOps.fileExists.mockResolvedValue(true);
-  apiClient.downloadFromServer.mockResolvedValue({
+  apiClient.getNodeContent.mockResolvedValue({
     content: '<html>server content</html>',
+    nodeType: 'site',
     modifiedAt: '2024-06-01T00:00:00Z',
-    checksum: checksum('<html>server content</html>')
+    checksum: checksum('<html>server content</html>'),
+    size: 26
   });
-  apiClient.uploadToServer.mockResolvedValue({ success: true, nodeId: 1 });
-  apiClient.fetchServerFiles.mockResolvedValue([]);
-  apiClient.deleteFileOnServer.mockResolvedValue({ success: true });
-  apiClient.renameFileOnServer.mockResolvedValue({ success: true });
-  apiClient.moveFileOnServer.mockResolvedValue({ success: true });
+  apiClient.putNodeContent.mockResolvedValue({ nodeId: 1, checksum: 'abc' });
+  apiClient.createNode.mockResolvedValue({ id: 1, type: 'site', name: 'test.html', parentId: 0, path: '' });
+  apiClient.listNodes.mockResolvedValue([]);
+  apiClient.deleteNode.mockResolvedValue({ success: true });
+  apiClient.renameNode.mockResolvedValue({ success: true });
+  apiClient.moveNode.mockResolvedValue({ success: true });
   fileOps.getLocalFiles.mockResolvedValue(new Map());
   nodeMapModule.load.mockResolvedValue(new Map());
   nodeMapModule.save.mockResolvedValue();
@@ -109,8 +112,8 @@ describe('reconcileServerFile — nodeId move detection', () => {
 
     syncEngine.nodeMap = new Map([['42', entry('my-site.html', cs, 111)]]);
 
-    apiClient.fetchServerFiles.mockResolvedValue([
-      { nodeId: 42, filename: 'blog/my-site', path: 'blog/my-site.html', checksum: cs, modifiedAt: '2024-06-01T00:00:00Z' }
+    apiClient.listNodes.mockResolvedValue([
+      { id: 42, type: 'site', name: 'my-site.html', path: 'blog', checksum: cs, modifiedAt: '2024-06-01T00:00:00Z' }
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
@@ -129,8 +132,8 @@ describe('reconcileServerFile — nodeId move detection', () => {
   });
 
   test('downloads when nodeId has no mapping (first sync)', async () => {
-    apiClient.fetchServerFiles.mockResolvedValue([
-      { nodeId: 42, filename: 'new-site', path: 'new-site.html', checksum: 'abc', modifiedAt: '2024-06-01T00:00:00Z' }
+    apiClient.listNodes.mockResolvedValue([
+      { id: 42, type: 'site', name: 'new-site.html', path: '', checksum: 'abc', modifiedAt: '2024-06-01T00:00:00Z' }
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map());
@@ -138,10 +141,10 @@ describe('reconcileServerFile — nodeId move detection', () => {
     await syncEngine.performInitialSync();
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
-    expect(apiClient.downloadFromServer).toHaveBeenCalledWith(
+    expect(apiClient.getNodeContent).toHaveBeenCalledWith(
       'http://localhyperclay.com',
       'hcsk_test',
-      'new-site'
+      42
     );
   });
 
@@ -149,9 +152,9 @@ describe('reconcileServerFile — nodeId move detection', () => {
     const content = '<html>content</html>';
     const cs = checksum(content);
 
-    apiClient.fetchServerFiles.mockResolvedValue([
-      { nodeId: 42, filename: 'index', path: 'index.html', checksum: cs, modifiedAt: '2024-06-01T00:00:00Z' },
-      { nodeId: 73, filename: 'about', path: 'about.html', checksum: cs, modifiedAt: '2024-06-01T00:00:00Z' }
+    apiClient.listNodes.mockResolvedValue([
+      { id: 42, type: 'site', name: 'index.html', path: '', checksum: cs, modifiedAt: '2024-06-01T00:00:00Z' },
+      { id: 73, type: 'site', name: 'about.html', path: '', checksum: cs, modifiedAt: '2024-06-01T00:00:00Z' }
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
@@ -175,7 +178,7 @@ describe('offline delete reconciliation', () => {
     syncEngine.nodeMap = new Map([['99', entry('deleted-on-server.html')]]);
     syncEngine.lastSyncedAt = null;
 
-    apiClient.fetchServerFiles.mockResolvedValue([]);
+    apiClient.listNodes.mockResolvedValue([]);
     fileOps.getLocalFiles.mockResolvedValue(new Map([
       ['deleted-on-server.html', { path: '/test/sync/deleted-on-server.html', relativePath: 'deleted-on-server.html', mtime: new Date('2024-01-01'), size: 100 }]
     ]));
@@ -189,7 +192,7 @@ describe('offline delete reconciliation', () => {
     syncEngine.nodeMap = new Map([['99', entry('old-site.html')]]);
     syncEngine.lastSyncedAt = Date.now();
 
-    apiClient.fetchServerFiles.mockResolvedValue([]);
+    apiClient.listNodes.mockResolvedValue([]);
     fileOps.getLocalFiles.mockResolvedValue(new Map([
       ['old-site.html', { path: '/test/sync/old-site.html', relativePath: 'old-site.html', mtime: new Date('2024-01-01'), size: 100 }]
     ]));
@@ -210,7 +213,7 @@ describe('offline delete reconciliation', () => {
     syncEngine.nodeMap = new Map([['99', entry('edited-locally.html')]]);
     syncEngine.lastSyncedAt = lastSync;
 
-    apiClient.fetchServerFiles.mockResolvedValue([]);
+    apiClient.listNodes.mockResolvedValue([]);
     fileOps.getLocalFiles.mockResolvedValue(new Map([
       ['edited-locally.html', { path: '/test/sync/edited-locally.html', relativePath: 'edited-locally.html', mtime: new Date('2024-07-01'), size: 200 }]
     ]));
@@ -227,7 +230,7 @@ describe('offline delete reconciliation', () => {
     syncEngine.nodeMap = new Map([['99', entry('trashed.html')]]);
     syncEngine.lastSyncedAt = Date.now();
 
-    apiClient.fetchServerFiles.mockResolvedValue([]);
+    apiClient.listNodes.mockResolvedValue([]);
     const localFiles = new Map([
       ['trashed.html', { path: '/test/sync/trashed.html', relativePath: 'trashed.html', mtime: new Date('2024-01-01'), size: 100 }]
     ]);
@@ -237,11 +240,11 @@ describe('offline delete reconciliation', () => {
 
     await syncEngine.performInitialSync();
 
-    expect(apiClient.uploadToServer).not.toHaveBeenCalled();
+    expect(apiClient.createNode).not.toHaveBeenCalled();
   });
 
   test('persists lastSyncedAt after successful sync', async () => {
-    apiClient.fetchServerFiles.mockResolvedValue([]);
+    apiClient.listNodes.mockResolvedValue([]);
     fileOps.getLocalFiles.mockResolvedValue(new Map());
 
     await syncEngine.performInitialSync();
@@ -424,8 +427,8 @@ describe('uploadFile — nodeId from response', () => {
   test('records nodeId in map with object entry after successful upload', async () => {
     fileOps.readFile.mockResolvedValue('<html>content</html>');
     fileOps.getFileStats.mockResolvedValue({ mtime: new Date('2024-06-01'), size: 100 });
-    apiClient.fetchServerFiles.mockResolvedValue([]);
-    apiClient.uploadToServer.mockResolvedValue({ success: true, nodeId: 42 });
+    apiClient.listNodes.mockResolvedValue([]);
+    apiClient.createNode.mockResolvedValue({ id: 42, type: 'site', name: 'my-site.html', parentId: 0, path: '' });
 
     await syncEngine.uploadFile('my-site.html');
 
@@ -438,8 +441,8 @@ describe('uploadFile — nodeId from response', () => {
   test('does not update map when response has no nodeId', async () => {
     fileOps.readFile.mockResolvedValue('<html>content</html>');
     fileOps.getFileStats.mockResolvedValue({ mtime: new Date('2024-06-01'), size: 100 });
-    apiClient.fetchServerFiles.mockResolvedValue([]);
-    apiClient.uploadToServer.mockResolvedValue({ success: true });
+    apiClient.listNodes.mockResolvedValue([]);
+    apiClient.createNode.mockResolvedValue({ type: 'site', name: 'my-site.html', parentId: 0, path: '' });
 
     await syncEngine.uploadFile('my-site.html');
 

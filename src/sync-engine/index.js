@@ -31,17 +31,14 @@ const {
   calculateBufferChecksum
 } = require('./file-operations');
 const {
-  fetchServerFiles,
-  downloadFromServer,
-  uploadToServer,
-  getServerStatus,
-  deleteFileOnServer,
-  renameFileOnServer,
-  moveFileOnServer,
-  // Upload sync
-  fetchServerUploads,
-  downloadUpload,
-  uploadUploadToServer
+  listNodes,
+  createNode,
+  getNodeContent,
+  putNodeContent,
+  renameNode,
+  moveNode,
+  deleteNode,
+  getServerStatus
 } = require('./api-client');
 const SyncQueue = require('./sync-queue');
 const { validateFileName, validateFullPath, validateUploadPath } = require('./validation');
@@ -85,6 +82,7 @@ class SyncEngine extends EventEmitter {
     this.serverFilesCacheTime = null; // When cache was last updated
     this.serverUploadsCache = null; // Cache for server uploads list
     this.serverUploadsCacheTime = null; // When uploads cache was last updated
+    this.serverNodesCache = null; // Cache for unified node listing
     this.logger = null; // Logger instance
     this.stats = {
       filesProtected: 0,
@@ -268,7 +266,18 @@ class SyncEngine extends EventEmitter {
 
     // Fetch fresh data
     console.log(`[SYNC] Fetching fresh server files list...`);
-    this.serverFilesCache = await fetchServerFiles(this.serverUrl, this.apiKey);
+    const allNodes = await listNodes(this.serverUrl, this.apiKey);
+    this.serverNodesCache = allNodes;
+    this.serverFilesCache = allNodes
+      .filter(n => n.type === 'site')
+      .map(n => ({
+        nodeId: n.id,
+        filename: n.path ? `${n.path}/${n.name}` : n.name,
+        path: n.path ? `${n.path}/${n.name}` : n.name,
+        size: n.size,
+        modifiedAt: n.modifiedAt,
+        checksum: n.checksum
+      }));
     this.serverFilesCacheTime = Date.now();
     return this.serverFilesCache;
   }
@@ -294,7 +303,17 @@ class SyncEngine extends EventEmitter {
     }
 
     console.log(`[SYNC] Fetching fresh server uploads list...`);
-    this.serverUploadsCache = await fetchServerUploads(this.serverUrl, this.apiKey);
+    const allNodes = await listNodes(this.serverUrl, this.apiKey);
+    this.serverNodesCache = allNodes;
+    this.serverUploadsCache = allNodes
+      .filter(n => n.type === 'upload')
+      .map(n => ({
+        nodeId: n.id,
+        path: n.path ? `${n.path}/${n.name}` : n.name,
+        size: n.size,
+        modifiedAt: n.modifiedAt,
+        checksum: n.checksum
+      }));
     this.serverUploadsCacheTime = Date.now();
     return this.serverUploadsCache;
   }
@@ -305,6 +324,53 @@ class SyncEngine extends EventEmitter {
   invalidateServerUploadsCache() {
     this.serverUploadsCache = null;
     this.serverUploadsCacheTime = null;
+  }
+
+  async fetchAndCacheServerNodes(force = false) {
+    if (!force && this.serverNodesCache) return this.serverNodesCache;
+    this.serverNodesCache = await listNodes(this.serverUrl, this.apiKey);
+    return this.serverNodesCache;
+  }
+
+  invalidateServerNodesCache() {
+    this.serverNodesCache = null;
+  }
+
+  /**
+   * Resolve a folder path string (e.g., "projects/assets") to its Node id.
+   * Returns 0 for root. Throws if the folder doesn't exist on the server.
+   * Uses the cached node listing.
+   *
+   * NOTE: this helper exists because Step 4 callers still think in terms of paths.
+   * Step 5 replaces it with direct nodeMap lookups once folders are tracked there.
+   */
+  async resolveParentIdByPath(folderPath) {
+    if (!folderPath || folderPath === '' || folderPath === '.') {
+      return 0;  // root
+    }
+
+    const nodes = await this.fetchAndCacheServerNodes(false);
+    const folder = nodes.find(n => {
+      if (n.type !== 'folder') return false;
+      const fullPath = n.path ? `${n.path}/${n.name}` : n.name;
+      return fullPath === folderPath;
+    });
+
+    if (!folder) {
+      // Cache might be stale — refresh and try once more
+      const freshNodes = await this.fetchAndCacheServerNodes(true);
+      const freshFolder = freshNodes.find(n => {
+        if (n.type !== 'folder') return false;
+        const fullPath = n.path ? `${n.path}/${n.name}` : n.name;
+        return fullPath === folderPath;
+      });
+      if (!freshFolder) {
+        throw new Error(`Target folder not found on server: ${folderPath}`);
+      }
+      return freshFolder.id;
+    }
+
+    return folder.id;
   }
 
   /**
@@ -448,7 +514,7 @@ class SyncEngine extends EventEmitter {
 
     if (!localExists) {
       try {
-        await this.downloadFile(serverFile.filename, relativePath);
+        await this.downloadFile(serverFile.filename, relativePath, serverFile.nodeId);
         this.stats.filesDownloaded++;
         const inode = await nodeMap.getInode(localPath);
         const content = await readFile(localPath).catch(() => null);
@@ -485,7 +551,7 @@ class SyncEngine extends EventEmitter {
         return;
       }
 
-      await this.downloadFile(serverFile.filename, relativePath);
+      await this.downloadFile(serverFile.filename, relativePath, serverFile.nodeId);
       this.stats.filesDownloaded++;
       const dlContent = await readFile(localPath).catch(() => null);
       const dlChecksum = dlContent ? await calculateChecksum(dlContent) : null;
@@ -597,7 +663,8 @@ class SyncEngine extends EventEmitter {
           apply: async (localFile) => {
             const targetFolder = path.dirname(localFile);
             const folderPath = targetFolder === '.' ? '' : targetFolder.replace(/\.(html|htmlclay)$/, '');
-            await moveFileOnServer(this.serverUrl, this.apiKey, parseInt(nid), folderPath);
+            const targetParentId = await this.resolveParentIdByPath(folderPath);
+            await moveNode(this.serverUrl, this.apiKey, parseInt(nid), targetParentId);
             const inode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
             const content = await readFile(path.join(this.syncFolder, localFile)).catch(() => null);
             const cs = content ? await calculateChecksum(content) : entry.checksum;
@@ -613,7 +680,7 @@ class SyncEngine extends EventEmitter {
           },
           apply: async (localFile) => {
             const newName = path.basename(localFile);
-            await renameFileOnServer(this.serverUrl, this.apiKey, parseInt(nid), newName);
+            await renameNode(this.serverUrl, this.apiKey, parseInt(nid), newName);
             const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
             return { path: localFile, checksum: entry.checksum, inode: localInode };
           }
@@ -629,7 +696,7 @@ class SyncEngine extends EventEmitter {
           },
           apply: async (localFile) => {
             const newName = path.basename(localFile);
-            await renameFileOnServer(this.serverUrl, this.apiKey, parseInt(nid), newName);
+            await renameNode(this.serverUrl, this.apiKey, parseInt(nid), newName);
             const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
             const content = await readFile(path.join(this.syncFolder, localFile)).catch(() => null);
             const cs = content ? await calculateChecksum(content) : entry.checksum;
@@ -665,7 +732,7 @@ class SyncEngine extends EventEmitter {
       if (serverFile.modifiedAt && new Date(serverFile.modifiedAt).getTime() > this.lastSyncedAt) {
         console.log(`[SYNC] Delete conflict: ${entry.path} deleted locally but modified on server — re-downloading`);
         try {
-          await this.downloadFile(serverFile.filename, serverPath);
+          await this.downloadFile(serverFile.filename, serverPath, serverFile.nodeId);
         } catch (err) {
           console.error(`[SYNC] Failed to re-download ${serverPath} after delete conflict:`, err.message);
         }
@@ -675,7 +742,7 @@ class SyncEngine extends EventEmitter {
       try {
         console.log(`[SYNC] Local delete detected: ${entry.path} (nodeId ${nid})`);
         this.pendingActions.set(`delete:${nid}`, Date.now());
-        await deleteFileOnServer(this.serverUrl, this.apiKey, parseInt(nid));
+        await deleteNode(this.serverUrl, this.apiKey, parseInt(nid));
         this.invalidateServerFilesCache();
         this.nodeMap.delete(nid);
       } catch (err) {
@@ -688,13 +755,14 @@ class SyncEngine extends EventEmitter {
    * Download a file from server
    * @param {string} filename - Full filename including extension (may include folders)
    * @param {string} relativePath - Full path for local storage
+   * @param {number} nodeId - Server node id
    */
-  async downloadFile(filename, relativePath) {
+  async downloadFile(filename, relativePath, nodeId) {
     try {
-      const { content, modifiedAt } = await downloadFromServer(
+      const { content, modifiedAt } = await getNodeContent(
         this.serverUrl,
         this.apiKey,
-        filename
+        nodeId
       );
 
       const localFilename = relativePath || filename;
@@ -994,17 +1062,44 @@ class SyncEngine extends EventEmitter {
         // Server module not available or getAndClearSnapshot not exported
       }
 
-      const result = await uploadToServer(
-        this.serverUrl,
-        this.apiKey,
-        filename,
-        content,
-        stat.mtime,
-        {
-          snapshotHtml,
-          senderId: this.deviceId
+      // Check nodeMap for an existing nodeId for this file path
+      let existingNodeId = null;
+      for (const [nid, entry] of this.nodeMap) {
+        if (entry.path === filename) {
+          existingNodeId = parseInt(nid);
+          break;
         }
-      );
+      }
+
+      let result;
+      if (existingNodeId) {
+        result = await putNodeContent(
+          this.serverUrl,
+          this.apiKey,
+          existingNodeId,
+          content,
+          {
+            modifiedAt: stat.mtime,
+            snapshotHtml,
+            senderId: this.deviceId
+          }
+        );
+        result.nodeId = existingNodeId;
+      } else {
+        const pathParts = filename.split('/').filter(Boolean);
+        const name = pathParts[pathParts.length - 1];
+        const folderPath = pathParts.slice(0, -1).join('/');
+        const parentId = await this.resolveParentIdByPath(folderPath);
+
+        const createdNode = await createNode(this.serverUrl, this.apiKey, {
+          type: 'site',
+          name,
+          parentId,
+          content,
+          modifiedAt: stat.mtime
+        });
+        result = { nodeId: createdNode.id };
+      }
 
       if (result.nodeId) {
         const inode = await nodeMap.getInode(path.join(this.syncFolder, filename));
@@ -1307,7 +1402,7 @@ class SyncEngine extends EventEmitter {
                 console.log(`[SYNC] Watcher: Identity mismatch for ${oldPath} → ${normalizedPath}, treating as delete+add`);
                 try {
                   self.pendingActions.set(`delete:${pending.nodeId}`, Date.now());
-                  await deleteFileOnServer(self.serverUrl, self.apiKey, parseInt(pending.nodeId));
+                  await deleteNode(self.serverUrl, self.apiKey, parseInt(pending.nodeId));
                   self.invalidateServerFilesCache();
                   self.nodeMap.delete(pending.nodeId);
                   await nodeMap.save(self.metaDir, self.nodeMap);
@@ -1323,20 +1418,22 @@ class SyncEngine extends EventEmitter {
                   const targetFolder = addDirname === '.' ? '' : addDirname;
                   console.log(`[SYNC] Watcher: Local move detected: ${oldPath} → ${normalizedPath}`);
                   self.pendingActions.set(`move:${pending.nodeId}`, Date.now());
-                  await moveFileOnServer(self.serverUrl, self.apiKey, parseInt(pending.nodeId), targetFolder);
+                  const targetParentId = await self.resolveParentIdByPath(targetFolder);
+                  await moveNode(self.serverUrl, self.apiKey, parseInt(pending.nodeId), targetParentId);
                 } else if (isRename) {
                   const newName = addBasename;
                   console.log(`[SYNC] Watcher: Local rename detected: ${oldPath} → ${normalizedPath}`);
                   self.pendingActions.set(`rename:${pending.nodeId}`, Date.now());
-                  await renameFileOnServer(self.serverUrl, self.apiKey, parseInt(pending.nodeId), newName);
+                  await renameNode(self.serverUrl, self.apiKey, parseInt(pending.nodeId), newName);
                 } else {
                   const newName = addBasename;
                   const targetFolder = addDirname === '.' ? '' : addDirname;
                   console.log(`[SYNC] Watcher: Local move+rename detected: ${oldPath} → ${normalizedPath}`);
                   self.pendingActions.set(`rename:${pending.nodeId}`, Date.now());
-                  await renameFileOnServer(self.serverUrl, self.apiKey, parseInt(pending.nodeId), newName);
+                  await renameNode(self.serverUrl, self.apiKey, parseInt(pending.nodeId), newName);
                   self.pendingActions.set(`move:${pending.nodeId}`, Date.now());
-                  await moveFileOnServer(self.serverUrl, self.apiKey, parseInt(pending.nodeId), targetFolder);
+                  const targetParentId = await self.resolveParentIdByPath(targetFolder);
+                  await moveNode(self.serverUrl, self.apiKey, parseInt(pending.nodeId), targetParentId);
                 }
 
                 self.invalidateServerFilesCache();
@@ -1432,7 +1529,7 @@ class SyncEngine extends EventEmitter {
           console.log(`[SYNC] Watcher: Local delete detected: ${normalizedPath} (nodeId ${foundNodeId})`);
           try {
             this.pendingActions.set(`delete:${foundNodeId}`, Date.now());
-            await deleteFileOnServer(this.serverUrl, this.apiKey, parseInt(foundNodeId));
+            await deleteNode(this.serverUrl, this.apiKey, parseInt(foundNodeId));
             this.invalidateServerFilesCache();
             this.nodeMap.delete(foundNodeId);
             await nodeMap.save(this.metaDir, this.nodeMap);
@@ -1485,7 +1582,7 @@ class SyncEngine extends EventEmitter {
 
         if (!localExists) {
           try {
-            await this.downloadUploadFile(serverUpload.path);
+            await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
             this.stats.uploadsDownloaded++;
           } catch (error) {
             console.error(`[SYNC] Failed to download upload ${serverUpload.path}:`, error.message);
@@ -1520,7 +1617,7 @@ class SyncEngine extends EventEmitter {
             }
 
             // Server is newer, download it
-            await this.downloadUploadFile(serverUpload.path);
+            await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
             this.stats.uploadsDownloaded++;
           } catch (error) {
             console.error(`[SYNC] Failed to process upload ${serverUpload.path}:`, error.message);
@@ -1558,13 +1655,13 @@ class SyncEngine extends EventEmitter {
   /**
    * Download an upload file from server
    */
-  async downloadUploadFile(serverPath) {
+  async downloadUploadFile(serverPath, nodeId) {
     this.resolveContainedPath(serverPath);
     try {
-      const { content, modifiedAt } = await downloadUpload(
+      const { content, modifiedAt } = await getNodeContent(
         this.serverUrl,
         this.apiKey,
-        serverPath
+        nodeId
       );
 
       const localPath = path.join(this.syncFolder, serverPath);
@@ -1647,14 +1744,37 @@ class SyncEngine extends EventEmitter {
         console.log(`[SYNC] Could not verify server checksum, proceeding: ${error.message}`);
       }
 
-      // Upload to server
-      await uploadUploadToServer(
-        this.serverUrl,
-        this.apiKey,
-        relativePath,
-        content,
-        stat.mtime
-      );
+      // Check nodeMap for an existing nodeId for this upload path
+      let existingNodeId = null;
+      for (const [nid, entry] of this.nodeMap) {
+        if (entry.path === relativePath) {
+          existingNodeId = parseInt(nid);
+          break;
+        }
+      }
+
+      if (existingNodeId) {
+        await putNodeContent(
+          this.serverUrl,
+          this.apiKey,
+          existingNodeId,
+          content,
+          { modifiedAt: stat.mtime }
+        );
+      } else {
+        const pathParts = relativePath.split('/').filter(Boolean);
+        const name = pathParts[pathParts.length - 1];
+        const folderPath = pathParts.slice(0, -1).join('/');
+        const parentId = await this.resolveParentIdByPath(folderPath);
+
+        await createNode(this.serverUrl, this.apiKey, {
+          type: 'upload',
+          name,
+          parentId,
+          content,
+          modifiedAt: stat.mtime
+        });
+      }
 
       console.log(`[SYNC] Uploaded: ${relativePath}`);
       this.stats.uploadsUploaded++;
@@ -1995,7 +2115,7 @@ class SyncEngine extends EventEmitter {
 
         if (!localExists) {
           // New file on server
-          await this.downloadFile(serverFile.filename, relativePath);
+          await this.downloadFile(serverFile.filename, relativePath, serverFile.nodeId);
           this.stats.filesDownloaded++;
           changesFound = true;
           if (serverFile.nodeId) {
@@ -2015,7 +2135,7 @@ class SyncEngine extends EventEmitter {
               this.stats.filesProtected++;
             } else {
               // Download newer version from server
-              await this.downloadFile(serverFile.filename, relativePath);
+              await this.downloadFile(serverFile.filename, relativePath, serverFile.nodeId);
               this.stats.filesDownloaded++;
               changesFound = true;
               if (serverFile.nodeId) {
@@ -2042,7 +2162,7 @@ class SyncEngine extends EventEmitter {
         const localExists = localUploads.has(serverUpload.path);
 
         if (!localExists) {
-          await this.downloadUploadFile(serverUpload.path);
+          await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
           this.stats.uploadsDownloaded++;
           changesFound = true;
         } else {
@@ -2055,7 +2175,7 @@ class SyncEngine extends EventEmitter {
               console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - local is newer`);
               this.stats.uploadsProtected++;
             } else {
-              await this.downloadUploadFile(serverUpload.path);
+              await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
               this.stats.uploadsDownloaded++;
               changesFound = true;
             }

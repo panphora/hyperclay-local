@@ -86,15 +86,19 @@ beforeEach(() => {
   fileOps.readFile.mockResolvedValue('<html>content</html>');
   fileOps.getFileStats.mockResolvedValue({ mtime: new Date('2024-01-01'), size: 100 });
   fileOps.fileExists.mockReturnValue(true);
-  apiClient.downloadFromServer.mockResolvedValue({
+  apiClient.getNodeContent.mockResolvedValue({
     content: '<html>server content</html>',
+    nodeType: 'site',
     modifiedAt: '2024-06-01T00:00:00Z',
-    checksum: checksum('<html>server content</html>')
+    checksum: checksum('<html>server content</html>'),
+    size: 26
   });
-  apiClient.uploadToServer.mockResolvedValue({ success: true, nodeId: 999 });
-  apiClient.deleteFileOnServer.mockResolvedValue({ success: true });
-  apiClient.renameFileOnServer.mockResolvedValue({ success: true });
-  apiClient.moveFileOnServer.mockResolvedValue({ success: true });
+  apiClient.putNodeContent.mockResolvedValue({ nodeId: 999, checksum: 'abc' });
+  apiClient.createNode.mockResolvedValue({ id: 999, type: 'site', name: 'test.html', parentId: 0, path: '' });
+  apiClient.listNodes.mockResolvedValue([]);
+  apiClient.deleteNode.mockResolvedValue({ success: true });
+  apiClient.renameNode.mockResolvedValue({ success: true });
+  apiClient.moveNode.mockResolvedValue({ success: true });
   nodeMapModule.load.mockResolvedValue(new Map());
   nodeMapModule.save.mockResolvedValue();
   nodeMapModule.loadState.mockResolvedValue({});
@@ -107,8 +111,8 @@ describe('performInitialSync — nodeId-based move detection', () => {
     const content = '<html>my site</html>';
     const cs = checksum(content);
 
-    apiClient.fetchServerFiles.mockResolvedValue([
-      { filename: 'blog/my-site', path: 'blog/my-site.html', checksum: cs, modifiedAt: '2024-06-01T00:00:00Z', nodeId: 1 }
+    apiClient.listNodes.mockResolvedValue([
+      { id: 1, type: 'site', name: 'my-site.html', path: 'blog', checksum: cs, modifiedAt: '2024-06-01T00:00:00Z' }
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
@@ -129,15 +133,15 @@ describe('performInitialSync — nodeId-based move detection', () => {
     expect(liveSync.markBrowserSave).toHaveBeenCalledWith('my-site');
 
     // Should NOT try to download since the file was moved
-    expect(apiClient.downloadFromServer).not.toHaveBeenCalled();
+    expect(apiClient.getNodeContent).not.toHaveBeenCalled();
 
     // Should NOT try to upload the old path (it was removed from localFiles)
-    expect(apiClient.uploadToServer).not.toHaveBeenCalled();
+    expect(apiClient.createNode).not.toHaveBeenCalled();
   });
 
   test('downloads file when it only exists on server', async () => {
-    apiClient.fetchServerFiles.mockResolvedValue([
-      { filename: 'new-site', path: 'new-site.html', checksum: 'abc123', modifiedAt: '2024-06-01T00:00:00Z', nodeId: 1 }
+    apiClient.listNodes.mockResolvedValue([
+      { id: 1, type: 'site', name: 'new-site.html', path: '', checksum: 'abc123', modifiedAt: '2024-06-01T00:00:00Z' }
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map());
@@ -145,17 +149,17 @@ describe('performInitialSync — nodeId-based move detection', () => {
     await syncEngine.performInitialSync();
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
-    expect(apiClient.downloadFromServer).toHaveBeenCalledWith(
+    expect(apiClient.getNodeContent).toHaveBeenCalledWith(
       'http://localhyperclay.com',
       'hcsk_test',
-      'new-site'
+      1
     );
   });
 
   test('uploads file when it only exists locally', async () => {
     const content = '<html>local only</html>';
 
-    apiClient.fetchServerFiles.mockResolvedValue([]);
+    apiClient.listNodes.mockResolvedValue([]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
       ['local-only.html', { path: '/test/sync/local-only.html', relativePath: 'local-only.html', mtime: new Date('2024-05-01'), size: 100 }]
@@ -166,15 +170,15 @@ describe('performInitialSync — nodeId-based move detection', () => {
 
     await syncEngine.performInitialSync();
 
-    expect(apiClient.uploadToServer).toHaveBeenCalled();
+    expect(apiClient.createNode).toHaveBeenCalled();
   });
 
   test('moved file with matching checksum skips download', async () => {
     const content = '<html>same content</html>';
     const cs = checksum(content);
 
-    apiClient.fetchServerFiles.mockResolvedValue([
-      { filename: 'blog/my-site', path: 'blog/my-site.html', checksum: cs, modifiedAt: '2024-06-01T00:00:00Z', nodeId: 1 }
+    apiClient.listNodes.mockResolvedValue([
+      { id: 1, type: 'site', name: 'my-site.html', path: 'blog', checksum: cs, modifiedAt: '2024-06-01T00:00:00Z' }
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
@@ -192,7 +196,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
     expect(fileOps.moveFile).toHaveBeenCalled();
 
     // Checksums match so no download needed
-    expect(apiClient.downloadFromServer).not.toHaveBeenCalled();
+    expect(apiClient.getNodeContent).not.toHaveBeenCalled();
     expect(syncEngine.stats.filesDownloadedSkipped).toBe(1);
   });
 
@@ -200,8 +204,8 @@ describe('performInitialSync — nodeId-based move detection', () => {
     const localContent = '<html>local newer</html>';
     const serverContent = '<html>server older</html>';
 
-    apiClient.fetchServerFiles.mockResolvedValue([
-      { filename: 'blog/my-site', path: 'blog/my-site.html', checksum: checksum(serverContent), modifiedAt: '2024-01-01T00:00:00Z', nodeId: 1 }
+    apiClient.listNodes.mockResolvedValue([
+      { id: 1, type: 'site', name: 'my-site.html', path: 'blog', checksum: checksum(serverContent), modifiedAt: '2024-01-01T00:00:00Z' }
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
@@ -220,13 +224,13 @@ describe('performInitialSync — nodeId-based move detection', () => {
     expect(fileOps.moveFile).toHaveBeenCalled();
 
     // But local is newer so content is preserved (no download)
-    expect(apiClient.downloadFromServer).not.toHaveBeenCalled();
+    expect(apiClient.getNodeContent).not.toHaveBeenCalled();
     expect(syncEngine.stats.filesProtected).toBe(1);
   });
 
   test('handles move failure gracefully by falling back to download', async () => {
-    apiClient.fetchServerFiles.mockResolvedValue([
-      { filename: 'blog/my-site', path: 'blog/my-site.html', checksum: 'abc123', modifiedAt: '2024-06-01T00:00:00Z', nodeId: 1 }
+    apiClient.listNodes.mockResolvedValue([
+      { id: 1, type: 'site', name: 'my-site.html', path: 'blog', checksum: 'abc123', modifiedAt: '2024-06-01T00:00:00Z' }
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
@@ -240,16 +244,16 @@ describe('performInitialSync — nodeId-based move detection', () => {
     await syncEngine.performInitialSync();
 
     // Move failed, should fall back to downloading
-    expect(apiClient.downloadFromServer).toHaveBeenCalledWith(
+    expect(apiClient.getNodeContent).toHaveBeenCalledWith(
       'http://localhyperclay.com',
       'hcsk_test',
-      'blog/my-site'
+      1
     );
   });
 
   test('does not move when nodeId has no local mapping', async () => {
-    apiClient.fetchServerFiles.mockResolvedValue([
-      { filename: 'blog/my-site', path: 'blog/my-site.html', checksum: 'abc123', modifiedAt: '2024-06-01T00:00:00Z', nodeId: 1 }
+    apiClient.listNodes.mockResolvedValue([
+      { id: 1, type: 'site', name: 'my-site.html', path: 'blog', checksum: 'abc123', modifiedAt: '2024-06-01T00:00:00Z' }
     ]);
 
     // Local has a DIFFERENT site — nodeMap has no entry for nodeId 1
@@ -261,9 +265,9 @@ describe('performInitialSync — nodeId-based move detection', () => {
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
     // Server file should be downloaded since no local match
-    expect(apiClient.downloadFromServer).toHaveBeenCalled();
+    expect(apiClient.getNodeContent).toHaveBeenCalled();
     // Local file should be uploaded since no server match
-    expect(apiClient.uploadToServer).toHaveBeenCalled();
+    expect(apiClient.createNode).toHaveBeenCalled();
   });
 });
 
@@ -272,8 +276,8 @@ describe('performInitialSync — duplicate filename handling', () => {
     const content = '<html>matching</html>';
     const serverChecksum = checksum(content);
 
-    apiClient.fetchServerFiles.mockResolvedValue([
-      { filename: 'projects/blog', path: 'projects/blog.html', checksum: serverChecksum, modifiedAt: '2024-06-01T00:00:00Z', nodeId: 1 }
+    apiClient.listNodes.mockResolvedValue([
+      { id: 1, type: 'site', name: 'blog.html', path: 'projects', checksum: serverChecksum, modifiedAt: '2024-06-01T00:00:00Z' }
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
@@ -292,15 +296,15 @@ describe('performInitialSync — duplicate filename handling', () => {
       '/test/sync/archive/blog.html',
       '/test/sync/projects/blog.html'
     );
-    expect(apiClient.downloadFromServer).not.toHaveBeenCalled();
+    expect(apiClient.getNodeContent).not.toHaveBeenCalled();
   });
 
   test('orphan duplicate skipped during upload phase', async () => {
     const content = '<html>blog content</html>';
     const cs = checksum(content);
 
-    apiClient.fetchServerFiles.mockResolvedValue([
-      { filename: 'projects/blog', path: 'projects/blog.html', checksum: cs, modifiedAt: '2024-06-01T00:00:00Z', nodeId: 1 }
+    apiClient.listNodes.mockResolvedValue([
+      { id: 1, type: 'site', name: 'blog.html', path: 'projects', checksum: cs, modifiedAt: '2024-06-01T00:00:00Z' }
     ]);
 
     // Both exist locally: one at the correct path, one orphan
@@ -315,15 +319,15 @@ describe('performInitialSync — duplicate filename handling', () => {
     await syncEngine.performInitialSync();
 
     // Orphan should NOT be uploaded (name already exists on server)
-    expect(apiClient.uploadToServer).not.toHaveBeenCalled();
+    expect(apiClient.createNode).not.toHaveBeenCalled();
   });
 
   test('sync-warning emitted for duplicate filenames', async () => {
     const content = '<html>content</html>';
     const cs = checksum(content);
 
-    apiClient.fetchServerFiles.mockResolvedValue([
-      { filename: 'blog', path: 'blog.html', checksum: cs, modifiedAt: '2024-06-01T00:00:00Z', nodeId: 1 }
+    apiClient.listNodes.mockResolvedValue([
+      { id: 1, type: 'site', name: 'blog.html', path: '', checksum: cs, modifiedAt: '2024-06-01T00:00:00Z' }
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
@@ -346,7 +350,7 @@ describe('performInitialSync — duplicate filename handling', () => {
   });
 
   test('no warning emitted when filenames are unique', async () => {
-    apiClient.fetchServerFiles.mockResolvedValue([]);
+    apiClient.listNodes.mockResolvedValue([]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
       ['drafts/blog.html', { path: '/test/sync/drafts/blog.html', relativePath: 'drafts/blog.html', mtime: new Date('2024-05-01'), size: 100 }],
@@ -368,8 +372,8 @@ describe('performInitialSync — duplicate filename handling', () => {
     const content = '<html>matching</html>';
     const serverChecksum = checksum(content);
 
-    apiClient.fetchServerFiles.mockResolvedValue([
-      { filename: 'projects/blog', path: 'projects/blog.html', checksum: serverChecksum, modifiedAt: '2024-06-01T00:00:00Z', nodeId: 1 }
+    apiClient.listNodes.mockResolvedValue([
+      { id: 1, type: 'site', name: 'blog.html', path: 'projects', checksum: serverChecksum, modifiedAt: '2024-06-01T00:00:00Z' }
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
@@ -388,10 +392,10 @@ describe('performInitialSync — duplicate filename handling', () => {
       '/test/sync/projects/blog.html'
     );
     // Move failed, should fall back to downloading
-    expect(apiClient.downloadFromServer).toHaveBeenCalledWith(
+    expect(apiClient.getNodeContent).toHaveBeenCalledWith(
       'http://localhyperclay.com',
       'hcsk_test',
-      'projects/blog'
+      1
     );
   });
 
@@ -401,9 +405,9 @@ describe('performInitialSync — duplicate filename handling', () => {
     const blogChecksum = checksum(blogContent);
     const aboutChecksum = checksum(aboutContent);
 
-    apiClient.fetchServerFiles.mockResolvedValue([
-      { filename: 'projects/blog', path: 'projects/blog.html', checksum: blogChecksum, modifiedAt: '2024-06-01T00:00:00Z', nodeId: 1 },
-      { filename: 'work/about', path: 'work/about.html', checksum: aboutChecksum, modifiedAt: '2024-06-01T00:00:00Z', nodeId: 2 }
+    apiClient.listNodes.mockResolvedValue([
+      { id: 1, type: 'site', name: 'blog.html', path: 'projects', checksum: blogChecksum, modifiedAt: '2024-06-01T00:00:00Z' },
+      { id: 2, type: 'site', name: 'about.html', path: 'work', checksum: aboutChecksum, modifiedAt: '2024-06-01T00:00:00Z' }
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
@@ -440,9 +444,9 @@ describe('performInitialSync — duplicate filename handling', () => {
     expect(fileOps.moveFile).toHaveBeenCalledTimes(2);
 
     // No downloads needed (checksums match after move)
-    expect(apiClient.downloadFromServer).not.toHaveBeenCalled();
+    expect(apiClient.getNodeContent).not.toHaveBeenCalled();
     // Orphans (old/blog.html, misc/about.html) should not be uploaded
-    expect(apiClient.uploadToServer).not.toHaveBeenCalled();
+    expect(apiClient.createNode).not.toHaveBeenCalled();
   });
 });
 

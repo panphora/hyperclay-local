@@ -82,16 +82,19 @@ beforeEach(() => {
   fileOps.readFile.mockResolvedValue('<html>content</html>');
   fileOps.getFileStats.mockResolvedValue({ mtime: new Date('2024-01-01'), size: 100 });
   fileOps.fileExists.mockResolvedValue(true);
-  apiClient.downloadFromServer.mockResolvedValue({
+  apiClient.getNodeContent.mockResolvedValue({
     content: '<html>server content</html>',
+    nodeType: 'site',
     modifiedAt: '2024-06-01T00:00:00Z',
-    checksum: checksum('<html>server content</html>')
+    checksum: checksum('<html>server content</html>'),
+    size: 26
   });
-  apiClient.uploadToServer.mockResolvedValue({ success: true, nodeId: 1 });
-  apiClient.fetchServerFiles.mockResolvedValue([]);
-  apiClient.deleteFileOnServer.mockResolvedValue({ success: true });
-  apiClient.renameFileOnServer.mockResolvedValue({ success: true });
-  apiClient.moveFileOnServer.mockResolvedValue({ success: true });
+  apiClient.putNodeContent.mockResolvedValue({ nodeId: 1, checksum: 'abc' });
+  apiClient.createNode.mockResolvedValue({ id: 1, type: 'site', name: 'test.html', parentId: 0, path: '' });
+  apiClient.listNodes.mockResolvedValue([]);
+  apiClient.deleteNode.mockResolvedValue({ success: true });
+  apiClient.renameNode.mockResolvedValue({ success: true });
+  apiClient.moveNode.mockResolvedValue({ success: true });
   fileOps.getLocalFiles.mockResolvedValue(new Map());
   nodeMapModule.load.mockResolvedValue(new Map());
   nodeMapModule.save.mockResolvedValue();
@@ -112,7 +115,7 @@ describe('detectLocalChanges — local delete', () => {
 
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
 
-    expect(apiClient.deleteFileOnServer).toHaveBeenCalledWith(
+    expect(apiClient.deleteNode).toHaveBeenCalledWith(
       'http://localhyperclay.com', 'hcsk_test', 42
     );
     expect(syncEngine.nodeMap.has('42')).toBe(false);
@@ -129,9 +132,9 @@ describe('detectLocalChanges — local delete', () => {
 
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
 
-    expect(apiClient.deleteFileOnServer).not.toHaveBeenCalled();
-    expect(apiClient.downloadFromServer).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test', 'my-site'
+    expect(apiClient.deleteNode).not.toHaveBeenCalled();
+    expect(apiClient.getNodeContent).toHaveBeenCalledWith(
+      'http://localhyperclay.com', 'hcsk_test', 42
     );
     expect(syncEngine.nodeMap.has('42')).toBe(true);
   });
@@ -144,7 +147,7 @@ describe('detectLocalChanges — local delete', () => {
 
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
 
-    expect(apiClient.deleteFileOnServer).not.toHaveBeenCalled();
+    expect(apiClient.deleteNode).not.toHaveBeenCalled();
   });
 });
 
@@ -160,11 +163,14 @@ describe('detectLocalChanges — local move', () => {
       ['blog/my-site.html', { path: '/test/sync/blog/my-site.html', relativePath: 'blog/my-site.html', mtime: new Date(), size: 100 }]
     ]);
     fileOps.readFile.mockResolvedValue('<html>content</html>');
+    apiClient.listNodes.mockResolvedValue([
+      { id: 100, type: 'folder', name: 'blog', path: '', parentId: 0 }
+    ]);
 
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
 
-    expect(apiClient.moveFileOnServer).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test', 42, 'blog'
+    expect(apiClient.moveNode).toHaveBeenCalledWith(
+      'http://localhyperclay.com', 'hcsk_test', 42, 100
     );
     expect(syncEngine.nodeMap.get('42').path).toBe('blog/my-site.html');
   });
@@ -183,8 +189,8 @@ describe('detectLocalChanges — local move', () => {
 
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
 
-    expect(apiClient.moveFileOnServer).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test', 42, ''
+    expect(apiClient.moveNode).toHaveBeenCalledWith(
+      'http://localhyperclay.com', 'hcsk_test', 42, 0
     );
   });
 });
@@ -205,7 +211,7 @@ describe('detectLocalChanges — local rename (inode match)', () => {
 
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
 
-    expect(apiClient.renameFileOnServer).toHaveBeenCalledWith(
+    expect(apiClient.renameNode).toHaveBeenCalledWith(
       'http://localhyperclay.com', 'hcsk_test', 42, 'new-name.html'
     );
     expect(syncEngine.nodeMap.get('42').path).toBe('new-name.html');
@@ -230,7 +236,7 @@ describe('detectLocalChanges — local rename (checksum match)', () => {
 
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
 
-    expect(apiClient.renameFileOnServer).toHaveBeenCalledWith(
+    expect(apiClient.renameNode).toHaveBeenCalledWith(
       'http://localhyperclay.com', 'hcsk_test', 42, 'renamed.html'
     );
   });
@@ -247,9 +253,9 @@ describe('detectLocalChanges — server wins conflicts', () => {
 
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
 
-    expect(apiClient.deleteFileOnServer).not.toHaveBeenCalled();
-    expect(apiClient.renameFileOnServer).not.toHaveBeenCalled();
-    expect(apiClient.moveFileOnServer).not.toHaveBeenCalled();
+    expect(apiClient.deleteNode).not.toHaveBeenCalled();
+    expect(apiClient.renameNode).not.toHaveBeenCalled();
+    expect(apiClient.moveNode).not.toHaveBeenCalled();
   });
 });
 
@@ -258,17 +264,17 @@ describe('detectLocalChanges — skips on first sync', () => {
     syncEngine.lastSyncedAt = null;
     syncEngine.nodeMap = new Map([['42', entry('my-site.html')]]);
 
-    apiClient.fetchServerFiles.mockResolvedValue([
-      { nodeId: 42, filename: 'my-site', path: 'my-site.html', checksum: 'abc', modifiedAt: '2024-01-01T00:00:00Z' }
+    apiClient.listNodes.mockResolvedValue([
+      { id: 42, type: 'site', name: 'my-site.html', path: '', checksum: 'abc', modifiedAt: '2024-01-01T00:00:00Z' }
     ]);
     fileOps.getLocalFiles.mockResolvedValue(new Map());
     fileOps.readFile.mockResolvedValue('<html>server content</html>');
 
     await syncEngine.performInitialSync();
 
-    expect(apiClient.deleteFileOnServer).not.toHaveBeenCalled();
-    expect(apiClient.renameFileOnServer).not.toHaveBeenCalled();
-    expect(apiClient.moveFileOnServer).not.toHaveBeenCalled();
+    expect(apiClient.deleteNode).not.toHaveBeenCalled();
+    expect(apiClient.renameNode).not.toHaveBeenCalled();
+    expect(apiClient.moveNode).not.toHaveBeenCalled();
   });
 });
 
@@ -338,7 +344,7 @@ describe('SSE echo suppression', () => {
 });
 
 describe('detectLocalChanges adds pendingActions for SSE suppression', () => {
-  test('adds delete pendingAction before calling deleteFileOnServer', async () => {
+  test('adds delete pendingAction before calling deleteNode', async () => {
     const cs = checksum('<html>content</html>');
     syncEngine.nodeMap = new Map([['42', entry('my-site.html', cs, 111)]]);
 
@@ -348,7 +354,7 @@ describe('detectLocalChanges adds pendingActions for SSE suppression', () => {
     const localFiles = new Map();
 
     let capturedPendingAction = false;
-    apiClient.deleteFileOnServer.mockImplementation(async () => {
+    apiClient.deleteNode.mockImplementation(async () => {
       capturedPendingAction = syncEngine.pendingActions.has('delete:42');
       return { success: true };
     });
@@ -358,7 +364,7 @@ describe('detectLocalChanges adds pendingActions for SSE suppression', () => {
     expect(capturedPendingAction).toBe(true);
   });
 
-  test('adds rename pendingAction before calling renameFileOnServer', async () => {
+  test('adds rename pendingAction before calling renameNode', async () => {
     const cs = checksum('<html>content</html>');
     syncEngine.nodeMap = new Map([['42', entry('old-name.html', cs, 99999)]]);
     nodeMapModule.getInode.mockResolvedValue(99999);
@@ -371,7 +377,7 @@ describe('detectLocalChanges adds pendingActions for SSE suppression', () => {
     ]);
 
     let capturedPendingAction = false;
-    apiClient.renameFileOnServer.mockImplementation(async () => {
+    apiClient.renameNode.mockImplementation(async () => {
       capturedPendingAction = syncEngine.pendingActions.has('rename:42');
       return { success: true };
     });
@@ -381,10 +387,13 @@ describe('detectLocalChanges adds pendingActions for SSE suppression', () => {
     expect(capturedPendingAction).toBe(true);
   });
 
-  test('adds move pendingAction before calling moveFileOnServer', async () => {
+  test('adds move pendingAction before calling moveNode', async () => {
     const cs = checksum('<html>content</html>');
     syncEngine.nodeMap = new Map([['42', entry('my-site.html', cs, 111)]]);
     fileOps.readFile.mockResolvedValue('<html>content</html>');
+    apiClient.listNodes.mockResolvedValue([
+      { id: 100, type: 'folder', name: 'blog', path: '', parentId: 0 }
+    ]);
 
     const serverFiles = [
       { nodeId: 42, filename: 'my-site', path: 'my-site.html', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
@@ -394,7 +403,7 @@ describe('detectLocalChanges adds pendingActions for SSE suppression', () => {
     ]);
 
     let capturedPendingAction = false;
-    apiClient.moveFileOnServer.mockImplementation(async () => {
+    apiClient.moveNode.mockImplementation(async () => {
       capturedPendingAction = syncEngine.pendingActions.has('move:42');
       return { success: true };
     });
@@ -419,9 +428,9 @@ describe('detectLocalChanges — file still at expected path', () => {
 
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
 
-    expect(apiClient.deleteFileOnServer).not.toHaveBeenCalled();
-    expect(apiClient.renameFileOnServer).not.toHaveBeenCalled();
-    expect(apiClient.moveFileOnServer).not.toHaveBeenCalled();
+    expect(apiClient.deleteNode).not.toHaveBeenCalled();
+    expect(apiClient.renameNode).not.toHaveBeenCalled();
+    expect(apiClient.moveNode).not.toHaveBeenCalled();
   });
 });
 
@@ -440,13 +449,13 @@ describe('detectLocalChanges — API error handling', () => {
     ];
     const localFiles = new Map();
 
-    apiClient.deleteFileOnServer
+    apiClient.deleteNode
       .mockRejectedValueOnce(new Error('Network error'))
       .mockResolvedValueOnce({ success: true });
 
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
 
-    expect(apiClient.deleteFileOnServer).toHaveBeenCalledTimes(2);
+    expect(apiClient.deleteNode).toHaveBeenCalledTimes(2);
     expect(syncEngine.nodeMap.has('42')).toBe(true);
     expect(syncEngine.nodeMap.has('43')).toBe(false);
   });
