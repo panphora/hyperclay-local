@@ -32,9 +32,7 @@ const nodeMap = require('./node-map');
 
 module.exports = {
   _skipIfEcho(actionType, nodeId) {
-    const key = `${actionType}:${nodeId}`;
-    if (this.pendingActions.has(key)) {
-      this.pendingActions.delete(key);
+    if (this.outbox.consumeIfInFlight(actionType, nodeId)) {
       console.log(`[SYNC] SSE: Skipping self-initiated ${actionType} for nodeId ${nodeId}`);
       return true;
     }
@@ -193,7 +191,7 @@ module.exports = {
 
     this._markDescendantsForSuppression([localFolderPath]);
 
-    this.pendingActions.set(`save:${data.nodeId}`, Date.now());
+    this.outbox.markInFlight('save', data.nodeId);
 
     await ensureDirectory(localPath);
 
@@ -296,7 +294,7 @@ module.exports = {
       liveSync.markBrowserSave(toFileId(localFilename));
     }
 
-    this.pendingActions.set(`delete:${nodeId}`, Date.now());
+    this.outbox.markInFlight('delete', nodeId);
 
     await moveFile(localPath, trashPath);
 
@@ -322,7 +320,7 @@ module.exports = {
     ];
     this._markDescendantsForSuppression(oldSidePaths);
 
-    this.pendingActions.set(`delete:${nodeId}`, Date.now());
+    this.outbox.markInFlight('delete', nodeId);
 
     const exists = await fileExists(localPath);
     if (!exists) {

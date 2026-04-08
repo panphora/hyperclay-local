@@ -31,6 +31,7 @@ jest.mock('../../src/main/utils/utils', () => ({
 const fileOps = require('../../src/sync-engine/file-operations');
 const apiClient = require('../../src/sync-engine/api-client');
 const nodeMapModule = require('../../src/sync-engine/node-map');
+const Outbox = require('../../src/sync-engine/state/outbox');
 
 jest.mock('../../src/sync-engine/file-operations');
 jest.mock('../../src/sync-engine/api-client');
@@ -279,9 +280,9 @@ describe('detectLocalChanges — skips on first sync', () => {
 });
 
 describe('SSE echo suppression', () => {
-  test('skips handleNodeDeleted when pendingActions has matching key', async () => {
+  test('skips handleNodeDeleted when outbox has matching op', async () => {
     syncEngine.nodeMap = new Map([['42', entry('my-site.html')]]);
-    syncEngine.pendingActions.set('delete:42', Date.now());
+    syncEngine.outbox.markInFlight('delete', 42);
     fileOps.fileExists.mockResolvedValue(true);
 
     await syncEngine.handleNodeDeleted({
@@ -290,12 +291,12 @@ describe('SSE echo suppression', () => {
     });
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
-    expect(syncEngine.pendingActions.has('delete:42')).toBe(false);
+    expect(syncEngine.outbox.has('delete', 42)).toBe(false);
   });
 
-  test('skips handleNodeRenamed when pendingActions has matching key', async () => {
+  test('skips handleNodeRenamed when outbox has matching op', async () => {
     syncEngine.nodeMap = new Map([['42', entry('old.html')]]);
-    syncEngine.pendingActions.set('rename:42', Date.now());
+    syncEngine.outbox.markInFlight('rename', 42);
 
     await syncEngine.handleNodeRenamed({
       nodeId: 42, nodeType: 'site',
@@ -304,12 +305,12 @@ describe('SSE echo suppression', () => {
     });
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
-    expect(syncEngine.pendingActions.has('rename:42')).toBe(false);
+    expect(syncEngine.outbox.has('rename', 42)).toBe(false);
   });
 
-  test('skips handleNodeMoved when pendingActions has matching key', async () => {
+  test('skips handleNodeMoved when outbox has matching op', async () => {
     syncEngine.nodeMap = new Map([['42', entry('my-site.html')]]);
-    syncEngine.pendingActions.set('move:42', Date.now());
+    syncEngine.outbox.markInFlight('move', 42);
 
     await syncEngine.handleNodeMoved({
       nodeId: 42, nodeType: 'site',
@@ -317,10 +318,10 @@ describe('SSE echo suppression', () => {
     });
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
-    expect(syncEngine.pendingActions.has('move:42')).toBe(false);
+    expect(syncEngine.outbox.has('move', 42)).toBe(false);
   });
 
-  test('processes SSE normally when no pendingAction match', async () => {
+  test('processes SSE normally when no outbox match', async () => {
     syncEngine.nodeMap = new Map([['42', entry('my-site.html')]]);
     fileOps.fileExists.mockResolvedValue(true);
 
@@ -334,8 +335,8 @@ describe('SSE echo suppression', () => {
   });
 });
 
-describe('detectLocalChanges adds pendingActions for SSE suppression', () => {
-  test('adds delete pendingAction before calling deleteNode', async () => {
+describe('detectLocalChanges marks outbox for SSE suppression', () => {
+  test('marks delete in outbox before calling deleteNode', async () => {
     const cs = checksum('<html>content</html>');
     syncEngine.nodeMap = new Map([['42', entry('my-site.html', cs, 111)]]);
 
@@ -346,7 +347,7 @@ describe('detectLocalChanges adds pendingActions for SSE suppression', () => {
 
     let capturedPendingAction = false;
     apiClient.deleteNode.mockImplementation(async () => {
-      capturedPendingAction = syncEngine.pendingActions.has('delete:42');
+      capturedPendingAction = syncEngine.outbox.has('delete', '42');
       return { success: true };
     });
 
@@ -355,7 +356,7 @@ describe('detectLocalChanges adds pendingActions for SSE suppression', () => {
     expect(capturedPendingAction).toBe(true);
   });
 
-  test('adds rename pendingAction before calling renameNode', async () => {
+  test('marks rename in outbox before calling renameNode', async () => {
     const cs = checksum('<html>content</html>');
     syncEngine.nodeMap = new Map([['42', entry('old-name.html', cs, 99999)]]);
     nodeMapModule.getInode.mockResolvedValue(99999);
@@ -369,7 +370,7 @@ describe('detectLocalChanges adds pendingActions for SSE suppression', () => {
 
     let capturedPendingAction = false;
     apiClient.renameNode.mockImplementation(async () => {
-      capturedPendingAction = syncEngine.pendingActions.has('rename:42');
+      capturedPendingAction = syncEngine.outbox.has('rename', '42');
       return { success: true };
     });
 
@@ -378,7 +379,7 @@ describe('detectLocalChanges adds pendingActions for SSE suppression', () => {
     expect(capturedPendingAction).toBe(true);
   });
 
-  test('adds move pendingAction before calling moveNode', async () => {
+  test('marks move in outbox before calling moveNode', async () => {
     const cs = checksum('<html>content</html>');
     syncEngine.nodeMap = new Map([
       ['42', entry('my-site.html', cs, 111)],
@@ -395,7 +396,7 @@ describe('detectLocalChanges adds pendingActions for SSE suppression', () => {
 
     let capturedPendingAction = false;
     apiClient.moveNode.mockImplementation(async () => {
-      capturedPendingAction = syncEngine.pendingActions.has('move:42');
+      capturedPendingAction = syncEngine.outbox.has('move', '42');
       return { success: true };
     });
 
@@ -452,51 +453,35 @@ describe('detectLocalChanges — API error handling', () => {
   });
 });
 
-describe('pendingActions TTL', () => {
+describe('outbox TTL', () => {
   test('keys persist past the cleanup interval if within TTL', () => {
-    syncEngine.pendingActions = new Map();
-    syncEngine.PENDING_ACTION_TTL_MS = 30000;
+    syncEngine.outbox = new Outbox({ ttlMs: 30000 });
+    syncEngine.outbox.markInFlight('rename', 42);
 
-    const addedAt = Date.now();
-    syncEngine.pendingActions.set('rename:42', addedAt);
+    // Sweep immediately — entry was just added, should survive
+    syncEngine.outbox.sweep();
 
-    // Simulate cleanup tick at +15s — within TTL, key should survive
-    const cutoff = (addedAt + 15000) - syncEngine.PENDING_ACTION_TTL_MS;
-    for (const [key, ts] of syncEngine.pendingActions) {
-      if (ts < cutoff) syncEngine.pendingActions.delete(key);
-    }
-
-    expect(syncEngine.pendingActions.has('rename:42')).toBe(true);
+    expect(syncEngine.outbox.has('rename', 42)).toBe(true);
   });
 
   test('keys are evicted after the TTL elapses', () => {
-    syncEngine.pendingActions = new Map();
-    syncEngine.PENDING_ACTION_TTL_MS = 30000;
+    syncEngine.outbox = new Outbox({ ttlMs: 30000 });
+    // Backdate: directly seed a 31s-old entry so sweep sees it as stale
+    syncEngine.outbox._inFlight.set('rename:42', Date.now() - 31000);
 
-    // Pretend the key was added 31s ago
-    syncEngine.pendingActions.set('rename:42', Date.now() - 31000);
+    syncEngine.outbox.sweep();
 
-    const cutoff = Date.now() - syncEngine.PENDING_ACTION_TTL_MS;
-    for (const [key, ts] of syncEngine.pendingActions) {
-      if (ts < cutoff) syncEngine.pendingActions.delete(key);
-    }
-
-    expect(syncEngine.pendingActions.has('rename:42')).toBe(false);
+    expect(syncEngine.outbox.has('rename', 42)).toBe(false);
   });
 
   test('only stale keys are evicted; fresh ones survive', () => {
-    syncEngine.pendingActions = new Map();
-    syncEngine.PENDING_ACTION_TTL_MS = 30000;
+    syncEngine.outbox = new Outbox({ ttlMs: 30000 });
+    syncEngine.outbox._inFlight.set('rename:42', Date.now() - 31000); // stale
+    syncEngine.outbox.markInFlight('move', 43);                        // fresh
 
-    syncEngine.pendingActions.set('rename:42', Date.now() - 31000); // stale
-    syncEngine.pendingActions.set('move:43', Date.now());            // fresh
+    syncEngine.outbox.sweep();
 
-    const cutoff = Date.now() - syncEngine.PENDING_ACTION_TTL_MS;
-    for (const [key, ts] of syncEngine.pendingActions) {
-      if (ts < cutoff) syncEngine.pendingActions.delete(key);
-    }
-
-    expect(syncEngine.pendingActions.has('rename:42')).toBe(false);
-    expect(syncEngine.pendingActions.has('move:43')).toBe(true);
+    expect(syncEngine.outbox.has('rename', 42)).toBe(false);
+    expect(syncEngine.outbox.has('move', 43)).toBe(true);
   });
 });

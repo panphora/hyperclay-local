@@ -35,6 +35,7 @@ jest.mock('../../src/sync-engine/node-map');
 const path = require('path');
 const fileOps = require('../../src/sync-engine/file-operations');
 const nodeMapModule = require('../../src/sync-engine/node-map');
+const Outbox = require('../../src/sync-engine/state/outbox');
 
 let syncEngine;
 
@@ -48,7 +49,7 @@ beforeEach(() => {
   syncEngine.syncFolder = '/tmp/test-sync';
   syncEngine.metaDir = '/tmp/test-meta';
   syncEngine.nodeMap = new Map();
-  syncEngine.pendingActions = new Map();
+  syncEngine.outbox = new Outbox();
   syncEngine.recentFolderCascadePaths = new Map();
 
   fileOps.moveFile.mockResolvedValue();

@@ -33,6 +33,7 @@ jest.mock('../../src/sync-engine/api-client');
 jest.mock('../../src/sync-engine/node-map');
 
 const { renameNode, moveNode, deleteNode } = require('../../src/sync-engine/api-client');
+const Outbox = require('../../src/sync-engine/state/outbox');
 
 let syncEngine;
 
@@ -46,7 +47,7 @@ beforeEach(() => {
   syncEngine.isRunning = true;
   syncEngine.nodeMap = new Map();
   syncEngine.pendingUnlinks = new Map();
-  syncEngine.pendingActions = new Map();
+  syncEngine.outbox = new Outbox();
   syncEngine.recentFolderCascadePaths = new Map();
   syncEngine.folderIdentityWaiters = new Map();
   syncEngine.serverUrl = 'http://test';

@@ -32,6 +32,7 @@ jest.mock('../../src/sync-engine/file-operations');
 jest.mock('../../src/sync-engine/node-map');
 
 const nodeMapModule = require('../../src/sync-engine/node-map');
+const Outbox = require('../../src/sync-engine/state/outbox');
 const {
   createNode,
   renameNode,
@@ -52,7 +53,7 @@ beforeEach(() => {
 
   syncEngine.isRunning = true;
   syncEngine.nodeMap = new Map();
-  syncEngine.pendingActions = new Map();
+  syncEngine.outbox = new Outbox();
   syncEngine.pendingUnlinks = new Map();
   syncEngine.recentFolderCascadePaths = new Map();
   syncEngine.folderIdentityWaiters = new Map();

@@ -166,7 +166,7 @@ module.exports = {
       this.pendingUnlinks.delete(normalizedPath);
       console.log(`[SYNC] Watcher: Local ${type} delete detected: ${normalizedPath} (nodeId ${foundNodeId})`);
       try {
-        this.pendingActions.set(`delete:${foundNodeId}`, Date.now());
+        this.outbox.markInFlight('delete', foundNodeId);
         await deleteNode(this.serverUrl, this.apiKey, parseInt(foundNodeId));
         this.invalidateServerNodesCache();
 
@@ -254,7 +254,7 @@ module.exports = {
     if (!isSameFile) {
       console.log(`[SYNC] Watcher: Identity mismatch for ${oldPath} → ${newPath}, treating as delete+add`);
       try {
-        this.pendingActions.set(`delete:${pending.nodeId}`, Date.now());
+        this.outbox.markInFlight('delete', pending.nodeId);
         await deleteNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId));
         this.invalidateServerNodesCache();
         this.nodeMap.delete(pending.nodeId);
@@ -273,18 +273,18 @@ module.exports = {
     try {
       if (shape === 'move') {
         console.log(`[SYNC] Watcher: Local ${type} move detected: ${oldPath} → ${newPath}`);
-        this.pendingActions.set(`move:${pending.nodeId}`, Date.now());
+        this.outbox.markInFlight('move', pending.nodeId);
         const targetParentId = this.resolveParentIdByPath(newFolderPath);
         await moveNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), targetParentId);
       } else if (shape === 'rename') {
         console.log(`[SYNC] Watcher: Local ${type} rename detected: ${oldPath} → ${newPath}`);
-        this.pendingActions.set(`rename:${pending.nodeId}`, Date.now());
+        this.outbox.markInFlight('rename', pending.nodeId);
         await renameNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), addBasename);
       } else {
         console.log(`[SYNC] Watcher: Local ${type} move+rename detected: ${oldPath} → ${newPath}`);
-        this.pendingActions.set(`rename:${pending.nodeId}`, Date.now());
+        this.outbox.markInFlight('rename', pending.nodeId);
         await renameNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), addBasename);
-        this.pendingActions.set(`move:${pending.nodeId}`, Date.now());
+        this.outbox.markInFlight('move', pending.nodeId);
         const targetParentId = this.resolveParentIdByPath(newFolderPath);
         await moveNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), targetParentId);
       }
@@ -372,7 +372,7 @@ module.exports = {
 
     if (!isSameFolder) {
       try {
-        this.pendingActions.set(`delete:${pending.nodeId}`, Date.now());
+        this.outbox.markInFlight('delete', pending.nodeId);
         await deleteNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId));
         this.invalidateServerNodesCache();
         const oldDescendants = nodeMap.walkDescendants(this.nodeMap, oldPath);
@@ -401,18 +401,18 @@ module.exports = {
     try {
       if (shape === 'move') {
         console.log(`[SYNC] Watcher: Local folder move detected: ${oldPath} → ${newPath}`);
-        this.pendingActions.set(`move:${pending.nodeId}`, Date.now());
+        this.outbox.markInFlight('move', pending.nodeId);
         const targetParentId = this.resolveParentIdByPath(newFolderPath);
         await moveNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), targetParentId);
       } else if (shape === 'rename') {
         console.log(`[SYNC] Watcher: Local folder rename detected: ${oldPath} → ${newPath}`);
-        this.pendingActions.set(`rename:${pending.nodeId}`, Date.now());
+        this.outbox.markInFlight('rename', pending.nodeId);
         await renameNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), addBasename);
       } else {
         console.log(`[SYNC] Watcher: Local folder move+rename detected: ${oldPath} → ${newPath}`);
-        this.pendingActions.set(`rename:${pending.nodeId}`, Date.now());
+        this.outbox.markInFlight('rename', pending.nodeId);
         await renameNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), addBasename);
-        this.pendingActions.set(`move:${pending.nodeId}`, Date.now());
+        this.outbox.markInFlight('move', pending.nodeId);
         const targetParentId = this.resolveParentIdByPath(newFolderPath);
         await moveNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), targetParentId);
       }

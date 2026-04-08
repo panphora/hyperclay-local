@@ -36,6 +36,7 @@ const path = require('path');
 const fileOps = require('../../src/sync-engine/file-operations');
 const apiClient = require('../../src/sync-engine/api-client');
 const nodeMapModule = require('../../src/sync-engine/node-map');
+const Outbox = require('../../src/sync-engine/state/outbox');
 
 let syncEngine;
 
@@ -54,7 +55,7 @@ beforeEach(() => {
   syncEngine.deviceId = 'test-device';
   syncEngine.isRunning = true;
   syncEngine.nodeMap = new Map();
-  syncEngine.pendingActions = new Map();
+  syncEngine.outbox = new Outbox();
   syncEngine.recentSseNodeSaves = new Map();
   syncEngine.recentFolderCascadePaths = new Map();
   syncEngine.stats = {
@@ -213,8 +214,8 @@ describe('handleNodeSaved', () => {
   });
 
   describe('echo suppression', () => {
-    it('skips application if pendingActions has matching save key', async () => {
-      syncEngine.pendingActions.set('save:42', Date.now());
+    it('skips application if outbox has matching save op', async () => {
+      syncEngine.outbox.markInFlight('save', 42);
 
       await syncEngine.handleNodeSaved({
         nodeId: 42,
@@ -225,7 +226,7 @@ describe('handleNodeSaved', () => {
       });
 
       expect(fileOps.writeFile).not.toHaveBeenCalled();
-      expect(syncEngine.pendingActions.has('save:42')).toBe(false);
+      expect(syncEngine.outbox.has('save', 42)).toBe(false);
     });
   });
 });

@@ -16,6 +16,7 @@ const { ensureDirectory } = require('./file-operations');
 const SyncQueue = require('./sync-queue');
 const nodeMap = require('./node-map');
 const { classifyPath } = require('./path-helpers');
+const Outbox = require('./state/outbox');
 
 class SyncEngine extends EventEmitter {
   constructor() {
@@ -37,8 +38,7 @@ class SyncEngine extends EventEmitter {
     this.syncQueue = new SyncQueue();
     this.metaDir = null; // Path to sync metadata directory (in userData)
     this.nodeMap = new Map(); // nodeId → { type, path, checksum?, inode?, parentId? }
-    this.pendingActions = new Map(); // SSE echo suppression: key -> timestamp ms (e.g. "delete:42" -> 1712345678901)
-    this.PENDING_ACTION_TTL_MS = 30000; // each pendingAction key lives 30s from when it was added
+    this.outbox = new Outbox(); // SSE echo suppression: tracks in-flight mutations
     this.pendingUnlinks = new Map(); // watcher rename/move detection: relativePath → { timerId, nodeId, type, entry }
     this.recentSseNodeSaves = new Map(); // `${nodeType}:${nodeId}` → expiresAt ms, tracks recent SSE node-saved events for toast suppression
     // Cascade suppression (S5-Q1, extended in Step 6): when a folder operation
@@ -188,14 +188,9 @@ class SyncEngine extends EventEmitter {
 
       // No polling - SSE handles real-time sync for both live-sync and disk writes
 
-      // Periodic cleanup of stale pendingActions + folder rename suppression entries
+      // Periodic cleanup of stale outbox entries + folder rename suppression entries
       this.pendingActionsCleanupTimer = setInterval(() => {
-        const cutoff = Date.now() - this.PENDING_ACTION_TTL_MS;
-        for (const [key, ts] of this.pendingActions) {
-          if (ts < cutoff) {
-            this.pendingActions.delete(key);
-          }
-        }
+        this.outbox.sweep();
         this._sweepFolderCascadeSuppressionSet();
       }, 10000);
 
@@ -279,7 +274,7 @@ class SyncEngine extends EventEmitter {
       clearInterval(this.pendingActionsCleanupTimer);
       this.pendingActionsCleanupTimer = null;
     }
-    this.pendingActions.clear();
+    this.outbox.clear();
     for (const [, { timerId }] of this.pendingUnlinks) {
       clearTimeout(timerId);
     }

@@ -35,6 +35,7 @@ jest.mock('../../src/sync-engine/node-map');
 const path = require('path');
 const fileOps = require('../../src/sync-engine/file-operations');
 const nodeMapModule = require('../../src/sync-engine/node-map');
+const Outbox = require('../../src/sync-engine/state/outbox');
 
 let syncEngine;
 
@@ -48,7 +49,7 @@ beforeEach(() => {
   syncEngine.syncFolder = '/tmp/test-sync';
   syncEngine.metaDir = '/tmp/test-meta';
   syncEngine.nodeMap = new Map();
-  syncEngine.pendingActions = new Map();
+  syncEngine.outbox = new Outbox();
   syncEngine.recentFolderCascadePaths = new Map();
 
   fileOps.moveFile.mockResolvedValue();
@@ -138,7 +139,7 @@ describe('_applyFolderRelocate', () => {
     expect(syncEngine.nodeMap.get('60').path).toBe('old');
   });
 
-  it('suppresses watcher echo via suppression set, not pendingActions', async () => {
+  it('suppresses watcher echo via suppression set, not outbox', async () => {
     syncEngine.nodeMap.set('60', { type: 'folder', path: 'old' });
     fileOps.fileExists.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
     nodeMapModule.walkDescendants.mockReturnValue([]);
@@ -151,9 +152,9 @@ describe('_applyFolderRelocate', () => {
     const calledWithPaths = spy.mock.calls[0][0];
     expect(calledWithPaths).toContain('old');
     expect(calledWithPaths).toContain('new');
-    // pendingActions should NOT be set (would poison subsequent SSE events)
-    expect(syncEngine.pendingActions.has('rename:60')).toBe(false);
-    expect(syncEngine.pendingActions.has('move:60')).toBe(false);
+    // outbox should NOT be set (would poison subsequent SSE events)
+    expect(syncEngine.outbox.has('rename', 60)).toBe(false);
+    expect(syncEngine.outbox.has('move', 60)).toBe(false);
 
     spy.mockRestore();
   });

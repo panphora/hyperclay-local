@@ -316,7 +316,7 @@ module.exports = {
       const strategies = [
         {
           name: 'move',
-          pendingKey: `move:${nid}`,
+          pendingOp: 'move',
           match: async (localFile) => path.basename(localFile) === expectedBasename,
           apply: async (localFile) => {
             const targetFolder = path.dirname(localFile);
@@ -331,7 +331,7 @@ module.exports = {
         },
         {
           name: 'rename (inode match)',
-          pendingKey: `rename:${nid}`,
+          pendingOp: 'rename',
           match: async (localFile) => {
             const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
             return localInode && entry.inode && localInode === entry.inode;
@@ -345,7 +345,7 @@ module.exports = {
         },
         {
           name: 'rename (checksum match)',
-          pendingKey: `rename:${nid}`,
+          pendingOp: 'rename',
           match: async (localFile) => {
             if (!entry.checksum) return false;
             const content = await readFile(path.join(this.syncFolder, localFile)).catch(() => null);
@@ -369,7 +369,7 @@ module.exports = {
           if (await strategy.match(localFile)) {
             try {
               console.log(`[SYNC] Local ${strategy.name} detected: ${entry.path} → ${localFile} (nodeId ${nid})`);
-              this.pendingActions.set(strategy.pendingKey, Date.now());
+              this.outbox.markInFlight(strategy.pendingOp, nid);
               const newEntry = await strategy.apply(localFile);
               this.invalidateServerFilesCache();
               this.nodeMap.set(nid, newEntry);
@@ -399,7 +399,7 @@ module.exports = {
 
       try {
         console.log(`[SYNC] Local delete detected: ${entry.path} (nodeId ${nid})`);
-        this.pendingActions.set(`delete:${nid}`, Date.now());
+        this.outbox.markInFlight('delete', nid);
         await deleteNode(this.serverUrl, this.apiKey, parseInt(nid));
         this.invalidateServerFilesCache();
         this.nodeMap.delete(nid);

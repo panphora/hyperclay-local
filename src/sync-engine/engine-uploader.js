@@ -448,7 +448,7 @@ module.exports = {
         parentId
       });
 
-      this.pendingActions.set(`save:${createdNode.id}`, Date.now());
+      this.outbox.markInFlight('save', createdNode.id);
 
       const fullPath = path.join(this.syncFolder, relativePath);
       const inode = await nodeMap.getInode(fullPath);
