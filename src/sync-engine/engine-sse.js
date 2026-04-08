@@ -82,13 +82,12 @@ module.exports = {
       if (localChecksum === data.checksum) {
         console.log(`[SYNC] SSE node-saved: ${data.path} already up to date`);
         const inode = await nodeMap.getInode(localPath);
-        this.nodeMap.set(String(data.nodeId), {
+        await this.repo.set(data.nodeId, {
           type: 'site',
           path: localFilename,
           checksum: localChecksum,
           inode
         });
-        await nodeMap.save(this.metaDir, this.nodeMap);
         return;
       }
     } catch (e) {
@@ -107,13 +106,12 @@ module.exports = {
 
     const inode = await nodeMap.getInode(localPath);
     const cs = await calculateChecksum(data.content);
-    this.nodeMap.set(String(data.nodeId), {
+    await this.repo.set(data.nodeId, {
       type: 'site',
       path: localFilename,
       checksum: cs,
       inode
     });
-    await nodeMap.save(this.metaDir, this.nodeMap);
 
     console.log(`[SYNC] SSE node-saved: Wrote site ${localFilename}`);
     this.stats.filesDownloaded++;
@@ -137,13 +135,12 @@ module.exports = {
       if (localChecksum === data.checksum) {
         console.log(`[SYNC] SSE node-saved: upload ${data.path} already up to date`);
         const inode = await nodeMap.getInode(localPath);
-        this.nodeMap.set(String(data.nodeId), {
+        await this.repo.set(data.nodeId, {
           type: 'upload',
           path: localFilename,
           checksum: localChecksum,
           inode
         });
-        await nodeMap.save(this.metaDir, this.nodeMap);
         return;
       }
     } catch (e) {
@@ -158,13 +155,12 @@ module.exports = {
     await writeFileBuffer(localPath, fetched.content, fetched.modifiedAt);
 
     const inode = await nodeMap.getInode(localPath);
-    this.nodeMap.set(String(data.nodeId), {
+    await this.repo.set(data.nodeId, {
       type: 'upload',
       path: localFilename,
       checksum: fetched.checksum,
       inode
     });
-    await nodeMap.save(this.metaDir, this.nodeMap);
 
     console.log(`[SYNC] SSE node-saved: Wrote upload ${localFilename}`);
     this.stats.uploadsDownloaded++;
@@ -178,7 +174,7 @@ module.exports = {
   },
 
   async _applyNodeSavedFolder(data) {
-    if (this.nodeMap.has(String(data.nodeId))) {
+    if (this.repo.has(data.nodeId)) {
       console.log(`[SYNC] SSE node-saved: folder ${data.path} already tracked, no-op`);
       return;
     }
@@ -194,13 +190,12 @@ module.exports = {
     await ensureDirectory(localPath);
 
     const inode = await nodeMap.getInode(localPath);
-    this.nodeMap.set(String(data.nodeId), {
+    await this.repo.set(data.nodeId, {
       type: 'folder',
       path: localFolderPath,
       parentId: data.parentId,
       inode
     });
-    await nodeMap.save(this.metaDir, this.nodeMap);
 
     console.log(`[SYNC] SSE node-saved: Created folder ${localFolderPath}`);
     this.emit('file-synced', {
@@ -272,7 +267,7 @@ module.exports = {
   },
 
   async _applyFileDelete(nodeId, fullPath, nodeType) {
-    const entry = this.nodeMap.get(String(nodeId));
+    const entry = this.repo.get(nodeId);
     const localFilename = entry?.path || fullPath;
     this.resolveContainedPath(localFilename);
     const localPath = path.join(this.syncFolder, localFilename);
@@ -281,8 +276,7 @@ module.exports = {
     const exists = await fileExists(localPath);
     if (!exists) {
       console.log(`[SYNC] SSE node-deleted: ${localFilename} not found locally`);
-      this.nodeMap.delete(String(nodeId));
-      await nodeMap.save(this.metaDir, this.nodeMap);
+      await this.repo.delete(nodeId);
       return;
     }
 
@@ -296,21 +290,20 @@ module.exports = {
 
     await moveFile(localPath, trashPath);
 
-    this.nodeMap.delete(String(nodeId));
-    await nodeMap.save(this.metaDir, this.nodeMap);
+    await this.repo.delete(nodeId);
 
     console.log(`[SYNC] SSE node-deleted: Trashed ${localFilename}`);
     this.emit('file-synced', { file: localFilename, action: 'trash', source: 'sse', type: nodeType });
   },
 
   async _applyFolderDelete(nodeId, fullPath) {
-    const entry = this.nodeMap.get(String(nodeId));
+    const entry = this.repo.get(nodeId);
     const localFolderPath = entry?.path || fullPath;
     this.resolveContainedPath(localFolderPath);
     const localPath = path.join(this.syncFolder, localFolderPath);
     const trashPath = path.join(this.syncFolder, '.trash', localFolderPath);
 
-    const descendants = nodeMap.walkDescendants(this.nodeMap, localFolderPath);
+    const descendants = this.repo.walkDescendants(localFolderPath);
 
     const oldSidePaths = [
       localFolderPath,
@@ -323,11 +316,12 @@ module.exports = {
     const exists = await fileExists(localPath);
     if (!exists) {
       console.log(`[SYNC] SSE node-deleted: folder ${localFolderPath} not found locally, cleaning nodeMap only`);
-      for (const { nodeId: descId } of descendants) {
-        this.nodeMap.delete(descId);
-      }
-      this.nodeMap.delete(String(nodeId));
-      await nodeMap.save(this.metaDir, this.nodeMap);
+      await this.repo.apply(async (map) => {
+        for (const { nodeId: descId } of descendants) {
+          map.delete(descId);
+        }
+        map.delete(String(nodeId));
+      });
       return;
     }
 
@@ -341,11 +335,12 @@ module.exports = {
       await moveFile(localPath, timestampedTrashPath);
     }
 
-    for (const { nodeId: descId } of descendants) {
-      this.nodeMap.delete(descId);
-    }
-    this.nodeMap.delete(String(nodeId));
-    await nodeMap.save(this.metaDir, this.nodeMap);
+    await this.repo.apply(async (map) => {
+      for (const { nodeId: descId } of descendants) {
+        map.delete(descId);
+      }
+      map.delete(String(nodeId));
+    });
 
     console.log(`[SYNC] SSE node-deleted: Trashed folder ${localFolderPath} (${descendants.length} descendant(s))`);
     this.emit('file-synced', { file: localFolderPath, action: 'trash', source: 'sse', type: 'folder' });
@@ -353,7 +348,7 @@ module.exports = {
 
   async _applyFileRelocate(nodeId, oldPath, newPath, nodeType) {
     this.resolveContainedPath(newPath);
-    const entry = this.nodeMap.get(String(nodeId));
+    const entry = this.repo.get(nodeId);
     const currentPath = entry?.path || oldPath;
     const localPath = path.join(this.syncFolder, currentPath);
     const newLocalPath = path.join(this.syncFolder, newPath);
@@ -367,13 +362,12 @@ module.exports = {
         console.log(`[SYNC] SSE node-relocated: ${currentPath} not found locally`);
       }
       const inode = await nodeMap.getInode(newLocalPath);
-      this.nodeMap.set(String(nodeId), {
+      await this.repo.set(nodeId, {
         type: nodeType,
         path: newPath,
         checksum: entry?.checksum || null,
         inode
       });
-      await nodeMap.save(this.metaDir, this.nodeMap);
       return;
     }
 
@@ -388,20 +382,19 @@ module.exports = {
     await moveFile(localPath, newLocalPath);
 
     const inode = await nodeMap.getInode(newLocalPath);
-    this.nodeMap.set(String(nodeId), {
+    await this.repo.set(nodeId, {
       type: nodeType,
       path: newPath,
       checksum: entry?.checksum || null,
       inode
     });
-    await nodeMap.save(this.metaDir, this.nodeMap);
 
     console.log(`[SYNC] SSE node-relocated: ${currentPath} → ${newPath}`);
   },
 
   async _applyFolderRelocate(nodeId, oldPath, newPath) {
     this.resolveContainedPath(newPath);
-    const entry = this.nodeMap.get(String(nodeId));
+    const entry = this.repo.get(nodeId);
     if (!entry || entry.type !== 'folder') {
       console.warn(`[SYNC] SSE node-relocated: folder nodeId ${nodeId} not in nodeMap or wrong type`);
     }
@@ -409,7 +402,7 @@ module.exports = {
     const localOldPath = path.join(this.syncFolder, oldPath);
     const localNewPath = path.join(this.syncFolder, newPath);
 
-    const descendants = nodeMap.walkDescendants(this.nodeMap, oldPath);
+    const descendants = this.repo.walkDescendants(oldPath);
 
     const oldToNew = new Map();
     for (const { nodeId: descId, entry: descEntry } of descendants) {
@@ -428,8 +421,9 @@ module.exports = {
     const exists = await fileExists(localOldPath);
     if (!exists) {
       console.log(`[SYNC] SSE node-relocated: folder ${oldPath} not found locally, updating nodeMap only`);
-      this._applyFolderRelocateNodeMapUpdates(nodeId, newPath, oldToNew);
-      await nodeMap.save(this.metaDir, this.nodeMap);
+      await this.repo.apply(async (map) => {
+        this._applyFolderRelocateNodeMapUpdates(map, nodeId, newPath, oldToNew);
+      });
       return;
     }
 
@@ -443,9 +437,9 @@ module.exports = {
 
     await moveFile(localOldPath, localNewPath);
 
-    this._applyFolderRelocateNodeMapUpdates(nodeId, newPath, oldToNew);
-
-    await nodeMap.save(this.metaDir, this.nodeMap);
+    await this.repo.apply(async (map) => {
+      this._applyFolderRelocateNodeMapUpdates(map, nodeId, newPath, oldToNew);
+    });
 
     console.log(`[SYNC] SSE node-relocated: folder ${oldPath} → ${newPath} (${descendants.length} descendant(s) updated)`);
 
@@ -457,14 +451,14 @@ module.exports = {
     });
   },
 
-  _applyFolderRelocateNodeMapUpdates(folderNodeId, newPath, oldToNew) {
+  _applyFolderRelocateNodeMapUpdates(map, folderNodeId, newPath, oldToNew) {
     for (const [descId, { newPath: descNewPath, entry: descEntry }] of oldToNew) {
-      this.nodeMap.set(descId, { ...descEntry, path: descNewPath });
+      map.set(descId, { ...descEntry, path: descNewPath });
     }
 
-    const folderEntry = this.nodeMap.get(String(folderNodeId));
+    const folderEntry = map.get(String(folderNodeId));
     if (folderEntry) {
-      this.nodeMap.set(String(folderNodeId), { ...folderEntry, path: newPath });
+      map.set(String(folderNodeId), { ...folderEntry, path: newPath });
     }
   },
 
@@ -658,51 +652,51 @@ module.exports = {
       const localFiles = await getLocalFiles(this.syncFolder);
       let changesFound = false;
 
-      for (const serverFile of serverFiles) {
-        // Check if sync was stopped during iteration
-        if (!this.isRunning) {
-          return;
-        }
-        // Server returns path WITH .html (e.g., "folder1/folder2/site.html" or "site.html")
-        const relativePath = serverFile.path || serverFile.filename;
-        const localPath = path.join(this.syncFolder, relativePath);
-        const localExists = localFiles.has(relativePath);
-
-        if (!localExists) {
-          // New file on server
-          await this.downloadFile(serverFile.filename, relativePath, serverFile.nodeId);
-          this.stats.filesDownloaded++;
-          changesFound = true;
-          if (serverFile.nodeId) {
-            const inode = await nodeMap.getInode(path.join(this.syncFolder, relativePath));
-            this.nodeMap.set(String(serverFile.nodeId), { path: relativePath, checksum: serverFile.checksum, inode });
+      await this.repo.apply(async (map) => {
+        for (const serverFile of serverFiles) {
+          // Check if sync was stopped during iteration
+          if (!this.isRunning) {
+            return;
           }
-        } else {
-          const localInfo = localFiles.get(relativePath);
-          const localContent = await readFile(localPath);
-          const localChecksum = await calculateChecksum(localContent);
+          // Server returns path WITH .html (e.g., "folder1/folder2/site.html" or "site.html")
+          const relativePath = serverFile.path || serverFile.filename;
+          const localPath = path.join(this.syncFolder, relativePath);
+          const localExists = localFiles.has(relativePath);
 
-          // Check if content is different
-          if (localChecksum !== serverFile.checksum) {
-            // Check if local is newer
-            if (isLocalNewer(localInfo.mtime, serverFile.modifiedAt, this.clockOffset)) {
-              console.log(`[SYNC] PRESERVE ${relativePath} - local is newer`);
-              this.stats.filesProtected++;
-            } else {
-              // Download newer version from server
-              await this.downloadFile(serverFile.filename, relativePath, serverFile.nodeId);
-              this.stats.filesDownloaded++;
-              changesFound = true;
-              if (serverFile.nodeId) {
-                const inode = await nodeMap.getInode(path.join(this.syncFolder, relativePath));
-                this.nodeMap.set(String(serverFile.nodeId), { path: relativePath, checksum: serverFile.checksum, inode });
+          if (!localExists) {
+            // New file on server
+            await this.downloadFile(serverFile.filename, relativePath, serverFile.nodeId);
+            this.stats.filesDownloaded++;
+            changesFound = true;
+            if (serverFile.nodeId) {
+              const inode = await nodeMap.getInode(path.join(this.syncFolder, relativePath));
+              map.set(String(serverFile.nodeId), { path: relativePath, checksum: serverFile.checksum, inode });
+            }
+          } else {
+            const localInfo = localFiles.get(relativePath);
+            const localContent = await readFile(localPath);
+            const localChecksum = await calculateChecksum(localContent);
+
+            // Check if content is different
+            if (localChecksum !== serverFile.checksum) {
+              // Check if local is newer
+              if (isLocalNewer(localInfo.mtime, serverFile.modifiedAt, this.clockOffset)) {
+                console.log(`[SYNC] PRESERVE ${relativePath} - local is newer`);
+                this.stats.filesProtected++;
+              } else {
+                // Download newer version from server
+                await this.downloadFile(serverFile.filename, relativePath, serverFile.nodeId);
+                this.stats.filesDownloaded++;
+                changesFound = true;
+                if (serverFile.nodeId) {
+                  const inode = await nodeMap.getInode(path.join(this.syncFolder, relativePath));
+                  map.set(String(serverFile.nodeId), { path: relativePath, checksum: serverFile.checksum, inode });
+                }
               }
             }
           }
         }
-      }
-
-      await nodeMap.save(this.metaDir, this.nodeMap);
+      });
 
       // Also check for upload changes
       if (!this.isRunning) return;
@@ -710,41 +704,41 @@ module.exports = {
       const serverUploads = await this.fetchAndCacheServerUploads(true);
       const localUploads = await getLocalUploads(this.syncFolder);
 
-      for (const serverUpload of serverUploads) {
-        if (!this.isRunning) return;
+      await this.repo.apply(async (map) => {
+        for (const serverUpload of serverUploads) {
+          if (!this.isRunning) return;
 
-        const localPath = path.join(this.syncFolder, serverUpload.path);
-        const localExists = localUploads.has(serverUpload.path);
+          const localPath = path.join(this.syncFolder, serverUpload.path);
+          const localExists = localUploads.has(serverUpload.path);
 
-        if (!localExists) {
-          await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
-          this.stats.uploadsDownloaded++;
-          changesFound = true;
-          if (serverUpload.nodeId) {
-            this.nodeMap.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null });
-          }
-        } else {
-          const localInfo = localUploads.get(serverUpload.path);
-          const localContent = await readFileBuffer(localPath);
-          const localChecksum = calculateBufferChecksum(localContent);
+          if (!localExists) {
+            await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
+            this.stats.uploadsDownloaded++;
+            changesFound = true;
+            if (serverUpload.nodeId) {
+              map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null });
+            }
+          } else {
+            const localInfo = localUploads.get(serverUpload.path);
+            const localContent = await readFileBuffer(localPath);
+            const localChecksum = calculateBufferChecksum(localContent);
 
-          if (localChecksum !== serverUpload.checksum) {
-            if (isLocalNewer(localInfo.mtime, serverUpload.modifiedAt, this.clockOffset)) {
-              console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - local is newer`);
-              this.stats.uploadsProtected++;
-            } else {
-              await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
-              this.stats.uploadsDownloaded++;
-              changesFound = true;
-              if (serverUpload.nodeId) {
-                this.nodeMap.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null });
+            if (localChecksum !== serverUpload.checksum) {
+              if (isLocalNewer(localInfo.mtime, serverUpload.modifiedAt, this.clockOffset)) {
+                console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - local is newer`);
+                this.stats.uploadsProtected++;
+              } else {
+                await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
+                this.stats.uploadsDownloaded++;
+                changesFound = true;
+                if (serverUpload.nodeId) {
+                  map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null });
+                }
               }
             }
           }
         }
-      }
-
-      await nodeMap.save(this.metaDir, this.nodeMap);
+      });
 
       if (changesFound) {
         this.emit('sync-stats', this.stats);
