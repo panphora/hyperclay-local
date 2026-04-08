@@ -85,7 +85,7 @@ class SyncEngine extends EventEmitter {
     this.pendingActions = new Map(); // SSE echo suppression: key -> timestamp ms (e.g. "delete:42" -> 1712345678901)
     this.PENDING_ACTION_TTL_MS = 30000; // each pendingAction key lives 30s from when it was added
     this.pendingUnlinks = new Map(); // watcher rename/move detection: relativePath → { timerId, nodeId, type, entry }
-    this.recentSseFileSaves = new Map(); // fileId → timestamp, tracks recent SSE file-saved events for toast suppression
+    this.recentSseNodeSaves = new Map(); // `${nodeType}:${nodeId}` → expiresAt ms, tracks recent SSE node-saved events for toast suppression
     this.recentFolderRenameDescendants = new Map();
     this.FOLDER_RENAME_SUPPRESSION_TTL_MS = 3000;
     this.folderIdentityWaiters = new Map();
@@ -811,169 +811,448 @@ class SyncEngine extends EventEmitter {
     }
   }
 
-  /**
-   * Handle file-saved SSE message - write stripped content to disk
-   * @param {string} file - Site name (without .html)
-   * @param {string} content - Stripped HTML content
-   * @param {string} checksum - MD5 checksum of content
-   * @param {string} modifiedAt - ISO timestamp
-   */
-  async handleFileSaved(file, content, checksum, modifiedAt, sseNodeId) {
-    const localFilename = /\.(html|htmlclay)$/.test(file) ? file : `${file}.html`;
-    this.resolveContainedPath(localFilename);
-    const localPath = path.join(this.syncFolder, localFilename);
+  _skipIfEcho(actionType, nodeId) {
+    const key = `${actionType}:${nodeId}`;
+    if (this.pendingActions.has(key)) {
+      this.pendingActions.delete(key);
+      console.log(`[SYNC] SSE: Skipping self-initiated ${actionType} for nodeId ${nodeId}`);
+      return true;
+    }
+    return false;
+  }
+
+  async handleNodeSaved(data) {
+    if (this._skipIfEcho('save', data.nodeId)) return;
+
+    const trackingKey = `${data.nodeType}:${data.nodeId}`;
+    this.recentSseNodeSaves.set(trackingKey, Date.now() + 5000);
+    setTimeout(() => this.recentSseNodeSaves.delete(trackingKey), 5000);
+
+    console.log(`[SYNC] SSE: node-saved (${data.nodeType}) for ${data.path} (nodeId ${data.nodeId})`);
 
     try {
-      // Check if we already have this exact content at the target path
-      try {
-        const localContent = await readFile(localPath);
-        const localChecksum = await calculateChecksum(localContent);
-
-        if (localChecksum === checksum) {
-          console.log(`[SYNC] SSE file-saved: ${file} already up to date (checksums match)`);
-          if (sseNodeId) {
-            const inode = await nodeMap.getInode(localPath);
-            this.nodeMap.set(String(sseNodeId), { path: localFilename, checksum: localChecksum, inode });
-          }
-          return;
-        }
-      } catch (e) {
-        // File doesn't exist at target path
+      if (data.nodeType === 'site') {
+        await this._applyNodeSavedSite(data);
+      } else if (data.nodeType === 'upload') {
+        await this._applyNodeSavedUpload(data);
+      } else if (data.nodeType === 'folder') {
+        await this._applyNodeSavedFolder(data);
+      } else {
+        console.warn(`[SYNC] SSE: Unknown nodeType in node-saved: ${data.nodeType}`);
       }
-
-      // Create backup if file exists
-      const siteName = localFilename.replace(/\.(html|htmlclay)$/i, '');
-      await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
-
-      // Ensure directory exists (for nested paths)
-      await ensureDirectory(path.dirname(localPath));
-
-      // Mark as expected write so file watcher doesn't send "File changed on disk" notification
-      liveSync.markBrowserSave(file);
-
-      // Write file with server modification time
-      await writeFile(localPath, content, new Date(modifiedAt));
-
-      if (sseNodeId) {
-        const inode = await nodeMap.getInode(localPath);
-        const cs = await calculateChecksum(content);
-        this.nodeMap.set(String(sseNodeId), { path: localFilename, checksum: cs, inode });
-        await nodeMap.save(this.metaDir, this.nodeMap);
-      }
-
-      console.log(`[SYNC] SSE file-saved: Downloaded ${localFilename}`);
-      this.stats.filesDownloaded++;
-
-      // Emit success event
-      this.emit('file-synced', {
-        file: localFilename,
-        action: 'download',
-        source: 'sse'
-      });
-
     } catch (error) {
-      console.error(`[SYNC] SSE file-saved: Failed to write ${localFilename}:`, error.message);
-
+      console.error(`[SYNC] SSE: Failed to apply node-saved for ${data.path}:`, error.message);
       if (this.logger) {
-        this.logger.error('SSE', 'Failed to write file-saved', {
-          file: localFilename,
-          error
-        });
+        this.logger.error('SSE', 'Failed to apply node-saved', { path: data.path, error });
       }
-
-      const errorInfo = classifyError(error, { filename: localFilename, action: 'sse-download' });
-      this.stats.errors.push(formatErrorForLog(error, { filename: localFilename, action: 'sse-download' }));
+      const errorInfo = classifyError(error, { filename: data.path, action: 'sse-node-saved' });
+      this.stats.errors.push(formatErrorForLog(error, { filename: data.path, action: 'sse-node-saved' }));
       this.emit('sync-error', errorInfo);
     }
   }
 
-  async handleFileRenamed(nodeId, oldName, newName) {
-    const entry = this.nodeMap.get(String(nodeId));
-    if (!entry) {
-      console.log(`[SYNC] SSE file-renamed: nodeId ${nodeId} not in map, skipping`);
-      return;
+  async _applyNodeSavedSite(data) {
+    const localFilename = data.path;
+    this.resolveContainedPath(localFilename);
+    const localPath = path.join(this.syncFolder, localFilename);
+
+    if (typeof data.content !== 'string') {
+      throw new Error(`node-saved for site ${data.nodeId} missing inline content`);
     }
-    const currentPath = entry.path;
 
-    const localPath = path.join(this.syncFolder, currentPath);
-    const dir = path.dirname(currentPath);
-    const newLocalFilename = dir === '.' ? newName : `${dir}/${newName}`;
-    this.resolveContainedPath(newLocalFilename);
-    const newLocalPath = path.join(this.syncFolder, newLocalFilename);
+    try {
+      const localContent = await readFile(localPath);
+      const localChecksum = await calculateChecksum(localContent);
+      if (localChecksum === data.checksum) {
+        console.log(`[SYNC] SSE node-saved: ${data.path} already up to date`);
+        const inode = await nodeMap.getInode(localPath);
+        this.nodeMap.set(String(data.nodeId), {
+          type: 'site',
+          path: localFilename,
+          checksum: localChecksum,
+          inode
+        });
+        await nodeMap.save(this.metaDir, this.nodeMap);
+        return;
+      }
+    } catch (e) {
+      // File doesn't exist locally yet — fall through to write
+    }
 
-    liveSync.markBrowserSave(toFileId(currentPath));
-    liveSync.markBrowserSave(toFileId(newLocalFilename));
-    await ensureDirectory(path.dirname(newLocalPath));
-    await moveFile(localPath, newLocalPath);
+    const siteName = localFilename.replace(/\.(html|htmlclay)$/i, '');
+    await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
 
-    const inode = await nodeMap.getInode(newLocalPath);
-    this.nodeMap.set(String(nodeId), { path: newLocalFilename, checksum: entry.checksum, inode });
+    await ensureDirectory(path.dirname(localPath));
+
+    const fileId = localFilename.replace(/\.(html|htmlclay)$/, '');
+    liveSync.markBrowserSave(fileId);
+
+    await writeFile(localPath, data.content, new Date(data.modifiedAt));
+
+    const inode = await nodeMap.getInode(localPath);
+    const cs = await calculateChecksum(data.content);
+    this.nodeMap.set(String(data.nodeId), {
+      type: 'site',
+      path: localFilename,
+      checksum: cs,
+      inode
+    });
     await nodeMap.save(this.metaDir, this.nodeMap);
 
-    console.log(`[SYNC] SSE file-renamed: ${currentPath} → ${newLocalFilename}`);
+    console.log(`[SYNC] SSE node-saved: Wrote site ${localFilename}`);
+    this.stats.filesDownloaded++;
+
+    this.emit('file-synced', {
+      file: localFilename,
+      action: 'download',
+      source: 'sse',
+      type: 'site'
+    });
   }
 
-  async handleFileMoved(nodeId, file, fromPath, toPath) {
-    this.resolveContainedPath(toPath);
+  async _applyNodeSavedUpload(data) {
+    const localFilename = data.path;
+    this.resolveContainedPath(localFilename);
+    const localPath = path.join(this.syncFolder, localFilename);
+
+    try {
+      const localContent = await readFileBuffer(localPath);
+      const localChecksum = calculateBufferChecksum(localContent);
+      if (localChecksum === data.checksum) {
+        console.log(`[SYNC] SSE node-saved: upload ${data.path} already up to date`);
+        const inode = await nodeMap.getInode(localPath);
+        this.nodeMap.set(String(data.nodeId), {
+          type: 'upload',
+          path: localFilename,
+          checksum: localChecksum,
+          inode
+        });
+        await nodeMap.save(this.metaDir, this.nodeMap);
+        return;
+      }
+    } catch (e) {
+      // File doesn't exist locally — fall through to fetch
+    }
+
+    console.log(`[SYNC] SSE node-saved: fetching upload content for nodeId ${data.nodeId}`);
+    const fetched = await getNodeContent(this.serverUrl, this.apiKey, data.nodeId);
+
+    await createBinaryBackupIfExists(localPath, localFilename, this.syncFolder, this.emit.bind(this), this.logger);
+
+    this.pendingActions.set(`save:${data.nodeId}`, Date.now());
+
+    await writeFileBuffer(localPath, fetched.content, fetched.modifiedAt);
+
+    const inode = await nodeMap.getInode(localPath);
+    this.nodeMap.set(String(data.nodeId), {
+      type: 'upload',
+      path: localFilename,
+      checksum: fetched.checksum,
+      inode
+    });
+    await nodeMap.save(this.metaDir, this.nodeMap);
+
+    console.log(`[SYNC] SSE node-saved: Wrote upload ${localFilename}`);
+    this.stats.uploadsDownloaded++;
+
+    this.emit('file-synced', {
+      file: localFilename,
+      action: 'download',
+      source: 'sse',
+      type: 'upload'
+    });
+  }
+
+  async _applyNodeSavedFolder(data) {
+    if (this.nodeMap.has(String(data.nodeId))) {
+      console.log(`[SYNC] SSE node-saved: folder ${data.path} already tracked, no-op`);
+      return;
+    }
+
+    const localFolderPath = data.path;
+    this.resolveContainedPath(localFolderPath);
+    const localPath = path.join(this.syncFolder, localFolderPath);
+
+    this._markDescendantsForSuppression([localFolderPath]);
+
+    this.pendingActions.set(`save:${data.nodeId}`, Date.now());
+
+    await ensureDirectory(localPath);
+
+    const inode = await nodeMap.getInode(localPath);
+    this.nodeMap.set(String(data.nodeId), {
+      type: 'folder',
+      path: localFolderPath,
+      parentId: data.parentId,
+      inode
+    });
+    await nodeMap.save(this.metaDir, this.nodeMap);
+
+    console.log(`[SYNC] SSE node-saved: Created folder ${localFolderPath}`);
+    this.emit('file-synced', {
+      file: localFolderPath,
+      action: 'create',
+      source: 'sse',
+      type: 'folder'
+    });
+  }
+
+  async handleNodeRenamed(data) {
+    if (this._skipIfEcho('rename', data.nodeId)) return;
+
+    console.log(`[SYNC] SSE: node-renamed (${data.nodeType}): ${data.oldPath} → ${data.newPath}`);
+
+    try {
+      if (data.nodeType === 'folder') {
+        await this._applyFolderRelocate(data.nodeId, data.oldPath, data.newPath);
+      } else {
+        await this._applyFileRelocate(data.nodeId, data.oldPath, data.newPath, data.nodeType);
+      }
+    } catch (error) {
+      console.error(`[SYNC] SSE: Failed to apply node-renamed for ${data.oldPath}:`, error.message);
+      if (this.logger) {
+        this.logger.error('SSE', 'Failed to apply node-renamed', { path: data.oldPath, error });
+      }
+      this.emit('sync-error', classifyError(error, { filename: data.oldPath, action: 'sse-node-renamed' }));
+    }
+  }
+
+  async handleNodeMoved(data) {
+    if (this._skipIfEcho('move', data.nodeId)) return;
+
+    console.log(`[SYNC] SSE: node-moved (${data.nodeType}): ${data.oldPath} → ${data.newPath}`);
+
+    try {
+      if (data.nodeType === 'folder') {
+        await this._applyFolderRelocate(data.nodeId, data.oldPath, data.newPath);
+      } else {
+        await this._applyFileRelocate(data.nodeId, data.oldPath, data.newPath, data.nodeType);
+      }
+    } catch (error) {
+      console.error(`[SYNC] SSE: Failed to apply node-moved for ${data.oldPath}:`, error.message);
+      if (this.logger) {
+        this.logger.error('SSE', 'Failed to apply node-moved', { path: data.oldPath, error });
+      }
+      this.emit('sync-error', classifyError(error, { filename: data.oldPath, action: 'sse-node-moved' }));
+    }
+  }
+
+  async handleNodeDeleted(data) {
+    if (this._skipIfEcho('delete', data.nodeId)) return;
+
+    console.log(`[SYNC] SSE: node-deleted (${data.nodeType}): ${data.path}`);
+
+    try {
+      if (data.nodeType === 'folder') {
+        await this._applyFolderDelete(data.nodeId, data.path);
+      } else {
+        await this._applyFileDelete(data.nodeId, data.path, data.nodeType);
+      }
+    } catch (error) {
+      console.error(`[SYNC] SSE: Failed to apply node-deleted for ${data.path}:`, error.message);
+      if (this.logger) {
+        this.logger.error('SSE', 'Failed to apply node-deleted', { path: data.path, error });
+      }
+      this.emit('sync-error', classifyError(error, { filename: data.path, action: 'sse-node-deleted' }));
+    }
+  }
+
+  async _applyFileDelete(nodeId, fullPath, nodeType) {
     const entry = this.nodeMap.get(String(nodeId));
-    const currentPath = entry?.path || fromPath;
+    const localFilename = entry?.path || fullPath;
+    this.resolveContainedPath(localFilename);
+    const localPath = path.join(this.syncFolder, localFilename);
+    const trashPath = path.join(this.syncFolder, '.trash', localFilename);
+
+    const exists = await fileExists(localPath);
+    if (!exists) {
+      console.log(`[SYNC] SSE node-deleted: ${localFilename} not found locally`);
+      this.nodeMap.delete(String(nodeId));
+      await nodeMap.save(this.metaDir, this.nodeMap);
+      return;
+    }
+
+    await ensureDirectory(path.dirname(trashPath));
+
+    if (nodeType === 'site') {
+      liveSync.markBrowserSave(toFileId(localFilename));
+    }
+
+    this.pendingActions.set(`delete:${nodeId}`, Date.now());
+
+    await moveFile(localPath, trashPath);
+
+    this.nodeMap.delete(String(nodeId));
+    await nodeMap.save(this.metaDir, this.nodeMap);
+
+    console.log(`[SYNC] SSE node-deleted: Trashed ${localFilename}`);
+    this.emit('file-synced', { file: localFilename, action: 'trash', source: 'sse', type: nodeType });
+  }
+
+  async _applyFolderDelete(nodeId, fullPath) {
+    const entry = this.nodeMap.get(String(nodeId));
+    const localFolderPath = entry?.path || fullPath;
+    this.resolveContainedPath(localFolderPath);
+    const localPath = path.join(this.syncFolder, localFolderPath);
+    const trashPath = path.join(this.syncFolder, '.trash', localFolderPath);
+
+    const descendants = nodeMap.walkDescendants(this.nodeMap, localFolderPath);
+
+    const oldSidePaths = [
+      localFolderPath,
+      ...descendants.map(({ entry: e }) => e.path)
+    ];
+    this._markDescendantsForSuppression(oldSidePaths);
+
+    this.pendingActions.set(`delete:${nodeId}`, Date.now());
+
+    const exists = await fileExists(localPath);
+    if (!exists) {
+      console.log(`[SYNC] SSE node-deleted: folder ${localFolderPath} not found locally, cleaning nodeMap only`);
+      for (const { nodeId: descId } of descendants) {
+        this.nodeMap.delete(descId);
+      }
+      this.nodeMap.delete(String(nodeId));
+      await nodeMap.save(this.metaDir, this.nodeMap);
+      return;
+    }
+
+    await ensureDirectory(path.dirname(trashPath));
+
+    try {
+      await moveFile(localPath, trashPath);
+    } catch (error) {
+      const timestampedTrashPath = `${trashPath}.${Date.now()}`;
+      console.warn(`[SYNC] SSE node-deleted: trash collision, using ${timestampedTrashPath}`);
+      await moveFile(localPath, timestampedTrashPath);
+    }
+
+    for (const { nodeId: descId } of descendants) {
+      this.nodeMap.delete(descId);
+    }
+    this.nodeMap.delete(String(nodeId));
+    await nodeMap.save(this.metaDir, this.nodeMap);
+
+    console.log(`[SYNC] SSE node-deleted: Trashed folder ${localFolderPath} (${descendants.length} descendant(s))`);
+    this.emit('file-synced', { file: localFolderPath, action: 'trash', source: 'sse', type: 'folder' });
+  }
+
+  async _applyFileRelocate(nodeId, oldPath, newPath, nodeType) {
+    const entry = this.nodeMap.get(String(nodeId));
+    const currentPath = entry?.path || oldPath;
     const localPath = path.join(this.syncFolder, currentPath);
-    const newLocalPath = path.join(this.syncFolder, toPath);
+    const newLocalPath = path.join(this.syncFolder, newPath);
 
     const exists = await fileExists(localPath);
     if (!exists) {
       const alreadyMoved = await fileExists(newLocalPath);
       if (alreadyMoved) {
-        console.log(`[SYNC] SSE file-moved: ${toPath} already in place`);
+        console.log(`[SYNC] SSE node-relocated: ${newPath} already in place`);
       } else {
-        console.log(`[SYNC] SSE file-moved: ${currentPath} not found locally, skipping`);
+        console.log(`[SYNC] SSE node-relocated: ${currentPath} not found locally`);
       }
       const inode = await nodeMap.getInode(newLocalPath);
-      this.nodeMap.set(String(nodeId), { path: toPath, checksum: entry?.checksum || null, inode });
+      this.nodeMap.set(String(nodeId), {
+        type: nodeType,
+        path: newPath,
+        checksum: entry?.checksum || null,
+        inode
+      });
       await nodeMap.save(this.metaDir, this.nodeMap);
       return;
     }
 
-    liveSync.markBrowserSave(toFileId(currentPath));
-    liveSync.markBrowserSave(toFileId(toPath));
+    if (nodeType === 'site') {
+      liveSync.markBrowserSave(toFileId(currentPath));
+      liveSync.markBrowserSave(toFileId(newPath));
+    }
+
+    this.pendingActions.set(`rename:${nodeId}`, Date.now());
+    this.pendingActions.set(`move:${nodeId}`, Date.now());
+
     await ensureDirectory(path.dirname(newLocalPath));
     await moveFile(localPath, newLocalPath);
 
-    const movedInode = await nodeMap.getInode(newLocalPath);
-    this.nodeMap.set(String(nodeId), { path: toPath, checksum: entry?.checksum || null, inode: movedInode });
+    const inode = await nodeMap.getInode(newLocalPath);
+    this.nodeMap.set(String(nodeId), {
+      type: nodeType,
+      path: newPath,
+      checksum: entry?.checksum || null,
+      inode
+    });
     await nodeMap.save(this.metaDir, this.nodeMap);
 
-    console.log(`[SYNC] SSE file-moved: ${currentPath} → ${toPath}`);
+    console.log(`[SYNC] SSE node-relocated: ${currentPath} → ${newPath}`);
   }
 
-  async handleFileDeleted(nodeId, file) {
+  async _applyFolderRelocate(nodeId, oldPath, newPath) {
     const entry = this.nodeMap.get(String(nodeId));
-    const localFilename = entry?.path
-      || (/\.(html|htmlclay)$/.test(file) ? file : `${file}.html`);
-    this.resolveContainedPath(localFilename);
-    const localPath = path.join(this.syncFolder, localFilename);
-    const trashPath = path.join(this.syncFolder, '.trash', localFilename);
+    if (!entry || entry.type !== 'folder') {
+      console.warn(`[SYNC] SSE node-relocated: folder nodeId ${nodeId} not in nodeMap or wrong type`);
+    }
 
-    try {
-      const exists = await fileExists(localPath);
-      if (!exists) {
-        console.log(`[SYNC] SSE file-deleted: ${localFilename} not found locally`);
-        this.nodeMap.delete(String(nodeId));
-        await nodeMap.save(this.metaDir, this.nodeMap);
-        return;
-      }
+    const localOldPath = path.join(this.syncFolder, oldPath);
+    const localNewPath = path.join(this.syncFolder, newPath);
 
-      await ensureDirectory(path.dirname(trashPath));
-      liveSync.markBrowserSave(toFileId(localFilename));
-      await moveFile(localPath, trashPath);
+    const descendants = nodeMap.walkDescendants(this.nodeMap, oldPath);
 
-      this.nodeMap.delete(String(nodeId));
+    const oldToNew = new Map();
+    for (const { nodeId: descId, entry: descEntry } of descendants) {
+      const newDescPath = newPath + descEntry.path.substring(oldPath.length);
+      oldToNew.set(descId, { newPath: newDescPath, entry: descEntry });
+    }
+
+    const allSuppressedPaths = [
+      oldPath,
+      newPath,
+      ...descendants.map(({ entry: e }) => e.path),
+      ...Array.from(oldToNew.values()).map(v => v.newPath)
+    ];
+    this._markDescendantsForSuppression(allSuppressedPaths);
+
+    this.pendingActions.set(`rename:${nodeId}`, Date.now());
+    this.pendingActions.set(`move:${nodeId}`, Date.now());
+
+    const exists = await fileExists(localOldPath);
+    if (!exists) {
+      console.log(`[SYNC] SSE node-relocated: folder ${oldPath} not found locally, updating nodeMap only`);
+      this._applyFolderRelocateNodeMapUpdates(nodeId, newPath, oldToNew);
       await nodeMap.save(this.metaDir, this.nodeMap);
+      return;
+    }
 
-      console.log(`[SYNC] SSE file-deleted: Trashed ${localFilename}`);
-      this.emit('file-synced', { file: localFilename, action: 'trash', source: 'sse' });
-    } catch (error) {
-      console.error(`[SYNC] SSE file-deleted: Failed to trash ${localFilename}:`, error.message);
+    const collision = await fileExists(localNewPath);
+    if (collision) {
+      console.warn(`[SYNC] SSE node-relocated: ${newPath} already exists locally; cannot apply rename`);
+      return;
+    }
+
+    await ensureDirectory(path.dirname(localNewPath));
+
+    await moveFile(localOldPath, localNewPath);
+
+    this._applyFolderRelocateNodeMapUpdates(nodeId, newPath, oldToNew);
+
+    await nodeMap.save(this.metaDir, this.nodeMap);
+
+    console.log(`[SYNC] SSE node-relocated: folder ${oldPath} → ${newPath} (${descendants.length} descendant(s) updated)`);
+
+    this.emit('file-synced', {
+      file: newPath,
+      action: 'relocate',
+      source: 'sse',
+      type: 'folder'
+    });
+  }
+
+  _applyFolderRelocateNodeMapUpdates(folderNodeId, newPath, oldToNew) {
+    for (const [descId, { newPath: descNewPath, entry: descEntry }] of oldToNew) {
+      this.nodeMap.set(descId, { ...descEntry, path: descNewPath });
+    }
+
+    const folderEntry = this.nodeMap.get(String(folderNodeId));
+    if (folderEntry) {
+      this.nodeMap.set(String(folderNodeId), { ...folderEntry, path: newPath });
     }
   }
 
@@ -1753,18 +2032,22 @@ class SyncEngine extends EventEmitter {
   async _handleSiteChange(normalizedPath) {
     const fileId = normalizedPath.replace(/\.(html|htmlclay)$/, '');
 
+    // Walk nodeMap once for both checksum comparison AND nodeId resolution
+    let storedChecksum = null;
+    let foundNodeId = null;
+    for (const [nid, entry] of this.nodeMap) {
+      if (entry.path === normalizedPath && entry.type === 'site') {
+        storedChecksum = entry.checksum;
+        foundNodeId = nid;
+        break;
+      }
+    }
+
+    // Content comparison: skip if file content hasn't actually changed
     try {
       const localPath = path.join(this.syncFolder, normalizedPath);
       const content = await readFile(localPath);
       const newChecksum = await calculateChecksum(content);
-
-      let storedChecksum = null;
-      for (const [, entry] of this.nodeMap) {
-        if (entry.path === normalizedPath && entry.type === 'site') {
-          storedChecksum = entry.checksum;
-          break;
-        }
-      }
 
       if (storedChecksum && storedChecksum === newChecksum) {
         console.log(`[SYNC] File changed but content identical (skipping): ${normalizedPath}`);
@@ -1777,7 +2060,9 @@ class SyncEngine extends EventEmitter {
     console.log(`[SYNC] Site changed: ${normalizedPath}`);
     this.queueSync('change', normalizedPath);
 
-    const recentSseSave = this.recentSseFileSaves.has(fileId);
+    // Toast suppression: don't notify the browser if this change is the local
+    // observation of an SSE-driven save we just applied.
+    const recentSseSave = foundNodeId && this.recentSseNodeSaves.has(`site:${foundNodeId}`);
     if (!liveSync.wasBrowserSave(fileId) && !recentSseSave) {
       liveSync.notify(fileId, {
         msgType: 'warning',
@@ -1786,7 +2071,7 @@ class SyncEngine extends EventEmitter {
         persistent: true
       });
     } else if (recentSseSave) {
-      console.log(`[SYNC] Suppressing toast for ${fileId} (recent SSE file-saved)`);
+      console.log(`[SYNC] Suppressing toast for ${fileId} (recent SSE node-saved)`);
     }
   }
 
@@ -2209,16 +2494,6 @@ class SyncEngine extends EventEmitter {
       }
     };
 
-    const skipIfEcho = (actionType, nodeId) => {
-      const key = `${actionType}:${nodeId}`;
-      if (this.pendingActions.has(key)) {
-        this.pendingActions.delete(key);
-        console.log(`[SYNC] SSE: Skipping self-initiated ${actionType} for nodeId ${nodeId}`);
-        return true;
-      }
-      return false;
-    };
-
     const sseDispatch = {
       'live-sync': async (data) => {
         const { file, html, sender } = data;
@@ -2230,28 +2505,10 @@ class SyncEngine extends EventEmitter {
         liveSync.broadcast(file, { html, sender });
         if (this.logger) this.logger.success('SSE', 'Relayed live-sync to local browsers', { file });
       },
-      'file-saved': async (data) => {
-        console.log(`[SYNC] SSE: Received file-saved for ${data.file}`);
-        this.recentSseFileSaves.set(data.file, Date.now());
-        setTimeout(() => this.recentSseFileSaves.delete(data.file), 5000);
-        await this.handleFileSaved(data.file, data.content, data.checksum, data.modifiedAt, data.nodeId);
-        if (this.logger) this.logger.success('SSE', 'Handled file-saved', { file: data.file });
-      },
-      'file-renamed': async (data) => {
-        if (skipIfEcho('rename', data.nodeId)) return;
-        console.log(`[SYNC] SSE: Received file-renamed: ${data.oldName} → ${data.newName}`);
-        await this.handleFileRenamed(data.nodeId, data.oldName, data.newName);
-      },
-      'file-moved': async (data) => {
-        if (skipIfEcho('move', data.nodeId)) return;
-        console.log(`[SYNC] SSE: Received file-moved: ${data.fromPath} → ${data.toPath}`);
-        await this.handleFileMoved(data.nodeId, data.file, data.fromPath, data.toPath);
-      },
-      'file-deleted': async (data) => {
-        if (skipIfEcho('delete', data.nodeId)) return;
-        console.log(`[SYNC] SSE: Received file-deleted: ${data.file}`);
-        await this.handleFileDeleted(data.nodeId, data.file);
-      }
+      'node-saved':   async (data) => this.handleNodeSaved(data),
+      'node-renamed': async (data) => this.handleNodeRenamed(data),
+      'node-moved':   async (data) => this.handleNodeMoved(data),
+      'node-deleted': async (data) => this.handleNodeDeleted(data)
     };
 
     this.sseConnection.onmessage = async (event) => {
@@ -2548,7 +2805,7 @@ class SyncEngine extends EventEmitter {
       clearTimeout(timerId);
     }
     this.pendingUnlinks.clear();
-    this.recentSseFileSaves.clear();
+    this.recentSseNodeSaves.clear();
 
     this.recentFolderRenameDescendants.clear();
 

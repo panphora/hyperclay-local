@@ -279,54 +279,42 @@ describe('detectLocalChanges — skips on first sync', () => {
 });
 
 describe('SSE echo suppression', () => {
-  test('skips handleFileDeleted when pendingActions has matching key', async () => {
+  test('skips handleNodeDeleted when pendingActions has matching key', async () => {
     syncEngine.nodeMap = new Map([['42', entry('my-site.html')]]);
     syncEngine.pendingActions.set('delete:42', Date.now());
     fileOps.fileExists.mockResolvedValue(true);
 
-    const data = { type: 'file-deleted', nodeId: 42, file: 'my-site' };
-
-    // Simulate SSE handler inline since we can't trigger the EventSource mock easily
-    const key = `delete:${data.nodeId}`;
-    if (syncEngine.pendingActions.has(key)) {
-      syncEngine.pendingActions.delete(key);
-    } else {
-      await syncEngine.handleFileDeleted(data.nodeId, data.file);
-    }
+    await syncEngine.handleNodeDeleted({
+      nodeId: 42, nodeType: 'site',
+      name: 'my-site.html', path: 'my-site.html'
+    });
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
     expect(syncEngine.pendingActions.has('delete:42')).toBe(false);
   });
 
-  test('skips handleFileRenamed when pendingActions has matching key', async () => {
+  test('skips handleNodeRenamed when pendingActions has matching key', async () => {
     syncEngine.nodeMap = new Map([['42', entry('old.html')]]);
     syncEngine.pendingActions.set('rename:42', Date.now());
 
-    const data = { type: 'file-renamed', nodeId: 42, oldName: 'old', newName: 'new' };
-
-    const key = `rename:${data.nodeId}`;
-    if (syncEngine.pendingActions.has(key)) {
-      syncEngine.pendingActions.delete(key);
-    } else {
-      await syncEngine.handleFileRenamed(data.nodeId, data.oldName, data.newName);
-    }
+    await syncEngine.handleNodeRenamed({
+      nodeId: 42, nodeType: 'site',
+      oldName: 'old.html', newName: 'new.html',
+      oldPath: 'old.html', newPath: 'new.html'
+    });
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
     expect(syncEngine.pendingActions.has('rename:42')).toBe(false);
   });
 
-  test('skips handleFileMoved when pendingActions has matching key', async () => {
+  test('skips handleNodeMoved when pendingActions has matching key', async () => {
     syncEngine.nodeMap = new Map([['42', entry('my-site.html')]]);
     syncEngine.pendingActions.set('move:42', Date.now());
 
-    const data = { type: 'file-moved', nodeId: 42, file: 'my-site', fromPath: 'my-site.html', toPath: 'blog/my-site.html' };
-
-    const key = `move:${data.nodeId}`;
-    if (syncEngine.pendingActions.has(key)) {
-      syncEngine.pendingActions.delete(key);
-    } else {
-      await syncEngine.handleFileMoved(data.nodeId, data.file, data.fromPath, data.toPath);
-    }
+    await syncEngine.handleNodeMoved({
+      nodeId: 42, nodeType: 'site',
+      oldPath: 'my-site.html', newPath: 'blog/my-site.html'
+    });
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
     expect(syncEngine.pendingActions.has('move:42')).toBe(false);
@@ -336,7 +324,10 @@ describe('SSE echo suppression', () => {
     syncEngine.nodeMap = new Map([['42', entry('my-site.html')]]);
     fileOps.fileExists.mockResolvedValue(true);
 
-    await syncEngine.handleFileDeleted(42, 'my-site');
+    await syncEngine.handleNodeDeleted({
+      nodeId: 42, nodeType: 'site',
+      name: 'my-site.html', path: 'my-site.html'
+    });
 
     expect(fileOps.moveFile).toHaveBeenCalled();
     expect(syncEngine.nodeMap.has('42')).toBe(false);

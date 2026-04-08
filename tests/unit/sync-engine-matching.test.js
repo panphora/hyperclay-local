@@ -49,6 +49,7 @@ function entry(p, cs, ino) {
 let syncEngine;
 
 beforeEach(() => {
+  jest.useFakeTimers();
   jest.clearAllMocks();
 
   // Re-require to get a fresh singleton
@@ -104,6 +105,11 @@ beforeEach(() => {
   nodeMapModule.loadState.mockResolvedValue({});
   nodeMapModule.saveState.mockResolvedValue();
   nodeMapModule.getInode.mockResolvedValue(12345);
+});
+
+afterEach(() => {
+  jest.runOnlyPendingTimers();
+  jest.useRealTimers();
 });
 
 describe('performInitialSync — nodeId-based move detection', () => {
@@ -450,7 +456,7 @@ describe('performInitialSync — duplicate filename handling', () => {
   });
 });
 
-describe('handleFileSaved — SSE with duplicate on disk', () => {
+describe('handleNodeSaved — SSE with duplicate on disk', () => {
   test('writes to server-specified path regardless of duplicates elsewhere', async () => {
     const content = '<html>updated blog</html>';
     const cs = checksum(content);
@@ -462,9 +468,12 @@ describe('handleFileSaved — SSE with duplicate on disk', () => {
     syncEngine.syncFolder = '/test/sync';
     syncEngine.isRunning = true;
 
-    await syncEngine.handleFileSaved('projects/blog', content, cs, '2024-06-01T00:00:00Z', 42);
+    await syncEngine.handleNodeSaved({
+      nodeId: 42, nodeType: 'site',
+      name: 'blog.html', path: 'projects/blog.html',
+      content, checksum: cs, modifiedAt: '2024-06-01T00:00:00Z'
+    });
 
-    // Should write to the exact path derived from the file name
     expect(fileOps.writeFile).toHaveBeenCalledWith(
       '/test/sync/projects/blog.html',
       content,
@@ -474,7 +483,7 @@ describe('handleFileSaved — SSE with duplicate on disk', () => {
   });
 });
 
-describe('handleFileSaved — SSE folder path preservation', () => {
+describe('handleNodeSaved — SSE folder path preservation', () => {
   beforeEach(() => {
     fileOps.readFile.mockRejectedValue(new Error('ENOENT'));
     fileOps.writeFile.mockResolvedValue();
@@ -487,7 +496,11 @@ describe('handleFileSaved — SSE folder path preservation', () => {
     const content = '<html>blog post</html>';
     const cs = checksum(content);
 
-    await syncEngine.handleFileSaved('blog/hyperclay-is-ready', content, cs, '2024-06-01T00:00:00Z', 1);
+    await syncEngine.handleNodeSaved({
+      nodeId: 1, nodeType: 'site',
+      name: 'hyperclay-is-ready.html', path: 'blog/hyperclay-is-ready.html',
+      content, checksum: cs, modifiedAt: '2024-06-01T00:00:00Z'
+    });
 
     expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/blog');
     expect(fileOps.writeFile).toHaveBeenCalledWith(
@@ -501,7 +514,11 @@ describe('handleFileSaved — SSE folder path preservation', () => {
     const content = '<html>root site</html>';
     const cs = checksum(content);
 
-    await syncEngine.handleFileSaved('my-site', content, cs, '2024-06-01T00:00:00Z', 1);
+    await syncEngine.handleNodeSaved({
+      nodeId: 1, nodeType: 'site',
+      name: 'my-site.html', path: 'my-site.html',
+      content, checksum: cs, modifiedAt: '2024-06-01T00:00:00Z'
+    });
 
     expect(fileOps.writeFile).toHaveBeenCalledWith(
       '/test/sync/my-site.html',
@@ -514,7 +531,11 @@ describe('handleFileSaved — SSE folder path preservation', () => {
     const content = '<html>deep site</html>';
     const cs = checksum(content);
 
-    await syncEngine.handleFileSaved('projects/2026/launch/deep-site', content, cs, '2024-06-01T00:00:00Z', 1);
+    await syncEngine.handleNodeSaved({
+      nodeId: 1, nodeType: 'site',
+      name: 'deep-site.html', path: 'projects/2026/launch/deep-site.html',
+      content, checksum: cs, modifiedAt: '2024-06-01T00:00:00Z'
+    });
 
     expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/projects/2026/launch');
     expect(fileOps.writeFile).toHaveBeenCalledWith(
@@ -528,7 +549,11 @@ describe('handleFileSaved — SSE folder path preservation', () => {
     const content = '<html>already has ext</html>';
     const cs = checksum(content);
 
-    await syncEngine.handleFileSaved('blog/my-post.html', content, cs, '2024-06-01T00:00:00Z', 1);
+    await syncEngine.handleNodeSaved({
+      nodeId: 1, nodeType: 'site',
+      name: 'my-post.html', path: 'blog/my-post.html',
+      content, checksum: cs, modifiedAt: '2024-06-01T00:00:00Z'
+    });
 
     expect(fileOps.writeFile).toHaveBeenCalledWith(
       '/test/sync/blog/my-post.html',
@@ -543,7 +568,11 @@ describe('handleFileSaved — SSE folder path preservation', () => {
 
     fileOps.readFile.mockResolvedValue(content);
 
-    await syncEngine.handleFileSaved('blog/my-post', content, cs, '2024-06-01T00:00:00Z', 1);
+    await syncEngine.handleNodeSaved({
+      nodeId: 1, nodeType: 'site',
+      name: 'my-post.html', path: 'blog/my-post.html',
+      content, checksum: cs, modifiedAt: '2024-06-01T00:00:00Z'
+    });
 
     expect(fileOps.writeFile).not.toHaveBeenCalled();
   });
