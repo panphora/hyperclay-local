@@ -43,16 +43,24 @@ describe('validateFolderName', () => {
 });
 
 describe('validateSiteName', () => {
-  test('accepts valid site names', () => {
-    expect(validateSiteName('my-site').valid).toBe(true);
-    expect(validateSiteName('MySite').valid).toBe(true);
-    expect(validateSiteName('site123').valid).toBe(true);
-    expect(validateSiteName('a').valid).toBe(true);
+  test('accepts valid site names with .html or .htmlclay extension', () => {
+    expect(validateSiteName('my-site.html').valid).toBe(true);
+    expect(validateSiteName('my-site.htmlclay').valid).toBe(true);
+    expect(validateSiteName('site123.html').valid).toBe(true);
+    expect(validateSiteName('my_site.html').valid).toBe(true);
+    expect(validateSiteName('a.html').valid).toBe(true);
   });
 
-  test('strips .html extension before validation', () => {
-    expect(validateSiteName('my-site.html').valid).toBe(true);
-    expect(validateSiteName('my-site.HTML').valid).toBe(true);
+  test('requires .html or .htmlclay extension', () => {
+    expect(validateSiteName('my-site').valid).toBe(false);
+    expect(validateSiteName('my-site.txt').valid).toBe(false);
+    // Extension is case-sensitive (must be lowercase) to match server
+    expect(validateSiteName('my-site.HTML').valid).toBe(false);
+  });
+
+  test('rejects uppercase letters in base name', () => {
+    expect(validateSiteName('MySite.html').valid).toBe(false);
+    expect(validateSiteName('mySite.html').valid).toBe(false);
   });
 
   test('rejects empty names', () => {
@@ -60,34 +68,35 @@ describe('validateSiteName', () => {
     expect(validateSiteName('.html').valid).toBe(false);
   });
 
-  test('rejects names over 63 characters', () => {
-    const longName = 'a'.repeat(64);
+  test('rejects names over 255 characters', () => {
+    const longName = 'a'.repeat(252) + '.html'; // 257 chars
     expect(validateSiteName(longName).valid).toBe(false);
-    expect(validateSiteName('a'.repeat(63)).valid).toBe(true);
+    const okName = 'a'.repeat(250) + '.html';    // 255 chars
+    expect(validateSiteName(okName).valid).toBe(true);
   });
 
-  test('rejects spaces and special characters', () => {
-    expect(validateSiteName('my site').valid).toBe(false);
-    expect(validateSiteName('my_site').valid).toBe(false);
-    expect(validateSiteName('my.site').valid).toBe(false);
+  test('rejects spaces and special characters in base name', () => {
+    expect(validateSiteName('my site.html').valid).toBe(false);
+    expect(validateSiteName('my.site.html').valid).toBe(false);
+    expect(validateSiteName('my!site.html').valid).toBe(false);
   });
 
   test('rejects names starting or ending with hyphen', () => {
-    expect(validateSiteName('-mysite').valid).toBe(false);
-    expect(validateSiteName('mysite-').valid).toBe(false);
-    expect(validateSiteName('-').valid).toBe(false);
+    expect(validateSiteName('-mysite.html').valid).toBe(false);
+    expect(validateSiteName('mysite-.html').valid).toBe(false);
+    expect(validateSiteName('-.html').valid).toBe(false);
   });
 
   test('rejects consecutive hyphens', () => {
-    expect(validateSiteName('my--site').valid).toBe(false);
-    expect(validateSiteName('a---b').valid).toBe(false);
+    expect(validateSiteName('my--site.html').valid).toBe(false);
+    expect(validateSiteName('a---b.html').valid).toBe(false);
   });
 
   test('rejects Windows reserved names', () => {
     const reserved = ['con', 'prn', 'aux', 'nul', 'com1', 'com9', 'lpt1', 'lpt9'];
     for (const name of reserved) {
-      expect(validateSiteName(name).valid).toBe(false);
-      expect(validateSiteName(name.toUpperCase()).valid).toBe(false);
+      expect(validateSiteName(`${name}.html`).valid).toBe(false);
+      expect(validateSiteName(`${name}.htmlclay`).valid).toBe(false);
     }
   });
 });
