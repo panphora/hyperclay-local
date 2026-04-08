@@ -939,8 +939,6 @@ class SyncEngine extends EventEmitter {
 
     await createBinaryBackupIfExists(localPath, localFilename, this.syncFolder, this.emit.bind(this), this.logger);
 
-    this.pendingActions.set(`save:${data.nodeId}`, Date.now());
-
     await writeFileBuffer(localPath, fetched.content, fetched.modifiedAt);
 
     const inode = await nodeMap.getInode(localPath);
@@ -1138,6 +1136,7 @@ class SyncEngine extends EventEmitter {
   }
 
   async _applyFileRelocate(nodeId, oldPath, newPath, nodeType) {
+    this.resolveContainedPath(newPath);
     const entry = this.nodeMap.get(String(nodeId));
     const currentPath = entry?.path || oldPath;
     const localPath = path.join(this.syncFolder, currentPath);
@@ -1167,8 +1166,7 @@ class SyncEngine extends EventEmitter {
       liveSync.markBrowserSave(toFileId(newPath));
     }
 
-    this.pendingActions.set(`rename:${nodeId}`, Date.now());
-    this.pendingActions.set(`move:${nodeId}`, Date.now());
+    this._markDescendantsForSuppression([currentPath, newPath]);
 
     await ensureDirectory(path.dirname(newLocalPath));
     await moveFile(localPath, newLocalPath);
@@ -1186,6 +1184,7 @@ class SyncEngine extends EventEmitter {
   }
 
   async _applyFolderRelocate(nodeId, oldPath, newPath) {
+    this.resolveContainedPath(newPath);
     const entry = this.nodeMap.get(String(nodeId));
     if (!entry || entry.type !== 'folder') {
       console.warn(`[SYNC] SSE node-relocated: folder nodeId ${nodeId} not in nodeMap or wrong type`);
@@ -1209,9 +1208,6 @@ class SyncEngine extends EventEmitter {
       ...Array.from(oldToNew.values()).map(v => v.newPath)
     ];
     this._markDescendantsForSuppression(allSuppressedPaths);
-
-    this.pendingActions.set(`rename:${nodeId}`, Date.now());
-    this.pendingActions.set(`move:${nodeId}`, Date.now());
 
     const exists = await fileExists(localOldPath);
     if (!exists) {

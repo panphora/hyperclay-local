@@ -138,14 +138,23 @@ describe('_applyFolderRelocate', () => {
     expect(syncEngine.nodeMap.get('60').path).toBe('old');
   });
 
-  it('marks both rename and move pendingActions to suppress watcher echo', async () => {
+  it('suppresses watcher echo via suppression set, not pendingActions', async () => {
     syncEngine.nodeMap.set('60', { type: 'folder', path: 'old' });
     fileOps.fileExists.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
     nodeMapModule.walkDescendants.mockReturnValue([]);
 
+    const spy = jest.spyOn(syncEngine, '_markDescendantsForSuppression');
+
     await syncEngine._applyFolderRelocate(60, 'old', 'new');
 
-    expect(syncEngine.pendingActions.has('rename:60')).toBe(true);
-    expect(syncEngine.pendingActions.has('move:60')).toBe(true);
+    expect(spy).toHaveBeenCalled();
+    const calledWithPaths = spy.mock.calls[0][0];
+    expect(calledWithPaths).toContain('old');
+    expect(calledWithPaths).toContain('new');
+    // pendingActions should NOT be set (would poison subsequent SSE events)
+    expect(syncEngine.pendingActions.has('rename:60')).toBe(false);
+    expect(syncEngine.pendingActions.has('move:60')).toBe(false);
+
+    spy.mockRestore();
   });
 });
