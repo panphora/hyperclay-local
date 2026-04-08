@@ -17,6 +17,7 @@ const SyncQueue = require('./sync-queue');
 const nodeMap = require('./node-map');
 const { classifyPath } = require('./path-helpers');
 const Outbox = require('./state/outbox');
+const CascadeSuppression = require('./state/cascade-suppression');
 
 class SyncEngine extends EventEmitter {
   constructor() {
@@ -42,12 +43,10 @@ class SyncEngine extends EventEmitter {
     this.pendingUnlinks = new Map(); // watcher rename/move detection: relativePath → { timerId, nodeId, type, entry }
     this.recentSseNodeSaves = new Map(); // `${nodeType}:${nodeId}` → expiresAt ms, tracks recent SSE node-saved events for toast suppression
     // Cascade suppression (S5-Q1, extended in Step 6): when a folder operation
-    // (rename, move, or delete) is detected locally OR applied via SSE, we pre-populate
-    // this set with the chokidar paths that will fire as a result, so they get
+    // (rename, move, or delete) is detected locally OR applied via SSE, we
+    // pre-mark the chokidar paths that will fire as a result so they get
     // silently consumed (no duplicate API calls, no nodeMap churn, no echo loops).
-    // Keyed by relative path; value is the expiresAt timestamp in ms.
-    this.recentFolderCascadePaths = new Map();
-    this.FOLDER_CASCADE_SUPPRESSION_TTL_MS = 3000;
+    this.cascade = new CascadeSuppression();
     this.folderIdentityWaiters = new Map();
     this.FOLDER_IDENTITY_WAIT_MS = 300;
     this.lastSyncedAt = null; // Timestamp of last successful sync
@@ -191,7 +190,7 @@ class SyncEngine extends EventEmitter {
       // Periodic cleanup of stale outbox entries + folder rename suppression entries
       this.pendingActionsCleanupTimer = setInterval(() => {
         this.outbox.sweep();
-        this._sweepFolderCascadeSuppressionSet();
+        this.cascade.sweep();
       }, 10000);
 
       this.isRunning = true;
@@ -281,7 +280,7 @@ class SyncEngine extends EventEmitter {
     this.pendingUnlinks.clear();
     this.recentSseNodeSaves.clear();
 
-    this.recentFolderCascadePaths.clear();
+    this.cascade.clear();
 
     for (const [, waiter] of this.folderIdentityWaiters) {
       clearTimeout(waiter.timerId);

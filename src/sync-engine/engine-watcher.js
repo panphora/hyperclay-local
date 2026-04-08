@@ -73,7 +73,7 @@ module.exports = {
   _onAdd(filename) {
     const normalizedPath = path.normalize(filename);
 
-    if (this._consumeSuppressedEvent(normalizedPath)) {
+    if (this.cascade.consume(normalizedPath)) {
       console.log(`[SYNC] Watcher: Suppressed cascade event for ${normalizedPath}`);
       return;
     }
@@ -98,7 +98,7 @@ module.exports = {
 
     if (!normalizedPath || normalizedPath === '' || normalizedPath === '.') return;
 
-    if (this._consumeSuppressedEvent(normalizedPath)) {
+    if (this.cascade.consume(normalizedPath)) {
       console.log(`[SYNC] Watcher: Suppressed cascade event for ${normalizedPath}`);
       return;
     }
@@ -113,7 +113,7 @@ module.exports = {
   _onChange(filename) {
     const normalizedPath = path.normalize(filename);
 
-    if (this._consumeSuppressedEvent(normalizedPath)) return;
+    if (this.cascade.consume(normalizedPath)) return;
 
     const type = classifyPath(normalizedPath, 'change');
     if (type === 'site') {
@@ -126,7 +126,7 @@ module.exports = {
   _onUnlink(filename) {
     const normalizedPath = path.normalize(filename);
 
-    if (this._consumeSuppressedEvent(normalizedPath)) return;
+    if (this.cascade.consume(normalizedPath)) return;
 
     const type = classifyPath(normalizedPath, 'unlink');
     this._registerPendingUnlink(normalizedPath, type);
@@ -137,7 +137,7 @@ module.exports = {
 
     if (!normalizedPath || normalizedPath === '' || normalizedPath === '.') return;
 
-    if (this._consumeSuppressedEvent(normalizedPath)) return;
+    if (this.cascade.consume(normalizedPath)) return;
 
     this._registerPendingUnlink(normalizedPath, 'folder');
   },
@@ -302,37 +302,6 @@ module.exports = {
     }
   },
 
-  // --- Cascade suppression ---
-
-  _markDescendantsForSuppression(descendantPaths) {
-    const expiresAt = Date.now() + this.FOLDER_CASCADE_SUPPRESSION_TTL_MS;
-    for (const p of descendantPaths) {
-      this.recentFolderCascadePaths.set(p, expiresAt);
-    }
-  },
-
-  _consumeSuppressedEvent(normalizedPath) {
-    const expiresAt = this.recentFolderCascadePaths.get(normalizedPath);
-    if (expiresAt === undefined) return false;
-
-    if (expiresAt < Date.now()) {
-      this.recentFolderCascadePaths.delete(normalizedPath);
-      return false;
-    }
-
-    this.recentFolderCascadePaths.delete(normalizedPath);
-    return true;
-  },
-
-  _sweepFolderCascadeSuppressionSet() {
-    const now = Date.now();
-    for (const [p, expiresAt] of this.recentFolderCascadePaths) {
-      if (expiresAt < now) {
-        this.recentFolderCascadePaths.delete(p);
-      }
-    }
-  },
-
   // --- Folder identity (S5-Q2) ---
 
   async _correlateFolderUnlinkAdd(oldPath, newPath, pending, shape) {
@@ -392,7 +361,7 @@ module.exports = {
     const expectedNewPaths = oldDescendants.map(({ entry }) => {
       return newPath + entry.path.substring(oldPath.length);
     });
-    this._markDescendantsForSuppression([newPath, ...expectedNewPaths]);
+    this.cascade.mark([newPath, ...expectedNewPaths]);
 
     const addBasename = path.basename(newPath);
     const newDirname = path.dirname(newPath);

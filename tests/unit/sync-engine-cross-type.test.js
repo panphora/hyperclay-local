@@ -36,6 +36,7 @@ const path = require('path');
 const fileOps = require('../../src/sync-engine/file-operations');
 const nodeMapModule = require('../../src/sync-engine/node-map');
 const Outbox = require('../../src/sync-engine/state/outbox');
+const CascadeSuppression = require('../../src/sync-engine/state/cascade-suppression');
 
 let syncEngine;
 
@@ -50,7 +51,7 @@ beforeEach(() => {
   syncEngine.metaDir = '/tmp/test-meta';
   syncEngine.nodeMap = new Map();
   syncEngine.outbox = new Outbox();
-  syncEngine.recentFolderCascadePaths = new Map();
+  syncEngine.cascade = new CascadeSuppression();
 
   fileOps.moveFile.mockResolvedValue();
   fileOps.ensureDirectory.mockResolvedValue();
@@ -143,7 +144,7 @@ describe('Cross-type: SSE folder rename cascades over mixed children', () => {
 
 describe('Cross-type: cascade suppression set is shared across mixed types', () => {
   it('suppresses chokidar events for site, upload, and folder descendants of a renamed folder', () => {
-    syncEngine._markDescendantsForSuppression([
+    syncEngine.cascade.mark([
       'new',
       'new/page.html',
       'new/image.png',
@@ -151,13 +152,13 @@ describe('Cross-type: cascade suppression set is shared across mixed types', () 
       'new/sub/nested.html'
     ]);
 
-    expect(syncEngine._consumeSuppressedEvent('new')).toBe(true);
-    expect(syncEngine._consumeSuppressedEvent('new/page.html')).toBe(true);
-    expect(syncEngine._consumeSuppressedEvent('new/image.png')).toBe(true);
-    expect(syncEngine._consumeSuppressedEvent('new/sub')).toBe(true);
-    expect(syncEngine._consumeSuppressedEvent('new/sub/nested.html')).toBe(true);
+    expect(syncEngine.cascade.consume('new')).toBe(true);
+    expect(syncEngine.cascade.consume('new/page.html')).toBe(true);
+    expect(syncEngine.cascade.consume('new/image.png')).toBe(true);
+    expect(syncEngine.cascade.consume('new/sub')).toBe(true);
+    expect(syncEngine.cascade.consume('new/sub/nested.html')).toBe(true);
 
-    expect(syncEngine._consumeSuppressedEvent('other.html')).toBe(false);
+    expect(syncEngine.cascade.consume('other.html')).toBe(false);
   });
 });
 

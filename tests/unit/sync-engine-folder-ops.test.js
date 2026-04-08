@@ -33,6 +33,7 @@ jest.mock('../../src/sync-engine/node-map');
 
 const nodeMapModule = require('../../src/sync-engine/node-map');
 const Outbox = require('../../src/sync-engine/state/outbox');
+const CascadeSuppression = require('../../src/sync-engine/state/cascade-suppression');
 const {
   createNode,
   renameNode,
@@ -55,7 +56,7 @@ beforeEach(() => {
   syncEngine.nodeMap = new Map();
   syncEngine.outbox = new Outbox();
   syncEngine.pendingUnlinks = new Map();
-  syncEngine.recentFolderCascadePaths = new Map();
+  syncEngine.cascade = new CascadeSuppression();
   syncEngine.folderIdentityWaiters = new Map();
   syncEngine.serverUrl = 'http://test';
   syncEngine.apiKey = 'test-key';
@@ -114,17 +115,17 @@ describe('folder rename cascade suppression', () => {
       ['11', { type: 'site',   path: 'projects/old/a.html', checksum: 'a1', inode: 1 }],
       ['12', { type: 'upload', path: 'projects/old/b.png', checksum: 'b1', inode: 2 }]
     ]);
-    syncEngine.recentFolderCascadePaths = new Map();
+    syncEngine.cascade = new CascadeSuppression();
 
     const expectedPaths = [
       'projects/new',
       'projects/new/a.html',
       'projects/new/b.png'
     ];
-    syncEngine._markDescendantsForSuppression(expectedPaths);
+    syncEngine.cascade.mark(expectedPaths);
 
     for (const p of expectedPaths) {
-      expect(syncEngine._consumeSuppressedEvent(p)).toBe(true);
+      expect(syncEngine.cascade.consume(p)).toBe(true);
     }
   });
 });

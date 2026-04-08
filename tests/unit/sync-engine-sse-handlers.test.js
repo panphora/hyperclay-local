@@ -37,6 +37,7 @@ const fileOps = require('../../src/sync-engine/file-operations');
 const apiClient = require('../../src/sync-engine/api-client');
 const nodeMapModule = require('../../src/sync-engine/node-map');
 const Outbox = require('../../src/sync-engine/state/outbox');
+const CascadeSuppression = require('../../src/sync-engine/state/cascade-suppression');
 
 let syncEngine;
 
@@ -57,7 +58,7 @@ beforeEach(() => {
   syncEngine.nodeMap = new Map();
   syncEngine.outbox = new Outbox();
   syncEngine.recentSseNodeSaves = new Map();
-  syncEngine.recentFolderCascadePaths = new Map();
+  syncEngine.cascade = new CascadeSuppression();
   syncEngine.stats = {
     filesProtected: 0,
     filesDownloaded: 0,
@@ -355,7 +356,7 @@ describe('handleNodeDeleted', () => {
       { nodeId: '61', entry: { type: 'site', path: 'projects/a.html' } }
     ]);
 
-    const spy = jest.spyOn(syncEngine, '_markDescendantsForSuppression');
+    const spy = jest.spyOn(syncEngine.cascade, 'mark');
 
     await syncEngine.handleNodeDeleted({
       nodeId: 60,

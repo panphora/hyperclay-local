@@ -189,7 +189,7 @@ module.exports = {
     this.resolveContainedPath(localFolderPath);
     const localPath = path.join(this.syncFolder, localFolderPath);
 
-    this._markDescendantsForSuppression([localFolderPath]);
+    this.cascade.mark([localFolderPath]);
 
     this.outbox.markInFlight('save', data.nodeId);
 
@@ -318,7 +318,7 @@ module.exports = {
       localFolderPath,
       ...descendants.map(({ entry: e }) => e.path)
     ];
-    this._markDescendantsForSuppression(oldSidePaths);
+    this.cascade.mark(oldSidePaths);
 
     this.outbox.markInFlight('delete', nodeId);
 
@@ -384,7 +384,7 @@ module.exports = {
       liveSync.markBrowserSave(toFileId(newPath));
     }
 
-    this._markDescendantsForSuppression([currentPath, newPath]);
+    this.cascade.mark([currentPath, newPath]);
 
     await ensureDirectory(path.dirname(newLocalPath));
     await moveFile(localPath, newLocalPath);
@@ -425,7 +425,7 @@ module.exports = {
       ...descendants.map(({ entry: e }) => e.path),
       ...Array.from(oldToNew.values()).map(v => v.newPath)
     ];
-    this._markDescendantsForSuppression(allSuppressedPaths);
+    this.cascade.mark(allSuppressedPaths);
 
     const exists = await fileExists(localOldPath);
     if (!exists) {

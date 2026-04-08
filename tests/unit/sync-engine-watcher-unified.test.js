@@ -34,6 +34,7 @@ jest.mock('../../src/sync-engine/node-map');
 
 const { renameNode, moveNode, deleteNode } = require('../../src/sync-engine/api-client');
 const Outbox = require('../../src/sync-engine/state/outbox');
+const CascadeSuppression = require('../../src/sync-engine/state/cascade-suppression');
 
 let syncEngine;
 
@@ -48,7 +49,7 @@ beforeEach(() => {
   syncEngine.nodeMap = new Map();
   syncEngine.pendingUnlinks = new Map();
   syncEngine.outbox = new Outbox();
-  syncEngine.recentFolderCascadePaths = new Map();
+  syncEngine.cascade = new CascadeSuppression();
   syncEngine.folderIdentityWaiters = new Map();
   syncEngine.serverUrl = 'http://test';
   syncEngine.apiKey = 'test-key';
@@ -119,33 +120,32 @@ describe('unified watcher — correlator', () => {
 
 describe('unified watcher — cascade suppression set', () => {
   beforeEach(() => {
-    syncEngine.recentFolderCascadePaths = new Map();
-    syncEngine.FOLDER_CASCADE_SUPPRESSION_TTL_MS = 3000;
+    syncEngine.cascade = new CascadeSuppression();
   });
 
   it('marks descendants and consumes them on match', () => {
-    syncEngine._markDescendantsForSuppression(['projects/new/a.html', 'projects/new/b.html']);
-    expect(syncEngine.recentFolderCascadePaths.size).toBe(2);
+    syncEngine.cascade.mark(['projects/new/a.html', 'projects/new/b.html']);
+    expect(syncEngine.cascade.size).toBe(2);
 
-    expect(syncEngine._consumeSuppressedEvent('projects/new/a.html')).toBe(true);
-    expect(syncEngine.recentFolderCascadePaths.size).toBe(1);
+    expect(syncEngine.cascade.consume('projects/new/a.html')).toBe(true);
+    expect(syncEngine.cascade.size).toBe(1);
 
-    expect(syncEngine._consumeSuppressedEvent('projects/new/a.html')).toBe(false);
+    expect(syncEngine.cascade.consume('projects/new/a.html')).toBe(false);
 
-    expect(syncEngine._consumeSuppressedEvent('projects/new/b.html')).toBe(true);
+    expect(syncEngine.cascade.consume('projects/new/b.html')).toBe(true);
   });
 
   it('expires entries after TTL', () => {
     jest.useFakeTimers();
-    syncEngine._markDescendantsForSuppression(['projects/new/a.html']);
+    syncEngine.cascade.mark(['projects/new/a.html']);
     jest.advanceTimersByTime(3500);
-    expect(syncEngine._consumeSuppressedEvent('projects/new/a.html')).toBe(false);
+    expect(syncEngine.cascade.consume('projects/new/a.html')).toBe(false);
     jest.useRealTimers();
   });
 
   it('unrelated paths are not consumed', () => {
-    syncEngine._markDescendantsForSuppression(['projects/new/a.html']);
-    expect(syncEngine._consumeSuppressedEvent('projects/other/b.html')).toBe(false);
-    expect(syncEngine.recentFolderCascadePaths.size).toBe(1);
+    syncEngine.cascade.mark(['projects/new/a.html']);
+    expect(syncEngine.cascade.consume('projects/other/b.html')).toBe(false);
+    expect(syncEngine.cascade.size).toBe(1);
   });
 });

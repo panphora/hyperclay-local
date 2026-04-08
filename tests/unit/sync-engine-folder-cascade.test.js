@@ -36,6 +36,7 @@ const path = require('path');
 const fileOps = require('../../src/sync-engine/file-operations');
 const nodeMapModule = require('../../src/sync-engine/node-map');
 const Outbox = require('../../src/sync-engine/state/outbox');
+const CascadeSuppression = require('../../src/sync-engine/state/cascade-suppression');
 
 let syncEngine;
 
@@ -50,7 +51,7 @@ beforeEach(() => {
   syncEngine.metaDir = '/tmp/test-meta';
   syncEngine.nodeMap = new Map();
   syncEngine.outbox = new Outbox();
-  syncEngine.recentFolderCascadePaths = new Map();
+  syncEngine.cascade = new CascadeSuppression();
 
   fileOps.moveFile.mockResolvedValue();
   fileOps.ensureDirectory.mockResolvedValue();
@@ -99,7 +100,7 @@ describe('_applyFolderRelocate', () => {
       { nodeId: '61', entry: { type: 'site', path: 'old/a.html' } }
     ]);
 
-    const spy = jest.spyOn(syncEngine, '_markDescendantsForSuppression');
+    const spy = jest.spyOn(syncEngine.cascade, 'mark');
 
     await syncEngine._applyFolderRelocate(60, 'old', 'new');
 
@@ -144,7 +145,7 @@ describe('_applyFolderRelocate', () => {
     fileOps.fileExists.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
     nodeMapModule.walkDescendants.mockReturnValue([]);
 
-    const spy = jest.spyOn(syncEngine, '_markDescendantsForSuppression');
+    const spy = jest.spyOn(syncEngine.cascade, 'mark');
 
     await syncEngine._applyFolderRelocate(60, 'old', 'new');
 
