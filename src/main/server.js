@@ -18,13 +18,7 @@ const eta = new Eta({
 // Store snapshot HTML for platform sync (keyed by filename)
 // When browser saves with snapshotHtml, we cache it for the sync engine to use
 const pendingSnapshots = new Map();
-
-setInterval(() => {
-  const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-  for (const [key, entry] of pendingSnapshots) {
-    if (entry.timestamp < fiveMinutesAgo) pendingSnapshots.delete(key);
-  }
-}, 60 * 1000);
+let snapshotCleanupTimer = null;
 
 /**
  * Get and clear the cached snapshot HTML for a file
@@ -103,6 +97,15 @@ function startServer(baseDir) {
   return new Promise((resolve, reject) => {
     if (server) {
       return reject(new Error('Server is already running'));
+    }
+
+    if (!snapshotCleanupTimer) {
+      snapshotCleanupTimer = setInterval(() => {
+        const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+        for (const [key, entry] of pendingSnapshots) {
+          if (entry.timestamp < fiveMinutesAgo) pendingSnapshots.delete(key);
+        }
+      }, 60 * 1000);
     }
 
     app = express();
@@ -470,6 +473,11 @@ function stopServer() {
   return new Promise((resolve) => {
     if (server) {
       console.log('Stopping server...');
+
+      if (snapshotCleanupTimer) {
+        clearInterval(snapshotCleanupTimer);
+        snapshotCleanupTimer = null;
+      }
 
       // Force close all active connections
       for (const connection of connections) {

@@ -58,6 +58,13 @@ beforeEach(() => {
   deleteNode.mockClear();
 });
 
+afterEach(() => {
+  for (const { timerId } of syncEngine.pendingUnlinks.values()) {
+    clearTimeout(timerId);
+  }
+  syncEngine.pendingUnlinks.clear();
+});
+
 describe('unified watcher — correlator', () => {
   it('rejects cross-type correlation (site unlink + upload add)', () => {
     syncEngine.nodeMap.set('1', {
