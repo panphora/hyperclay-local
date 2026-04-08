@@ -86,8 +86,13 @@ class SyncEngine extends EventEmitter {
     this.PENDING_ACTION_TTL_MS = 30000; // each pendingAction key lives 30s from when it was added
     this.pendingUnlinks = new Map(); // watcher rename/move detection: relativePath → { timerId, nodeId, type, entry }
     this.recentSseNodeSaves = new Map(); // `${nodeType}:${nodeId}` → expiresAt ms, tracks recent SSE node-saved events for toast suppression
-    this.recentFolderRenameDescendants = new Map();
-    this.FOLDER_RENAME_SUPPRESSION_TTL_MS = 3000;
+    // Cascade suppression (S5-Q1, extended in Step 6): when a folder operation
+    // (rename, move, or delete) is detected locally OR applied via SSE, we pre-populate
+    // this set with the chokidar paths that will fire as a result, so they get
+    // silently consumed (no duplicate API calls, no nodeMap churn, no echo loops).
+    // Keyed by relative path; value is the expiresAt timestamp in ms.
+    this.recentFolderCascadePaths = new Map();
+    this.FOLDER_CASCADE_SUPPRESSION_TTL_MS = 3000;
     this.folderIdentityWaiters = new Map();
     this.FOLDER_IDENTITY_WAIT_MS = 300;
     this.lastSyncedAt = null; // Timestamp of last successful sync
@@ -236,7 +241,7 @@ class SyncEngine extends EventEmitter {
             this.pendingActions.delete(key);
           }
         }
-        this._sweepFolderRenameSuppressionSet();
+        this._sweepFolderCascadeSuppressionSet();
       }, 10000);
 
       this.isRunning = true;
@@ -1852,30 +1857,30 @@ class SyncEngine extends EventEmitter {
   // --- Cascade suppression ---
 
   _markDescendantsForSuppression(descendantPaths) {
-    const expiresAt = Date.now() + this.FOLDER_RENAME_SUPPRESSION_TTL_MS;
+    const expiresAt = Date.now() + this.FOLDER_CASCADE_SUPPRESSION_TTL_MS;
     for (const p of descendantPaths) {
-      this.recentFolderRenameDescendants.set(p, expiresAt);
+      this.recentFolderCascadePaths.set(p, expiresAt);
     }
   }
 
   _consumeSuppressedEvent(normalizedPath) {
-    const expiresAt = this.recentFolderRenameDescendants.get(normalizedPath);
+    const expiresAt = this.recentFolderCascadePaths.get(normalizedPath);
     if (expiresAt === undefined) return false;
 
     if (expiresAt < Date.now()) {
-      this.recentFolderRenameDescendants.delete(normalizedPath);
+      this.recentFolderCascadePaths.delete(normalizedPath);
       return false;
     }
 
-    this.recentFolderRenameDescendants.delete(normalizedPath);
+    this.recentFolderCascadePaths.delete(normalizedPath);
     return true;
   }
 
-  _sweepFolderRenameSuppressionSet() {
+  _sweepFolderCascadeSuppressionSet() {
     const now = Date.now();
-    for (const [p, expiresAt] of this.recentFolderRenameDescendants) {
+    for (const [p, expiresAt] of this.recentFolderCascadePaths) {
       if (expiresAt < now) {
-        this.recentFolderRenameDescendants.delete(p);
+        this.recentFolderCascadePaths.delete(p);
       }
     }
   }
@@ -2803,7 +2808,7 @@ class SyncEngine extends EventEmitter {
     this.pendingUnlinks.clear();
     this.recentSseNodeSaves.clear();
 
-    this.recentFolderRenameDescendants.clear();
+    this.recentFolderCascadePaths.clear();
 
     for (const [, waiter] of this.folderIdentityWaiters) {
       clearTimeout(waiter.timerId);

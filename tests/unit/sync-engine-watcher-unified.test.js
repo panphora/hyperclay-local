@@ -47,7 +47,7 @@ beforeEach(() => {
   syncEngine.nodeMap = new Map();
   syncEngine.pendingUnlinks = new Map();
   syncEngine.pendingActions = new Map();
-  syncEngine.recentFolderRenameDescendants = new Map();
+  syncEngine.recentFolderCascadePaths = new Map();
   syncEngine.folderIdentityWaiters = new Map();
   syncEngine.serverUrl = 'http://test';
   syncEngine.apiKey = 'test-key';
@@ -118,16 +118,16 @@ describe('unified watcher — correlator', () => {
 
 describe('unified watcher — cascade suppression set', () => {
   beforeEach(() => {
-    syncEngine.recentFolderRenameDescendants = new Map();
-    syncEngine.FOLDER_RENAME_SUPPRESSION_TTL_MS = 3000;
+    syncEngine.recentFolderCascadePaths = new Map();
+    syncEngine.FOLDER_CASCADE_SUPPRESSION_TTL_MS = 3000;
   });
 
   it('marks descendants and consumes them on match', () => {
     syncEngine._markDescendantsForSuppression(['projects/new/a.html', 'projects/new/b.html']);
-    expect(syncEngine.recentFolderRenameDescendants.size).toBe(2);
+    expect(syncEngine.recentFolderCascadePaths.size).toBe(2);
 
     expect(syncEngine._consumeSuppressedEvent('projects/new/a.html')).toBe(true);
-    expect(syncEngine.recentFolderRenameDescendants.size).toBe(1);
+    expect(syncEngine.recentFolderCascadePaths.size).toBe(1);
 
     expect(syncEngine._consumeSuppressedEvent('projects/new/a.html')).toBe(false);
 
@@ -145,6 +145,6 @@ describe('unified watcher — cascade suppression set', () => {
   it('unrelated paths are not consumed', () => {
     syncEngine._markDescendantsForSuppression(['projects/new/a.html']);
     expect(syncEngine._consumeSuppressedEvent('projects/other/b.html')).toBe(false);
-    expect(syncEngine.recentFolderRenameDescendants.size).toBe(1);
+    expect(syncEngine.recentFolderCascadePaths.size).toBe(1);
   });
 });

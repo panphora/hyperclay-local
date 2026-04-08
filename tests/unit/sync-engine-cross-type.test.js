@@ -49,7 +49,7 @@ beforeEach(() => {
   syncEngine.metaDir = '/tmp/test-meta';
   syncEngine.nodeMap = new Map();
   syncEngine.pendingActions = new Map();
-  syncEngine.recentFolderRenameDescendants = new Map();
+  syncEngine.recentFolderCascadePaths = new Map();
 
   fileOps.moveFile.mockResolvedValue();
   fileOps.ensureDirectory.mockResolvedValue();

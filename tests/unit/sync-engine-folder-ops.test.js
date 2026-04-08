@@ -54,7 +54,7 @@ beforeEach(() => {
   syncEngine.nodeMap = new Map();
   syncEngine.pendingActions = new Map();
   syncEngine.pendingUnlinks = new Map();
-  syncEngine.recentFolderRenameDescendants = new Map();
+  syncEngine.recentFolderCascadePaths = new Map();
   syncEngine.folderIdentityWaiters = new Map();
   syncEngine.serverUrl = 'http://test';
   syncEngine.apiKey = 'test-key';
@@ -113,7 +113,7 @@ describe('folder rename cascade suppression', () => {
       ['11', { type: 'site',   path: 'projects/old/a.html', checksum: 'a1', inode: 1 }],
       ['12', { type: 'upload', path: 'projects/old/b.png', checksum: 'b1', inode: 2 }]
     ]);
-    syncEngine.recentFolderRenameDescendants = new Map();
+    syncEngine.recentFolderCascadePaths = new Map();
 
     const expectedPaths = [
       'projects/new',

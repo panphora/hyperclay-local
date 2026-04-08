@@ -56,7 +56,7 @@ beforeEach(() => {
   syncEngine.nodeMap = new Map();
   syncEngine.pendingActions = new Map();
   syncEngine.recentSseNodeSaves = new Map();
-  syncEngine.recentFolderRenameDescendants = new Map();
+  syncEngine.recentFolderCascadePaths = new Map();
   syncEngine.stats = {
     filesProtected: 0,
     filesDownloaded: 0,
