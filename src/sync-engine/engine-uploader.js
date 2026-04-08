@@ -176,13 +176,11 @@ module.exports = {
         // Server module not available or getAndClearSnapshot not exported
       }
 
-      // Check nodeMap for an existing nodeId for this file path
+      // Check repo for an existing nodeId for this file path
       let existingNodeId = null;
-      for (const [nid, entry] of this.nodeMap) {
-        if (entry.path === filename) {
-          existingNodeId = parseInt(nid);
-          break;
-        }
+      const existing = this.repo.getByPath(filename);
+      if (existing) {
+        existingNodeId = parseInt(existing.nodeId);
       }
 
       let result;
@@ -217,8 +215,7 @@ module.exports = {
 
       if (result.nodeId) {
         const inode = await nodeMap.getInode(path.join(this.syncFolder, filename));
-        this.nodeMap.set(String(result.nodeId), { path: filename, checksum: localChecksum, inode });
-        await nodeMap.save(this.metaDir, this.nodeMap);
+        await this.repo.set(result.nodeId, { path: filename, checksum: localChecksum, inode });
       }
 
       console.log(`[SYNC] Uploaded ${filename}`);
@@ -365,13 +362,11 @@ module.exports = {
         console.log(`[SYNC] Could not verify server checksum, proceeding: ${error.message}`);
       }
 
-      // Check nodeMap for an existing nodeId for this upload path
+      // Check repo for an existing nodeId for this upload path
       let existingNodeId = null;
-      for (const [nid, entry] of this.nodeMap) {
-        if (entry.path === relativePath) {
-          existingNodeId = parseInt(nid);
-          break;
-        }
+      const existing = this.repo.getByPath(relativePath);
+      if (existing) {
+        existingNodeId = parseInt(existing.nodeId);
       }
 
       let resultNodeId = existingNodeId;
@@ -400,8 +395,7 @@ module.exports = {
       }
 
       if (resultNodeId) {
-        this.nodeMap.set(String(resultNodeId), { path: relativePath, checksum: localChecksum, inode: null });
-        await nodeMap.save(this.metaDir, this.nodeMap);
+        await this.repo.set(resultNodeId, { path: relativePath, checksum: localChecksum, inode: null });
       }
 
       console.log(`[SYNC] Uploaded: ${relativePath}`);
@@ -434,11 +428,10 @@ module.exports = {
 
       const parentId = this.resolveParentIdByPath(parentFolderPath);
 
-      for (const [, entry] of this.nodeMap) {
-        if (entry.type === 'folder' && entry.path === relativePath) {
-          console.log(`[SYNC] Folder already tracked in nodeMap: ${relativePath}`);
-          return;
-        }
+      const existingFolder = this.repo.getByPath(relativePath);
+      if (existingFolder && existingFolder.entry.type === 'folder') {
+        console.log(`[SYNC] Folder already tracked in nodeMap: ${relativePath}`);
+        return;
       }
 
       console.log(`[SYNC] Creating folder on server: ${relativePath} (parentId=${parentId})`);
@@ -452,13 +445,12 @@ module.exports = {
 
       const fullPath = path.join(this.syncFolder, relativePath);
       const inode = await nodeMap.getInode(fullPath);
-      this.nodeMap.set(String(createdNode.id), {
+      await this.repo.set(createdNode.id, {
         type: 'folder',
         path: relativePath,
         parentId: createdNode.parentId,
         inode
       });
-      await nodeMap.save(this.metaDir, this.nodeMap);
 
       this.invalidateServerNodesCache();
       this.emit('file-synced', { file: relativePath, action: 'create', type: 'folder' });

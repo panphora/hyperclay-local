@@ -39,14 +39,18 @@ class SyncEngine extends EventEmitter {
     this.lastSseActivity = null; // Last SSE message timestamp
     this.deviceId = null; // Per-device identifier for multi-device sync
     this.syncQueue = new SyncQueue();
-    this.metaDir = null; // Path to sync metadata directory (in userData)
     this.repo = new NodeRepository(); // nodeId → { type, path, checksum?, inode?, parentId? }
-    // Shim: `this.nodeMap` forwards to `this.repo._map` so un-migrated code
-    // and tests continue to work during the per-file repo migration. Removed
-    // once every call site uses `this.repo` directly.
+    // Shims: `this.nodeMap` and `this.metaDir` forward to `this.repo` so
+    // un-migrated code and tests continue to work during the per-file repo
+    // migration. Removed once every call site uses `this.repo` directly.
     Object.defineProperty(this, 'nodeMap', {
       get() { return this.repo._map; },
       set(v) { this.repo._map = v instanceof Map ? v : new Map(v); },
+      configurable: true
+    });
+    Object.defineProperty(this, 'metaDir', {
+      get() { return this.repo._metaDir; },
+      set(v) { this.repo.attach(v); },
       configurable: true
     });
     this.outbox = new Outbox(); // SSE echo suppression: tracks in-flight mutations
@@ -171,7 +175,7 @@ class SyncEngine extends EventEmitter {
       console.log(`[SYNC] Clock offset: ${this.clockOffset}ms`);
 
       // Load node map (nodeId ↔ local path) and sync state
-      this.repo.attach(this.metaDir);
+      // (repo was already attached via the `this.metaDir = metaDir` setter above)
       await this.repo.load();
       const syncState = await this.repo.loadState();
       this.lastSyncedAt = syncState.lastSyncedAt || null;
