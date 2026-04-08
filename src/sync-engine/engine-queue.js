@@ -71,7 +71,7 @@ module.exports = {
       try {
         if (item.type === 'add' || item.type === 'change') {
           let type = null;
-          for (const [, entry] of this.nodeMap) {
+          for (const [, entry] of this.repo) {
             if (entry.path === item.filename) {
               type = entry.type;
               break;

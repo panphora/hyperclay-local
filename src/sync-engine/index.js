@@ -14,7 +14,6 @@ const { getServerBaseUrl } = require('../main/utils/utils');
 const { calibrateClock } = require('./utils');
 const { ensureDirectory } = require('./file-operations');
 const SyncQueue = require('./sync-queue');
-const nodeMap = require('./node-map');
 const { classifyPath } = require('./path-helpers');
 const Outbox = require('./state/outbox');
 const CascadeSuppression = require('./state/cascade-suppression');
@@ -40,14 +39,9 @@ class SyncEngine extends EventEmitter {
     this.deviceId = null; // Per-device identifier for multi-device sync
     this.syncQueue = new SyncQueue();
     this.repo = new NodeRepository(); // nodeId → { type, path, checksum?, inode?, parentId? }
-    // Shims: `this.nodeMap` and `this.metaDir` forward to `this.repo` so
-    // un-migrated code and tests continue to work during the per-file repo
-    // migration. Removed once every call site uses `this.repo` directly.
-    Object.defineProperty(this, 'nodeMap', {
-      get() { return this.repo._map; },
-      set(v) { this.repo._map = v instanceof Map ? v : new Map(v); },
-      configurable: true
-    });
+    // Convenience: `this.metaDir = x` forwards to `this.repo.attach(x)` so
+    // tests and init() can set the metadata directory in one place instead
+    // of having to remember to call attach() separately.
     Object.defineProperty(this, 'metaDir', {
       get() { return this.repo._metaDir; },
       set(v) { this.repo.attach(v); },
@@ -243,7 +237,7 @@ class SyncEngine extends EventEmitter {
       return 0;  // root
     }
 
-    for (const [nodeId, entry] of this.nodeMap) {
+    for (const [nodeId, entry] of this.repo) {
       if (entry.type === 'folder' && entry.path === folderPath) {
         return parseInt(nodeId, 10);
       }

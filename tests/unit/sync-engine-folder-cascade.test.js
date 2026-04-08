@@ -49,7 +49,7 @@ beforeEach(() => {
 
   syncEngine.syncFolder = '/tmp/test-sync';
   syncEngine.metaDir = '/tmp/test-meta';
-  syncEngine.nodeMap = new Map();
+  syncEngine.repo.seed([]);
   syncEngine.outbox = new Outbox();
   syncEngine.cascade = new CascadeSuppression();
 
@@ -65,11 +65,11 @@ beforeEach(() => {
 
 describe('_applyFolderRelocate', () => {
   it('rewrites descendant paths in nodeMap', async () => {
-    syncEngine.nodeMap.set('60', { type: 'folder', path: 'projects/old', parentId: 0 });
-    syncEngine.nodeMap.set('61', { type: 'site', path: 'projects/old/a.html', checksum: 'a' });
-    syncEngine.nodeMap.set('62', { type: 'upload', path: 'projects/old/b.png', checksum: 'b' });
-    syncEngine.nodeMap.set('63', { type: 'folder', path: 'projects/old/sub' });
-    syncEngine.nodeMap.set('64', { type: 'site', path: 'projects/old/sub/c.html' });
+    syncEngine.repo._map.set('60', { type: 'folder', path: 'projects/old', parentId: 0 });
+    syncEngine.repo._map.set('61', { type: 'site', path: 'projects/old/a.html', checksum: 'a' });
+    syncEngine.repo._map.set('62', { type: 'upload', path: 'projects/old/b.png', checksum: 'b' });
+    syncEngine.repo._map.set('63', { type: 'folder', path: 'projects/old/sub' });
+    syncEngine.repo._map.set('64', { type: 'site', path: 'projects/old/sub/c.html' });
 
     fileOps.fileExists.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
     nodeMapModule.walkDescendants.mockReturnValue([
@@ -85,16 +85,16 @@ describe('_applyFolderRelocate', () => {
       path.join('/tmp/test-sync', 'projects/old'),
       path.join('/tmp/test-sync', 'projects/new')
     );
-    expect(syncEngine.nodeMap.get('60').path).toBe('projects/new');
-    expect(syncEngine.nodeMap.get('61').path).toBe('projects/new/a.html');
-    expect(syncEngine.nodeMap.get('62').path).toBe('projects/new/b.png');
-    expect(syncEngine.nodeMap.get('63').path).toBe('projects/new/sub');
-    expect(syncEngine.nodeMap.get('64').path).toBe('projects/new/sub/c.html');
+    expect(syncEngine.repo.get('60').path).toBe('projects/new');
+    expect(syncEngine.repo.get('61').path).toBe('projects/new/a.html');
+    expect(syncEngine.repo.get('62').path).toBe('projects/new/b.png');
+    expect(syncEngine.repo.get('63').path).toBe('projects/new/sub');
+    expect(syncEngine.repo.get('64').path).toBe('projects/new/sub/c.html');
   });
 
   it('pre-populates suppression set with both old and new paths', async () => {
-    syncEngine.nodeMap.set('60', { type: 'folder', path: 'old' });
-    syncEngine.nodeMap.set('61', { type: 'site', path: 'old/a.html' });
+    syncEngine.repo._map.set('60', { type: 'folder', path: 'old' });
+    syncEngine.repo._map.set('61', { type: 'site', path: 'old/a.html' });
     fileOps.fileExists.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
     nodeMapModule.walkDescendants.mockReturnValue([
       { nodeId: '61', entry: { type: 'site', path: 'old/a.html' } }
@@ -115,8 +115,8 @@ describe('_applyFolderRelocate', () => {
   });
 
   it('updates nodeMap even if folder is missing on disk', async () => {
-    syncEngine.nodeMap.set('60', { type: 'folder', path: 'old' });
-    syncEngine.nodeMap.set('61', { type: 'site', path: 'old/a.html' });
+    syncEngine.repo._map.set('60', { type: 'folder', path: 'old' });
+    syncEngine.repo._map.set('61', { type: 'site', path: 'old/a.html' });
     fileOps.fileExists.mockResolvedValueOnce(false);
     nodeMapModule.walkDescendants.mockReturnValue([
       { nodeId: '61', entry: { type: 'site', path: 'old/a.html' } }
@@ -125,23 +125,23 @@ describe('_applyFolderRelocate', () => {
     await syncEngine._applyFolderRelocate(60, 'old', 'new');
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
-    expect(syncEngine.nodeMap.get('60').path).toBe('new');
-    expect(syncEngine.nodeMap.get('61').path).toBe('new/a.html');
+    expect(syncEngine.repo.get('60').path).toBe('new');
+    expect(syncEngine.repo.get('61').path).toBe('new/a.html');
   });
 
   it('bails out on collision at the new path', async () => {
-    syncEngine.nodeMap.set('60', { type: 'folder', path: 'old' });
+    syncEngine.repo._map.set('60', { type: 'folder', path: 'old' });
     fileOps.fileExists.mockResolvedValueOnce(true).mockResolvedValueOnce(true);
     nodeMapModule.walkDescendants.mockReturnValue([]);
 
     await syncEngine._applyFolderRelocate(60, 'old', 'new');
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
-    expect(syncEngine.nodeMap.get('60').path).toBe('old');
+    expect(syncEngine.repo.get('60').path).toBe('old');
   });
 
   it('suppresses watcher echo via suppression set, not outbox', async () => {
-    syncEngine.nodeMap.set('60', { type: 'folder', path: 'old' });
+    syncEngine.repo._map.set('60', { type: 'folder', path: 'old' });
     fileOps.fileExists.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
     nodeMapModule.walkDescendants.mockReturnValue([]);
 

@@ -56,7 +56,7 @@ beforeEach(() => {
   syncEngine.apiKey = 'test-key';
   syncEngine.deviceId = 'test-device';
   syncEngine.isRunning = true;
-  syncEngine.nodeMap = new Map();
+  syncEngine.repo.seed([]);
   syncEngine.outbox = new Outbox();
   syncEngine.echoWindow = new EchoWindow();
   syncEngine.cascade = new CascadeSuppression();
@@ -121,7 +121,7 @@ describe('handleNodeSaved', () => {
         '<html>hi</html>',
         expect.any(Date)
       );
-      expect(syncEngine.nodeMap.get('42')).toEqual(expect.objectContaining({
+      expect(syncEngine.repo.get('42')).toEqual(expect.objectContaining({
         type: 'site',
         path: 'index.html'
       }));
@@ -157,7 +157,7 @@ describe('handleNodeSaved', () => {
 
       expect(apiClient.getNodeContent).toHaveBeenCalledWith('http://test', 'test-key', 50);
       expect(fileOps.writeFileBuffer).toHaveBeenCalled();
-      expect(syncEngine.nodeMap.get('50')).toEqual(expect.objectContaining({
+      expect(syncEngine.repo.get('50')).toEqual(expect.objectContaining({
         type: 'upload',
         path: 'image.png',
         checksum: 'cs-fetched'
@@ -193,7 +193,7 @@ describe('handleNodeSaved', () => {
       });
 
       expect(fileOps.ensureDirectory).toHaveBeenCalledWith(path.join('/tmp/test-sync', 'projects'));
-      expect(syncEngine.nodeMap.get('60')).toEqual(expect.objectContaining({
+      expect(syncEngine.repo.get('60')).toEqual(expect.objectContaining({
         type: 'folder',
         path: 'projects',
         parentId: 0
@@ -201,7 +201,7 @@ describe('handleNodeSaved', () => {
     });
 
     it('no-ops if folder is already tracked in nodeMap', async () => {
-      syncEngine.nodeMap.set('60', { type: 'folder', path: 'projects', parentId: 0 });
+      syncEngine.repo._map.set('60', { type: 'folder', path: 'projects', parentId: 0 });
 
       await syncEngine.handleNodeSaved({
         nodeId: 60,
@@ -239,7 +239,7 @@ describe('handleNodeRenamed', () => {
   });
 
   it('renames a site file on disk and updates nodeMap', async () => {
-    syncEngine.nodeMap.set('42', {
+    syncEngine.repo._map.set('42', {
       type: 'site',
       path: 'old.html',
       checksum: 'cs',
@@ -260,11 +260,11 @@ describe('handleNodeRenamed', () => {
       path.join('/tmp/test-sync', 'old.html'),
       path.join('/tmp/test-sync', 'new.html')
     );
-    expect(syncEngine.nodeMap.get('42').path).toBe('new.html');
+    expect(syncEngine.repo.get('42').path).toBe('new.html');
   });
 
   it('renames an upload', async () => {
-    syncEngine.nodeMap.set('50', {
+    syncEngine.repo._map.set('50', {
       type: 'upload',
       path: 'old.png',
       checksum: 'cs',
@@ -282,12 +282,12 @@ describe('handleNodeRenamed', () => {
     });
 
     expect(fileOps.moveFile).toHaveBeenCalled();
-    expect(syncEngine.nodeMap.get('50').path).toBe('new.png');
+    expect(syncEngine.repo.get('50').path).toBe('new.png');
   });
 
   it('renames a folder via _applyFolderRelocate', async () => {
-    syncEngine.nodeMap.set('60', { type: 'folder', path: 'old', parentId: 0 });
-    syncEngine.nodeMap.set('61', { type: 'site', path: 'old/a.html', checksum: 'a' });
+    syncEngine.repo._map.set('60', { type: 'folder', path: 'old', parentId: 0 });
+    syncEngine.repo._map.set('61', { type: 'site', path: 'old/a.html', checksum: 'a' });
     fileOps.fileExists.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
     nodeMapModule.walkDescendants.mockReturnValue([
       { nodeId: '61', entry: { type: 'site', path: 'old/a.html', checksum: 'a' } }
@@ -303,8 +303,8 @@ describe('handleNodeRenamed', () => {
     });
 
     expect(fileOps.moveFile).toHaveBeenCalled();
-    expect(syncEngine.nodeMap.get('60').path).toBe('new');
-    expect(syncEngine.nodeMap.get('61').path).toBe('new/a.html');
+    expect(syncEngine.repo.get('60').path).toBe('new');
+    expect(syncEngine.repo.get('61').path).toBe('new/a.html');
   });
 });
 
@@ -314,7 +314,7 @@ describe('handleNodeDeleted', () => {
   });
 
   it('trashes a site file and removes from nodeMap', async () => {
-    syncEngine.nodeMap.set('42', { type: 'site', path: 'foo.html' });
+    syncEngine.repo._map.set('42', { type: 'site', path: 'foo.html' });
     fileOps.fileExists.mockResolvedValue(true);
 
     await syncEngine.handleNodeDeleted({
@@ -325,13 +325,13 @@ describe('handleNodeDeleted', () => {
     });
 
     expect(fileOps.moveFile).toHaveBeenCalled();
-    expect(syncEngine.nodeMap.has('42')).toBe(false);
+    expect(syncEngine.repo.has('42')).toBe(false);
   });
 
   it('trashes a folder and cleans up all descendants in nodeMap', async () => {
-    syncEngine.nodeMap.set('60', { type: 'folder', path: 'projects' });
-    syncEngine.nodeMap.set('61', { type: 'site', path: 'projects/a.html' });
-    syncEngine.nodeMap.set('62', { type: 'upload', path: 'projects/b.png' });
+    syncEngine.repo._map.set('60', { type: 'folder', path: 'projects' });
+    syncEngine.repo._map.set('61', { type: 'site', path: 'projects/a.html' });
+    syncEngine.repo._map.set('62', { type: 'upload', path: 'projects/b.png' });
     fileOps.fileExists.mockResolvedValue(true);
     nodeMapModule.walkDescendants.mockReturnValue([
       { nodeId: '61', entry: { type: 'site', path: 'projects/a.html' } },
@@ -346,12 +346,12 @@ describe('handleNodeDeleted', () => {
     });
 
     expect(fileOps.moveFile).toHaveBeenCalled();
-    expect(syncEngine.nodeMap.size).toBe(0);
+    expect(syncEngine.repo.size).toBe(0);
   });
 
   it('pre-populates suppression set before trashing folder', async () => {
-    syncEngine.nodeMap.set('60', { type: 'folder', path: 'projects' });
-    syncEngine.nodeMap.set('61', { type: 'site', path: 'projects/a.html' });
+    syncEngine.repo._map.set('60', { type: 'folder', path: 'projects' });
+    syncEngine.repo._map.set('61', { type: 'site', path: 'projects/a.html' });
     fileOps.fileExists.mockResolvedValue(true);
     nodeMapModule.walkDescendants.mockReturnValue([
       { nodeId: '61', entry: { type: 'site', path: 'projects/a.html' } }

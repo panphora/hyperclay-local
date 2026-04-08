@@ -46,7 +46,7 @@ beforeEach(() => {
   });
 
   syncEngine.isRunning = true;
-  syncEngine.nodeMap = new Map();
+  syncEngine.repo.seed([]);
   syncEngine.pendingUnlinks = new Map();
   syncEngine.outbox = new Outbox();
   syncEngine.cascade = new CascadeSuppression();
@@ -69,7 +69,7 @@ afterEach(() => {
 
 describe('unified watcher — correlator', () => {
   it('rejects cross-type correlation (site unlink + upload add)', () => {
-    syncEngine.nodeMap.set('1', {
+    syncEngine.repo._map.set('1', {
       type: 'site',
       path: 'foo.html',
       checksum: 'abc',
@@ -85,7 +85,7 @@ describe('unified watcher — correlator', () => {
   });
 
   it('correlates same-type rename', () => {
-    syncEngine.nodeMap.set('1', {
+    syncEngine.repo._map.set('1', {
       type: 'site',
       path: 'foo.html',
       checksum: 'abc',
@@ -100,7 +100,7 @@ describe('unified watcher — correlator', () => {
   });
 
   it('does not correlate when paths are identical', () => {
-    syncEngine.nodeMap.set('1', {
+    syncEngine.repo._map.set('1', {
       type: 'site',
       path: 'foo.html',
       checksum: 'abc',

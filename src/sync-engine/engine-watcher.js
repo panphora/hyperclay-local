@@ -149,7 +149,7 @@ module.exports = {
 
     let foundNodeId = null;
     let foundEntry = null;
-    for (const [nid, entry] of this.nodeMap) {
+    for (const [nid, entry] of this.repo) {
       if (entry.type === type && entry.path === normalizedPath) {
         foundNodeId = nid;
         foundEntry = entry;
@@ -170,15 +170,15 @@ module.exports = {
         await deleteNode(this.serverUrl, this.apiKey, parseInt(foundNodeId));
         this.invalidateServerNodesCache();
 
-        if (type === 'folder') {
-          const descendants = nodeMap.walkDescendants(this.nodeMap, normalizedPath);
-          for (const { nodeId: descId } of descendants) {
-            this.nodeMap.delete(descId);
+        await this.repo.apply(async (map) => {
+          if (type === 'folder') {
+            const descendants = this.repo.walkDescendants(normalizedPath);
+            for (const { nodeId: descId } of descendants) {
+              map.delete(descId);
+            }
           }
-        }
-
-        this.nodeMap.delete(foundNodeId);
-        await nodeMap.save(this.metaDir, this.nodeMap);
+          map.delete(foundNodeId);
+        });
       } catch (err) {
         console.error(`[SYNC] Watcher: Failed to sync ${type} delete for ${normalizedPath}:`, err.message);
       }
@@ -257,8 +257,7 @@ module.exports = {
         this.outbox.markInFlight('delete', pending.nodeId);
         await deleteNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId));
         this.invalidateServerNodesCache();
-        this.nodeMap.delete(pending.nodeId);
-        await nodeMap.save(this.metaDir, this.nodeMap);
+        await this.repo.delete(pending.nodeId);
       } catch (err) {
         console.error(`[SYNC] Watcher: Failed to sync delete for ${oldPath}:`, err.message);
       }
@@ -290,13 +289,12 @@ module.exports = {
       }
 
       this.invalidateServerNodesCache();
-      this.nodeMap.set(pending.nodeId, {
+      await this.repo.set(pending.nodeId, {
         type,
         path: newPath,
         checksum: pending.entry.checksum,
         inode: newInode
       });
-      await nodeMap.save(this.metaDir, this.nodeMap);
     } catch (err) {
       console.error(`[SYNC] Watcher: Failed to sync ${shape} for ${oldPath}:`, err.message);
     }
@@ -315,7 +313,7 @@ module.exports = {
       reason = 'inode-match';
     } else {
       const knownDescendantBasenames = new Set(
-        nodeMap.walkDescendants(this.nodeMap, oldPath)
+        this.repo.walkDescendants(oldPath)
           .map(({ entry }) => path.basename(entry.path))
       );
 
@@ -344,12 +342,13 @@ module.exports = {
         this.outbox.markInFlight('delete', pending.nodeId);
         await deleteNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId));
         this.invalidateServerNodesCache();
-        const oldDescendants = nodeMap.walkDescendants(this.nodeMap, oldPath);
-        for (const { nodeId: descId } of oldDescendants) {
-          this.nodeMap.delete(descId);
-        }
-        this.nodeMap.delete(pending.nodeId);
-        await nodeMap.save(this.metaDir, this.nodeMap);
+        const oldDescendants = this.repo.walkDescendants(oldPath);
+        await this.repo.apply(async (map) => {
+          for (const { nodeId: descId } of oldDescendants) {
+            map.delete(descId);
+          }
+          map.delete(pending.nodeId);
+        });
       } catch (err) {
         console.error(`[SYNC] Watcher: Failed to sync folder delete for ${oldPath}:`, err.message);
       }
@@ -357,7 +356,7 @@ module.exports = {
       return;
     }
 
-    const oldDescendants = nodeMap.walkDescendants(this.nodeMap, oldPath);
+    const oldDescendants = this.repo.walkDescendants(oldPath);
     const expectedNewPaths = oldDescendants.map(({ entry }) => {
       return newPath + entry.path.substring(oldPath.length);
     });
@@ -387,19 +386,19 @@ module.exports = {
       }
       this.invalidateServerNodesCache();
 
-      for (const { nodeId: descId, entry } of oldDescendants) {
-        const newEntryPath = newPath + entry.path.substring(oldPath.length);
-        this.nodeMap.set(descId, { ...entry, path: newEntryPath });
-      }
+      await this.repo.apply(async (map) => {
+        for (const { nodeId: descId, entry } of oldDescendants) {
+          const newEntryPath = newPath + entry.path.substring(oldPath.length);
+          map.set(descId, { ...entry, path: newEntryPath });
+        }
 
-      this.nodeMap.set(pending.nodeId, {
-        type: 'folder',
-        path: newPath,
-        parentId: pending.entry.parentId,
-        inode: newInode
+        map.set(String(pending.nodeId), {
+          type: 'folder',
+          path: newPath,
+          parentId: pending.entry.parentId,
+          inode: newInode
+        });
       });
-
-      await nodeMap.save(this.metaDir, this.nodeMap);
     } catch (err) {
       console.error(`[SYNC] Watcher: Failed to sync folder ${shape} for ${oldPath}:`, err.message);
     }
@@ -450,10 +449,10 @@ module.exports = {
   async _handleSiteChange(normalizedPath) {
     const fileId = normalizedPath.replace(/\.(html|htmlclay)$/, '');
 
-    // Walk nodeMap once for both checksum comparison AND nodeId resolution
+    // Walk repo once for both checksum comparison AND nodeId resolution
     let storedChecksum = null;
     let foundNodeId = null;
-    for (const [nid, entry] of this.nodeMap) {
+    for (const [nid, entry] of this.repo) {
       if (entry.path === normalizedPath && entry.type === 'site') {
         storedChecksum = entry.checksum;
         foundNodeId = nid;
@@ -505,7 +504,7 @@ module.exports = {
       const newChecksum = calculateBufferChecksum(content);
 
       let storedChecksum = null;
-      for (const [, entry] of this.nodeMap) {
+      for (const [, entry] of this.repo) {
         if (entry.path === normalizedPath && entry.type === 'upload') {
           storedChecksum = entry.checksum;
           break;

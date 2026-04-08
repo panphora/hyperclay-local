@@ -49,7 +49,7 @@ beforeEach(() => {
 
   syncEngine.syncFolder = '/tmp/test-sync';
   syncEngine.metaDir = '/tmp/test-meta';
-  syncEngine.nodeMap = new Map();
+  syncEngine.repo.seed([]);
   syncEngine.outbox = new Outbox();
   syncEngine.cascade = new CascadeSuppression();
 
@@ -93,11 +93,11 @@ describe('Cross-type: walkDescendants with mixed nodeMap', () => {
 
 describe('Cross-type: SSE folder rename cascades over mixed children', () => {
   it('rewrites paths for site, upload, and sub-folder descendants in one pass', async () => {
-    syncEngine.nodeMap.set('10', { type: 'folder', path: 'old', parentId: 0 });
-    syncEngine.nodeMap.set('11', { type: 'site', path: 'old/page.html', checksum: 'a' });
-    syncEngine.nodeMap.set('12', { type: 'upload', path: 'old/image.png', checksum: 'b' });
-    syncEngine.nodeMap.set('13', { type: 'folder', path: 'old/sub' });
-    syncEngine.nodeMap.set('14', { type: 'site', path: 'old/sub/nested.html', checksum: 'c' });
+    syncEngine.repo._map.set('10', { type: 'folder', path: 'old', parentId: 0 });
+    syncEngine.repo._map.set('11', { type: 'site', path: 'old/page.html', checksum: 'a' });
+    syncEngine.repo._map.set('12', { type: 'upload', path: 'old/image.png', checksum: 'b' });
+    syncEngine.repo._map.set('13', { type: 'folder', path: 'old/sub' });
+    syncEngine.repo._map.set('14', { type: 'site', path: 'old/sub/nested.html', checksum: 'c' });
 
     nodeMapModule.walkDescendants.mockReturnValue([
       { nodeId: '11', entry: { type: 'site', path: 'old/page.html', checksum: 'a' } },
@@ -123,18 +123,18 @@ describe('Cross-type: SSE folder rename cascades over mixed children', () => {
       path.join('/tmp/test-sync', 'new')
     );
 
-    expect(syncEngine.nodeMap.get('10').path).toBe('new');
-    expect(syncEngine.nodeMap.get('11').path).toBe('new/page.html');
-    expect(syncEngine.nodeMap.get('12').path).toBe('new/image.png');
-    expect(syncEngine.nodeMap.get('13').path).toBe('new/sub');
-    expect(syncEngine.nodeMap.get('14').path).toBe('new/sub/nested.html');
+    expect(syncEngine.repo.get('10').path).toBe('new');
+    expect(syncEngine.repo.get('11').path).toBe('new/page.html');
+    expect(syncEngine.repo.get('12').path).toBe('new/image.png');
+    expect(syncEngine.repo.get('13').path).toBe('new/sub');
+    expect(syncEngine.repo.get('14').path).toBe('new/sub/nested.html');
 
-    expect(syncEngine.nodeMap.get('11').type).toBe('site');
-    expect(syncEngine.nodeMap.get('11').checksum).toBe('a');
-    expect(syncEngine.nodeMap.get('12').type).toBe('upload');
-    expect(syncEngine.nodeMap.get('12').checksum).toBe('b');
-    expect(syncEngine.nodeMap.get('14').type).toBe('site');
-    expect(syncEngine.nodeMap.get('14').checksum).toBe('c');
+    expect(syncEngine.repo.get('11').type).toBe('site');
+    expect(syncEngine.repo.get('11').checksum).toBe('a');
+    expect(syncEngine.repo.get('12').type).toBe('upload');
+    expect(syncEngine.repo.get('12').checksum).toBe('b');
+    expect(syncEngine.repo.get('14').type).toBe('site');
+    expect(syncEngine.repo.get('14').checksum).toBe('c');
   });
 });
 
@@ -168,7 +168,7 @@ describe('Cross-type: cascade suppression set is shared across mixed types', () 
 
 describe('Cross-type: processQueue dispatches correctly for mixed nodeMap entries', () => {
   it('routes a folder add to createFolderOnServer', async () => {
-    syncEngine.nodeMap.set('10', { type: 'folder', path: 'projects' });
+    syncEngine.repo._map.set('10', { type: 'folder', path: 'projects' });
     syncEngine.isRunning = true;
 
     const createFolderSpy = jest.spyOn(syncEngine, 'createFolderOnServer').mockResolvedValue();
@@ -191,7 +191,7 @@ describe('Cross-type: processQueue dispatches correctly for mixed nodeMap entrie
   });
 
   it('routes a site add to uploadFile', async () => {
-    syncEngine.nodeMap.set('11', { type: 'site', path: 'projects/index.html' });
+    syncEngine.repo._map.set('11', { type: 'site', path: 'projects/index.html' });
     syncEngine.isRunning = true;
 
     const uploadFileSpy = jest.spyOn(syncEngine, 'uploadFile').mockResolvedValue();
@@ -214,7 +214,7 @@ describe('Cross-type: processQueue dispatches correctly for mixed nodeMap entrie
   });
 
   it('routes an upload add to uploadUploadFile', async () => {
-    syncEngine.nodeMap.set('12', { type: 'upload', path: 'projects/image.png' });
+    syncEngine.repo._map.set('12', { type: 'upload', path: 'projects/image.png' });
     syncEngine.isRunning = true;
 
     const uploadUploadFileSpy = jest.spyOn(syncEngine, 'uploadUploadFile').mockResolvedValue();

@@ -63,7 +63,7 @@ beforeEach(() => {
   syncEngine.apiKey = 'hcsk_test';
   syncEngine.username = 'testuser';
   syncEngine.clockOffset = 0;
-  syncEngine.nodeMap = new Map();
+  syncEngine.repo.seed();
   syncEngine.lastSyncedAt = null;
   syncEngine.isRunning = false;
   syncEngine.stats = {
@@ -125,7 +125,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
       ['my-site.html', { path: '/test/sync/my-site.html', relativePath: 'my-site.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
-    syncEngine.nodeMap = new Map([['1', entry('my-site.html')]]);
+    syncEngine.repo.seed([['1', entry('my-site.html')]]);
 
     fileOps.readFile.mockResolvedValue(content);
     fileOps.getFileStats.mockResolvedValue({ mtime: new Date('2024-05-01'), size: 100 });
@@ -191,7 +191,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
       ['my-site.html', { path: '/test/sync/my-site.html', relativePath: 'my-site.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
-    syncEngine.nodeMap = new Map([['1', entry('my-site.html')]]);
+    syncEngine.repo.seed([['1', entry('my-site.html')]]);
 
     fileOps.readFile.mockResolvedValue(content);
     fileOps.getFileStats.mockResolvedValue({ mtime: new Date('2024-05-01'), size: 100 });
@@ -218,7 +218,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
       ['my-site.html', { path: '/test/sync/my-site.html', relativePath: 'my-site.html', mtime: new Date('2024-06-01'), size: 100 }]
     ]));
 
-    syncEngine.nodeMap = new Map([['1', entry('my-site.html')]]);
+    syncEngine.repo.seed([['1', entry('my-site.html')]]);
 
     fileOps.readFile.mockResolvedValue(localContent);
     // Return a date newer than server's modifiedAt
@@ -243,7 +243,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
       ['my-site.html', { path: '/test/sync/my-site.html', relativePath: 'my-site.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
-    syncEngine.nodeMap = new Map([['1', entry('my-site.html')]]);
+    syncEngine.repo.seed([['1', entry('my-site.html')]]);
 
     fileOps.moveFile.mockRejectedValue(new Error('EACCES: permission denied'));
 
@@ -291,7 +291,7 @@ describe('performInitialSync — duplicate filename handling', () => {
       ['archive/blog.html', { path: '/test/sync/archive/blog.html', relativePath: 'archive/blog.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
-    syncEngine.nodeMap = new Map([['1', entry('archive/blog.html')]]);
+    syncEngine.repo.seed([['1', entry('archive/blog.html')]]);
 
     fileOps.readFile.mockResolvedValue(content);
     fileOps.getFileStats.mockResolvedValue({ mtime: new Date('2024-05-01'), size: 100 });
@@ -386,7 +386,7 @@ describe('performInitialSync — duplicate filename handling', () => {
       ['drafts/blog.html', { path: '/test/sync/drafts/blog.html', relativePath: 'drafts/blog.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
-    syncEngine.nodeMap = new Map([['1', entry('drafts/blog.html')]]);
+    syncEngine.repo.seed([['1', entry('drafts/blog.html')]]);
 
     fileOps.moveFile.mockRejectedValue(new Error('EACCES: permission denied'));
 
@@ -423,7 +423,7 @@ describe('performInitialSync — duplicate filename handling', () => {
       ['archive/about.html', { path: '/test/sync/archive/about.html', relativePath: 'archive/about.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
-    syncEngine.nodeMap = new Map([
+    syncEngine.repo.seed([
       ['1', entry('drafts/blog.html')],
       ['2', entry('archive/about.html')]
     ]);

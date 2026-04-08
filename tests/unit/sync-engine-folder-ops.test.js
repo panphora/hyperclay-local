@@ -53,7 +53,7 @@ beforeEach(() => {
   });
 
   syncEngine.isRunning = true;
-  syncEngine.nodeMap = new Map();
+  syncEngine.repo.seed([]);
   syncEngine.outbox = new Outbox();
   syncEngine.pendingUnlinks = new Map();
   syncEngine.cascade = new CascadeSuppression();
@@ -82,14 +82,14 @@ describe('folder create', () => {
       expect.any(String),
       { type: 'folder', name: 'projects', parentId: 0 }
     );
-    expect(syncEngine.nodeMap.get('42')).toEqual(expect.objectContaining({
+    expect(syncEngine.repo.get('42')).toEqual(expect.objectContaining({
       type: 'folder',
       path: 'projects'
     }));
   });
 
   it('creates a nested folder with the correct parentId', async () => {
-    syncEngine.nodeMap.set('10', { type: 'folder', path: 'projects', parentId: 0 });
+    syncEngine.repo._map.set('10', { type: 'folder', path: 'projects', parentId: 0 });
     createNode.mockResolvedValueOnce({ id: 20, type: 'folder', name: 'assets', parentId: 10, path: 'projects' });
 
     await syncEngine.createFolderOnServer('projects/assets');
@@ -102,7 +102,7 @@ describe('folder create', () => {
   });
 
   it('is idempotent: returns early if folder is already in nodeMap', async () => {
-    syncEngine.nodeMap.set('10', { type: 'folder', path: 'projects', parentId: 0 });
+    syncEngine.repo._map.set('10', { type: 'folder', path: 'projects', parentId: 0 });
     await syncEngine.createFolderOnServer('projects');
     expect(createNode).not.toHaveBeenCalled();
   });
@@ -110,7 +110,7 @@ describe('folder create', () => {
 
 describe('folder rename cascade suppression', () => {
   it('pre-populates the suppression set with expected new descendant paths', () => {
-    syncEngine.nodeMap = new Map([
+    syncEngine.repo.seed([
       ['10', { type: 'folder', path: 'projects/old', parentId: 0 }],
       ['11', { type: 'site',   path: 'projects/old/a.html', checksum: 'a1', inode: 1 }],
       ['12', { type: 'upload', path: 'projects/old/b.png', checksum: 'b1', inode: 2 }]
@@ -134,7 +134,7 @@ describe('folder delete cleans up descendants in nodeMap', () => {
   it('removes all descendant entries when a folder is deleted', async () => {
     jest.useFakeTimers();
 
-    syncEngine.nodeMap = new Map([
+    syncEngine.repo.seed([
       ['10', { type: 'folder', path: 'projects', parentId: 0 }],
       ['11', { type: 'site',   path: 'projects/a.html', checksum: 'a', inode: 1 }],
       ['12', { type: 'upload', path: 'projects/b.png', checksum: 'b', inode: 2 }],
@@ -165,7 +165,7 @@ describe('folder delete cleans up descendants in nodeMap', () => {
     await Promise.resolve();
 
     expect(deleteNode).toHaveBeenCalledWith(expect.any(String), expect.any(String), 10);
-    expect(syncEngine.nodeMap.size).toBe(0);
+    expect(syncEngine.repo.size).toBe(0);
 
     jest.useRealTimers();
   });
@@ -180,7 +180,7 @@ describe('resolveParentIdByPath', () => {
   });
 
   it('resolves a folder path to its nodeId', () => {
-    syncEngine.nodeMap.set('10', { type: 'folder', path: 'projects', parentId: 0 });
+    syncEngine.repo._map.set('10', { type: 'folder', path: 'projects', parentId: 0 });
     expect(syncEngine.resolveParentIdByPath('projects')).toBe(10);
   });
 

@@ -63,7 +63,7 @@ beforeEach(() => {
   syncEngine.username = 'testuser';
   syncEngine.clockOffset = 0;
   syncEngine.isRunning = true;
-  syncEngine.nodeMap = new Map();
+  syncEngine.repo.seed();
   syncEngine.lastSyncedAt = null;
   syncEngine.stats = {
     filesProtected: 0,
@@ -116,7 +116,7 @@ describe('reconcileServerFile — nodeId move detection', () => {
     const content = '<html>my site</html>';
     const cs = checksum(content);
 
-    syncEngine.nodeMap = new Map([['42', entry('my-site.html', cs, 111)]]);
+    syncEngine.repo.seed([['42', entry('my-site.html', cs, 111)]]);
 
     apiClient.listNodes.mockResolvedValue([
       { id: 42, type: 'site', name: 'my-site.html', path: 'blog', checksum: cs, modifiedAt: '2024-06-01T00:00:00Z' }
@@ -173,15 +173,15 @@ describe('reconcileServerFile — nodeId move detection', () => {
 
     await syncEngine.performInitialSync();
 
-    expect(syncEngine.nodeMap.get('42').path).toBe('index.html');
-    expect(syncEngine.nodeMap.get('73').path).toBe('about.html');
+    expect(syncEngine.repo.get('42').path).toBe('index.html');
+    expect(syncEngine.repo.get('73').path).toBe('about.html');
     expect(nodeMapModule.save).toHaveBeenCalled();
   });
 });
 
 describe('offline delete reconciliation', () => {
   test('skips entirely on first-ever sync (no lastSyncedAt)', async () => {
-    syncEngine.nodeMap = new Map([['99', entry('deleted-on-server.html')]]);
+    syncEngine.repo.seed([['99', entry('deleted-on-server.html')]]);
     syncEngine.lastSyncedAt = null;
 
     apiClient.listNodes.mockResolvedValue([]);
@@ -195,7 +195,7 @@ describe('offline delete reconciliation', () => {
   });
 
   test('trashes stale local file when nodeId missing from server', async () => {
-    syncEngine.nodeMap = new Map([['99', entry('old-site.html')]]);
+    syncEngine.repo.seed([['99', entry('old-site.html')]]);
     syncEngine.lastSyncedAt = Date.now();
 
     apiClient.listNodes.mockResolvedValue([]);
@@ -211,12 +211,12 @@ describe('offline delete reconciliation', () => {
       '/test/sync/old-site.html',
       '/test/sync/.trash/old-site.html'
     );
-    expect(syncEngine.nodeMap.has('99')).toBe(false);
+    expect(syncEngine.repo.has('99')).toBe(false);
   });
 
   test('preserves locally-edited file when mtime is newer than lastSyncedAt', async () => {
     const lastSync = new Date('2024-06-01').getTime();
-    syncEngine.nodeMap = new Map([['99', entry('edited-locally.html')]]);
+    syncEngine.repo.seed([['99', entry('edited-locally.html')]]);
     syncEngine.lastSyncedAt = lastSync;
 
     apiClient.listNodes.mockResolvedValue([]);
@@ -229,11 +229,11 @@ describe('offline delete reconciliation', () => {
     await syncEngine.performInitialSync();
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
-    expect(syncEngine.nodeMap.has('99')).toBe(false);
+    expect(syncEngine.repo.has('99')).toBe(false);
   });
 
   test('trashed paths are removed from localFiles before upload pass', async () => {
-    syncEngine.nodeMap = new Map([['99', entry('trashed.html')]]);
+    syncEngine.repo.seed([['99', entry('trashed.html')]]);
     syncEngine.lastSyncedAt = Date.now();
 
     apiClient.listNodes.mockResolvedValue([]);
@@ -265,7 +265,7 @@ describe('offline delete reconciliation', () => {
 
 describe('handleNodeRenamed', () => {
   test('renames local file and updates nodeMap', async () => {
-    syncEngine.nodeMap = new Map([['42', entry('my-site.html', 'abc', 111)]]);
+    syncEngine.repo.seed([['42', entry('my-site.html', 'abc', 111)]]);
 
     await syncEngine.handleNodeRenamed({
       nodeId: 42, nodeType: 'site',
@@ -277,12 +277,12 @@ describe('handleNodeRenamed', () => {
       '/test/sync/my-site.html',
       '/test/sync/new-name.html'
     );
-    expect(syncEngine.nodeMap.get('42').path).toBe('new-name.html');
+    expect(syncEngine.repo.get('42').path).toBe('new-name.html');
     expect(nodeMapModule.save).toHaveBeenCalled();
   });
 
   test('renames file in subfolder correctly', async () => {
-    syncEngine.nodeMap = new Map([['42', entry('blog/my-site.html', 'abc', 111)]]);
+    syncEngine.repo.seed([['42', entry('blog/my-site.html', 'abc', 111)]]);
 
     await syncEngine.handleNodeRenamed({
       nodeId: 42, nodeType: 'site',
@@ -294,11 +294,11 @@ describe('handleNodeRenamed', () => {
       '/test/sync/blog/my-site.html',
       '/test/sync/blog/new-name.html'
     );
-    expect(syncEngine.nodeMap.get('42').path).toBe('blog/new-name.html');
+    expect(syncEngine.repo.get('42').path).toBe('blog/new-name.html');
   });
 
   test('updates nodeMap even when source file not found', async () => {
-    syncEngine.nodeMap = new Map([['42', entry('gone.html', 'abc', 111)]]);
+    syncEngine.repo.seed([['42', entry('gone.html', 'abc', 111)]]);
     fileOps.fileExists.mockResolvedValue(false);
 
     await syncEngine.handleNodeRenamed({
@@ -308,11 +308,11 @@ describe('handleNodeRenamed', () => {
     });
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
-    expect(syncEngine.nodeMap.get('42').path).toBe('new.html');
+    expect(syncEngine.repo.get('42').path).toBe('new.html');
   });
 
   test('uses toFileId for markBrowserSave on sites', async () => {
-    syncEngine.nodeMap = new Map([['42', entry('blog/my-site.html', 'abc', 111)]]);
+    syncEngine.repo.seed([['42', entry('blog/my-site.html', 'abc', 111)]]);
 
     await syncEngine.handleNodeRenamed({
       nodeId: 42, nodeType: 'site',
@@ -327,7 +327,7 @@ describe('handleNodeRenamed', () => {
 
 describe('handleNodeMoved', () => {
   test('moves local file and updates nodeMap', async () => {
-    syncEngine.nodeMap = new Map([['42', entry('my-site.html', 'abc', 111)]]);
+    syncEngine.repo.seed([['42', entry('my-site.html', 'abc', 111)]]);
 
     await syncEngine.handleNodeMoved({
       nodeId: 42, nodeType: 'site',
@@ -338,12 +338,12 @@ describe('handleNodeMoved', () => {
       '/test/sync/my-site.html',
       '/test/sync/blog/my-site.html'
     );
-    expect(syncEngine.nodeMap.get('42').path).toBe('blog/my-site.html');
+    expect(syncEngine.repo.get('42').path).toBe('blog/my-site.html');
     expect(nodeMapModule.save).toHaveBeenCalled();
   });
 
   test('uses nodeMap path over oldPath when available', async () => {
-    syncEngine.nodeMap = new Map([['42', entry('actual-location.html', 'abc', 111)]]);
+    syncEngine.repo.seed([['42', entry('actual-location.html', 'abc', 111)]]);
 
     await syncEngine.handleNodeMoved({
       nodeId: 42, nodeType: 'site',
@@ -357,7 +357,7 @@ describe('handleNodeMoved', () => {
   });
 
   test('updates map even when source file not found', async () => {
-    syncEngine.nodeMap = new Map([['42', entry('gone.html')]]);
+    syncEngine.repo.seed([['42', entry('gone.html')]]);
     fileOps.fileExists.mockResolvedValue(false);
 
     await syncEngine.handleNodeMoved({
@@ -366,11 +366,11 @@ describe('handleNodeMoved', () => {
     });
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
-    expect(syncEngine.nodeMap.get('42').path).toBe('blog/my-site.html');
+    expect(syncEngine.repo.get('42').path).toBe('blog/my-site.html');
   });
 
   test('uses toFileId for markBrowserSave on sites', async () => {
-    syncEngine.nodeMap = new Map([['42', entry('blog/my-site.html', 'abc', 111)]]);
+    syncEngine.repo.seed([['42', entry('blog/my-site.html', 'abc', 111)]]);
 
     await syncEngine.handleNodeMoved({
       nodeId: 42, nodeType: 'site',
@@ -384,7 +384,7 @@ describe('handleNodeMoved', () => {
 
 describe('handleNodeDeleted', () => {
   test('trashes local file and removes from nodeMap', async () => {
-    syncEngine.nodeMap = new Map([['42', entry('my-site.html')]]);
+    syncEngine.repo.seed([['42', entry('my-site.html')]]);
     fileOps.fileExists.mockResolvedValue(true);
 
     await syncEngine.handleNodeDeleted({
@@ -396,12 +396,12 @@ describe('handleNodeDeleted', () => {
       '/test/sync/my-site.html',
       '/test/sync/.trash/my-site.html'
     );
-    expect(syncEngine.nodeMap.has('42')).toBe(false);
+    expect(syncEngine.repo.has('42')).toBe(false);
     expect(nodeMapModule.save).toHaveBeenCalled();
   });
 
   test('uses nodeMap path over data.path', async () => {
-    syncEngine.nodeMap = new Map([['42', entry('blog/actual-name.html')]]);
+    syncEngine.repo.seed([['42', entry('blog/actual-name.html')]]);
     fileOps.fileExists.mockResolvedValue(true);
 
     await syncEngine.handleNodeDeleted({
@@ -416,7 +416,7 @@ describe('handleNodeDeleted', () => {
   });
 
   test('removes from nodeMap even when file not found locally', async () => {
-    syncEngine.nodeMap = new Map([['42', entry('gone.html')]]);
+    syncEngine.repo.seed([['42', entry('gone.html')]]);
     fileOps.fileExists.mockResolvedValue(false);
 
     await syncEngine.handleNodeDeleted({
@@ -425,11 +425,11 @@ describe('handleNodeDeleted', () => {
     });
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
-    expect(syncEngine.nodeMap.has('42')).toBe(false);
+    expect(syncEngine.repo.has('42')).toBe(false);
   });
 
   test('uses toFileId for markBrowserSave on sites', async () => {
-    syncEngine.nodeMap = new Map([['42', entry('blog/my-site.html')]]);
+    syncEngine.repo.seed([['42', entry('blog/my-site.html')]]);
     fileOps.fileExists.mockResolvedValue(true);
 
     await syncEngine.handleNodeDeleted({
@@ -452,8 +452,8 @@ describe('handleNodeSaved — site nodeId tracking', () => {
       modifiedAt: '2024-06-01T00:00:00Z'
     });
 
-    expect(syncEngine.nodeMap.get('42').path).toBe('my-site.html');
-    expect(syncEngine.nodeMap.get('42').type).toBe('site');
+    expect(syncEngine.repo.get('42').path).toBe('my-site.html');
+    expect(syncEngine.repo.get('42').type).toBe('site');
     expect(nodeMapModule.save).toHaveBeenCalled();
   });
 
@@ -470,8 +470,8 @@ describe('handleNodeSaved — site nodeId tracking', () => {
     });
 
     expect(fileOps.writeFile).not.toHaveBeenCalled();
-    expect(syncEngine.nodeMap.get('42').path).toBe('my-site.html');
-    expect(syncEngine.nodeMap.get('42').type).toBe('site');
+    expect(syncEngine.repo.get('42').path).toBe('my-site.html');
+    expect(syncEngine.repo.get('42').type).toBe('site');
   });
 });
 
@@ -484,7 +484,7 @@ describe('uploadFile — nodeId from response', () => {
 
     await syncEngine.uploadFile('my-site.html');
 
-    const mapEntry = syncEngine.nodeMap.get('42');
+    const mapEntry = syncEngine.repo.get('42');
     expect(mapEntry.path).toBe('my-site.html');
     expect(mapEntry.checksum).toBeTruthy();
     expect(nodeMapModule.save).toHaveBeenCalled();
@@ -498,6 +498,6 @@ describe('uploadFile — nodeId from response', () => {
 
     await syncEngine.uploadFile('my-site.html');
 
-    expect(syncEngine.nodeMap.size).toBe(0);
+    expect(syncEngine.repo.size).toBe(0);
   });
 });
