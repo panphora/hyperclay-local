@@ -154,7 +154,10 @@ describe('detectLocalChanges — local delete', () => {
 describe('detectLocalChanges — local move', () => {
   test('detects move when basename is same but path differs', async () => {
     const cs = checksum('<html>content</html>');
-    syncEngine.nodeMap = new Map([['42', entry('my-site.html', cs, 111)]]);
+    syncEngine.nodeMap = new Map([
+      ['42', entry('my-site.html', cs, 111)],
+      ['100', { type: 'folder', path: 'blog', parentId: 0 }]
+    ]);
 
     const serverFiles = [
       { nodeId: 42, filename: 'my-site', path: 'my-site.html', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
@@ -163,9 +166,6 @@ describe('detectLocalChanges — local move', () => {
       ['blog/my-site.html', { path: '/test/sync/blog/my-site.html', relativePath: 'blog/my-site.html', mtime: new Date(), size: 100 }]
     ]);
     fileOps.readFile.mockResolvedValue('<html>content</html>');
-    apiClient.listNodes.mockResolvedValue([
-      { id: 100, type: 'folder', name: 'blog', path: '', parentId: 0 }
-    ]);
 
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
 
@@ -389,11 +389,11 @@ describe('detectLocalChanges adds pendingActions for SSE suppression', () => {
 
   test('adds move pendingAction before calling moveNode', async () => {
     const cs = checksum('<html>content</html>');
-    syncEngine.nodeMap = new Map([['42', entry('my-site.html', cs, 111)]]);
-    fileOps.readFile.mockResolvedValue('<html>content</html>');
-    apiClient.listNodes.mockResolvedValue([
-      { id: 100, type: 'folder', name: 'blog', path: '', parentId: 0 }
+    syncEngine.nodeMap = new Map([
+      ['42', entry('my-site.html', cs, 111)],
+      ['100', { type: 'folder', path: 'blog', parentId: 0 }]
     ]);
+    fileOps.readFile.mockResolvedValue('<html>content</html>');
 
     const serverFiles = [
       { nodeId: 42, filename: 'my-site', path: 'my-site.html', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }

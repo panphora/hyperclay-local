@@ -23,17 +23,15 @@ describe('SyncQueue', () => {
       expect(queue.length()).toBe(2);
     });
 
-    test('accepts upload: prefixed files', () => {
-      expect(queue.add('add', 'upload:image.png')).toBe(true);
-      expect(queue.add('add', 'upload:folder/document.pdf')).toBe(true);
+    test('accepts upload files directly', () => {
+      expect(queue.add('add', 'image.png')).toBe(true);
+      expect(queue.add('add', 'folder/document.pdf')).toBe(true);
       expect(queue.length()).toBe(2);
     });
 
-    test('rejects non-.html files without upload: prefix', () => {
-      expect(queue.add('add', 'image.png')).toBe(false);
-      expect(queue.add('add', 'styles.css')).toBe(false);
-      expect(queue.add('add', 'script.js')).toBe(false);
-      expect(queue.length()).toBe(0);
+    test('accepts .htmlclay files', () => {
+      expect(queue.add('add', 'site.htmlclay')).toBe(true);
+      expect(queue.length()).toBe(1);
     });
 
     test('rejects duplicate entries', () => {

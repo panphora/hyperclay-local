@@ -30,8 +30,8 @@ describe('node map load/save', () => {
     const loaded = await load(tmpDir);
 
     expect(loaded.size).toBe(2);
-    expect(loaded.get('42')).toEqual({ path: 'index.html', checksum: 'abc123', inode: 12345 });
-    expect(loaded.get('73')).toEqual({ path: 'blog/hello.html', checksum: 'def456', inode: 67890 });
+    expect(loaded.get('42')).toEqual({ type: 'site', path: 'index.html', checksum: 'abc123', inode: 12345 });
+    expect(loaded.get('73')).toEqual({ type: 'site', path: 'blog/hello.html', checksum: 'def456', inode: 67890 });
   });
 
   test('creates meta directory if missing', async () => {
@@ -48,7 +48,7 @@ describe('node map load/save', () => {
     const loaded = await load(tmpDir);
     expect(loaded.size).toBe(1);
     expect(loaded.has('1')).toBe(false);
-    expect(loaded.get('2')).toEqual({ path: 'new.html', checksum: null, inode: null });
+    expect(loaded.get('2')).toEqual({ type: 'site', path: 'new.html', checksum: null, inode: null });
   });
 
   test('returns empty map on corrupt JSON', async () => {
@@ -71,8 +71,8 @@ describe('node map migration from old format', () => {
     const loaded = await load(tmpDir);
 
     expect(loaded.size).toBe(2);
-    expect(loaded.get('42')).toEqual({ path: 'index.html', checksum: null, inode: null });
-    expect(loaded.get('73')).toEqual({ path: 'blog/hello.html', checksum: null, inode: null });
+    expect(loaded.get('42')).toEqual({ type: 'site', path: 'index.html', checksum: null, inode: null });
+    expect(loaded.get('73')).toEqual({ type: 'site', path: 'blog/hello.html', checksum: null, inode: null });
   });
 
   test('handles mixed old and new format entries', async () => {
@@ -87,8 +87,8 @@ describe('node map migration from old format', () => {
 
     const loaded = await load(tmpDir);
 
-    expect(loaded.get('42')).toEqual({ path: 'old-format.html', checksum: null, inode: null });
-    expect(loaded.get('73')).toEqual({ path: 'new-format.html', checksum: 'abc', inode: 999 });
+    expect(loaded.get('42')).toEqual({ type: 'site', path: 'old-format.html', checksum: null, inode: null });
+    expect(loaded.get('73')).toEqual({ type: 'site', path: 'new-format.html', checksum: 'abc', inode: 999 });
   });
 });
 

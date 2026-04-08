@@ -30,11 +30,18 @@ async function load(metaDir) {
   }
   const map = new Map();
   for (const [key, value] of Object.entries(parsed)) {
+    let entry;
     if (typeof value === 'string') {
-      map.set(key, { path: value, checksum: null, inode: null });
+      entry = { path: value, checksum: null, inode: null };
     } else {
-      map.set(key, value);
+      entry = { ...value };
     }
+
+    if (!entry.type && entry.path) {
+      entry.type = /\.(html|htmlclay)$/i.test(entry.path) ? 'site' : 'upload';
+    }
+
+    map.set(key, entry);
   }
   return map;
 }
@@ -76,4 +83,16 @@ async function getInode(filePath) {
   }
 }
 
-module.exports = { load, save, loadState, saveState, getInode };
+function walkDescendants(map, folderPath) {
+  if (!folderPath) return [];
+  const prefix = folderPath.endsWith('/') ? folderPath : folderPath + '/';
+  const results = [];
+  for (const [nodeId, entry] of map) {
+    if (entry.path && entry.path.startsWith(prefix)) {
+      results.push({ nodeId, entry });
+    }
+  }
+  return results;
+}
+
+module.exports = { load, save, loadState, saveState, getInode, walkDescendants };

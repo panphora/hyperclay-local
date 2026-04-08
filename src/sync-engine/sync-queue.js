@@ -18,12 +18,6 @@ class SyncQueue {
    * Add item to sync queue
    */
   add(type, filename) {
-    // Only sync .html files OR uploads (prefixed with 'upload:')
-    if (!filename.endsWith('.html') && !filename.startsWith('upload:')) {
-      return false;
-    }
-
-    // Check if already in queue
     const existing = this.queue.find(item => item.filename === filename);
     if (existing) {
       return false;
