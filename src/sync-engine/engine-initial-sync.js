@@ -173,7 +173,7 @@ module.exports = {
 
     if (!localExists) {
       try {
-        await this.downloadFile(serverFile.filename, relativePath, serverFile.nodeId);
+        await this.downloadFile(serverFile.nodeId);
         this.stats.filesDownloaded++;
         const inode = await nodeMap.getInode(localPath);
         const content = await readFile(localPath).catch(() => null);
@@ -210,7 +210,7 @@ module.exports = {
         return;
       }
 
-      await this.downloadFile(serverFile.filename, relativePath, serverFile.nodeId);
+      await this.downloadFile(serverFile.nodeId);
       this.stats.filesDownloaded++;
       const dlContent = await readFile(localPath).catch(() => null);
       const dlChecksum = dlContent ? await calculateChecksum(dlContent) : null;
@@ -392,7 +392,7 @@ module.exports = {
       if (serverFile.modifiedAt && new Date(serverFile.modifiedAt).getTime() > this.lastSyncedAt) {
         console.log(`[SYNC] Delete conflict: ${entry.path} deleted locally but modified on server — re-downloading`);
         try {
-          await this.downloadFile(serverFile.filename, serverPath, serverFile.nodeId);
+          await this.downloadFile(serverFile.nodeId);
         } catch (err) {
           console.error(`[SYNC] Failed to re-download ${serverPath} after delete conflict:`, err.message);
         }

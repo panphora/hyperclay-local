@@ -30,12 +30,22 @@ const nodeMap = require('./node-map');
 
 module.exports = {
   /**
-   * Download a file from server
-   * @param {string} filename - Full filename including extension (may include folders)
-   * @param {string} relativePath - Full path for local storage
+   * Download a site file from server by nodeId.
+   *
+   * The local path is resolved from `this.serverFilesCache`, which the caller
+   * must have populated via `fetchAndCacheServerFiles()` earlier in the same
+   * sync cycle — all current call sites do this when they build the serverFiles
+   * list they're iterating over.
+   *
    * @param {number} nodeId - Server node id
    */
-  async downloadFile(filename, relativePath, nodeId) {
+  async downloadFile(nodeId) {
+    const serverFile = this.serverFilesCache?.find(f => f.nodeId === nodeId);
+    if (!serverFile) {
+      throw new Error(`downloadFile: nodeId ${nodeId} not in server files cache — call fetchAndCacheServerFiles first`);
+    }
+    const relativePath = serverFile.path;
+
     try {
       const { content, modifiedAt } = await getNodeContent(
         this.serverUrl,
@@ -43,13 +53,12 @@ module.exports = {
         nodeId
       );
 
-      const localFilename = relativePath || filename;
-      this.resolveContainedPath(localFilename);
-      const localPath = path.join(this.syncFolder, localFilename);
+      this.resolveContainedPath(relativePath);
+      const localPath = path.join(this.syncFolder, relativePath);
 
       // Create backup if file exists locally
       // Remove .html extension for siteName (matches server.js behavior)
-      const siteName = localFilename.replace(/\.(html|htmlclay)$/i, '');
+      const siteName = relativePath.replace(/\.(html|htmlclay)$/i, '');
       await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
 
       // Mark as expected write so file watcher doesn't send "File changed on disk" notification
@@ -58,7 +67,7 @@ module.exports = {
       // Write file with server modification time (ensures directories exist)
       await writeFile(localPath, content, modifiedAt);
 
-      console.log(`[SYNC] Downloaded ${localFilename}`);
+      console.log(`[SYNC] Downloaded ${relativePath}`);
 
       // Log download success
       if (this.logger) {
@@ -70,23 +79,23 @@ module.exports = {
 
       // Emit success event
       this.emit('file-synced', {
-        file: localFilename,
+        file: relativePath,
         action: 'download'
       });
 
     } catch (error) {
-      console.error(`[SYNC] Failed to download ${filename}:`, error);
+      console.error(`[SYNC] Failed to download ${relativePath}:`, error);
 
       // Log download error
       if (this.logger) {
         this.logger.error('DOWNLOAD', 'Download failed', {
-          file: filename,
+          file: relativePath,
           error
         });
       }
 
-      const errorInfo = classifyError(error, { filename, action: 'download' });
-      this.stats.errors.push(formatErrorForLog(error, { filename, action: 'download' }));
+      const errorInfo = classifyError(error, { filename: relativePath, action: 'download' });
+      this.stats.errors.push(formatErrorForLog(error, { filename: relativePath, action: 'download' }));
 
       // Emit structured error
       this.emit('sync-error', errorInfo);

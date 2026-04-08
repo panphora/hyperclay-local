@@ -129,6 +129,10 @@ describe('detectLocalChanges — local delete', () => {
     const serverFiles = [
       { nodeId: 42, filename: 'my-site', path: 'my-site.html', checksum: 'abc', modifiedAt: '2024-07-01T00:00:00Z' }
     ];
+    // downloadFile(nodeId) resolves the local path from serverFilesCache,
+    // which is populated by fetchAndCacheServerFiles at the top of performInitialSync
+    // in production. Mirror that here since we're calling detectLocalChanges directly.
+    syncEngine.serverFilesCache = serverFiles;
     const localFiles = new Map();
 
     await syncEngine.detectLocalChanges(serverFiles, localFiles);
