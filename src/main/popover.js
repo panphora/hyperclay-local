@@ -107,8 +107,18 @@ function showPopover(trayBounds) {
 
   ignoreBlur = true;
   positionPopover(trayBounds);
-  popoverWindow.show();
-  popoverWindow.focus();
+
+  if (sticky) {
+    // Dev debugging mode: show in the background without stealing focus
+    // or floating above the user's other windows, so an agent-browser
+    // debugging session can stay open without interrupting real work.
+    popoverWindow.setAlwaysOnTop(false);
+    popoverWindow.showInactive();
+  } else {
+    popoverWindow.setAlwaysOnTop(true, 'pop-up-menu');
+    popoverWindow.show();
+    popoverWindow.focus();
+  }
 
   setTimeout(() => {
     ignoreBlur = false;

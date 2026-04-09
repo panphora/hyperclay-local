@@ -383,6 +383,29 @@ function startServer(baseDir, devHooks = null) {
       }
     });
 
+    // Dev-only popover control endpoints (only registered when devHooks are passed in)
+    // Must be registered BEFORE the catch-all static file middleware below, otherwise
+    // the catch-all intercepts every request (including POSTs) and returns 404.
+    if (devHooks) {
+      app.post('/__dev/popover/show', (req, res) => {
+        try {
+          devHooks.showSticky();
+          res.json({ ok: true, sticky: true });
+        } catch (err) {
+          res.status(500).json({ ok: false, error: err.message });
+        }
+      });
+
+      app.post('/__dev/popover/hide', (req, res) => {
+        try {
+          devHooks.hideAndClear();
+          res.json({ ok: true, sticky: false });
+        } catch (err) {
+          res.status(500).json({ ok: false, error: err.message });
+        }
+      });
+    }
+
     // Static file serving with SPA routing support
     // URLs with .html/.htmlclay extension: everything after the extension is a SPA route
     // e.g. /blog/app.htmlclay/dashboard → serves blog/app.htmlclay, SPA route: /dashboard
@@ -433,27 +456,6 @@ function startServer(baseDir, devHooks = null) {
         return res.status(404).send('File not found');
       }
     });
-
-    // Dev-only popover control endpoints (only registered when devHooks are passed in)
-    if (devHooks) {
-      app.post('/__dev/popover/show', (req, res) => {
-        try {
-          devHooks.showSticky();
-          res.json({ ok: true, sticky: true });
-        } catch (err) {
-          res.status(500).json({ ok: false, error: err.message });
-        }
-      });
-
-      app.post('/__dev/popover/hide', (req, res) => {
-        try {
-          devHooks.hideAndClear();
-          res.json({ ok: true, sticky: false });
-        } catch (err) {
-          res.status(500).json({ ok: false, error: err.message });
-        }
-      });
-    }
 
     // Catch-all error handler for unhandled Express errors
     app.use((err, req, res, next) => {
