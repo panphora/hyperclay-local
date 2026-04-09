@@ -180,6 +180,29 @@ Development mode features:
 
 For building signed installers, see [BUILD.md](./BUILD.md).
 
+### Claude / agent-browser debugging hooks (dev only)
+
+When running `npm run dev`, the app exposes two debugging affordances that are **never** active in production builds (they're gated on `!app.isPackaged`):
+
+1. **Chrome DevTools Protocol (CDP) on port 9229** — lets `agent-browser` (or any CDP client) drive the popover's React UI directly. Attach with:
+   ```bash
+   agent-browser connect 9229
+   agent-browser --auto-connect false snapshot -i
+   ```
+   Filter for the target whose URL contains `popover.html`.
+
+2. **Two HTTP endpoints on the local server** (`localhost:4321`, dev only) for controlling the popover without clicking the tray:
+   ```bash
+   curl -X POST http://localhost:4321/__dev/popover/show    # show + stick
+   curl -X POST http://localhost:4321/__dev/popover/hide    # hide + unstick
+   ```
+
+   `/__dev/popover/show` opens the popover, marks it "sticky" (suppresses the normal blur-hide so it stays open while you focus other apps), and writes a marker file (`<userData>-dev/debug-popover-sticky.flag`) so the state survives **electron-reload restarts and full `npm run dev` restarts**. The popover will automatically reappear sticky on the next dev launch until you call `/__dev/popover/hide`.
+
+   These routes only exist when `!app.isPackaged` and are not registered in production builds.
+
+This combination lets an AI assistant work on the popover UI in the background while you keep using your Mac — the popover stays open, CDP stays accessible, and reloads don't interrupt the session.
+
 ### Adding npm Modules
 
 When adding new npm dependencies, consider whether they need `asarUnpack` in `package.json`. Electron bundles node_modules into a `.asar` archive, which can break:

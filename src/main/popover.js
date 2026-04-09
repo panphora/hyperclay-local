@@ -8,6 +8,7 @@ const MARGIN_Y = 4;
 let popoverWindow = null;
 let lastBlurTime = 0;
 let ignoreBlur = false;
+let sticky = false;
 
 function createPopoverWindow() {
   popoverWindow = new BrowserWindow({
@@ -42,6 +43,7 @@ function createPopoverWindow() {
   }
 
   popoverWindow.on('blur', () => {
+    if (sticky) return;
     if (ignoreBlur) return;
     if (popoverWindow && popoverWindow.isVisible()) {
       lastBlurTime = Date.now();
@@ -146,6 +148,14 @@ function getPopoverWindow() {
   return popoverWindow;
 }
 
+function setSticky(on) {
+  sticky = !!on;
+}
+
+function isSticky() {
+  return sticky;
+}
+
 function destroyPopover() {
   if (popoverWindow) {
     popoverWindow.destroy();
@@ -158,6 +168,8 @@ module.exports = {
   togglePopover,
   showPopover,
   hidePopover,
+  setSticky,
+  isSticky,
   getPopoverWindow,
   destroyPopover,
 };

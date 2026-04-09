@@ -93,7 +93,7 @@ function resolveResourceFromHref(href) {
   return pathname;
 }
 
-function startServer(baseDir) {
+function startServer(baseDir, devHooks = null) {
   return new Promise((resolve, reject) => {
     if (server) {
       return reject(new Error('Server is already running'));
@@ -433,6 +433,27 @@ function startServer(baseDir) {
         return res.status(404).send('File not found');
       }
     });
+
+    // Dev-only popover control endpoints (only registered when devHooks are passed in)
+    if (devHooks) {
+      app.post('/__dev/popover/show', (req, res) => {
+        try {
+          devHooks.showSticky();
+          res.json({ ok: true, sticky: true });
+        } catch (err) {
+          res.status(500).json({ ok: false, error: err.message });
+        }
+      });
+
+      app.post('/__dev/popover/hide', (req, res) => {
+        try {
+          devHooks.hideAndClear();
+          res.json({ ok: true, sticky: false });
+        } catch (err) {
+          res.status(500).json({ ok: false, error: err.message });
+        }
+      });
+    }
 
     // Catch-all error handler for unhandled Express errors
     app.use((err, req, res, next) => {

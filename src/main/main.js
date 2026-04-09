@@ -30,6 +30,7 @@ app.name = 'Hyperclay Local';
 const isDev = !app.isPackaged;
 if (isDev) {
   app.setPath('userData', app.getPath('userData') + '-dev');
+  app.commandLine.appendSwitch('remote-debugging-port', '9229');
 }
 
 if (process.platform === 'darwin') {
@@ -68,6 +69,41 @@ let availableUpdate = null;
 
 const userData = app.getPath('userData');
 const settingsPath = path.join(userData, 'settings.json');
+const debugStickyFlagPath = path.join(userData, 'debug-popover-sticky.flag');
+
+function readDebugSticky() {
+  try { return fs.existsSync(debugStickyFlagPath); } catch { return false; }
+}
+
+function writeDebugSticky(on) {
+  try {
+    if (on) {
+      if (!fs.existsSync(userData)) fs.mkdirSync(userData, { recursive: true });
+      fs.writeFileSync(debugStickyFlagPath, '');
+    } else if (fs.existsSync(debugStickyFlagPath)) {
+      fs.unlinkSync(debugStickyFlagPath);
+    }
+  } catch (err) {
+    console.error('[DEBUG] Failed to update sticky flag:', err);
+  }
+}
+
+function getDevHooks() {
+  if (!isDev) return null;
+  return {
+    showSticky: () => {
+      if (!tray) return;
+      popover.setSticky(true);
+      popover.showPopover(tray.getBounds());
+      writeDebugSticky(true);
+    },
+    hideAndClear: () => {
+      popover.setSticky(false);
+      popover.hidePopover();
+      writeDebugSticky(false);
+    },
+  };
+}
 
 function encryptApiKey(apiKey) {
   if (!apiKey) return null;
@@ -427,7 +463,7 @@ async function handleStartServer() {
   }
 
   try {
-    await startServer(selectedFolder);
+    await startServer(selectedFolder, getDevHooks());
     serverRunning = isServerRunning();
 
     settings.serverEnabled = true;
@@ -922,7 +958,7 @@ app.whenReady().then(async () => {
     console.log('[APP] Auto-restarting server from previous session...');
     try {
       selectedFolder = settings.serverFolder;
-      await startServer(selectedFolder);
+      await startServer(selectedFolder, getDevHooks());
       serverRunning = isServerRunning();
       updateTrayMenu();
       console.log('[APP] Server auto-restart successful');
@@ -938,6 +974,17 @@ app.whenReady().then(async () => {
   if (!settings.selectedFolder && !settings.syncFolder) {
     setTimeout(() => {
       if (tray) {
+        popover.showPopover(tray.getBounds());
+      }
+    }, 500);
+  }
+
+  // Dev-only: restore sticky popover from previous session if marker file exists
+  if (isDev && readDebugSticky()) {
+    console.log('[DEBUG] Restoring sticky popover from previous session');
+    setTimeout(() => {
+      if (tray) {
+        popover.setSticky(true);
         popover.showPopover(tray.getBounds());
       }
     }, 500);
