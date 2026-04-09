@@ -145,7 +145,13 @@ module.exports = {
   // --- Type-tagged correlator ---
 
   _registerPendingUnlink(normalizedPath, type) {
-    const UNLINK_GRACE_PERIOD = 1500;
+    // Grace period before committing a local delete to the server. During this
+    // window, a matching `add` with a different name/location will be correlated
+    // as a rename/move rather than delete+create. Bumped from 1500 to 3000ms
+    // because slow rename tools (rsync, cloud sync daemons, some editors) can
+    // exceed 1.5s between unlink and add — and for folders a misclassification
+    // causes a cascading delete of every descendant on the server.
+    const UNLINK_GRACE_PERIOD = 3000;
 
     let foundNodeId = null;
     let foundEntry = null;

@@ -56,7 +56,13 @@ class SyncEngine extends EventEmitter {
     // silently consumed (no duplicate API calls, no nodeMap churn, no echo loops).
     this.cascade = new CascadeSuppression();
     this.folderIdentityWaiters = new Map();
-    this.FOLDER_IDENTITY_WAIT_MS = 300;
+    // After a folder unlink+addDir pair is correlated, how long to wait for
+    // the first descendant to reappear to confirm folder identity. If no
+    // descendant appears within this window, the correlator falls back to
+    // treating the operation as delete + new folder — which cascades a
+    // descendant-wide delete to the server. Bumped from 300 to 3000ms to
+    // prevent that catastrophic misclassification on slow filesystems.
+    this.FOLDER_IDENTITY_WAIT_MS = 3000;
     this.lastSyncedAt = null; // Timestamp of last successful sync
     this.serverFilesCache = null; // Cache for server files list
     this.serverFilesCacheTime = null; // When cache was last updated

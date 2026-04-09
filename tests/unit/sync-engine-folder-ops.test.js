@@ -158,7 +158,7 @@ describe('folder delete cleans up descendants in nodeMap', () => {
 
     syncEngine._registerPendingUnlink('projects', 'folder');
 
-    jest.advanceTimersByTime(1600);
+    jest.advanceTimersByTime(3100);
 
     await Promise.resolve();
     await Promise.resolve();
