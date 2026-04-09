@@ -32,6 +32,8 @@ jest.mock('../../src/sync-engine/file-operations');
 jest.mock('../../src/sync-engine/api-client');
 jest.mock('../../src/sync-engine/node-map');
 
+const fileOps = require('../../src/sync-engine/file-operations');
+const nodeMapModule = require('../../src/sync-engine/node-map');
 const { renameNode, moveNode, deleteNode } = require('../../src/sync-engine/api-client');
 const Outbox = require('../../src/sync-engine/state/outbox');
 const CascadeSuppression = require('../../src/sync-engine/state/cascade-suppression');
@@ -115,6 +117,172 @@ describe('unified watcher — correlator', () => {
   it('does not register pending unlink for untracked path', () => {
     syncEngine._registerPendingUnlink('unknown.html', 'site');
     expect(syncEngine.pendingUnlinks.size).toBe(0);
+  });
+});
+
+describe('unified watcher — _correlateFileUnlinkAdd move+rename', () => {
+  beforeEach(() => {
+    nodeMapModule.getInode.mockResolvedValue(100);
+    nodeMapModule.save.mockResolvedValue();
+    fileOps.moveFile.mockResolvedValue();
+    fileOps.ensureDirectory.mockResolvedValue();
+    fileOps.fileExists.mockResolvedValue(true);
+    syncEngine.invalidateServerNodesCache = jest.fn();
+    // Provide a tracked folder so resolveParentIdByPath can find the target.
+    syncEngine.repo._map.set('200', {
+      type: 'folder',
+      path: 'dest',
+      inode: 200,
+    });
+  });
+
+  it('issues ONE atomic moveNode(nodeId, targetParentId, newBasename) call for move+rename', async () => {
+    syncEngine.repo._map.set('42', {
+      type: 'site',
+      path: 'src/foo.html',
+      checksum: 'abc',
+      inode: 100,
+    });
+
+    const pending = {
+      nodeId: '42',
+      type: 'site',
+      entry: { type: 'site', path: 'src/foo.html', checksum: 'abc', inode: 100 },
+    };
+
+    await syncEngine._correlateFileUnlinkAdd(
+      'src/foo.html',
+      'dest/bar.html',
+      pending,
+      'move+rename',
+      'site'
+    );
+
+    // Single atomic call — no separate rename leg.
+    expect(moveNode).toHaveBeenCalledTimes(1);
+    expect(moveNode).toHaveBeenCalledWith(
+      'http://test',
+      'test-key',
+      42,
+      200, // target parent id for 'dest' folder
+      'bar.html' // new basename passed as the fifth arg
+    );
+    expect(renameNode).not.toHaveBeenCalled();
+  });
+
+  it('marks outbox only once with "move" (not rename+move)', async () => {
+    syncEngine.repo._map.set('42', {
+      type: 'site',
+      path: 'src/foo.html',
+      checksum: 'abc',
+      inode: 100,
+    });
+    const spyMark = jest.spyOn(syncEngine.outbox, 'markInFlight');
+
+    const pending = {
+      nodeId: '42',
+      type: 'site',
+      entry: { type: 'site', path: 'src/foo.html', checksum: 'abc', inode: 100 },
+    };
+
+    await syncEngine._correlateFileUnlinkAdd(
+      'src/foo.html',
+      'dest/bar.html',
+      pending,
+      'move+rename',
+      'site'
+    );
+
+    const moveMarks = spyMark.mock.calls.filter(c => c[0] === 'move');
+    const renameMarks = spyMark.mock.calls.filter(c => c[0] === 'rename');
+    expect(moveMarks.length).toBe(1);
+    expect(renameMarks.length).toBe(0);
+
+    spyMark.mockRestore();
+  });
+
+  it('updates repo entry to new path after successful move+rename', async () => {
+    syncEngine.repo._map.set('42', {
+      type: 'site',
+      path: 'src/foo.html',
+      checksum: 'abc',
+      inode: 100,
+    });
+    moveNode.mockResolvedValue({ nodeId: 42, oldName: 'foo.html', newName: 'bar.html' });
+
+    const pending = {
+      nodeId: '42',
+      type: 'site',
+      entry: { type: 'site', path: 'src/foo.html', checksum: 'abc', inode: 100 },
+    };
+
+    await syncEngine._correlateFileUnlinkAdd(
+      'src/foo.html',
+      'dest/bar.html',
+      pending,
+      'move+rename',
+      'site'
+    );
+
+    expect(syncEngine.repo.get('42').path).toBe('dest/bar.html');
+  });
+});
+
+describe('unified watcher — _correlateFolderUnlinkAdd move+rename', () => {
+  beforeEach(() => {
+    nodeMapModule.getInode.mockResolvedValue(300);
+    nodeMapModule.save.mockResolvedValue();
+    // walkDescendants is a persistence helper delegated to by the repo.
+    nodeMapModule.walkDescendants.mockReturnValue([]);
+    fileOps.moveFile.mockResolvedValue();
+    fileOps.ensureDirectory.mockResolvedValue();
+    fileOps.fileExists.mockResolvedValue(true);
+    syncEngine.invalidateServerNodesCache = jest.fn();
+  });
+
+  it('issues ONE atomic moveNode(nodeId, targetParentId, newBasename) call for folder move+rename', async () => {
+    // Source folder at projects/old-name, plus a destination folder archive.
+    syncEngine.repo._map.set('50', {
+      type: 'folder',
+      path: 'projects/old-name',
+      parentId: 99,
+      inode: 300,
+    });
+    syncEngine.repo._map.set('10', {
+      type: 'folder',
+      path: 'archive',
+      parentId: 0,
+      inode: 99,
+    });
+
+    const pending = {
+      nodeId: '50',
+      type: 'folder',
+      entry: {
+        type: 'folder',
+        path: 'projects/old-name',
+        parentId: 99,
+        inode: 300,
+      },
+    };
+
+    // No descendants → folder-identity check takes the empty-folder fast path.
+    await syncEngine._correlateFolderUnlinkAdd(
+      'projects/old-name',
+      'archive/new-name',
+      pending,
+      'move+rename'
+    );
+
+    expect(moveNode).toHaveBeenCalledTimes(1);
+    expect(moveNode).toHaveBeenCalledWith(
+      'http://test',
+      'test-key',
+      50,
+      10, // target parent id of 'archive'
+      'new-name'
+    );
+    expect(renameNode).not.toHaveBeenCalled();
   });
 });
 

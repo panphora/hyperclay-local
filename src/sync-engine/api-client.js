@@ -214,16 +214,28 @@ async function renameNode(serverUrl, apiKey, nodeId, newName) {
 }
 
 /**
- * Move a Node to a new parent folder.
+ * Move a Node to a new parent folder. Optionally rename it in the same call so
+ * the server treats the whole thing as a single atomic operation — this is how
+ * the watcher handles local `mv foo/a.html bar/b.html` without hitting
+ * intermediate-state 409s.
+ *
  * @param {string} serverUrl
  * @param {string} apiKey
  * @param {number} nodeId
  * @param {number|string} targetParentId - numeric Node id, or 0 / 'root' for root
- * @returns {Promise<{ nodeId: number, fromPath: string, toPath: string }>}
+ * @param {string|null} [newName] - Optional new basename. If provided, rename happens atomically with the move.
+ * @returns {Promise<{ nodeId: number, fromPath: string, toPath: string, oldName: string, newName: string }>}
  */
-async function moveNode(serverUrl, apiKey, nodeId, targetParentId) {
+async function moveNode(serverUrl, apiKey, nodeId, targetParentId, newName = null) {
   const url = `${serverUrl}/sync/nodes/${nodeId}/move`;
-  console.log(`[API] Moving node ${nodeId} → parent ${targetParentId}`);
+  if (newName) {
+    console.log(`[API] Moving node ${nodeId} → parent ${targetParentId} (rename → ${newName})`);
+  } else {
+    console.log(`[API] Moving node ${nodeId} → parent ${targetParentId}`);
+  }
+
+  const body = { targetParentId };
+  if (newName) body.newName = newName;
 
   return apiFetch(url, {
     method: 'PATCH',
@@ -231,7 +243,7 @@ async function moveNode(serverUrl, apiKey, nodeId, targetParentId) {
       'Content-Type': 'application/json',
       'X-API-Key': apiKey
     },
-    body: JSON.stringify({ targetParentId })
+    body: JSON.stringify(body)
   }, { errorPrefix: `Move node ${nodeId} failed` });
 }
 

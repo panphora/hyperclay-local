@@ -280,12 +280,15 @@ module.exports = {
         this.outbox.markInFlight('rename', pending.nodeId);
         await renameNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), addBasename);
       } else {
+        // Atomic move+rename. We issue a single moveNode call with newName so
+        // the server can check uniqueness at the target parent against the
+        // final name, not the intermediate state. Splitting this into
+        // rename-then-move (or move-then-rename) would fail on perfectly valid
+        // operations whenever the interim name collides at the source or target.
         console.log(`[SYNC] Watcher: Local ${type} move+rename detected: ${oldPath} → ${newPath}`);
-        this.outbox.markInFlight('rename', pending.nodeId);
-        await renameNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), addBasename);
         this.outbox.markInFlight('move', pending.nodeId);
         const targetParentId = this.resolveParentIdByPath(newFolderPath);
-        await moveNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), targetParentId);
+        await moveNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), targetParentId, addBasename);
       }
 
       this.invalidateServerNodesCache();
@@ -377,12 +380,11 @@ module.exports = {
         this.outbox.markInFlight('rename', pending.nodeId);
         await renameNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), addBasename);
       } else {
+        // Atomic move+rename — see _correlateFileUnlinkAdd for rationale.
         console.log(`[SYNC] Watcher: Local folder move+rename detected: ${oldPath} → ${newPath}`);
-        this.outbox.markInFlight('rename', pending.nodeId);
-        await renameNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), addBasename);
         this.outbox.markInFlight('move', pending.nodeId);
         const targetParentId = this.resolveParentIdByPath(newFolderPath);
-        await moveNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), targetParentId);
+        await moveNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), targetParentId, addBasename);
       }
       this.invalidateServerNodesCache();
 
