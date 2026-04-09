@@ -69,7 +69,9 @@ module.exports = {
       const item = this.syncQueue.next();
 
       try {
-        if (item.type === 'add' || item.type === 'change') {
+        if (item.type === 'addDir') {
+          await this.createFolderOnServer(item.filename);
+        } else if (item.type === 'add' || item.type === 'change') {
           let type = null;
           for (const [, entry] of this.repo) {
             if (entry.path === item.filename) {

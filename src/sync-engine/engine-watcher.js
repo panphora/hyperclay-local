@@ -312,6 +312,19 @@ module.exports = {
   // --- Folder identity (S5-Q2) ---
 
   async _correlateFolderUnlinkAdd(oldPath, newPath, pending, shape) {
+    const oldDescendants = this.repo.walkDescendants(oldPath);
+    const expectedNewPaths = oldDescendants.map(({ entry }) =>
+      newPath + entry.path.substring(oldPath.length)
+    );
+    this.cascade.mark([newPath, ...expectedNewPaths]);
+
+    this.repo.setProvisional(pending.nodeId, {
+      type: 'folder',
+      path: newPath,
+      parentId: pending.entry.parentId,
+      inode: null
+    });
+
     const newFullPath = path.join(this.syncFolder, newPath);
     let isSameFolder = false;
     let reason = '';
@@ -322,8 +335,7 @@ module.exports = {
       reason = 'inode-match';
     } else {
       const knownDescendantBasenames = new Set(
-        this.repo.walkDescendants(oldPath)
-          .map(({ entry }) => path.basename(entry.path))
+        oldDescendants.map(({ entry }) => path.basename(entry.path))
       );
 
       if (knownDescendantBasenames.size === 0) {
@@ -351,7 +363,6 @@ module.exports = {
         this.outbox.markInFlight('delete', pending.nodeId);
         await deleteNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId));
         this.invalidateServerNodesCache();
-        const oldDescendants = this.repo.walkDescendants(oldPath);
         await this.repo.apply(async (map) => {
           for (const { nodeId: descId } of oldDescendants) {
             map.delete(descId);
@@ -364,12 +375,6 @@ module.exports = {
       this._handleFolderAdd(newPath);
       return;
     }
-
-    const oldDescendants = this.repo.walkDescendants(oldPath);
-    const expectedNewPaths = oldDescendants.map(({ entry }) => {
-      return newPath + entry.path.substring(oldPath.length);
-    });
-    this.cascade.mark([newPath, ...expectedNewPaths]);
 
     const addBasename = path.basename(newPath);
     const newDirname = path.dirname(newPath);
@@ -533,8 +538,6 @@ module.exports = {
 
   _handleFolderAdd(normalizedPath) {
     console.log(`[SYNC] Folder added: ${normalizedPath}`);
-    this.createFolderOnServer(normalizedPath).catch(err => {
-      console.error(`[SYNC] Failed to create folder ${normalizedPath}:`, err.message);
-    });
+    this.queueSync('addDir', normalizedPath);
   }
 };

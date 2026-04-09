@@ -84,6 +84,10 @@ module.exports = {
       });
 
     } catch (error) {
+      if (error.statusCode === 404) {
+        await this.repo.delete(nodeId).catch(() => {});
+      }
+
       console.error(`[SYNC] Failed to download ${relativePath}:`, error);
 
       // Log download error
@@ -194,6 +198,7 @@ module.exports = {
 
       let result;
       if (existingNodeId) {
+        this.outbox.markInFlight('save', existingNodeId);
         result = await putNodeContent(
           this.serverUrl,
           this.apiKey,
@@ -219,12 +224,13 @@ module.exports = {
           content,
           modifiedAt: stat.mtime
         });
+        this.outbox.markInFlight('save', createdNode.id);
         result = { nodeId: createdNode.id };
       }
 
       if (result.nodeId) {
         const inode = await nodeMap.getInode(path.join(this.syncFolder, filename));
-        await this.repo.set(result.nodeId, { path: filename, checksum: localChecksum, inode });
+        await this.repo.set(result.nodeId, { type: 'site', path: filename, checksum: localChecksum, inode });
       }
 
       console.log(`[SYNC] Uploaded ${filename}`);
@@ -308,6 +314,10 @@ module.exports = {
       this.emit('file-synced', { file: serverPath, action: 'download', type: 'upload' });
 
     } catch (error) {
+      if (error.statusCode === 404) {
+        await this.repo.delete(nodeId).catch(() => {});
+      }
+
       console.error(`[SYNC] Failed to download upload ${serverPath}:`, error);
 
       if (this.logger) {
@@ -380,6 +390,7 @@ module.exports = {
 
       let resultNodeId = existingNodeId;
       if (existingNodeId) {
+        this.outbox.markInFlight('save', existingNodeId);
         await putNodeContent(
           this.serverUrl,
           this.apiKey,
@@ -400,11 +411,12 @@ module.exports = {
           content,
           modifiedAt: stat.mtime
         });
+        this.outbox.markInFlight('save', createdNode.id);
         resultNodeId = createdNode.id;
       }
 
       if (resultNodeId) {
-        await this.repo.set(resultNodeId, { path: relativePath, checksum: localChecksum, inode: null });
+        await this.repo.set(resultNodeId, { type: 'upload', path: relativePath, checksum: localChecksum, inode: null });
       }
 
       console.log(`[SYNC] Uploaded: ${relativePath}`);
@@ -432,6 +444,14 @@ module.exports = {
   async createFolderOnServer(relativePath) {
     try {
       const pathParts = relativePath.split('/').filter(Boolean);
+
+      for (let i = 1; i < pathParts.length; i++) {
+        const ancestorPath = pathParts.slice(0, i).join('/');
+        if (!this.repo.getByPath(ancestorPath)) {
+          await this.createFolderOnServer(ancestorPath);
+        }
+      }
+
       const name = pathParts[pathParts.length - 1];
       const parentFolderPath = pathParts.slice(0, -1).join('/');
 

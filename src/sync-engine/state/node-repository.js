@@ -104,6 +104,15 @@ class NodeRepository {
     await this._save();
   }
 
+  /**
+   * In-memory only update — no disk write. Use when you need the value
+   * visible immediately to synchronous code on the same tick, and a
+   * full persist will happen shortly after via set() or apply().
+   */
+  setProvisional(nodeId, entry) {
+    this._map.set(String(nodeId), entry);
+  }
+
   async delete(nodeId) {
     this._map.delete(String(nodeId));
     await this._save();
