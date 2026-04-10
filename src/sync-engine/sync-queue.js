@@ -18,16 +18,23 @@ class SyncQueue {
    * Add item to sync queue
    */
   add(type, filename) {
-    const existing = this.queue.find(item => item.filename === filename);
-    if (existing) {
-      return false;
-    }
+    if (this.queue.some(item => item.filename === filename)) return false;
 
-    this.queue.push({
-      type,
-      filename,
-      queuedAt: Date.now()
-    });
+    const newItem = { type, filename, queuedAt: Date.now() };
+
+    if (type === 'addDir') {
+      const newDepth = filename ? filename.split('/').length : 0;
+      const insertAt = this.queue.findIndex(
+        item => item.type === 'addDir' && item.filename.split('/').length > newDepth
+      );
+      if (insertAt === -1) {
+        this.queue.push(newItem);
+      } else {
+        this.queue.splice(insertAt, 0, newItem);
+      }
+    } else {
+      this.queue.push(newItem);
+    }
 
     return true;
   }

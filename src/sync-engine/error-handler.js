@@ -122,6 +122,12 @@ function isRetryableError(error) {
     return true;
   }
 
+  // Transient ordering error: parent folder not yet in repo when child is processed.
+  // A retry after backoff gives time for the parent's addDir event to be processed.
+  if (errorMsg.includes('not tracked in nodemap')) {
+    return true;
+  }
+
   // Default to not retrying unknown errors
   return false;
 }

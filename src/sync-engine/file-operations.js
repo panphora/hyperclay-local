@@ -228,7 +228,38 @@ function calculateBufferChecksum(buffer) {
     .substring(0, 16);
 }
 
+/**
+ * Get all local folders recursively with relative paths.
+ * Used by detectLocalFolderChanges to find where folders moved while offline.
+ * @returns {Map<string, { fullPath: string }>}
+ */
+async function getLocalFolders(syncFolder) {
+  const folders = new Map();
+
+  async function scanDirectory(dirPath, relativePath = '') {
+    try {
+      const entries = await fs.readdir(dirPath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (shouldSkipEntry(entry.name)) continue;
+
+        const fullPath = path.join(dirPath, entry.name);
+        const relPath = relativePath ? path.join(relativePath, entry.name) : entry.name;
+
+        folders.set(relPath, { fullPath });
+        await scanDirectory(fullPath, relPath);
+      }
+    } catch (error) {
+      console.error(`Error scanning directories ${dirPath}:`, error);
+    }
+  }
+
+  await scanDirectory(syncFolder);
+  return folders;
+}
+
 module.exports = {
+  getLocalFolders,
   getLocalFiles,
   readFile,
   writeFile,

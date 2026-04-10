@@ -109,12 +109,12 @@ describe('detectLocalChanges — local delete', () => {
     const cs = checksum('<html>content</html>');
     syncEngine.repo.seed([['42', entry('my-site.html', cs, 111)]]);
 
-    const serverFiles = [
-      { nodeId: 42, filename: 'my-site', path: 'my-site.html', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
+    const allServerNodes = [
+      { id: 42, type: 'site', name: 'my-site.html', path: '', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
     ];
     const localFiles = new Map();
 
-    await syncEngine.detectLocalChanges(serverFiles, localFiles);
+    await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(apiClient.deleteNode).toHaveBeenCalledWith(
       'http://localhyperclay.com', 'hcsk_test', 42
@@ -126,16 +126,17 @@ describe('detectLocalChanges — local delete', () => {
     syncEngine.lastSyncedAt = new Date('2024-06-01').getTime();
     syncEngine.repo.seed([['42', entry('my-site.html', 'abc', 111)]]);
 
-    const serverFiles = [
-      { nodeId: 42, filename: 'my-site', path: 'my-site.html', checksum: 'abc', modifiedAt: '2024-07-01T00:00:00Z' }
+    const allServerNodes = [
+      { id: 42, type: 'site', name: 'my-site.html', path: '', checksum: 'abc', modifiedAt: '2024-07-01T00:00:00Z' }
     ];
-    // downloadFile(nodeId) resolves the local path from serverFilesCache,
-    // which is populated by fetchAndCacheServerFiles at the top of performInitialSync
-    // in production. Mirror that here since we're calling detectLocalChanges directly.
-    syncEngine.serverFilesCache = serverFiles;
+    // downloadFile(nodeId) resolves the local path from serverFilesCache (mapped shape).
+    // Mirror that here since we're calling detectLocalChanges directly.
+    syncEngine.serverFilesCache = [
+      { nodeId: 42, filename: 'my-site.html', path: 'my-site.html', checksum: 'abc', modifiedAt: '2024-07-01T00:00:00Z' }
+    ];
     const localFiles = new Map();
 
-    await syncEngine.detectLocalChanges(serverFiles, localFiles);
+    await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
     expect(apiClient.getNodeContent).toHaveBeenCalledWith(
@@ -147,10 +148,10 @@ describe('detectLocalChanges — local delete', () => {
   test('skips detection for nodeIds not on server', async () => {
     syncEngine.repo.seed([['42', entry('my-site.html')]]);
 
-    const serverFiles = [];
+    const allServerNodes = [];
     const localFiles = new Map();
 
-    await syncEngine.detectLocalChanges(serverFiles, localFiles);
+    await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
   });
@@ -164,15 +165,15 @@ describe('detectLocalChanges — local move', () => {
       ['100', { type: 'folder', path: 'blog', parentId: 0 }]
     ]);
 
-    const serverFiles = [
-      { nodeId: 42, filename: 'my-site', path: 'my-site.html', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
+    const allServerNodes = [
+      { id: 42, type: 'site', name: 'my-site.html', path: '', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
     ];
     const localFiles = new Map([
       ['blog/my-site.html', { path: '/test/sync/blog/my-site.html', relativePath: 'blog/my-site.html', mtime: new Date(), size: 100 }]
     ]);
     fileOps.readFile.mockResolvedValue('<html>content</html>');
 
-    await syncEngine.detectLocalChanges(serverFiles, localFiles);
+    await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(apiClient.moveNode).toHaveBeenCalledWith(
       'http://localhyperclay.com', 'hcsk_test', 42, 100
@@ -184,15 +185,15 @@ describe('detectLocalChanges — local move', () => {
     const cs = checksum('<html>content</html>');
     syncEngine.repo.seed([['42', entry('blog/my-site.html', cs, 111)]]);
 
-    const serverFiles = [
-      { nodeId: 42, filename: 'blog/my-site', path: 'blog/my-site.html', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
+    const allServerNodes = [
+      { id: 42, type: 'site', name: 'my-site.html', path: 'blog', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
     ];
     const localFiles = new Map([
       ['my-site.html', { path: '/test/sync/my-site.html', relativePath: 'my-site.html', mtime: new Date(), size: 100 }]
     ]);
     fileOps.readFile.mockResolvedValue('<html>content</html>');
 
-    await syncEngine.detectLocalChanges(serverFiles, localFiles);
+    await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(apiClient.moveNode).toHaveBeenCalledWith(
       'http://localhyperclay.com', 'hcsk_test', 42, 0
@@ -207,14 +208,14 @@ describe('detectLocalChanges — local rename (inode match)', () => {
 
     nodeMapModule.getInode.mockResolvedValue(99999);
 
-    const serverFiles = [
-      { nodeId: 42, filename: 'old-name', path: 'old-name.html', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
+    const allServerNodes = [
+      { id: 42, type: 'site', name: 'old-name.html', path: '', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
     ];
     const localFiles = new Map([
       ['new-name.html', { path: '/test/sync/new-name.html', relativePath: 'new-name.html', mtime: new Date(), size: 100 }]
     ]);
 
-    await syncEngine.detectLocalChanges(serverFiles, localFiles);
+    await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(apiClient.renameNode).toHaveBeenCalledWith(
       'http://localhyperclay.com', 'hcsk_test', 42, 'new-name.html'
@@ -232,14 +233,14 @@ describe('detectLocalChanges — local rename (checksum match)', () => {
     nodeMapModule.getInode.mockResolvedValue(22222);
     fileOps.readFile.mockResolvedValue(content);
 
-    const serverFiles = [
-      { nodeId: 42, filename: 'old-name', path: 'old-name.html', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
+    const allServerNodes = [
+      { id: 42, type: 'site', name: 'old-name.html', path: '', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
     ];
     const localFiles = new Map([
       ['renamed.html', { path: '/test/sync/renamed.html', relativePath: 'renamed.html', mtime: new Date(), size: 100 }]
     ]);
 
-    await syncEngine.detectLocalChanges(serverFiles, localFiles);
+    await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(apiClient.renameNode).toHaveBeenCalledWith(
       'http://localhyperclay.com', 'hcsk_test', 42, 'renamed.html'
@@ -251,12 +252,12 @@ describe('detectLocalChanges — server wins conflicts', () => {
   test('skips local change detection when server path differs from nodeMap (server moved it)', async () => {
     syncEngine.repo.seed([['42', entry('old-path.html', 'abc', 111)]]);
 
-    const serverFiles = [
-      { nodeId: 42, filename: 'blog/old-path', path: 'blog/old-path.html', checksum: 'abc', modifiedAt: '2024-01-01T00:00:00Z' }
+    const allServerNodes = [
+      { id: 42, type: 'site', name: 'old-path.html', path: 'blog', checksum: 'abc', modifiedAt: '2024-01-01T00:00:00Z' }
     ];
     const localFiles = new Map();
 
-    await syncEngine.detectLocalChanges(serverFiles, localFiles);
+    await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
     expect(apiClient.renameNode).not.toHaveBeenCalled();
@@ -344,8 +345,8 @@ describe('detectLocalChanges marks outbox for SSE suppression', () => {
     const cs = checksum('<html>content</html>');
     syncEngine.repo.seed([['42', entry('my-site.html', cs, 111)]]);
 
-    const serverFiles = [
-      { nodeId: 42, filename: 'my-site', path: 'my-site.html', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
+    const allServerNodes = [
+      { id: 42, type: 'site', name: 'my-site.html', path: '', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
     ];
     const localFiles = new Map();
 
@@ -355,7 +356,7 @@ describe('detectLocalChanges marks outbox for SSE suppression', () => {
       return { success: true };
     });
 
-    await syncEngine.detectLocalChanges(serverFiles, localFiles);
+    await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(capturedPendingAction).toBe(true);
   });
@@ -365,8 +366,8 @@ describe('detectLocalChanges marks outbox for SSE suppression', () => {
     syncEngine.repo.seed([['42', entry('old-name.html', cs, 99999)]]);
     nodeMapModule.getInode.mockResolvedValue(99999);
 
-    const serverFiles = [
-      { nodeId: 42, filename: 'old-name', path: 'old-name.html', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
+    const allServerNodes = [
+      { id: 42, type: 'site', name: 'old-name.html', path: '', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
     ];
     const localFiles = new Map([
       ['new-name.html', { path: '/test/sync/new-name.html', relativePath: 'new-name.html', mtime: new Date(), size: 100 }]
@@ -378,7 +379,7 @@ describe('detectLocalChanges marks outbox for SSE suppression', () => {
       return { success: true };
     });
 
-    await syncEngine.detectLocalChanges(serverFiles, localFiles);
+    await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(capturedPendingAction).toBe(true);
   });
@@ -391,8 +392,8 @@ describe('detectLocalChanges marks outbox for SSE suppression', () => {
     ]);
     fileOps.readFile.mockResolvedValue('<html>content</html>');
 
-    const serverFiles = [
-      { nodeId: 42, filename: 'my-site', path: 'my-site.html', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
+    const allServerNodes = [
+      { id: 42, type: 'site', name: 'my-site.html', path: '', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
     ];
     const localFiles = new Map([
       ['blog/my-site.html', { path: '/test/sync/blog/my-site.html', relativePath: 'blog/my-site.html', mtime: new Date(), size: 100 }]
@@ -404,7 +405,7 @@ describe('detectLocalChanges marks outbox for SSE suppression', () => {
       return { success: true };
     });
 
-    await syncEngine.detectLocalChanges(serverFiles, localFiles);
+    await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(capturedPendingAction).toBe(true);
   });
@@ -415,14 +416,14 @@ describe('detectLocalChanges — file still at expected path', () => {
     const cs = checksum('<html>content</html>');
     syncEngine.repo.seed([['42', entry('my-site.html', cs, 111)]]);
 
-    const serverFiles = [
-      { nodeId: 42, filename: 'my-site', path: 'my-site.html', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
+    const allServerNodes = [
+      { id: 42, type: 'site', name: 'my-site.html', path: '', checksum: cs, modifiedAt: '2024-01-01T00:00:00Z' }
     ];
     const localFiles = new Map([
       ['my-site.html', { path: '/test/sync/my-site.html', relativePath: 'my-site.html', mtime: new Date(), size: 100 }]
     ]);
 
-    await syncEngine.detectLocalChanges(serverFiles, localFiles);
+    await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
     expect(apiClient.renameNode).not.toHaveBeenCalled();
@@ -439,9 +440,9 @@ describe('detectLocalChanges — API error handling', () => {
       ['43', entry('site2.html', cs2, 222)]
     ]);
 
-    const serverFiles = [
-      { nodeId: 42, filename: 'site1', path: 'site1.html', checksum: cs1, modifiedAt: '2024-01-01T00:00:00Z' },
-      { nodeId: 43, filename: 'site2', path: 'site2.html', checksum: cs2, modifiedAt: '2024-01-01T00:00:00Z' }
+    const allServerNodes = [
+      { id: 42, type: 'site', name: 'site1.html', path: '', checksum: cs1, modifiedAt: '2024-01-01T00:00:00Z' },
+      { id: 43, type: 'site', name: 'site2.html', path: '', checksum: cs2, modifiedAt: '2024-01-01T00:00:00Z' }
     ];
     const localFiles = new Map();
 
@@ -449,7 +450,7 @@ describe('detectLocalChanges — API error handling', () => {
       .mockRejectedValueOnce(new Error('Network error'))
       .mockResolvedValueOnce({ success: true });
 
-    await syncEngine.detectLocalChanges(serverFiles, localFiles);
+    await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(apiClient.deleteNode).toHaveBeenCalledTimes(2);
     expect(syncEngine.repo.has('42')).toBe(true);

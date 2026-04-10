@@ -159,9 +159,13 @@ function startServer(baseDir, devHooks = null) {
 
     // Live-sync SSE stream endpoint
     app.get('/live-sync/stream', (req, res) => {
-      const file = req.query.file;
+      const pageUrl = req.query['page-url'];
+      if (!pageUrl) {
+        return res.status(400).send('page-url parameter required');
+      }
+      const file = resolveResourceFromHref(pageUrl);
       if (!file) {
-        return res.status(400).send('file parameter required');
+        return res.status(400).send('could not resolve file from page-url');
       }
 
       // SSE headers

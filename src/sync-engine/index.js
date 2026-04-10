@@ -191,7 +191,7 @@ class SyncEngine extends EventEmitter {
       await this.performInitialUploadSync();
       console.log(`[SYNC] Initial upload sync completed`);
 
-      await this.populateFolderNodeMap();
+      await this.performInitialFolderSync();
 
       console.log(`[SYNC] Starting unified watcher...`);
       this.startUnifiedWatcher();
