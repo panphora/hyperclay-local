@@ -167,6 +167,7 @@ function startServer(baseDir, devHooks = null) {
       if (!file) {
         return res.status(400).send('could not resolve file from page-url');
       }
+      const fileId = file.replace(/\.(html|htmlclay)$/i, '');
 
       // SSE headers
       res.setHeader('Content-Type', 'text/event-stream');
@@ -176,8 +177,8 @@ function startServer(baseDir, devHooks = null) {
       res.flushHeaders();
 
       // Register client
-      liveSync.subscribe(file, res);
-      console.log(`[LiveSync] Client connected: ${file}`);
+      liveSync.subscribe(fileId, res);
+      console.log(`[LiveSync] Client connected: ${fileId}`);
 
       // Keep-alive ping every 30 seconds
       const keepAlive = setInterval(() => {
@@ -191,8 +192,8 @@ function startServer(baseDir, devHooks = null) {
       // Cleanup on disconnect
       req.on('close', () => {
         clearInterval(keepAlive);
-        liveSync.unsubscribe(file, res);
-        console.log(`[LiveSync] Client disconnected: ${file}`);
+        liveSync.unsubscribe(fileId, res);
+        console.log(`[LiveSync] Client disconnected: ${fileId}`);
       });
 
       // Connection established
