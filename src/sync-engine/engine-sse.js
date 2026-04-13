@@ -31,6 +31,11 @@ const { toFileId } = require('./path-helpers');
 const nodeMap = require('./node-map');
 
 module.exports = {
+  async _applyRemoteFsChange(paths, fn) {
+    this.cascade.mark(paths);
+    return fn();
+  },
+
   _skipIfEcho(actionType, nodeId) {
     if (this.outbox.consumeIfInFlight(actionType, nodeId)) {
       console.log(`[SYNC] SSE: Skipping self-initiated ${actionType} for nodeId ${nodeId}`);
@@ -183,11 +188,7 @@ module.exports = {
     this.resolveContainedPath(localFolderPath);
     const localPath = path.join(this.syncFolder, localFolderPath);
 
-    this.cascade.mark([localFolderPath]);
-
-    this.outbox.markInFlight('save', data.nodeId);
-
-    await ensureDirectory(localPath);
+    await this._applyRemoteFsChange([localFolderPath], () => ensureDirectory(localPath));
 
     const inode = await nodeMap.getInode(localPath);
     await this.repo.set(data.nodeId, {
@@ -286,9 +287,7 @@ module.exports = {
       liveSync.markBrowserSave(toFileId(localFilename));
     }
 
-    this.outbox.markInFlight('delete', nodeId);
-
-    await moveFile(localPath, trashPath);
+    await this._applyRemoteFsChange([localFilename], () => moveFile(localPath, trashPath));
 
     await this.repo.delete(nodeId);
 
@@ -309,10 +308,6 @@ module.exports = {
       localFolderPath,
       ...descendants.map(({ entry: e }) => e.path)
     ];
-    this.cascade.mark(oldSidePaths);
-
-    this.outbox.markInFlight('delete', nodeId);
-
     const exists = await fileExists(localPath);
     if (!exists) {
       console.log(`[SYNC] SSE node-deleted: folder ${localFolderPath} not found locally, cleaning nodeMap only`);
@@ -327,13 +322,15 @@ module.exports = {
 
     await ensureDirectory(path.dirname(trashPath));
 
-    try {
-      await moveFile(localPath, trashPath);
-    } catch (error) {
-      const timestampedTrashPath = `${trashPath}.${Date.now()}`;
-      console.warn(`[SYNC] SSE node-deleted: trash collision, using ${timestampedTrashPath}`);
-      await moveFile(localPath, timestampedTrashPath);
-    }
+    await this._applyRemoteFsChange(oldSidePaths, async () => {
+      try {
+        await moveFile(localPath, trashPath);
+      } catch (error) {
+        const timestampedTrashPath = `${trashPath}.${Date.now()}`;
+        console.warn(`[SYNC] SSE node-deleted: trash collision, using ${timestampedTrashPath}`);
+        await moveFile(localPath, timestampedTrashPath);
+      }
+    });
 
     await this.repo.apply(async (map) => {
       for (const { nodeId: descId } of descendants) {
@@ -654,7 +651,7 @@ module.exports = {
         this.logger.info('POLL', 'Checking for remote changes');
       }
 
-      const serverFiles = await this.fetchAndCacheServerFiles(true);
+      const serverFiles = await this.fetchAndCacheServerFiles(0);
 
       // Check if sync was stopped during the fetch
       if (!this.isRunning) {
@@ -693,8 +690,9 @@ module.exports = {
             if (localChecksum !== serverFile.checksum) {
               // Check if local is newer
               if (isLocalNewer(localInfo.mtime, serverFile.modifiedAt, this.clockOffset)) {
-                console.log(`[SYNC] PRESERVE ${relativePath} - local is newer`);
+                console.log(`[SYNC] PRESERVE ${relativePath} - local is newer, uploading`);
                 this.stats.filesProtected++;
+                await this.uploadFile(relativePath);
               } else {
                 // Download newer version from server
                 await this.downloadFile(serverFile.nodeId);
@@ -713,7 +711,7 @@ module.exports = {
       // Also check for upload changes
       if (!this.isRunning) return;
 
-      const serverUploads = await this.fetchAndCacheServerUploads(true);
+      const serverUploads = await this.fetchAndCacheServerUploads(10_000);
       const localUploads = await getLocalUploads(this.syncFolder);
 
       await this.repo.apply(async (map) => {
@@ -737,8 +735,9 @@ module.exports = {
 
             if (localChecksum !== serverUpload.checksum) {
               if (isLocalNewer(localInfo.mtime, serverUpload.modifiedAt, this.clockOffset)) {
-                console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - local is newer`);
+                console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - local is newer, uploading`);
                 this.stats.uploadsProtected++;
+                await this.uploadUploadFile(serverUpload.path);
               } else {
                 await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
                 this.stats.uploadsDownloaded++;

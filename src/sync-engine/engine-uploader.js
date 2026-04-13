@@ -154,7 +154,7 @@ module.exports = {
 
       // Check if server already has this exact content using cached data
       try {
-        const serverFiles = await this.fetchAndCacheServerFiles(false);
+        const serverFiles = await this.fetchAndCacheServerFiles(Number.MAX_SAFE_INTEGER);
         const serverFile = serverFiles.find(f => f.filename === filename);
 
         if (serverFile && serverFile.checksum === localChecksum) {
@@ -376,7 +376,7 @@ module.exports = {
       const localChecksum = calculateBufferChecksum(content);
 
       try {
-        const serverUploads = await this.fetchAndCacheServerUploads(false);
+        const serverUploads = await this.fetchAndCacheServerUploads(Number.MAX_SAFE_INTEGER);
         const serverUpload = serverUploads.find(u => u.path === relativePath);
 
         if (serverUpload && serverUpload.checksum === localChecksum) {

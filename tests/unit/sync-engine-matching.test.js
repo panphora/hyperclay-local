@@ -305,7 +305,7 @@ describe('performInitialSync — duplicate filename handling', () => {
     expect(apiClient.getNodeContent).not.toHaveBeenCalled();
   });
 
-  test('orphan duplicate skipped during upload phase', async () => {
+  test('local file in new folder gets folder created and file uploaded', async () => {
     const content = '<html>blog content</html>';
     const cs = checksum(content);
 
@@ -313,7 +313,7 @@ describe('performInitialSync — duplicate filename handling', () => {
       { id: 1, type: 'site', name: 'blog.html', path: 'projects', checksum: cs, modifiedAt: '2024-06-01T00:00:00Z' }
     ]);
 
-    // Both exist locally: one at the correct path, one orphan
+    // projects/blog.html matches server (same checksum); drafts/blog.html is a separate local file
     fileOps.getLocalFiles.mockResolvedValue(new Map([
       ['projects/blog.html', { path: '/test/sync/projects/blog.html', relativePath: 'projects/blog.html', mtime: new Date('2024-05-01'), size: 100 }],
       ['drafts/blog.html', { path: '/test/sync/drafts/blog.html', relativePath: 'drafts/blog.html', mtime: new Date('2024-05-01'), size: 100 }]
@@ -324,8 +324,16 @@ describe('performInitialSync — duplicate filename handling', () => {
 
     await syncEngine.performInitialSync();
 
-    // Orphan should NOT be uploaded (name already exists on server)
-    expect(apiClient.createNode).not.toHaveBeenCalled();
+    // drafts/ folder is created first, then drafts/blog.html is uploaded
+    expect(apiClient.createNode).toHaveBeenCalledTimes(2);
+    expect(apiClient.createNode).toHaveBeenCalledWith(
+      'http://localhyperclay.com', 'hcsk_test',
+      expect.objectContaining({ type: 'folder', name: 'drafts', parentId: 0 })
+    );
+    expect(apiClient.createNode).toHaveBeenCalledWith(
+      'http://localhyperclay.com', 'hcsk_test',
+      expect.objectContaining({ type: 'site', name: 'blog.html' })
+    );
   });
 
   test.skip('sync-warning emitted for duplicate filenames (unimplemented — sync-warning event not yet emitted in production code)', async () => {
@@ -451,8 +459,24 @@ describe('performInitialSync — duplicate filename handling', () => {
 
     // No downloads needed (checksums match after move)
     expect(apiClient.getNodeContent).not.toHaveBeenCalled();
-    // Orphans (old/blog.html, misc/about.html) should not be uploaded
-    expect(apiClient.createNode).not.toHaveBeenCalled();
+    // Local-only files (old/blog.html, misc/about.html) get uploaded with their folders created first
+    expect(apiClient.createNode).toHaveBeenCalledTimes(4);
+    expect(apiClient.createNode).toHaveBeenCalledWith(
+      'http://localhyperclay.com', 'hcsk_test',
+      expect.objectContaining({ type: 'folder', name: 'old', parentId: 0 })
+    );
+    expect(apiClient.createNode).toHaveBeenCalledWith(
+      'http://localhyperclay.com', 'hcsk_test',
+      expect.objectContaining({ type: 'folder', name: 'misc', parentId: 0 })
+    );
+    expect(apiClient.createNode).toHaveBeenCalledWith(
+      'http://localhyperclay.com', 'hcsk_test',
+      expect.objectContaining({ type: 'site', name: 'blog.html' })
+    );
+    expect(apiClient.createNode).toHaveBeenCalledWith(
+      'http://localhyperclay.com', 'hcsk_test',
+      expect.objectContaining({ type: 'site', name: 'about.html' })
+    );
   });
 });
 

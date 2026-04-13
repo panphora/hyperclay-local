@@ -22,11 +22,6 @@ const {
   readFileBuffer,
   calculateBufferChecksum
 } = require('./file-operations');
-const {
-  renameNode,
-  moveNode,
-  deleteNode
-} = require('./api-client');
 const { calculateChecksum, isLocalNewer, isFutureFile } = require('./utils');
 const { ERROR_PRIORITY } = require('./constants');
 const nodeMap = require('./node-map');
@@ -40,24 +35,10 @@ module.exports = {
     this.emit('sync-start', { type: 'initial' });
 
     try {
-      // Fetch all nodes once. Downstream type-specific views derive from this.
-      const allServerNodes = await this.fetchAndCacheServerNodes(true);
-
-      // Derive the site-specific mapped list that existing callers expect.
-      const serverFiles = allServerNodes
-        .filter(n => n.type === 'site')
-        .map(n => ({
-          nodeId: n.id,
-          filename: n.path ? `${n.path}/${n.name}` : n.name,
-          path:     n.path ? `${n.path}/${n.name}` : n.name,
-          size:     n.size,
-          modifiedAt: n.modifiedAt,
-          checksum: n.checksum
-        }));
-
-      // Keep serverFilesCache warm so uploadFile's checksum check gets a cache hit.
-      this.serverFilesCache = serverFiles;
-      this.serverFilesCacheTime = Date.now();
+      // Fetch and cache server files — also warms serverNodesCache and serverFilesCache
+      // so that downloadFile() can resolve nodeId → path without a separate lookup.
+      const serverFiles = await this.fetchAndCacheServerFiles(30_000);
+      const allServerNodes = this.serverNodesCache;
 
       const localFiles = await getLocalFiles(this.syncFolder, this.logger);
 
@@ -238,16 +219,17 @@ module.exports = {
       }
 
       if (isLocalNewer(localStat.mtime, serverFile.modifiedAt, this.clockOffset)) {
-        console.log(`[SYNC] PRESERVE ${relativePath} - local is newer`);
+        console.log(`[SYNC] PRESERVE ${relativePath} - local is newer, uploading`);
         this.stats.filesProtected++;
         if (this.logger) {
-          this.logger.info('SYNC', 'Site skipped - local is newer than server', {
+          this.logger.info('SYNC', 'Site local is newer than server - uploading', {
             file: relativePath,
             localMtime: localStat.mtime,
             serverModifiedAt: serverFile.modifiedAt,
             clockOffset: this.clockOffset
           });
         }
+        await this.uploadFile(relativePath);
         return;
       }
 
@@ -288,7 +270,6 @@ module.exports = {
 
   /**
    * Upload local files that don't exist on the server.
-   * Skips files whose name already exists on the server at a different path (orphan duplicates).
    */
   async uploadLocalOnlyFiles(localFiles, serverFiles) {
     for (const [relativePath, localInfo] of localFiles) {
@@ -297,26 +278,12 @@ module.exports = {
       );
 
       if (!serverFile) {
-        const localName = relativePath.split('/').pop();
-        const localFolder = relativePath.split('/').slice(0, -1).join('/');
-        const nameExistsInSameFolder = serverFiles.some(f => {
-          const serverPath = f.path || f.filename;
-          const serverName = serverPath.split('/').pop();
-          const serverFolder = serverPath.split('/').slice(0, -1).join('/');
-          return serverName === localName && serverFolder === localFolder;
-        });
-
-        if (nameExistsInSameFolder) {
-          console.log(`[SYNC] SKIP ${relativePath} - same name already exists in folder on server`);
-          this.stats.filesUploadedSkipped++;
-          if (this.logger) {
-            this.logger.warn('SYNC', 'Skipped upload - name exists in same folder on server', { file: relativePath });
-          }
-          continue;
-        }
-
         console.log(`[SYNC] LOCAL ONLY: ${relativePath} - uploading`);
         try {
+          const parentFolder = relativePath.split('/').slice(0, -1).join('/');
+          if (parentFolder && !this.repo.getByPath(parentFolder)) {
+            await this.createFolderOnServer(parentFolder);
+          }
           await this.uploadFile(relativePath);
           this.stats.filesUploaded++;
         } catch (error) {
@@ -385,7 +352,7 @@ module.exports = {
             const targetFolder = path.dirname(localFile);
             const folderPath = targetFolder === '.' ? '' : targetFolder.replace(/\.(html|htmlclay)$/, '');
             const targetParentId = this.resolveParentIdByPath(folderPath);
-            await moveNode(this.serverUrl, this.apiKey, parseInt(nid), targetParentId);
+            await this._apiMoveNode(nid, targetParentId);
             const inode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
             const content = await readFile(path.join(this.syncFolder, localFile)).catch(() => null);
             const cs = content ? await calculateChecksum(content) : entry.checksum;
@@ -401,7 +368,7 @@ module.exports = {
           },
           apply: async (localFile) => {
             const newName = path.basename(localFile);
-            await renameNode(this.serverUrl, this.apiKey, parseInt(nid), newName);
+            await this._apiRenameNode(nid, newName);
             const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
             return { path: localFile, checksum: entry.checksum, inode: localInode };
           }
@@ -417,7 +384,7 @@ module.exports = {
           },
           apply: async (localFile) => {
             const newName = path.basename(localFile);
-            await renameNode(this.serverUrl, this.apiKey, parseInt(nid), newName);
+            await this._apiRenameNode(nid, newName);
             const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
             const content = await readFile(path.join(this.syncFolder, localFile)).catch(() => null);
             const cs = content ? await calculateChecksum(content) : entry.checksum;
@@ -432,9 +399,7 @@ module.exports = {
           if (await strategy.match(localFile)) {
             try {
               console.log(`[SYNC] Local ${strategy.name} detected: ${entry.path} → ${localFile} (nodeId ${nid})`);
-              this.outbox.markInFlight(strategy.pendingOp, nid);
               const newEntry = await strategy.apply(localFile);
-              this.invalidateServerFilesCache();
               map.set(nid, newEntry);
               localOnlySet.delete(localFile);
               handled = true;
@@ -469,9 +434,7 @@ module.exports = {
 
       try {
         console.log(`[SYNC] Local delete detected: ${entry.path} (nodeId ${nid})`);
-        this.outbox.markInFlight('delete', nid);
-        await deleteNode(this.serverUrl, this.apiKey, parseInt(nid));
-        this.invalidateServerFilesCache();
+        await this._apiDeleteNode(nid);
         map.delete(nid);
       } catch (err) {
         console.error(`[SYNC] Failed to sync local delete for nodeId ${nid}:`, err.message);
@@ -523,7 +486,7 @@ module.exports = {
               const targetFolder = path.dirname(localFile);
               const folderPath = targetFolder === '.' ? '' : targetFolder;
               const targetParentId = this.resolveParentIdByPath(folderPath);
-              await moveNode(this.serverUrl, this.apiKey, parseInt(nid), targetParentId);
+              await this._apiMoveNode(nid, targetParentId);
               const inode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
               const buf = await readFileBuffer(path.join(this.syncFolder, localFile)).catch(() => null);
               const cs = buf ? calculateBufferChecksum(buf) : entry.checksum;
@@ -539,7 +502,7 @@ module.exports = {
             },
             apply: async (localFile) => {
               const newName = path.basename(localFile);
-              await renameNode(this.serverUrl, this.apiKey, parseInt(nid), newName);
+              await this._apiRenameNode(nid, newName);
               const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
               return { type: 'upload', path: localFile, checksum: entry.checksum, inode: localInode };
             }
@@ -555,7 +518,7 @@ module.exports = {
             },
             apply: async (localFile) => {
               const newName = path.basename(localFile);
-              await renameNode(this.serverUrl, this.apiKey, parseInt(nid), newName);
+              await this._apiRenameNode(nid, newName);
               const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
               const buf = await readFileBuffer(path.join(this.syncFolder, localFile)).catch(() => null);
               const cs = buf ? calculateBufferChecksum(buf) : entry.checksum;
@@ -570,9 +533,7 @@ module.exports = {
             if (await strategy.match(localFile)) {
               try {
                 console.log(`[SYNC] Local upload ${strategy.name}: ${entry.path} → ${localFile} (nodeId ${nid})`);
-                this.outbox.markInFlight(strategy.pendingOp, nid);
                 const newEntry = await strategy.apply(localFile);
-                this.invalidateServerUploadsCache();
                 map.set(nid, newEntry);
                 localUploadOnlySet.delete(localFile);
                 handled = true;
@@ -604,9 +565,7 @@ module.exports = {
         // No match — local delete
         try {
           console.log(`[SYNC] Local upload delete detected: ${entry.path} (nodeId ${nid})`);
-          this.outbox.markInFlight('delete', nid);
-          await deleteNode(this.serverUrl, this.apiKey, parseInt(nid));
-          this.invalidateServerUploadsCache();
+          await this._apiDeleteNode(nid);
           map.delete(nid);
           if (this.logger) {
             this.logger.info('SYNC', 'Upload delete synced to server', {
@@ -636,7 +595,7 @@ module.exports = {
     this.emit('sync-start', { type: 'initial-uploads' });
 
     try {
-      const serverUploads = await this.fetchAndCacheServerUploads(true);
+      const serverUploads = await this.fetchAndCacheServerUploads(30_000);
       const localUploads = await getLocalUploads(this.syncFolder, this.logger);
 
       await this.repo.apply(async (map) => {
@@ -679,10 +638,10 @@ module.exports = {
 
               // Check if local is newer
               if (isLocalNewer(localInfo.mtime, serverUpload.modifiedAt, this.clockOffset)) {
-                console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - local is newer`);
+                console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - local is newer, uploading`);
                 this.stats.uploadsProtected++;
                 if (this.logger) {
-                  this.logger.info('SYNC', 'Upload skipped - local is newer than server', {
+                  this.logger.info('SYNC', 'Upload local is newer than server - uploading', {
                     file: serverUpload.path,
                     localMtime: localInfo.mtime,
                     serverModifiedAt: serverUpload.modifiedAt,
@@ -692,6 +651,7 @@ module.exports = {
                 if (serverUpload.nodeId) {
                   map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: null, inode: null });
                 }
+                await this.uploadUploadFile(serverUpload.path);
                 continue;
               }
 
@@ -734,6 +694,10 @@ module.exports = {
           if (!serverUpload) {
             console.log(`[SYNC] LOCAL ONLY upload: ${relativePath} - uploading`);
             try {
+              const parentFolder = relativePath.split('/').slice(0, -1).join('/');
+              if (parentFolder && !this.repo.getByPath(parentFolder)) {
+                await this.createFolderOnServer(parentFolder);
+              }
               await this.uploadUploadFile(relativePath);
               // Note: uploadsUploaded is incremented inside uploadUploadFile
             } catch (error) {
@@ -745,7 +709,7 @@ module.exports = {
       });
 
       if (this.lastSyncedAt) {
-        const allServerNodes = await this.fetchAndCacheServerNodes(false); // free cache hit
+        const allServerNodes = await this.fetchAndCacheServerNodes(30_000); // reuse pipeline cache
         await this.detectLocalUploadChanges(allServerNodes, localUploads);
       }
 
@@ -762,8 +726,7 @@ module.exports = {
   async performInitialFolderSync() {
     console.log('[SYNC] Starting initial folder sync...');
 
-    // Free cache hit — fetchAndCacheServerNodes was already called in performInitialSync
-    const allServerNodes = await this.fetchAndCacheServerNodes(false);
+    const allServerNodes = await this.fetchAndCacheServerNodes(0);
     const serverFolders = allServerNodes.filter(n => n.type === 'folder');
     const serverNodeIds = new Set(allServerNodes.map(n => String(n.id)));
 
@@ -855,19 +818,16 @@ module.exports = {
 
           try {
             console.log(`[SYNC] Local folder ${shape} detected: ${entry.path} → ${localFolder} (nodeId ${nid})`);
-            this.outbox.markInFlight(shape === 'rename' ? 'rename' : 'move', nid);
 
             if (shape === 'rename') {
-              await renameNode(this.serverUrl, this.apiKey, parseInt(nid), newBasename);
+              await this._apiRenameNode(nid, newBasename);
             } else if (shape === 'move') {
               const targetParentId = this.resolveParentIdByPath(normalizeDir(newDirname));
-              await moveNode(this.serverUrl, this.apiKey, parseInt(nid), targetParentId);
+              await this._apiMoveNode(nid, targetParentId);
             } else {
               const targetParentId = this.resolveParentIdByPath(normalizeDir(newDirname));
-              await moveNode(this.serverUrl, this.apiKey, parseInt(nid), targetParentId, newBasename);
+              await this._apiMoveNode(nid, targetParentId, newBasename);
             }
-
-            this.invalidateServerNodesCache();
 
             // Update repo: this folder and all descendants
             const descendants = this.repo.walkDescendants(entry.path);
@@ -907,9 +867,7 @@ module.exports = {
         // Delete from server (cascades to descendants on server side).
         try {
           console.log(`[SYNC] Local folder delete detected: ${entry.path} (nodeId ${nid})`);
-          this.outbox.markInFlight('delete', nid);
-          await deleteNode(this.serverUrl, this.apiKey, parseInt(nid));
-          this.invalidateServerNodesCache();
+          await this._apiDeleteNode(nid);
 
           const descendants = this.repo.walkDescendants(entry.path);
           for (const { nodeId: descId } of descendants) {

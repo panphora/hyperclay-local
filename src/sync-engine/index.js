@@ -64,11 +64,9 @@ class SyncEngine extends EventEmitter {
     // prevent that catastrophic misclassification on slow filesystems.
     this.FOLDER_IDENTITY_WAIT_MS = 3000;
     this.lastSyncedAt = null; // Timestamp of last successful sync
-    this.serverFilesCache = null; // Cache for server files list
-    this.serverFilesCacheTime = null; // When cache was last updated
-    this.serverUploadsCache = null; // Cache for server uploads list
-    this.serverUploadsCacheTime = null; // When uploads cache was last updated
     this.serverNodesCache = null; // Cache for unified node listing
+    this.serverNodesCacheTime = null; // Timestamp of last successful fetchAndCacheServerNodes
+    this.serverFilesCache = null; // Derived cache for site files (populated by fetchAndCacheServerFiles)
     this.logger = null; // Logger instance
     this.stats = {
       filesProtected: 0,
@@ -192,6 +190,8 @@ class SyncEngine extends EventEmitter {
       this.lastSyncedAt = syncState.lastSyncedAt || null;
       console.log(`[SYNC] Loaded node map: ${this.repo.size} entries, lastSyncedAt: ${this.lastSyncedAt || 'never'}`);
 
+      await this.performInitialFolderSync();
+
       // Perform initial sync for sites
       console.log(`[SYNC] Starting initial site sync...`);
       await this.performInitialSync();
@@ -201,8 +201,6 @@ class SyncEngine extends EventEmitter {
       console.log(`[SYNC] Starting initial upload sync...`);
       await this.performInitialUploadSync();
       console.log(`[SYNC] Initial upload sync completed`);
-
-      await this.performInitialFolderSync();
 
       console.log(`[SYNC] Starting unified watcher...`);
       this.startUnifiedWatcher();
@@ -333,8 +331,7 @@ class SyncEngine extends EventEmitter {
     this.folderIdentityWaiters.clear();
 
     // Clear caches
-    this.invalidateServerFilesCache();
-    this.invalidateServerUploadsCache();
+    this.invalidateServerNodesCache();
 
     console.log('[SYNC] Sync stopped');
 
@@ -405,7 +402,8 @@ Object.assign(SyncEngine.prototype,
   require('./engine-uploader'),
   require('./engine-initial-sync'),
   require('./engine-sse'),
-  require('./engine-watcher')
+  require('./engine-watcher'),
+  require('./engine-mutations')
 );
 
 // Export singleton instance

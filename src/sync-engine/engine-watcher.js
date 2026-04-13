@@ -16,11 +16,6 @@ const {
   readFileBuffer,
   calculateBufferChecksum
 } = require('./file-operations');
-const {
-  renameNode,
-  moveNode,
-  deleteNode
-} = require('./api-client');
 const { calculateChecksum } = require('./utils');
 const { SYNC_CONFIG } = require('./constants');
 const { classifyPath } = require('./path-helpers');
@@ -172,9 +167,7 @@ module.exports = {
       this.pendingUnlinks.delete(normalizedPath);
       console.log(`[SYNC] Watcher: Local ${type} delete detected: ${normalizedPath} (nodeId ${foundNodeId})`);
       try {
-        this.outbox.markInFlight('delete', foundNodeId);
-        await deleteNode(this.serverUrl, this.apiKey, parseInt(foundNodeId));
-        this.invalidateServerNodesCache();
+        await this._apiDeleteNode(foundNodeId);
 
         await this.repo.apply(async (map) => {
           if (type === 'folder') {
@@ -274,9 +267,7 @@ module.exports = {
     if (!isSameFile) {
       console.log(`[SYNC] Watcher: Identity mismatch for ${oldPath} → ${newPath}, treating as delete+add`);
       try {
-        this.outbox.markInFlight('delete', pending.nodeId);
-        await deleteNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId));
-        this.invalidateServerNodesCache();
+        await this._apiDeleteNode(pending.nodeId);
         await this.repo.delete(pending.nodeId);
       } catch (err) {
         console.error(`[SYNC] Watcher: Failed to sync delete for ${oldPath}:`, err.message);
@@ -292,13 +283,11 @@ module.exports = {
     try {
       if (shape === 'move') {
         console.log(`[SYNC] Watcher: Local ${type} move detected: ${oldPath} → ${newPath}`);
-        this.outbox.markInFlight('move', pending.nodeId);
         const targetParentId = this.resolveParentIdByPath(newFolderPath);
-        await moveNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), targetParentId);
+        await this._apiMoveNode(pending.nodeId, targetParentId);
       } else if (shape === 'rename') {
         console.log(`[SYNC] Watcher: Local ${type} rename detected: ${oldPath} → ${newPath}`);
-        this.outbox.markInFlight('rename', pending.nodeId);
-        await renameNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), addBasename);
+        await this._apiRenameNode(pending.nodeId, addBasename);
       } else {
         // Atomic move+rename. We issue a single moveNode call with newName so
         // the server can check uniqueness at the target parent against the
@@ -306,12 +295,10 @@ module.exports = {
         // rename-then-move (or move-then-rename) would fail on perfectly valid
         // operations whenever the interim name collides at the source or target.
         console.log(`[SYNC] Watcher: Local ${type} move+rename detected: ${oldPath} → ${newPath}`);
-        this.outbox.markInFlight('move', pending.nodeId);
         const targetParentId = this.resolveParentIdByPath(newFolderPath);
-        await moveNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), targetParentId, addBasename);
+        await this._apiMoveNode(pending.nodeId, targetParentId, addBasename);
       }
 
-      this.invalidateServerNodesCache();
       await this.repo.set(pending.nodeId, {
         type,
         path: newPath,
@@ -385,9 +372,7 @@ module.exports = {
         });
       }
       try {
-        this.outbox.markInFlight('delete', pending.nodeId);
-        await deleteNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId));
-        this.invalidateServerNodesCache();
+        await this._apiDeleteNode(pending.nodeId);
         await this.repo.apply(async (map) => {
           for (const { nodeId: descId } of oldDescendants) {
             map.delete(descId);
@@ -408,21 +393,17 @@ module.exports = {
     try {
       if (shape === 'move') {
         console.log(`[SYNC] Watcher: Local folder move detected: ${oldPath} → ${newPath}`);
-        this.outbox.markInFlight('move', pending.nodeId);
         const targetParentId = this.resolveParentIdByPath(newFolderPath);
-        await moveNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), targetParentId);
+        await this._apiMoveNode(pending.nodeId, targetParentId);
       } else if (shape === 'rename') {
         console.log(`[SYNC] Watcher: Local folder rename detected: ${oldPath} → ${newPath}`);
-        this.outbox.markInFlight('rename', pending.nodeId);
-        await renameNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), addBasename);
+        await this._apiRenameNode(pending.nodeId, addBasename);
       } else {
         // Atomic move+rename — see _correlateFileUnlinkAdd for rationale.
         console.log(`[SYNC] Watcher: Local folder move+rename detected: ${oldPath} → ${newPath}`);
-        this.outbox.markInFlight('move', pending.nodeId);
         const targetParentId = this.resolveParentIdByPath(newFolderPath);
-        await moveNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId), targetParentId, addBasename);
+        await this._apiMoveNode(pending.nodeId, targetParentId, addBasename);
       }
-      this.invalidateServerNodesCache();
 
       await this.repo.apply(async (map) => {
         for (const { nodeId: descId, entry } of oldDescendants) {

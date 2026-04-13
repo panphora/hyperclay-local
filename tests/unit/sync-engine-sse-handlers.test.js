@@ -308,6 +308,90 @@ describe('handleNodeRenamed', () => {
   });
 });
 
+describe('checkForRemoteChanges', () => {
+  beforeEach(() => {
+    syncEngine.syncQueue = { isProcessingQueue: jest.fn().mockReturnValue(false) };
+    syncEngine.uploadFile = jest.fn().mockResolvedValue();
+    syncEngine.downloadFile = jest.fn().mockResolvedValue();
+    syncEngine.uploadUploadFile = jest.fn().mockResolvedValue();
+    syncEngine.downloadUploadFile = jest.fn().mockResolvedValue();
+    syncEngine.fetchAndCacheServerFiles = jest.fn().mockResolvedValue([]);
+    syncEngine.fetchAndCacheServerUploads = jest.fn().mockResolvedValue([]);
+    fileOps.getLocalFiles.mockResolvedValue(new Map());
+    fileOps.getLocalUploads.mockResolvedValue(new Map());
+  });
+
+  describe('site reconciliation', () => {
+    it('uploads the local file when local is newer than server', async () => {
+      syncEngine.fetchAndCacheServerFiles.mockResolvedValue([
+        { nodeId: 1, path: 'my-site.html', filename: 'my-site.html', checksum: 'cs-server', modifiedAt: '2024-01-01T00:00:00Z' }
+      ]);
+      fileOps.getLocalFiles.mockResolvedValue(new Map([
+        ['my-site.html', { mtime: new Date('2026-01-01') }]
+      ]));
+      fileOps.readFile.mockResolvedValue('<html>local newer content</html>');
+
+      await syncEngine.checkForRemoteChanges();
+
+      expect(syncEngine.uploadFile).toHaveBeenCalledWith('my-site.html');
+      expect(syncEngine.downloadFile).not.toHaveBeenCalled();
+      expect(syncEngine.stats.filesProtected).toBe(1);
+    });
+
+    it('downloads from server when server version is newer', async () => {
+      syncEngine.fetchAndCacheServerFiles.mockResolvedValue([
+        { nodeId: 1, path: 'my-site.html', filename: 'my-site.html', checksum: 'cs-server', modifiedAt: '2026-01-01T00:00:00Z' }
+      ]);
+      fileOps.getLocalFiles.mockResolvedValue(new Map([
+        ['my-site.html', { mtime: new Date('2024-01-01') }]
+      ]));
+      fileOps.readFile.mockResolvedValue('<html>old local content</html>');
+
+      await syncEngine.checkForRemoteChanges();
+
+      expect(syncEngine.downloadFile).toHaveBeenCalledWith(1);
+      expect(syncEngine.uploadFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('upload reconciliation', () => {
+    beforeEach(() => {
+      fileOps.calculateBufferChecksum.mockReturnValue('cs-local-upload');
+    });
+
+    it('uploads the local file when local is newer than server', async () => {
+      syncEngine.fetchAndCacheServerUploads.mockResolvedValue([
+        { nodeId: 2, path: 'image.png', checksum: 'cs-server-upload', modifiedAt: '2024-01-01T00:00:00Z' }
+      ]);
+      fileOps.getLocalUploads.mockResolvedValue(new Map([
+        ['image.png', { mtime: new Date('2026-01-01') }]
+      ]));
+      fileOps.readFileBuffer.mockResolvedValue(Buffer.from('local image content'));
+
+      await syncEngine.checkForRemoteChanges();
+
+      expect(syncEngine.uploadUploadFile).toHaveBeenCalledWith('image.png');
+      expect(syncEngine.downloadUploadFile).not.toHaveBeenCalled();
+      expect(syncEngine.stats.uploadsProtected).toBe(1);
+    });
+
+    it('downloads from server when server version is newer', async () => {
+      syncEngine.fetchAndCacheServerUploads.mockResolvedValue([
+        { nodeId: 2, path: 'image.png', checksum: 'cs-server-upload', modifiedAt: '2026-01-01T00:00:00Z' }
+      ]);
+      fileOps.getLocalUploads.mockResolvedValue(new Map([
+        ['image.png', { mtime: new Date('2024-01-01') }]
+      ]));
+      fileOps.readFileBuffer.mockResolvedValue(Buffer.from('old local content'));
+
+      await syncEngine.checkForRemoteChanges();
+
+      expect(syncEngine.downloadUploadFile).toHaveBeenCalledWith('image.png', 2);
+      expect(syncEngine.uploadUploadFile).not.toHaveBeenCalled();
+    });
+  });
+});
+
 describe('handleNodeDeleted', () => {
   beforeEach(() => {
     fileOps.fileExists.mockReset();

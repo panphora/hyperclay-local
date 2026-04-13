@@ -9,24 +9,8 @@
 const { listNodes } = require('./api-client');
 
 module.exports = {
-  /**
-   * Fetch server files and cache them
-   * @param {boolean} forceRefresh - Force refresh even if cache is valid
-   */
-  async fetchAndCacheServerFiles(forceRefresh = false) {
-    // Use cache if it's fresh (less than 30 seconds old) and not forcing refresh
-    if (!forceRefresh && this.serverFilesCache && this.serverFilesCacheTime) {
-      const cacheAge = Date.now() - this.serverFilesCacheTime;
-      if (cacheAge < 30000) {
-        console.log(`[SYNC] Using cached server files (age: ${cacheAge}ms)`);
-        return this.serverFilesCache;
-      }
-    }
-
-    // Fetch fresh data
-    console.log(`[SYNC] Fetching fresh server files list...`);
-    const allNodes = await listNodes(this.serverUrl, this.apiKey);
-    this.serverNodesCache = allNodes;
+  async fetchAndCacheServerFiles(maxAgeMs = 0) {
+    const allNodes = await this.fetchAndCacheServerNodes(maxAgeMs);
     this.serverFilesCache = allNodes
       .filter(n => n.type === 'site')
       .map(n => ({
@@ -37,34 +21,16 @@ module.exports = {
         modifiedAt: n.modifiedAt,
         checksum: n.checksum
       }));
-    this.serverFilesCacheTime = Date.now();
     return this.serverFilesCache;
   },
 
-  /**
-   * Invalidate the server files cache
-   */
   invalidateServerFilesCache() {
-    this.serverFilesCache = null;
-    this.serverFilesCacheTime = null;
+    this.invalidateServerNodesCache();
   },
 
-  /**
-   * Fetch server uploads and cache them
-   */
-  async fetchAndCacheServerUploads(forceRefresh = false) {
-    if (!forceRefresh && this.serverUploadsCache && this.serverUploadsCacheTime) {
-      const cacheAge = Date.now() - this.serverUploadsCacheTime;
-      if (cacheAge < 30000) {
-        console.log(`[SYNC] Using cached server uploads (age: ${cacheAge}ms)`);
-        return this.serverUploadsCache;
-      }
-    }
-
-    console.log(`[SYNC] Fetching fresh server uploads list...`);
-    const allNodes = await listNodes(this.serverUrl, this.apiKey);
-    this.serverNodesCache = allNodes;
-    this.serverUploadsCache = allNodes
+  async fetchAndCacheServerUploads(maxAgeMs = 0) {
+    const allNodes = await this.fetchAndCacheServerNodes(maxAgeMs);
+    return allNodes
       .filter(n => n.type === 'upload')
       .map(n => ({
         nodeId: n.id,
@@ -73,25 +39,24 @@ module.exports = {
         modifiedAt: n.modifiedAt,
         checksum: n.checksum
       }));
-    this.serverUploadsCacheTime = Date.now();
-    return this.serverUploadsCache;
   },
 
-  /**
-   * Invalidate the server uploads cache
-   */
   invalidateServerUploadsCache() {
-    this.serverUploadsCache = null;
-    this.serverUploadsCacheTime = null;
+    this.invalidateServerNodesCache();
   },
 
-  async fetchAndCacheServerNodes(force = false) {
-    if (!force && this.serverNodesCache) return this.serverNodesCache;
+  async fetchAndCacheServerNodes(maxAgeMs = 0) {
+    if (this.serverNodesCache && this.serverNodesCacheTime) {
+      if (Date.now() - this.serverNodesCacheTime <= maxAgeMs) return this.serverNodesCache;
+    }
     this.serverNodesCache = await listNodes(this.serverUrl, this.apiKey);
+    this.serverNodesCacheTime = Date.now();
     return this.serverNodesCache;
   },
 
   invalidateServerNodesCache() {
     this.serverNodesCache = null;
+    this.serverNodesCacheTime = null;
+    this.serverFilesCache = null;
   }
 };
