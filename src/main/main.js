@@ -183,6 +183,10 @@ function loadSettings() {
     return loaded;
   } catch (error) {
     console.error('Failed to load settings:', error);
+    syncLogger.error('App', 'Failed to load settings — starting with empty config', {
+      error: error.message,
+      settingsPath
+    });
   }
   return { deviceId: crypto.randomUUID() };
 }
@@ -316,6 +320,38 @@ function getTrayMenuTemplate() {
       click: () => {
         if (serverRunning) {
           shell.openExternal(`http://localhost:${getServerPort()}`);
+        }
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'View Sync Logs',
+      click: () => {
+        const logsPath = app.getPath('logs');
+        shell.openPath(path.join(logsPath, 'sync'));
+      }
+    },
+    {
+      label: 'View Error Logs',
+      click: () => {
+        const logsPath = app.getPath('logs');
+        shell.openPath(path.join(logsPath, 'errors'));
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'About Hyperclay Local',
+      click: () => {
+        if (process.platform === 'darwin') {
+          app.showAboutPanel();
+        } else {
+          dialog.showMessageBox({
+            type: 'info',
+            title: 'About Hyperclay Local',
+            message: `Hyperclay Local Server v${app.getVersion()}`,
+            detail: 'A local server for running your malleable HTML files offline.\n\nMade with \u2764\ufe0f for the Hyperclay platform.',
+            buttons: ['OK']
+          });
         }
       }
     },
@@ -941,13 +977,15 @@ app.whenReady().then(async () => {
         console.log('[APP] Sync auto-restart successful');
       } else {
         console.error('[APP] Sync auto-restart failed:', result);
-        errorLogger.error('App', 'Sync auto-restart failed', result);
+        syncLogger.error('App', 'Sync auto-restart failed', result);
+        sendToPopover('sync-update', { syncing: false, error: result.error || 'Sync failed to restart automatically' });
         settings.syncEnabled = false;
         saveSettings(settings);
       }
     } else {
       console.error('[APP] Failed to auto-restart sync: could not decrypt API key');
-      errorLogger.error('App', 'Failed to auto-restart sync: could not decrypt API key');
+      syncLogger.error('App', 'Failed to auto-restart sync: could not decrypt API key');
+      sendToPopover('sync-update', { syncing: false, error: 'Could not decrypt API key — please re-enter your credentials' });
       settings.syncEnabled = false;
       saveSettings(settings);
     }

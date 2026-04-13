@@ -11,7 +11,7 @@ async function atomicWrite(filePath, data) {
   await fs.rename(tmpPath, filePath);
 }
 
-async function load(metaDir) {
+async function load(metaDir, logger = null) {
   const filePath = path.join(metaDir, MAP_FILE);
   let data;
   try {
@@ -26,6 +26,12 @@ async function load(metaDir) {
     parsed = JSON.parse(data);
   } catch (err) {
     console.warn(`[SYNC] Corrupt ${MAP_FILE}; starting with empty map`);
+    if (logger) {
+      logger.error('SYNC', 'node-map.json is corrupt — all node mappings lost, full re-sync required', {
+        error: err.message,
+        filePath
+      });
+    }
     return new Map();
   }
   const map = new Map();
@@ -46,10 +52,21 @@ async function load(metaDir) {
   return map;
 }
 
-async function save(metaDir, map) {
+async function save(metaDir, map, logger = null) {
   await fs.mkdir(metaDir, { recursive: true });
   const obj = Object.fromEntries(map);
-  await atomicWrite(path.join(metaDir, MAP_FILE), JSON.stringify(obj, null, 2));
+  try {
+    await atomicWrite(path.join(metaDir, MAP_FILE), JSON.stringify(obj, null, 2));
+  } catch (err) {
+    console.error(`[SYNC] Failed to save ${MAP_FILE}:`, err);
+    if (logger) {
+      logger.error('SYNC', 'Failed to persist node-map to disk — sync state may be lost on restart', {
+        error: err.message,
+        metaDir
+      });
+    }
+    throw err;
+  }
 }
 
 async function loadState(metaDir) {

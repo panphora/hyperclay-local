@@ -140,7 +140,9 @@ module.exports = {
               file: item.filename,
               attempt: retryResult.attempt,
               maxAttempts: retryResult.maxAttempts,
-              nextRetryIn: retryResult.nextRetryIn
+              nextRetryIn: retryResult.nextRetryIn,
+              error: error.message,
+              statusCode: error.statusCode
             });
           }
           this.emit('sync-retry', {

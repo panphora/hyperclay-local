@@ -60,7 +60,7 @@ function isFutureFile(mtime, clockOffset) {
 /**
  * Calibrate local clock with server
  */
-async function calibrateClock(serverUrl, apiKey) {
+async function calibrateClock(serverUrl, apiKey, logger = null) {
   try {
     const response = await fetch(`${serverUrl}/sync/status`, {
       headers: {
@@ -82,6 +82,12 @@ async function calibrateClock(serverUrl, apiKey) {
     return clockOffset;
   } catch (error) {
     console.error('[SYNC] Failed to calibrate clock:', error);
+    if (logger) {
+      logger.warn('SYNC', 'Clock calibration failed - using zero offset, timestamps may be unreliable', {
+        error: error.message,
+        statusCode: error.statusCode
+      });
+    }
     return 0; // Assume no offset if calibration fails
   }
 }

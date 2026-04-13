@@ -20,7 +20,7 @@ function shouldSkipEntry(name) {
 /**
  * Get all local HTML files recursively with relative paths
  */
-async function getLocalFiles(syncFolder) {
+async function getLocalFiles(syncFolder, logger = null) {
   const files = new Map();
 
   async function scanDirectory(dirPath, relativePath = '') {
@@ -51,6 +51,13 @@ async function getLocalFiles(syncFolder) {
       }
     } catch (error) {
       console.error(`Error scanning directory ${dirPath}:`, error);
+      if (logger) {
+        logger.warn('SYNC', 'Directory scan failed — some local files may be missed', {
+          dir: dirPath,
+          error: error.message,
+          code: error.code
+        });
+      }
     }
   }
 
@@ -159,7 +166,7 @@ async function readDirectory(dirPath) {
  * Scans <syncFolder>/uploads/ and returns all files
  * @returns {Map<string, {path: string, relativePath: string, mtime: Date, size: number}>}
  */
-async function getLocalUploads(syncFolder) {
+async function getLocalUploads(syncFolder, logger = null) {
   const files = new Map();
 
   async function scanDirectory(dirPath, relativePath = '') {
@@ -190,6 +197,13 @@ async function getLocalUploads(syncFolder) {
       }
     } catch (error) {
       console.error(`Error scanning uploads directory ${dirPath}:`, error);
+      if (logger) {
+        logger.warn('SYNC', 'Uploads directory scan failed — some local uploads may be missed', {
+          dir: dirPath,
+          error: error.message,
+          code: error.code
+        });
+      }
     }
   }
 
@@ -233,7 +247,7 @@ function calculateBufferChecksum(buffer) {
  * Used by detectLocalFolderChanges to find where folders moved while offline.
  * @returns {Map<string, { fullPath: string }>}
  */
-async function getLocalFolders(syncFolder) {
+async function getLocalFolders(syncFolder, logger = null) {
   const folders = new Map();
 
   async function scanDirectory(dirPath, relativePath = '') {
@@ -251,6 +265,13 @@ async function getLocalFolders(syncFolder) {
       }
     } catch (error) {
       console.error(`Error scanning directories ${dirPath}:`, error);
+      if (logger) {
+        logger.warn('SYNC', 'Folders directory scan failed — some local folders may be missed', {
+          dir: dirPath,
+          error: error.message,
+          code: error.code
+        });
+      }
     }
   }
 

@@ -169,13 +169,24 @@ class SyncEngine extends EventEmitter {
       console.log(`[SYNC] Ensuring sync folder exists: ${syncFolder}`);
       await ensureDirectory(syncFolder);
 
-      // Calibrate clock with server
+      // Calibrate clock with server (also validates API key and connectivity)
       console.log(`[SYNC] Calibrating clock with server...`);
-      this.clockOffset = await calibrateClock(this.serverUrl, this.apiKey);
+      if (this.logger) {
+        this.logger.info('SYNC', 'Testing connectivity and authenticating', { serverUrl: this.serverUrl });
+      }
+      const calibrateStart = Date.now();
+      this.clockOffset = await calibrateClock(this.serverUrl, this.apiKey, this.logger);
       console.log(`[SYNC] Clock offset: ${this.clockOffset}ms`);
+      if (this.logger) {
+        this.logger.info('SYNC', 'Authentication successful, clock calibrated', {
+          clockOffsetMs: this.clockOffset,
+          roundtripMs: Date.now() - calibrateStart
+        });
+      }
 
       // Load node map (nodeId ↔ local path) and sync state
       // (repo was already attached via the `this.metaDir = metaDir` setter above)
+      this.repo.attachLogger(this.logger);
       await this.repo.load();
       const syncState = await this.repo.loadState();
       this.lastSyncedAt = syncState.lastSyncedAt || null;
@@ -204,8 +215,16 @@ class SyncEngine extends EventEmitter {
 
       // Periodic cleanup of stale outbox entries + folder rename suppression entries
       this.pendingActionsCleanupTimer = setInterval(() => {
-        this.outbox.sweep();
-        this.cascade.sweep();
+        const expiredOutbox = this.outbox.sweep();
+        if (expiredOutbox.length > 0 && this.logger) {
+          for (const { operation, ageMs } of expiredOutbox) {
+            this.logger.warn('OUTBOX', 'In-flight operation expired without SSE echo', { operation, ageMs });
+          }
+        }
+        const expiredCascade = this.cascade.sweep();
+        if (expiredCascade.length > 0 && this.logger) {
+          this.logger.warn('CASCADE', 'Suppression entries expired before events arrived', { paths: expiredCascade });
+        }
       }, 10000);
 
       this.isRunning = true;
@@ -249,6 +268,16 @@ class SyncEngine extends EventEmitter {
       }
     }
 
+    const trackedFolders = [];
+    for (const [, entry] of this.repo) {
+      if (entry.type === 'folder') trackedFolders.push(entry.path);
+    }
+    if (this.logger) {
+      this.logger.error('SYNC', 'Parent folder not found in nodeMap', {
+        requestedPath: folderPath,
+        trackedFolders
+      });
+    }
     throw new Error(`Target folder not tracked in nodeMap: ${folderPath}`);
   }
 

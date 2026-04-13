@@ -59,7 +59,7 @@ module.exports = {
       this.serverFilesCache = serverFiles;
       this.serverFilesCacheTime = Date.now();
 
-      const localFiles = await getLocalFiles(this.syncFolder);
+      const localFiles = await getLocalFiles(this.syncFolder, this.logger);
 
       await this.repo.apply(async (map) => {
         for (const serverFile of serverFiles) {
@@ -227,18 +227,39 @@ module.exports = {
       if (isFutureFile(localStat.mtime, this.clockOffset)) {
         console.log(`[SYNC] PRESERVE ${relativePath} - future-dated file`);
         this.stats.filesProtected++;
+        if (this.logger) {
+          this.logger.warn('SYNC', 'Site skipped - future-dated local file', {
+            file: relativePath,
+            localMtime: localStat.mtime,
+            clockOffset: this.clockOffset
+          });
+        }
         return;
       }
 
       if (isLocalNewer(localStat.mtime, serverFile.modifiedAt, this.clockOffset)) {
         console.log(`[SYNC] PRESERVE ${relativePath} - local is newer`);
         this.stats.filesProtected++;
+        if (this.logger) {
+          this.logger.info('SYNC', 'Site skipped - local is newer than server', {
+            file: relativePath,
+            localMtime: localStat.mtime,
+            serverModifiedAt: serverFile.modifiedAt,
+            clockOffset: this.clockOffset
+          });
+        }
         return;
       }
 
       if (localChecksum === serverFile.checksum) {
         console.log(`[SYNC] SKIP ${relativePath} - checksums match`);
         this.stats.filesDownloadedSkipped++;
+        if (this.logger) {
+          this.logger.info('SYNC', 'Site skipped - checksums match', {
+            file: relativePath,
+            checksum: localChecksum
+          });
+        }
         return;
       }
 
@@ -287,6 +308,7 @@ module.exports = {
 
         if (nameExistsInSameFolder) {
           console.log(`[SYNC] SKIP ${relativePath} - same name already exists in folder on server`);
+          this.stats.filesUploadedSkipped++;
           if (this.logger) {
             this.logger.warn('SYNC', 'Skipped upload - name exists in same folder on server', { file: relativePath });
           }
@@ -430,6 +452,13 @@ module.exports = {
       // Check for delete conflict: if server modified the file after our last sync, re-download instead
       if (serverNode.modifiedAt && new Date(serverNode.modifiedAt).getTime() > this.lastSyncedAt) {
         console.log(`[SYNC] Delete conflict: ${entry.path} deleted locally but modified on server — re-downloading`);
+        if (this.logger) {
+          this.logger.warn('SYNC', 'Delete conflict - local delete overridden by server change', {
+            file: entry.path,
+            serverModifiedAt: serverNode.modifiedAt,
+            lastSyncedAt: new Date(this.lastSyncedAt).toISOString()
+          });
+        }
         try {
           await this.downloadFile(serverNode.id);
         } catch (err) {
@@ -547,8 +576,23 @@ module.exports = {
                 map.set(nid, newEntry);
                 localUploadOnlySet.delete(localFile);
                 handled = true;
+                if (this.logger) {
+                  this.logger.info('SYNC', `Upload ${strategy.name} synced to server`, {
+                    from: entry.path,
+                    to: localFile,
+                    nodeId: nid
+                  });
+                }
               } catch (err) {
                 console.error(`[SYNC] Failed to sync local upload ${strategy.name} for nodeId ${nid}:`, err.message);
+                if (this.logger) {
+                  this.logger.error('SYNC', `Failed to sync offline upload ${strategy.name}`, {
+                    file: entry.path,
+                    target: localFile,
+                    nodeId: nid,
+                    error: err.message
+                  });
+                }
               }
               break;
             }
@@ -564,8 +608,21 @@ module.exports = {
           await deleteNode(this.serverUrl, this.apiKey, parseInt(nid));
           this.invalidateServerUploadsCache();
           map.delete(nid);
+          if (this.logger) {
+            this.logger.info('SYNC', 'Upload delete synced to server', {
+              file: entry.path,
+              nodeId: nid
+            });
+          }
         } catch (err) {
           console.error(`[SYNC] Failed to sync local upload delete for nodeId ${nid}:`, err.message);
+          if (this.logger) {
+            this.logger.error('SYNC', 'Failed to sync offline upload delete', {
+              file: entry.path,
+              nodeId: nid,
+              error: err.message
+            });
+          }
         }
       }
     });
@@ -580,7 +637,7 @@ module.exports = {
 
     try {
       const serverUploads = await this.fetchAndCacheServerUploads(true);
-      const localUploads = await getLocalUploads(this.syncFolder);
+      const localUploads = await getLocalUploads(this.syncFolder, this.logger);
 
       await this.repo.apply(async (map) => {
         // Download server uploads not present locally
@@ -607,6 +664,13 @@ module.exports = {
               if (isFutureFile(localInfo.mtime, this.clockOffset)) {
                 console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - future-dated`);
                 this.stats.uploadsProtected++;
+                if (this.logger) {
+                  this.logger.warn('SYNC', 'Upload skipped - future-dated local file', {
+                    file: serverUpload.path,
+                    localMtime: localInfo.mtime,
+                    clockOffset: this.clockOffset
+                  });
+                }
                 if (serverUpload.nodeId) {
                   map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: null, inode: null });
                 }
@@ -617,6 +681,14 @@ module.exports = {
               if (isLocalNewer(localInfo.mtime, serverUpload.modifiedAt, this.clockOffset)) {
                 console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - local is newer`);
                 this.stats.uploadsProtected++;
+                if (this.logger) {
+                  this.logger.info('SYNC', 'Upload skipped - local is newer than server', {
+                    file: serverUpload.path,
+                    localMtime: localInfo.mtime,
+                    serverModifiedAt: serverUpload.modifiedAt,
+                    clockOffset: this.clockOffset
+                  });
+                }
                 if (serverUpload.nodeId) {
                   map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: null, inode: null });
                 }
@@ -630,6 +702,12 @@ module.exports = {
               if (localChecksum === serverUpload.checksum) {
                 console.log(`[SYNC] SKIP upload ${serverUpload.path} - checksums match`);
                 this.stats.uploadsSkipped++;
+                if (this.logger) {
+                  this.logger.info('SYNC', 'Upload skipped - checksums match', {
+                    file: serverUpload.path,
+                    checksum: localChecksum
+                  });
+                }
                 if (serverUpload.nodeId) {
                   map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: localChecksum, inode: null });
                 }
@@ -717,7 +795,7 @@ module.exports = {
     // Step 2: Detect structural changes (rename/move/delete) that happened while offline.
     // Only runs when we have a baseline to compare against (not first-ever sync).
     if (this.lastSyncedAt) {
-      const localFolders = await getLocalFolders(this.syncFolder);
+      const localFolders = await getLocalFolders(this.syncFolder, this.logger);
       await this.detectLocalFolderChanges(allServerNodes, serverNodeIds, localFolders);
     }
 
@@ -801,8 +879,24 @@ module.exports = {
 
             localFolderOnlySet.delete(localFolder);
             handled = true;
+            if (this.logger) {
+              this.logger.info('SYNC', `Folder ${shape} synced to server`, {
+                from: entry.path,
+                to: localFolder,
+                nodeId: nid,
+                descendantsUpdated: descendants.length
+              });
+            }
           } catch (err) {
             console.error(`[SYNC] Failed to sync local folder ${shape} for nodeId ${nid}:`, err.message);
+            if (this.logger) {
+              this.logger.error('SYNC', `Failed to sync offline folder ${shape}`, {
+                from: entry.path,
+                to: localFolder,
+                nodeId: nid,
+                error: err.message
+              });
+            }
           }
           break;
         }
@@ -822,8 +916,22 @@ module.exports = {
             map.delete(descId);
           }
           map.delete(nid);
+          if (this.logger) {
+            this.logger.info('SYNC', 'Folder delete synced to server', {
+              folder: entry.path,
+              nodeId: nid,
+              descendantsDeleted: descendants.length
+            });
+          }
         } catch (err) {
           console.error(`[SYNC] Failed to sync local folder delete for nodeId ${nid}:`, err.message);
+          if (this.logger) {
+            this.logger.error('SYNC', 'Failed to sync offline folder delete', {
+              folder: entry.path,
+              nodeId: nid,
+              error: err.message
+            });
+          }
         }
       }
     });

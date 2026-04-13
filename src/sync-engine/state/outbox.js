@@ -43,9 +43,14 @@ class Outbox {
    */
   sweep() {
     const cutoff = Date.now() - this._ttlMs;
+    const expired = [];
     for (const [key, ts] of this._inFlight) {
-      if (ts < cutoff) this._inFlight.delete(key);
+      if (ts < cutoff) {
+        expired.push({ operation: key, ageMs: Date.now() - ts });
+        this._inFlight.delete(key);
+      }
     }
+    return expired;
   }
 
   clear() {

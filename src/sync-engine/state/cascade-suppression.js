@@ -53,9 +53,14 @@ class CascadeSuppression {
    */
   sweep() {
     const now = Date.now();
+    const expired = [];
     for (const [p, expiresAt] of this._paths) {
-      if (expiresAt < now) this._paths.delete(p);
+      if (expiresAt < now) {
+        expired.push(p);
+        this._paths.delete(p);
+      }
     }
+    return expired;
   }
 
   clear() {

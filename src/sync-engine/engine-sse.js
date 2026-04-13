@@ -520,21 +520,33 @@ module.exports = {
       if (!this.isRunning) return;
       this.lastSseActivity = Date.now();
 
+      let parsedType = 'unknown';
       try {
         const data = JSON.parse(event.data);
-        const type = data.type || 'live-sync';
-        const handler = sseDispatch[type];
+        parsedType = data.type || 'live-sync';
+        const handler = sseDispatch[parsedType];
         if (handler) await handler(data);
       } catch (error) {
         console.error('[SYNC] SSE: Error processing message:', error.message);
         if (this.logger) {
-          this.logger.error('SSE', 'Error processing stream message', { error });
+          this.logger.error('SSE', 'Error processing stream message', {
+            error,
+            messageType: parsedType,
+            rawData: event.data ? event.data.substring(0, 200) : null
+          });
         }
       }
     };
 
     this.sseConnection.onerror = (error) => {
       console.error('[SYNC] SSE stream error:', error.message || 'Connection error');
+      if (this.logger) {
+        this.logger.error('SSE', 'Stream error', {
+          error: error.message || 'Connection error',
+          willReconnect: this.isRunning && !this.sseReconnectTimer,
+          reconnectDelayMs: 5000
+        });
+      }
 
       // Only attempt reconnect if we're still running
       if (this.isRunning && !this.sseReconnectTimer) {

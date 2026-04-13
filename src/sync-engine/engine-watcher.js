@@ -179,6 +179,13 @@ module.exports = {
         await this.repo.apply(async (map) => {
           if (type === 'folder') {
             const descendants = this.repo.walkDescendants(normalizedPath);
+            if (this.logger) {
+              this.logger.info('WATCHER', 'Folder deleted - removing descendants from nodeMap', {
+                folder: normalizedPath,
+                nodeId: foundNodeId,
+                descendantsRemoved: descendants.length
+              });
+            }
             for (const { nodeId: descId } of descendants) {
               map.delete(descId);
             }
@@ -187,6 +194,13 @@ module.exports = {
         });
       } catch (err) {
         console.error(`[SYNC] Watcher: Failed to sync ${type} delete for ${normalizedPath}:`, err.message);
+        if (this.logger) {
+          this.logger.error('WATCHER', `Failed to sync ${type} delete`, {
+            path: normalizedPath,
+            nodeId: foundNodeId,
+            error: err.message
+          });
+        }
       }
     }, UNLINK_GRACE_PERIOD);
 
@@ -359,6 +373,17 @@ module.exports = {
     console.log(`[SYNC] Watcher: Folder identity for ${oldPath} → ${newPath}: ${isSameFolder ? 'CONFIRMED' : 'REJECTED'} (${reason})`);
 
     if (!isSameFolder) {
+      if (this.logger) {
+        this.logger.error('WATCHER', 'Folder identity rejected - deleting server copy and all descendants', {
+          oldPath,
+          newPath,
+          reason,
+          oldInode: pending.entry.inode,
+          newInode,
+          descendantsToDelete: oldDescendants.length,
+          descendantPaths: oldDescendants.map(d => d.entry.path)
+        });
+      }
       try {
         this.outbox.markInFlight('delete', pending.nodeId);
         await deleteNode(this.serverUrl, this.apiKey, parseInt(pending.nodeId));

@@ -173,6 +173,13 @@ module.exports = {
       } catch (error) {
         // If checksum check fails, continue with upload
         console.log(`[SYNC] Could not verify server checksum, proceeding with upload: ${error.message}`);
+        if (this.logger) {
+          this.logger.warn('UPLOAD', 'Server checksum check failed - uploading anyway', {
+            file: filename,
+            error: error.message,
+            statusCode: error.statusCode
+          });
+        }
       }
 
       // Try to get cached snapshot for platform live sync.
@@ -379,6 +386,13 @@ module.exports = {
         }
       } catch (error) {
         console.log(`[SYNC] Could not verify server checksum, proceeding: ${error.message}`);
+        if (this.logger) {
+          this.logger.warn('UPLOAD', 'Server checksum check failed - uploading anyway', {
+            file: relativePath,
+            error: error.message,
+            statusCode: error.statusCode
+          });
+        }
       }
 
       // Check repo for an existing nodeId for this upload path

@@ -25,6 +25,7 @@ class NodeRepository {
   constructor() {
     this._metaDir = null;
     this._map = new Map();
+    this._logger = null;
   }
 
   /**
@@ -36,11 +37,18 @@ class NodeRepository {
   }
 
   /**
+   * Attach a logger so that persistence errors surface in the sync log.
+   */
+  attachLogger(logger) {
+    this._logger = logger;
+  }
+
+  /**
    * Load the persisted node map from disk into memory. Replaces the current
    * in-memory map entirely.
    */
   async load() {
-    this._map = await nodeMapPersistence.load(this._metaDir);
+    this._map = await nodeMapPersistence.load(this._metaDir, this._logger);
   }
 
   /**
@@ -147,7 +155,7 @@ class NodeRepository {
   }
 
   async _save() {
-    await nodeMapPersistence.save(this._metaDir, this._map);
+    await nodeMapPersistence.save(this._metaDir, this._map, this._logger);
   }
 }
 
