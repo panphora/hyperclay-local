@@ -55,14 +55,6 @@ class SyncEngine extends EventEmitter {
     // pre-mark the chokidar paths that will fire as a result so they get
     // silently consumed (no duplicate API calls, no nodeMap churn, no echo loops).
     this.cascade = new CascadeSuppression();
-    this.folderIdentityWaiters = new Map();
-    // After a folder unlink+addDir pair is correlated, how long to wait for
-    // the first descendant to reappear to confirm folder identity. If no
-    // descendant appears within this window, the correlator falls back to
-    // treating the operation as delete + new folder — which cascades a
-    // descendant-wide delete to the server. Bumped from 300 to 3000ms to
-    // prevent that catastrophic misclassification on slow filesystems.
-    this.FOLDER_IDENTITY_WAIT_MS = 3000;
     this.lastSyncedAt = null; // Timestamp of last successful sync
     this.serverNodesCache = null; // Cache for unified node listing
     this.serverNodesCacheTime = null; // Timestamp of last successful fetchAndCacheServerNodes
@@ -323,12 +315,6 @@ class SyncEngine extends EventEmitter {
     this.echoWindow.clear();
 
     this.cascade.clear();
-
-    for (const [, waiter] of this.folderIdentityWaiters) {
-      clearTimeout(waiter.timerId);
-      waiter.resolve(null);
-    }
-    this.folderIdentityWaiters.clear();
 
     // Clear caches
     this.invalidateServerNodesCache();

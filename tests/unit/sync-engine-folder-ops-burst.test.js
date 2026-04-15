@@ -61,10 +61,10 @@ let syncEngine;
 
 // Matches the constant inside engine-watcher.js `_registerPendingUnlink`.
 const UNLINK_GRACE_PERIOD = 3000;
-// Matches `syncEngine.FOLDER_IDENTITY_WAIT_MS`.
-const FOLDER_IDENTITY_WAIT = 3000;
-// Budget for settling all microtasks + timers after a burst.
-const SETTLE_BUDGET = UNLINK_GRACE_PERIOD + FOLDER_IDENTITY_WAIT + 500;
+// Budget for settling all microtasks + timers after a burst. The old
+// event-timed folder-identity wait is gone, but keep a buffer for the
+// content scan + API roundtrip + any chained microtasks.
+const SETTLE_BUDGET = UNLINK_GRACE_PERIOD + 3500;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -79,7 +79,6 @@ beforeEach(() => {
   syncEngine.pendingUnlinks = new Map();
   syncEngine.outbox = new Outbox();
   syncEngine.cascade = new CascadeSuppression();
-  syncEngine.folderIdentityWaiters = new Map();
   syncEngine.serverUrl = 'http://test';
   syncEngine.apiKey = 'test-key';
   syncEngine.syncFolder = '/tmp/test-sync';
@@ -122,11 +121,6 @@ beforeEach(() => {
 afterEach(() => {
   for (const { timerId } of syncEngine.pendingUnlinks.values()) clearTimeout(timerId);
   syncEngine.pendingUnlinks.clear();
-  for (const waiter of syncEngine.folderIdentityWaiters.values()) {
-    clearTimeout(waiter.timerId);
-    waiter.resolve(null);
-  }
-  syncEngine.folderIdentityWaiters.clear();
   jest.useRealTimers();
 });
 

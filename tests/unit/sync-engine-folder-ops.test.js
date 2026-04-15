@@ -57,7 +57,6 @@ beforeEach(() => {
   syncEngine.outbox = new Outbox();
   syncEngine.pendingUnlinks = new Map();
   syncEngine.cascade = new CascadeSuppression();
-  syncEngine.folderIdentityWaiters = new Map();
   syncEngine.serverUrl = 'http://test';
   syncEngine.apiKey = 'test-key';
   syncEngine.syncFolder = '/tmp/test-sync';

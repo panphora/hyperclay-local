@@ -2,9 +2,9 @@
  * Local filesystem watcher and reaction to local changes.
  *
  * Covers the chokidar setup, the raw event shims, rename/move correlation
- * via pending-unlink tracking, folder cascade suppression, folder identity
- * waits, and per-type handlers that forward into the queue or folder create.
- * Methods are installed onto SyncEngine.prototype.
+ * via pending-unlink tracking, folder cascade suppression, content-based
+ * folder identity resolution, and per-type handlers that forward into the
+ * queue or folder create. Methods are installed onto SyncEngine.prototype.
  */
 
 const path = require('upath');
@@ -20,6 +20,7 @@ const { calculateChecksum } = require('./utils');
 const { SYNC_CONFIG } = require('./constants');
 const { classifyPath, ancestorPaths } = require('./path-helpers');
 const nodeMap = require('./node-map');
+const fs = require('fs/promises');
 
 module.exports = {
   startUnifiedWatcher() {
@@ -72,8 +73,6 @@ module.exports = {
       console.log(`[SYNC] Watcher: Suppressed cascade event for ${normalizedPath}`);
       return;
     }
-
-    this._maybeResolveFolderIdentityWaiter(normalizedPath);
 
     const type = classifyPath(normalizedPath, 'add');
 
@@ -200,6 +199,22 @@ module.exports = {
       }
     }
 
+    // Ledger snapshot for folders. Captures the repo view at unlink time so a
+    // later addDir correlation can verify identity by comparing on-disk content
+    // against this ledger instead of observing chokidar events.
+    let ledger = null;
+    if (type === 'folder') {
+      const descendants = this.repo.walkDescendants(normalizedPath);
+      ledger = descendants.map(({ nodeId, entry }) => ({
+        nodeId,
+        type: entry.type,
+        path: entry.path,
+        relPath: entry.path.substring(normalizedPath.length + 1),
+        basename: path.basename(entry.path),
+        checksum: entry.checksum || null
+      }));
+    }
+
     const timerId = setTimeout(async () => {
       this.pendingUnlinks.delete(normalizedPath);
       console.log(`[SYNC] Watcher: Local ${type} delete detected: ${normalizedPath} (nodeId ${foundNodeId})`);
@@ -238,7 +253,8 @@ module.exports = {
       timerId,
       nodeId: foundNodeId,
       type,
-      entry: foundEntry
+      entry: foundEntry,
+      ledger
     });
   },
 
@@ -380,6 +396,7 @@ module.exports = {
       newPath,
       pending,
       oldDescendants,
+      ledger: pending.ledger || [],
       expectedNewPaths,
       oldDescendantPaths,
       newFullPath: path.join(this.syncFolder, newPath),
@@ -438,16 +455,169 @@ module.exports = {
   },
 
   /**
+   * Walk the new folder's subtree and return a Map of relPath → entry.
+   * relPath is relative to newPath. entry fields:
+   *   - type: 'folder' | 'site' | 'upload'
+   *   - basename: last path segment
+   *   - size: byte size (files only)
+   *   - absPath: absolute path on disk (used for content hashing later)
+   *
+   * Returns null if the root cannot be read. Subdirectory errors are logged
+   * and skipped — a partial map is still usable as evidence for the majority
+   * heuristic in _countIdentityMatches.
+   */
+  async _scanFolderTree(absRoot) {
+    const result = new Map();
+
+    const walk = async (absDir, relDir) => {
+      let entries;
+      try {
+        entries = await fs.readdir(absDir, { withFileTypes: true });
+      } catch (err) {
+        if (this.logger) {
+          this.logger.warn('WATCHER', 'scanFolderTree: readdir failed for subdirectory', {
+            dir: absDir,
+            error: err.message
+          });
+        }
+        return;
+      }
+      for (const entry of entries) {
+        const absPath = path.join(absDir, entry.name);
+        const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          result.set(relPath, { type: 'folder', basename: entry.name, absPath });
+          await walk(absPath, relPath);
+        } else if (entry.isFile()) {
+          let stat;
+          try {
+            stat = await fs.stat(absPath);
+          } catch {
+            continue;
+          }
+          const type = classifyPath(relPath, 'add');
+          if (type === 'site' || type === 'upload') {
+            result.set(relPath, { type, basename: entry.name, size: stat.size, absPath });
+          }
+        }
+      }
+    };
+
+    try {
+      let rootEntries;
+      try {
+        rootEntries = await fs.readdir(absRoot, { withFileTypes: true });
+      } catch (err) {
+        if (this.logger) {
+          this.logger.warn('WATCHER', 'scanFolderTree: root walk failed', {
+            root: absRoot,
+            error: err.message
+          });
+        }
+        return null;
+      }
+      for (const entry of rootEntries) {
+        const absPath = path.join(absRoot, entry.name);
+        const relPath = entry.name;
+        if (entry.isDirectory()) {
+          result.set(relPath, { type: 'folder', basename: entry.name, absPath });
+          await walk(absPath, relPath);
+        } else if (entry.isFile()) {
+          let stat;
+          try {
+            stat = await fs.stat(absPath);
+          } catch {
+            continue;
+          }
+          const type = classifyPath(relPath, 'add');
+          if (type === 'site' || type === 'upload') {
+            result.set(relPath, { type, basename: entry.name, size: stat.size, absPath });
+          }
+        }
+      }
+    } catch (err) {
+      if (this.logger) {
+        this.logger.warn('WATCHER', 'scanFolderTree: root walk failed', {
+          root: absRoot,
+          error: err.message
+        });
+      }
+      return null;
+    }
+    return result;
+  },
+
+  /**
+   * Compare the ledger (the pre-unlink snapshot) against foundEntries (the
+   * current on-disk state at newPath). Returns { strong, weak } counts.
+   *
+   * strong = ledger entries whose content hash matches an on-disk file at the
+   *   expected relative path. A single strong match is treated as proof of
+   *   identity — content hash collisions are astronomically unlikely.
+   *
+   * weak = ledger entries whose relPath, basename, and type match an on-disk
+   *   entry but whose content was not hashed (file too big, too small to
+   *   bother, or read failed). Weak matches are used for majority-match
+   *   confirmation.
+   *
+   * HASH_SIZE_LIMIT caps the per-file work so a single 2GB upload does not
+   * make identity resolution block for minutes. Files above the cap count
+   * as weak matches.
+   */
+  async _countIdentityMatches(ledger, foundEntries) {
+    const HASH_SIZE_LIMIT = 2_000_000; // 2 MB per file
+    let strong = 0;
+    let weak = 0;
+
+    for (const ledgerEntry of ledger) {
+      const found = foundEntries.get(ledgerEntry.relPath);
+      if (!found) continue;
+      if (found.type !== ledgerEntry.type) continue;
+
+      const canHash =
+        ledgerEntry.checksum &&
+        ledgerEntry.type !== 'folder' &&
+        found.size !== undefined &&
+        found.size <= HASH_SIZE_LIMIT;
+
+      if (canHash) {
+        try {
+          const content = ledgerEntry.type === 'site'
+            ? await readFile(found.absPath)
+            : await readFileBuffer(found.absPath);
+          const h = ledgerEntry.type === 'site'
+            ? await calculateChecksum(content)
+            : calculateBufferChecksum(content);
+          if (h === ledgerEntry.checksum) {
+            strong++;
+            continue;
+          }
+        } catch {
+          // fall through to weak match
+        }
+      }
+
+      weak++;
+    }
+
+    return { strong, weak };
+  },
+
+  /**
    * Decide whether the `addDir` at newPath really is the same folder that was
    * just unlinked at oldPath (as opposed to a user happening to create a new
    * folder with the same target name right after deleting the original).
-   * Three-way check, in order of confidence:
+   * Content-based check, in order of confidence:
    *   1. inode-match — strongest signal; same filesystem object.
    *   2. empty-folder — nothing to misattribute, treat as identity.
-   *   3. descendant-name-match — wait briefly for the first descendant `add`
-   *      at the new path and check its basename against the known set.
+   *   3. content-hash-match — any ledger entry whose hash matches an on-disk
+   *      file at the expected relative path is treated as proof.
+   *   4. basename-majority-match — at least half the ledger's entries match
+   *      by relPath+basename+type on disk.
    */
   async _decideFolderIdentity(plan) {
+    // 1. Inode match — strongest signal. Keep as the fast path so we don't
+    //    touch the filesystem at all on POSIX renames that preserve inodes.
     const newInode = await nodeMap.getInode(plan.newFullPath);
     const oldInode = plan.pending.entry.inode;
 
@@ -455,61 +625,143 @@ module.exports = {
       return { confirmed: true, reason: 'inode-match', newInode };
     }
 
-    const knownDescendantBasenames = new Set(
-      plan.oldDescendants.map(({ entry }) => path.basename(entry.path))
-    );
-
-    if (knownDescendantBasenames.size === 0) {
+    // 2. Empty ledger — nothing to misattribute, treat as identity confirmed.
+    //    An empty folder rename has no descendants to get wrong.
+    if (plan.ledger.length === 0) {
       return { confirmed: true, reason: 'empty-folder', newInode };
     }
 
-    try {
-      const firstAddBasename = await this._waitForFirstDescendantAdd(
-        plan.newPath,
-        this.FOLDER_IDENTITY_WAIT_MS
-      );
-      if (firstAddBasename && knownDescendantBasenames.has(firstAddBasename)) {
-        return { confirmed: true, reason: 'descendant-name-match', newInode };
-      }
-      return {
-        confirmed: false,
-        reason: firstAddBasename ? 'descendant-mismatch' : 'no-descendant-in-window',
-        newInode
-      };
-    } catch (e) {
-      return { confirmed: false, reason: 'identity-wait-error', newInode };
+    // 3. Content-based identity. Walk the new folder's subtree and compare.
+    const foundEntries = await this._scanFolderTree(plan.newFullPath);
+    if (!foundEntries) {
+      return { confirmed: false, reason: 'scan-failed', newInode };
     }
+
+    const matches = await this._countIdentityMatches(plan.ledger, foundEntries);
+
+    // Any hash match is unambiguous identity.
+    if (matches.strong > 0) {
+      return { confirmed: true, reason: 'content-hash-match', newInode, matches };
+    }
+
+    // Majority basename+type match handles the case where content didn't
+    // round-trip (files too big to hash, or the user edited during rename).
+    // The floor(total/2) threshold prevents a single coincidental filename
+    // match from confirming a genuine delete-and-replace.
+    const total = plan.ledger.length;
+    const weakThreshold = Math.max(1, Math.floor(total / 2));
+    if (matches.weak >= weakThreshold) {
+      return { confirmed: true, reason: 'basename-majority-match', newInode, matches };
+    }
+
+    return { confirmed: false, reason: 'content-mismatch', newInode, matches };
   },
 
   /**
-   * Identity failed — treat the oldPath folder as gone and the newPath as a
-   * fresh folder. Delete server copy (which cascades descendants server-side),
-   * prune the repo, then re-enter the normal `addDir` handler for newPath.
+   * Identity failed — the folder at newPath is NOT the same folder that was
+   * unlinked at oldPath. Three things must happen:
+   *   1. Cascade-delete descendants server-side, then the folder, so the
+   *      server converges on "old folder is gone." The server's deleteNode
+   *      rejects folder-with-children with 400, so children must go first.
+   *   2. Prune the repo of old entries so local state matches.
+   *   3. Treat newPath as a fresh folder: queue its creation + recursively
+   *      queue adds for whatever is on disk. Descendant `add` events were
+   *      cascade-suppressed during identity resolution, so without this
+   *      rescan those files would never reach the server.
    */
   async _rejectFolderIdentity(plan, identity) {
     if (this.logger) {
-      this.logger.error('WATCHER', 'Folder identity rejected - deleting server copy and all descendants', {
+      this.logger.error('WATCHER', 'Folder identity rejected - cascading delete and rescanning new path', {
         oldPath: plan.oldPath,
         newPath: plan.newPath,
         reason: identity.reason,
         oldInode: plan.pending.entry.inode,
         newInode: identity.newInode,
         descendantsToDelete: plan.oldDescendants.length,
-        descendantPaths: plan.oldDescendants.map(d => d.entry.path)
+        matches: identity.matches
       });
     }
+
+    // Leaves first so the folder itself is deletable after. The server
+    // rejects folder-delete when children exist; depth-first ordering
+    // ensures each parent is empty by the time we try to delete it.
+    const descendantsDeepestFirst = plan.oldDescendants
+      .slice()
+      .sort((a, b) => b.entry.path.length - a.entry.path.length);
+
+    for (const { nodeId: descId, entry: descEntry } of descendantsDeepestFirst) {
+      try {
+        await this._apiDeleteNode(descId);
+      } catch (e) {
+        if (this.logger) {
+          this.logger.warn('WATCHER', 'Descendant delete failed during folder reject', {
+            nodeId: descId,
+            path: descEntry.path,
+            error: e.message
+          });
+        }
+        // Continue — a partially-cleaned server is still better than nothing,
+        // and initial-sync will reconcile on next client restart.
+      }
+    }
+
     try {
       await this._apiDeleteNode(plan.pending.nodeId);
-      await this.repo.apply(async (map) => {
-        for (const { nodeId: descId } of plan.oldDescendants) {
-          map.delete(descId);
-        }
-        map.delete(plan.pending.nodeId);
-      });
     } catch (err) {
       console.error(`[SYNC] Watcher: Failed to sync folder delete for ${plan.oldPath}:`, err.message);
     }
+
+    // Always clean the repo regardless of server delete success. Leaving
+    // stale entries causes duplicates on next initial-sync.
+    await this.repo.apply(async (map) => {
+      for (const { nodeId: descId } of plan.oldDescendants) {
+        map.delete(descId);
+      }
+      map.delete(plan.pending.nodeId);
+    });
+
     this._handleFolderAdd(plan.newPath);
+    await this._rescanAndQueueFolderContents(plan.newPath);
+  },
+
+  /**
+   * Recursively walk folderRelPath on disk and queue each entry as a fresh
+   * add. Called from _rejectFolderIdentity when identity fails — descendant
+   * events at this path were already swallowed by cascade suppression, so
+   * we must re-emit them through the queue ourselves.
+   *
+   * This differs from _scanFolderTree in intent: _scanFolderTree reads the
+   * tree for identity comparison (no side effects); this method has the
+   * side effect of queueing syncs.
+   */
+  async _rescanAndQueueFolderContents(folderRelPath) {
+    const absPath = path.join(this.syncFolder, folderRelPath);
+    let entries;
+    try {
+      entries = await fs.readdir(absPath, { withFileTypes: true });
+    } catch (err) {
+      if (this.logger) {
+        this.logger.warn('WATCHER', 'Rescan failed for rejected folder identity', {
+          path: folderRelPath,
+          error: err.message
+        });
+      }
+      return;
+    }
+    for (const entry of entries) {
+      const childRelPath = path.join(folderRelPath, entry.name);
+      if (entry.isDirectory()) {
+        this._handleFolderAdd(childRelPath);
+        await this._rescanAndQueueFolderContents(childRelPath);
+      } else if (entry.isFile()) {
+        const type = classifyPath(childRelPath, 'add');
+        if (type === 'site') {
+          this._handleSiteAdd(childRelPath);
+        } else if (type === 'upload') {
+          this._handleUploadAdd(childRelPath);
+        }
+      }
+    }
   },
 
   /**
@@ -552,32 +804,6 @@ module.exports = {
       });
     } catch (err) {
       console.error(`[SYNC] Watcher: Failed to sync folder ${shape} for ${plan.oldPath}:`, err.message);
-    }
-  },
-
-  _waitForFirstDescendantAdd(parentPath, timeoutMs) {
-    return new Promise((resolve) => {
-      const timerId = setTimeout(() => {
-        if (this.folderIdentityWaiters.get(parentPath)?.resolve === resolve) {
-          this.folderIdentityWaiters.delete(parentPath);
-        }
-        resolve(null);
-      }, timeoutMs);
-
-      this.folderIdentityWaiters.set(parentPath, { resolve, timerId });
-    });
-  },
-
-  _maybeResolveFolderIdentityWaiter(normalizedPath) {
-    for (const [parentPath, waiter] of this.folderIdentityWaiters) {
-      const parentPrefix = parentPath + '/';
-      if (normalizedPath.startsWith(parentPrefix)) {
-        const basename = path.basename(normalizedPath);
-        clearTimeout(waiter.timerId);
-        this.folderIdentityWaiters.delete(parentPath);
-        waiter.resolve(basename);
-        break;
-      }
     }
   },
 
