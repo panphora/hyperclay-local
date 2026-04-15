@@ -813,9 +813,8 @@ module.exports = {
     console.log(`[SYNC] Site added: ${normalizedPath}`);
     this.queueSync('add', normalizedPath);
 
-    const fileId = normalizedPath.replace(/\.(html|htmlclay)$/, '');
-    if (!liveSync.wasBrowserSave(fileId)) {
-      liveSync.notify(fileId, {
+    if (!liveSync.wasBrowserSave(normalizedPath)) {
+      liveSync.notify(normalizedPath, {
         msgType: 'info',
         msg: 'New file created',
         action: 'reload'
@@ -824,8 +823,6 @@ module.exports = {
   },
 
   async _handleSiteChange(normalizedPath) {
-    const fileId = normalizedPath.replace(/\.(html|htmlclay)$/, '');
-
     // Walk repo once for both checksum comparison AND nodeId resolution
     let storedChecksum = null;
     let foundNodeId = null;
@@ -857,15 +854,15 @@ module.exports = {
     // Toast suppression: don't notify the browser if this change is the local
     // observation of an SSE-driven save we just applied.
     const recentSseSave = foundNodeId && this.echoWindow.isRecent('site', foundNodeId);
-    if (!liveSync.wasBrowserSave(fileId) && !recentSseSave) {
-      liveSync.notify(fileId, {
+    if (!liveSync.wasBrowserSave(normalizedPath) && !recentSseSave) {
+      liveSync.notify(normalizedPath, {
         msgType: 'warning',
         msg: 'File changed on disk',
         action: 'reload',
         persistent: true
       });
     } else if (recentSseSave) {
-      console.log(`[SYNC] Suppressing toast for ${fileId} (recent SSE node-saved)`);
+      console.log(`[SYNC] Suppressing toast for ${normalizedPath} (recent SSE node-saved)`);
     }
   },
 

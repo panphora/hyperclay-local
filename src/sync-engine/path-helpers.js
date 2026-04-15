@@ -9,10 +9,6 @@ function hasHiddenSegment(filePath) {
   return filePath.split('/').some(segment => segment.startsWith('.'));
 }
 
-function toFileId(relPath) {
-  return path.normalize(relPath).replace(/\.(html|htmlclay)$/i, '');
-}
-
 function classifyPath(relativePath, eventType) {
   if (eventType === 'addDir' || eventType === 'unlinkDir') {
     return 'folder';
@@ -35,7 +31,6 @@ function ancestorPaths(normalizedPath) {
 
 module.exports = {
   hasHiddenSegment,
-  toFileId,
   classifyPath,
   ancestorPaths
 };

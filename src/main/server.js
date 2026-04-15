@@ -4,7 +4,11 @@ const path = require('upath');
 const { Eta } = require('eta');
 const { validateFileName } = require('../sync-engine/validation.js');
 const { createBackup } = require('./utils/backup.js');
-const { compileTailwind, getTailwindCssName } = require('tailwind-hyperclay');
+const { scopeTailwindLink } = require('./utils/tailwind-scoping.js');
+const {
+  compileTailwind,
+  getTailwindCssName
+} = require('tailwind-hyperclay');
 const { liveSync } = require('livesync-hyperclay');
 const errorLogger = require('./error-logger');
 const formatHtml = require('./format-html');
@@ -87,10 +91,13 @@ function resolveResourceFromHref(href) {
 
   pathname = pathname.replace(/^\//, '');
 
+  // Normalize so downstream liveSync keys (marks, broadcasts, subscriptions)
+  // match the watcher's path.normalize(filename) output. Collapses `//`, `./`
+  // and folds backslashes via upath.
   const htmlMatch = pathname.match(/^(.*?\.html(?:clay)?)/);
-  if (htmlMatch) return htmlMatch[1];
+  if (htmlMatch) return path.normalize(htmlMatch[1]);
 
-  return pathname;
+  return path.normalize(pathname);
 }
 
 function startServer(baseDir, devHooks = null) {
@@ -167,7 +174,6 @@ function startServer(baseDir, devHooks = null) {
       if (!file) {
         return res.status(400).send('could not resolve file from page-url');
       }
-      const fileId = file.replace(/\.(html|htmlclay)$/i, '');
 
       // SSE headers
       res.setHeader('Content-Type', 'text/event-stream');
@@ -176,9 +182,9 @@ function startServer(baseDir, devHooks = null) {
       res.setHeader('X-Accel-Buffering', 'no');
       res.flushHeaders();
 
-      // Register client
-      liveSync.subscribe(fileId, res);
-      console.log(`[LiveSync] Client connected: ${fileId}`);
+      // Register client (channel key = full path with extension, e.g. "blog/post.html")
+      liveSync.subscribe(file, res);
+      console.log(`[LiveSync] Client connected: ${file}`);
 
       // Keep-alive ping every 30 seconds
       const keepAlive = setInterval(() => {
@@ -192,8 +198,8 @@ function startServer(baseDir, devHooks = null) {
       // Cleanup on disconnect
       req.on('close', () => {
         clearInterval(keepAlive);
-        liveSync.unsubscribe(fileId, res);
-        console.log(`[LiveSync] Client disconnected: ${fileId}`);
+        liveSync.unsubscribe(file, res);
+        console.log(`[LiveSync] Client disconnected: ${file}`);
       });
 
       // Connection established
@@ -222,11 +228,10 @@ function startServer(baseDir, devHooks = null) {
         // Cache snapshot for platform sync (consumed by uploadFile via getAndClearSnapshot)
         pendingSnapshots.set(file, { html, timestamp: Date.now() });
 
-        // Broadcast to other local browsers (extensionless key matches detectCurrentFile)
-        const fileId = file.replace(/\.(html|htmlclay)$/i, '');
-        liveSync.broadcast(fileId, { html, sender });
+        // Broadcast to other local browsers on the same channel as /live-sync/stream
+        liveSync.broadcast(file, { html, sender });
 
-        console.log(`[LiveSync] Broadcast: ${fileId} (from: ${sender})`);
+        console.log(`[LiveSync] Broadcast: ${file} (from: ${sender})`);
 
         res.json({ success: true });
       } catch (err) {
@@ -292,7 +297,10 @@ function startServer(baseDir, devHooks = null) {
         // Ensure directory exists for subfolder files
         await fs.mkdir(path.dirname(filePath), { recursive: true });
 
-        // Use base name (without extension) for backup directory paths
+        // ANCILLARY DISK CONVENTION: versions dir and backups use baseName without
+        // extension (matches platform's sites-versions/{baseName}/ layout).
+        // Do NOT reuse `backupName` as a liveSync channel key — liveSync keys must
+        // carry the extension (Rule 1).
         const backupName = name.replace(/\.(html|htmlclay)$/, '');
 
         // Check if this is the first save (no versions exist yet)
@@ -317,6 +325,8 @@ function startServer(baseDir, devHooks = null) {
           }
         }
 
+        content = scopeTailwindLink(name, content);
+
         // Format HTML to match platform output (consistent checksums)
         content = formatHtml(content);
 
@@ -326,16 +336,22 @@ function startServer(baseDir, devHooks = null) {
         // Write file (creates if not exists, overwrites if exists)
         await fs.writeFile(filePath, content, 'utf8');
 
-        // Mark as browser save so file watcher doesn't send redundant notification
-        liveSync.markBrowserSave(backupName);
+        // Mark as browser save so file watcher doesn't send redundant notification.
+        // Key is full path with extension so it matches engine-watcher's wasBrowserSave check.
+        liveSync.markBrowserSave(name);
 
-        // Generate Tailwind CSS if site uses it
+        // Generate Tailwind CSS if site uses it. `tailwindName` from
+        // getTailwindCssName includes any path prefix present in the URL
+        // (e.g. "blog/post"), so path.join naturally nests the CSS file. After
+        // the replaceTailwindLink above, the URL is always scoped to the site's
+        // folder, which mirrors the platform's
+        // public-assets/tailwindcss/{username}/{path}/{baseName}.css layout.
         const tailwindName = getTailwindCssName(content);
         if (tailwindName) {
           const css = await compileTailwind(content);
-          const cssDir = path.join(baseDir, 'tailwindcss');
-          await fs.mkdir(cssDir, { recursive: true });
-          await fs.writeFile(path.join(cssDir, `${tailwindName}.css`), css, 'utf8');
+          const cssPath = path.join(baseDir, 'tailwindcss', `${tailwindName}.css`);
+          await fs.mkdir(path.dirname(cssPath), { recursive: true });
+          await fs.writeFile(cssPath, css, 'utf8');
           console.log(`Generated Tailwind CSS: tailwindcss/${tailwindName}.css`);
         }
 
@@ -361,25 +377,36 @@ function startServer(baseDir, devHooks = null) {
       }
     });
 
-    // Tailwind CSS — serve from disk or auto-generate on first request
-    app.get('/tailwindcss/:name.css', async (req, res) => {
+    // Tailwind CSS — serve from disk or auto-generate on first request.
+    // Regex route so the captured name can include slashes (nested paths like
+    // "blog/post"). A traditional /tailwindcss/:name.css route only matches a
+    // single path segment, which silently broke nested sites.
+    app.get(/^\/tailwindcss\/(.+)\.css$/, async (req, res) => {
       res.setHeader('Content-Type', 'text/css');
-      const name = path.basename(req.params.name);
-      const cssPath = path.join(baseDir, 'tailwindcss', `${name}.css`);
+      const name = req.params[0]; // may contain slashes, e.g. "blog/post"
 
-      // Try pre-compiled CSS first
+      if (name.includes('..') || name.startsWith('/') || path.isAbsolute(name)) {
+        return res.status(400).send('');
+      }
+      const cssPath = path.join(baseDir, 'tailwindcss', `${name}.css`);
+      const htmlPath = path.join(baseDir, `${name}.html`);
+      const resolvedBase = path.resolve(baseDir);
+      const resolvedCss = path.resolve(cssPath);
+      const resolvedHtml = path.resolve(htmlPath);
+      if (!resolvedCss.startsWith(resolvedBase + path.sep) ||
+          !resolvedHtml.startsWith(resolvedBase + path.sep)) {
+        return res.status(403).send('');
+      }
+
       try {
         const css = await fs.readFile(cssPath, 'utf8');
         return res.send(css);
       } catch {}
 
-      // Auto-generate: find the HTML file, compile Tailwind, write to disk
       try {
-        const htmlPath = path.join(baseDir, `${name}.html`);
         const html = await fs.readFile(htmlPath, 'utf8');
         const css = await compileTailwind(html);
-        const cssDir = path.join(baseDir, 'tailwindcss');
-        await fs.mkdir(cssDir, { recursive: true });
+        await fs.mkdir(path.dirname(cssPath), { recursive: true });
         await fs.writeFile(cssPath, css, 'utf8');
         console.log(`Auto-generated Tailwind CSS: tailwindcss/${name}.css`);
         return res.send(css);

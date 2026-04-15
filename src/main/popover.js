@@ -166,6 +166,11 @@ function isSticky() {
   return sticky;
 }
 
+function shrinkToDebug() {
+  if (!popoverWindow) return;
+  popoverWindow.setSize(1, 1);
+}
+
 function destroyPopover() {
   if (popoverWindow) {
     popoverWindow.destroy();
@@ -181,5 +186,6 @@ module.exports = {
   setSticky,
   isSticky,
   getPopoverWindow,
+  shrinkToDebug,
   destroyPopover,
 };

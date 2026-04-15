@@ -95,6 +95,7 @@ function getDevHooks() {
       if (!tray) return;
       popover.setSticky(true);
       popover.showPopover(tray.getBounds());
+      popover.shrinkToDebug();
       writeDebugSticky(true);
     },
     hideAndClear: () => {

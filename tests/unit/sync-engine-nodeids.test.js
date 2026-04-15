@@ -311,8 +311,9 @@ describe('handleNodeRenamed', () => {
     expect(syncEngine.repo.get('42').path).toBe('new.html');
   });
 
-  test('uses toFileId for markBrowserSave on sites', async () => {
+  test('suppresses watcher cascade with full old + new paths on sites', async () => {
     syncEngine.repo.seed([['42', entry('blog/my-site.html', 'abc', 111)]]);
+    const cascadeSpy = jest.spyOn(syncEngine.cascade, 'mark');
 
     await syncEngine.handleNodeRenamed({
       nodeId: 42, nodeType: 'site',
@@ -320,8 +321,7 @@ describe('handleNodeRenamed', () => {
       oldPath: 'blog/my-site.html', newPath: 'blog/new-name.html'
     });
 
-    expect(liveSync.markBrowserSave).toHaveBeenCalledWith('blog/my-site');
-    expect(liveSync.markBrowserSave).toHaveBeenCalledWith('blog/new-name');
+    expect(cascadeSpy).toHaveBeenCalledWith(['blog/my-site.html', 'blog/new-name.html']);
   });
 });
 
@@ -369,16 +369,16 @@ describe('handleNodeMoved', () => {
     expect(syncEngine.repo.get('42').path).toBe('blog/my-site.html');
   });
 
-  test('uses toFileId for markBrowserSave on sites', async () => {
+  test('suppresses watcher cascade with full old + new paths on sites', async () => {
     syncEngine.repo.seed([['42', entry('blog/my-site.html', 'abc', 111)]]);
+    const cascadeSpy = jest.spyOn(syncEngine.cascade, 'mark');
 
     await syncEngine.handleNodeMoved({
       nodeId: 42, nodeType: 'site',
       oldPath: 'blog/my-site.html', newPath: 'projects/my-site.html'
     });
 
-    expect(liveSync.markBrowserSave).toHaveBeenCalledWith('blog/my-site');
-    expect(liveSync.markBrowserSave).toHaveBeenCalledWith('projects/my-site');
+    expect(cascadeSpy).toHaveBeenCalledWith(['blog/my-site.html', 'projects/my-site.html']);
   });
 });
 
@@ -428,16 +428,17 @@ describe('handleNodeDeleted', () => {
     expect(syncEngine.repo.has('42')).toBe(false);
   });
 
-  test('uses toFileId for markBrowserSave on sites', async () => {
+  test('suppresses watcher cascade with full path on sites', async () => {
     syncEngine.repo.seed([['42', entry('blog/my-site.html')]]);
     fileOps.fileExists.mockResolvedValue(true);
+    const cascadeSpy = jest.spyOn(syncEngine.cascade, 'mark');
 
     await syncEngine.handleNodeDeleted({
       nodeId: 42, nodeType: 'site',
       name: 'my-site.html', path: 'blog/my-site.html'
     });
 
-    expect(liveSync.markBrowserSave).toHaveBeenCalledWith('blog/my-site');
+    expect(cascadeSpy).toHaveBeenCalledWith(['blog/my-site.html']);
   });
 });
 

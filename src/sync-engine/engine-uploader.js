@@ -56,13 +56,12 @@ module.exports = {
       this.resolveContainedPath(relativePath);
       const localPath = path.join(this.syncFolder, relativePath);
 
-      // Create backup if file exists locally
-      // Remove .html extension for siteName (matches server.js behavior)
+      // ANCILLARY: siteName without extension → maps to sites-versions/{siteName}/.
       const siteName = relativePath.replace(/\.(html|htmlclay)$/i, '');
       await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
 
-      // Mark as expected write so file watcher doesn't send "File changed on disk" notification
-      liveSync.markBrowserSave(siteName);
+      // liveSync channel key = full path with extension.
+      liveSync.markBrowserSave(relativePath);
 
       // Write file with server modification time (ensures directories exist)
       await writeFile(localPath, content, modifiedAt);

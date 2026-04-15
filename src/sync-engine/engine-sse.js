@@ -27,7 +27,6 @@ const {
 const { getNodeContent } = require('./api-client');
 const { calculateChecksum, isLocalNewer } = require('./utils');
 const { SYNC_CONFIG } = require('./constants');
-const { toFileId } = require('./path-helpers');
 const nodeMap = require('./node-map');
 
 module.exports = {
@@ -99,13 +98,14 @@ module.exports = {
       // File doesn't exist locally yet — fall through to write
     }
 
+    // ANCILLARY: siteName without extension → maps to sites-versions/{siteName}/.
     const siteName = localFilename.replace(/\.(html|htmlclay)$/i, '');
     await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
 
     await ensureDirectory(path.dirname(localPath));
 
-    const fileId = localFilename.replace(/\.(html|htmlclay)$/, '');
-    liveSync.markBrowserSave(fileId);
+    // liveSync channel key = full path with extension (Rule 1 / Rule 2).
+    liveSync.markBrowserSave(localFilename);
 
     await writeFile(localPath, data.content, new Date(data.modifiedAt));
 
@@ -283,10 +283,9 @@ module.exports = {
 
     await ensureDirectory(path.dirname(trashPath));
 
-    if (nodeType === 'site') {
-      liveSync.markBrowserSave(toFileId(localFilename));
-    }
-
+    // cascade.mark via _applyRemoteFsChange is the sole suppression mechanism
+    // for SSE-driven FS changes — it runs before the watcher's wasBrowserSave
+    // check. No markBrowserSave needed here.
     await this._applyRemoteFsChange([localFilename], () => moveFile(localPath, trashPath));
 
     await this.repo.delete(nodeId);
@@ -368,11 +367,9 @@ module.exports = {
       return;
     }
 
-    if (nodeType === 'site') {
-      liveSync.markBrowserSave(toFileId(currentPath));
-      liveSync.markBrowserSave(toFileId(newPath));
-    }
-
+    // cascade.mark below is the sole suppression mechanism for SSE-driven FS
+    // changes — it runs before the watcher's wasBrowserSave check in every
+    // handler. No markBrowserSave needed.
     this.cascade.mark([currentPath, newPath]);
 
     await ensureDirectory(path.dirname(newLocalPath));

@@ -82,8 +82,8 @@ module.exports = {
 
               const trashPath = path.join(this.syncFolder, '.trash', localRelPath);
               await ensureDirectory(path.dirname(trashPath));
-              const siteName = localRelPath.split('/').pop().replace(/\.(html|htmlclay)$/i, '');
-              liveSync.markBrowserSave(siteName);
+              // Full path + extension — matches wasBrowserSave in engine-watcher.
+              liveSync.markBrowserSave(localRelPath);
               await moveFile(fullPath, trashPath);
               localFiles.delete(localRelPath);
               console.log(`[SYNC] Trashed ${localRelPath} (deleted on server while offline, nodeId ${nid})`);
@@ -157,9 +157,8 @@ module.exports = {
       const knownPath = knownEntry?.path;
       if (knownPath && knownPath !== relativePath && localFiles.has(knownPath)) {
         const oldFullPath = path.join(this.syncFolder, knownPath);
-        const siteName = relativePath.split('/').pop().replace(/\.(html|htmlclay)$/i, '');
         try {
-          liveSync.markBrowserSave(siteName);
+          liveSync.markBrowserSave(relativePath);
           await moveFile(oldFullPath, localPath);
 
           const localInfo = localFiles.get(knownPath);
@@ -350,7 +349,9 @@ module.exports = {
           match: async (localFile) => path.basename(localFile) === expectedBasename,
           apply: async (localFile) => {
             const targetFolder = path.dirname(localFile);
-            const folderPath = targetFolder === '.' ? '' : targetFolder.replace(/\.(html|htmlclay)$/, '');
+            // Folder names never carry .html/.htmlclay extensions (validator regex
+            // forbids dots); the previous .replace() was a no-op for real data.
+            const folderPath = targetFolder === '.' ? '' : targetFolder;
             const targetParentId = this.resolveParentIdByPath(folderPath);
             await this._apiMoveNode(nid, targetParentId);
             const inode = await nodeMap.getInode(path.join(this.syncFolder, localFile));

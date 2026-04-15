@@ -136,7 +136,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
       '/test/sync/my-site.html',
       '/test/sync/blog/my-site.html'
     );
-    expect(liveSync.markBrowserSave).toHaveBeenCalledWith('my-site');
+    expect(liveSync.markBrowserSave).toHaveBeenCalledWith('blog/my-site.html');
 
     // Should NOT try to download since the file was moved
     expect(apiClient.getNodeContent).not.toHaveBeenCalled();

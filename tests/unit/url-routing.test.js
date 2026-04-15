@@ -24,6 +24,14 @@ describe('resolveResourceFromHref', () => {
     expect(resolveResourceFromHref('http://localhost:4321/blog')).toBe('blog');
     expect(resolveResourceFromHref('http://localhost:4321/blog/')).toBe('blog/');
   });
+
+  test('collapses accidental double slashes', () => {
+    expect(resolveResourceFromHref('http://localhost:4321/blog//post.html')).toBe('blog/post.html');
+  });
+
+  test('query string does not leak into returned path', () => {
+    expect(resolveResourceFromHref('http://localhost:4321/post.html?v=1')).toBe('post.html');
+  });
 });
 
 describe('validateAndResolvePath', () => {
