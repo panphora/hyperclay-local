@@ -18,7 +18,7 @@ const {
 } = require('./file-operations');
 const { calculateChecksum } = require('./utils');
 const { SYNC_CONFIG } = require('./constants');
-const { classifyPath } = require('./path-helpers');
+const { classifyPath, ancestorPaths } = require('./path-helpers');
 const nodeMap = require('./node-map');
 
 module.exports = {
@@ -161,6 +161,43 @@ module.exports = {
     if (!foundNodeId) {
       console.log(`[SYNC] Watcher: ${type} unlink for untracked path: ${normalizedPath}`);
       return;
+    }
+
+    // If an ancestor folder already has a pending unlink, this delete is part
+    // of its cascade (either a folder rename/move which `_correlateFolderUnlinkAdd`
+    // will handle, or a folder delete whose server-side cascade will clean up
+    // descendants automatically). Don't arm our own timer — otherwise it would
+    // fire against an already-cascaded node and produce a spurious 404.
+    const ancestors = ancestorPaths(normalizedPath);
+    for (const ancestorPath of ancestors) {
+      const ancestor = this.pendingUnlinks.get(ancestorPath);
+      if (ancestor && ancestor.type === 'folder') {
+        console.log(`[SYNC] Watcher: Skipping pending unlink for ${normalizedPath} — covered by ancestor folder unlink at ${ancestorPath}`);
+        return;
+      }
+    }
+
+    // Conversely, if this unlink is itself a folder, cancel any existing
+    // pending unlinks for descendants that chokidar may have already reported.
+    // They're covered by our cascade (rename correlation or server delete
+    // cascade) and firing their individual timers would produce spurious 404s.
+    if (type === 'folder') {
+      const prefix = normalizedPath + '/';
+      const cancelled = [];
+      for (const [entryPath, pendingEntry] of this.pendingUnlinks) {
+        if (entryPath.startsWith(prefix)) {
+          clearTimeout(pendingEntry.timerId);
+          this.pendingUnlinks.delete(entryPath);
+          cancelled.push(entryPath);
+        }
+      }
+      if (cancelled.length > 0 && this.logger) {
+        this.logger.info('WATCHER', 'Cancelled existing descendant pending-unlinks under newly-registered folder unlink', {
+          folder: normalizedPath,
+          cancelledCount: cancelled.length,
+          cancelled
+        });
+      }
     }
 
     const timerId = setTimeout(async () => {
@@ -313,113 +350,208 @@ module.exports = {
   // --- Folder identity (S5-Q2) ---
 
   async _correlateFolderUnlinkAdd(oldPath, newPath, pending, shape) {
+    const plan = this._planFolderRelocate(oldPath, newPath, pending);
+    this._cancelDescendantPendingUnlinks(plan);
+    this._suppressFolderOpCascade(plan);
+    this.repo.setProvisional(plan.pending.nodeId, plan.provisionalEntry);
+
+    const identity = await this._decideFolderIdentity(plan);
+    console.log(`[SYNC] Watcher: Folder identity for ${oldPath} → ${newPath}: ${identity.confirmed ? 'CONFIRMED' : 'REJECTED'} (${identity.reason})`);
+
+    if (!identity.confirmed) {
+      return this._rejectFolderIdentity(plan, identity);
+    }
+    return this._commitFolderRelocate(plan, identity, shape);
+  },
+
+  /**
+   * Gather everything a folder relocate needs: descendants, old/new path
+   * pairings, and the provisional entry we'll publish immediately so downstream
+   * lookups see the new location.
+   */
+  _planFolderRelocate(oldPath, newPath, pending) {
     const oldDescendants = this.repo.walkDescendants(oldPath);
     const expectedNewPaths = oldDescendants.map(({ entry }) =>
       newPath + entry.path.substring(oldPath.length)
     );
-    this.cascade.mark([newPath, ...expectedNewPaths]);
+    const oldDescendantPaths = oldDescendants.map(({ entry }) => entry.path);
+    return {
+      oldPath,
+      newPath,
+      pending,
+      oldDescendants,
+      expectedNewPaths,
+      oldDescendantPaths,
+      newFullPath: path.join(this.syncFolder, newPath),
+      provisionalEntry: {
+        type: 'folder',
+        path: newPath,
+        parentId: pending.entry.parentId,
+        inode: null
+      }
+    };
+  },
 
-    this.repo.setProvisional(pending.nodeId, {
-      type: 'folder',
-      path: newPath,
-      parentId: pending.entry.parentId,
-      inode: null
-    });
+  /**
+   * Any descendant whose unlink already armed a pending-delete timer must be
+   * cancelled — its corresponding `add` at the new path will be cascade-
+   * suppressed and therefore can't correlate. Without this cancel, each
+   * descendant's timer would fire `_apiDeleteNode` against a node we just
+   * moved on the server. Defense-in-depth alongside the register-time ancestor
+   * check in `_registerPendingUnlink`.
+   */
+  _cancelDescendantPendingUnlinks(plan) {
+    const cancelled = [];
+    for (const { entry } of plan.oldDescendants) {
+      const pendingEntry = this.pendingUnlinks.get(entry.path);
+      if (pendingEntry) {
+        clearTimeout(pendingEntry.timerId);
+        this.pendingUnlinks.delete(entry.path);
+        cancelled.push(entry.path);
+      }
+    }
+    if (cancelled.length > 0 && this.logger) {
+      this.logger.info('WATCHER', 'Cancelled pending unlinks for folder-op descendants', {
+        oldPath: plan.oldPath,
+        newPath: plan.newPath,
+        cancelledCount: cancelled.length,
+        cancelled
+      });
+    }
+  },
 
-    const newFullPath = path.join(this.syncFolder, newPath);
-    let isSameFolder = false;
-    let reason = '';
+  /**
+   * Mark BOTH old and new paths (folder + every descendant) so chokidar events
+   * fired as a side-effect of the folder op get silently consumed. Old paths
+   * matter because chokidar can deliver descendant unlinks at old paths AFTER
+   * this correlation has already cleared the folder's pending-unlink — by then
+   * the register-time ancestor-skip in `_registerPendingUnlink` can't catch
+   * them. Mirrors `_applyFolderRelocate` (engine-sse.js) for SSE-driven renames.
+   */
+  _suppressFolderOpCascade(plan) {
+    this.cascade.mark([
+      plan.newPath,
+      plan.oldPath,
+      ...plan.expectedNewPaths,
+      ...plan.oldDescendantPaths
+    ]);
+  },
 
-    const newInode = await nodeMap.getInode(newFullPath);
-    if (pending.entry.inode && newInode && pending.entry.inode === newInode) {
-      isSameFolder = true;
-      reason = 'inode-match';
-    } else {
-      const knownDescendantBasenames = new Set(
-        oldDescendants.map(({ entry }) => path.basename(entry.path))
+  /**
+   * Decide whether the `addDir` at newPath really is the same folder that was
+   * just unlinked at oldPath (as opposed to a user happening to create a new
+   * folder with the same target name right after deleting the original).
+   * Three-way check, in order of confidence:
+   *   1. inode-match — strongest signal; same filesystem object.
+   *   2. empty-folder — nothing to misattribute, treat as identity.
+   *   3. descendant-name-match — wait briefly for the first descendant `add`
+   *      at the new path and check its basename against the known set.
+   */
+  async _decideFolderIdentity(plan) {
+    const newInode = await nodeMap.getInode(plan.newFullPath);
+    const oldInode = plan.pending.entry.inode;
+
+    if (oldInode && newInode && oldInode === newInode) {
+      return { confirmed: true, reason: 'inode-match', newInode };
+    }
+
+    const knownDescendantBasenames = new Set(
+      plan.oldDescendants.map(({ entry }) => path.basename(entry.path))
+    );
+
+    if (knownDescendantBasenames.size === 0) {
+      return { confirmed: true, reason: 'empty-folder', newInode };
+    }
+
+    try {
+      const firstAddBasename = await this._waitForFirstDescendantAdd(
+        plan.newPath,
+        this.FOLDER_IDENTITY_WAIT_MS
       );
+      if (firstAddBasename && knownDescendantBasenames.has(firstAddBasename)) {
+        return { confirmed: true, reason: 'descendant-name-match', newInode };
+      }
+      return {
+        confirmed: false,
+        reason: firstAddBasename ? 'descendant-mismatch' : 'no-descendant-in-window',
+        newInode
+      };
+    } catch (e) {
+      return { confirmed: false, reason: 'identity-wait-error', newInode };
+    }
+  },
 
-      if (knownDescendantBasenames.size === 0) {
-        isSameFolder = true;
-        reason = 'empty-folder';
-      } else {
-        try {
-          const firstAddBasename = await this._waitForFirstDescendantAdd(newPath, this.FOLDER_IDENTITY_WAIT_MS);
-          if (firstAddBasename && knownDescendantBasenames.has(firstAddBasename)) {
-            isSameFolder = true;
-            reason = 'descendant-name-match';
-          } else {
-            reason = firstAddBasename ? 'descendant-mismatch' : 'no-descendant-in-window';
-          }
-        } catch (e) {
-          reason = 'identity-wait-error';
+  /**
+   * Identity failed — treat the oldPath folder as gone and the newPath as a
+   * fresh folder. Delete server copy (which cascades descendants server-side),
+   * prune the repo, then re-enter the normal `addDir` handler for newPath.
+   */
+  async _rejectFolderIdentity(plan, identity) {
+    if (this.logger) {
+      this.logger.error('WATCHER', 'Folder identity rejected - deleting server copy and all descendants', {
+        oldPath: plan.oldPath,
+        newPath: plan.newPath,
+        reason: identity.reason,
+        oldInode: plan.pending.entry.inode,
+        newInode: identity.newInode,
+        descendantsToDelete: plan.oldDescendants.length,
+        descendantPaths: plan.oldDescendants.map(d => d.entry.path)
+      });
+    }
+    try {
+      await this._apiDeleteNode(plan.pending.nodeId);
+      await this.repo.apply(async (map) => {
+        for (const { nodeId: descId } of plan.oldDescendants) {
+          map.delete(descId);
         }
-      }
+        map.delete(plan.pending.nodeId);
+      });
+    } catch (err) {
+      console.error(`[SYNC] Watcher: Failed to sync folder delete for ${plan.oldPath}:`, err.message);
     }
+    this._handleFolderAdd(plan.newPath);
+  },
 
-    console.log(`[SYNC] Watcher: Folder identity for ${oldPath} → ${newPath}: ${isSameFolder ? 'CONFIRMED' : 'REJECTED'} (${reason})`);
-
-    if (!isSameFolder) {
-      if (this.logger) {
-        this.logger.error('WATCHER', 'Folder identity rejected - deleting server copy and all descendants', {
-          oldPath,
-          newPath,
-          reason,
-          oldInode: pending.entry.inode,
-          newInode,
-          descendantsToDelete: oldDescendants.length,
-          descendantPaths: oldDescendants.map(d => d.entry.path)
-        });
-      }
-      try {
-        await this._apiDeleteNode(pending.nodeId);
-        await this.repo.apply(async (map) => {
-          for (const { nodeId: descId } of oldDescendants) {
-            map.delete(descId);
-          }
-          map.delete(pending.nodeId);
-        });
-      } catch (err) {
-        console.error(`[SYNC] Watcher: Failed to sync folder delete for ${oldPath}:`, err.message);
-      }
-      this._handleFolderAdd(newPath);
-      return;
-    }
-
-    const addBasename = path.basename(newPath);
-    const newDirname = path.dirname(newPath);
+  /**
+   * Identity confirmed — issue the matching server API call (rename / move /
+   * move+rename) and persist the new paths for the folder and every descendant
+   * into the repo in a single batch. Named `_commit` (not `_apply`) to avoid
+   * colliding with engine-sse.js's existing `_applyFolderRelocate`.
+   */
+  async _commitFolderRelocate(plan, identity, shape) {
+    const addBasename = path.basename(plan.newPath);
+    const newDirname = path.dirname(plan.newPath);
     const newFolderPath = newDirname === '.' ? '' : newDirname;
 
     try {
       if (shape === 'move') {
-        console.log(`[SYNC] Watcher: Local folder move detected: ${oldPath} → ${newPath}`);
+        console.log(`[SYNC] Watcher: Local folder move detected: ${plan.oldPath} → ${plan.newPath}`);
         const targetParentId = this.resolveParentIdByPath(newFolderPath);
-        await this._apiMoveNode(pending.nodeId, targetParentId);
+        await this._apiMoveNode(plan.pending.nodeId, targetParentId);
       } else if (shape === 'rename') {
-        console.log(`[SYNC] Watcher: Local folder rename detected: ${oldPath} → ${newPath}`);
-        await this._apiRenameNode(pending.nodeId, addBasename);
+        console.log(`[SYNC] Watcher: Local folder rename detected: ${plan.oldPath} → ${plan.newPath}`);
+        await this._apiRenameNode(plan.pending.nodeId, addBasename);
       } else {
         // Atomic move+rename — see _correlateFileUnlinkAdd for rationale.
-        console.log(`[SYNC] Watcher: Local folder move+rename detected: ${oldPath} → ${newPath}`);
+        console.log(`[SYNC] Watcher: Local folder move+rename detected: ${plan.oldPath} → ${plan.newPath}`);
         const targetParentId = this.resolveParentIdByPath(newFolderPath);
-        await this._apiMoveNode(pending.nodeId, targetParentId, addBasename);
+        await this._apiMoveNode(plan.pending.nodeId, targetParentId, addBasename);
       }
 
       await this.repo.apply(async (map) => {
-        for (const { nodeId: descId, entry } of oldDescendants) {
-          const newEntryPath = newPath + entry.path.substring(oldPath.length);
+        for (const { nodeId: descId, entry } of plan.oldDescendants) {
+          const newEntryPath = plan.newPath + entry.path.substring(plan.oldPath.length);
           map.set(descId, { ...entry, path: newEntryPath });
         }
-
-        map.set(String(pending.nodeId), {
+        map.set(String(plan.pending.nodeId), {
           type: 'folder',
-          path: newPath,
-          parentId: pending.entry.parentId,
-          inode: newInode
+          path: plan.newPath,
+          parentId: plan.pending.entry.parentId,
+          inode: identity.newInode
         });
       });
     } catch (err) {
-      console.error(`[SYNC] Watcher: Failed to sync folder ${shape} for ${oldPath}:`, err.message);
+      console.error(`[SYNC] Watcher: Failed to sync folder ${shape} for ${plan.oldPath}:`, err.message);
     }
   },
 

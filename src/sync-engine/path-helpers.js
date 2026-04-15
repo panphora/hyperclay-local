@@ -23,8 +23,19 @@ function classifyPath(relativePath, eventType) {
   return 'upload';
 }
 
+function ancestorPaths(normalizedPath) {
+  if (!normalizedPath || normalizedPath === '' || normalizedPath === '.') return [];
+  const parts = normalizedPath.split('/').filter(Boolean);
+  const ancestors = [];
+  for (let i = 1; i < parts.length; i++) {
+    ancestors.push(parts.slice(0, i).join('/'));
+  }
+  return ancestors;
+}
+
 module.exports = {
   hasHiddenSegment,
   toFileId,
-  classifyPath
+  classifyPath,
+  ancestorPaths
 };
