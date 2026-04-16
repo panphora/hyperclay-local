@@ -74,7 +74,8 @@ module.exports = {
             const exists = await fileExists(fullPath);
             if (exists) {
               const stats = await getFileStats(fullPath);
-              if (stats.mtime > this.lastSyncedAt) {
+              const entrySyncedAt = entry.syncedAt ?? this.lastSyncedAt;
+              if (stats.mtime > entrySyncedAt) {
                 console.log(`[SYNC] Skipping trash for ${localRelPath} — local file is newer than last sync (edited while offline)`);
                 map.delete(nid);
                 continue;
@@ -181,16 +182,45 @@ module.exports = {
     }
 
     const existingEntry = map.get(String(serverFile.nodeId)) || {};
-    map.set(String(serverFile.nodeId), { path: relativePath, checksum: existingEntry.checksum || null, inode: existingEntry.inode || null });
+    map.set(String(serverFile.nodeId), { path: relativePath, checksum: existingEntry.checksum || null, inode: existingEntry.inode || null, syncedAt: existingEntry.syncedAt });
 
     if (!localExists) {
+      // Offline-rename pre-check (BUG-4): if the existing entry has an inode and a
+      // local file with that inode is present elsewhere on disk, the user renamed
+      // the file while offline. Skip the download and let detectLocalChanges
+      // correlate the rename against the preserved inode. Downloading first would
+      // overwrite the entry's inode with the new file's inode, breaking the
+      // inode-match strategy and producing a duplicate node + orphan file.
+      if (existingEntry.inode) {
+        let inodeMatchPath = null;
+        for (const [candidatePath] of localFiles) {
+          const candidateFullPath = path.join(this.syncFolder, candidatePath);
+          const candidateInode = await nodeMap.getInode(candidateFullPath);
+          if (candidateInode && candidateInode === existingEntry.inode) {
+            inodeMatchPath = candidatePath;
+            break;
+          }
+        }
+        if (inodeMatchPath) {
+          console.log(`[SYNC] Deferring download of ${relativePath} to detectLocalChanges — inode match at ${inodeMatchPath} (likely offline rename)`);
+          if (this.logger) {
+            this.logger.info('SYNC', 'Deferring download — inode match suggests offline rename', {
+              file: relativePath,
+              inodeMatchAt: inodeMatchPath,
+              inode: existingEntry.inode
+            });
+          }
+          return;
+        }
+      }
+
       try {
         await this.downloadFile(serverFile.nodeId);
         this.stats.filesDownloaded++;
         const inode = await nodeMap.getInode(localPath);
         const content = await readFile(localPath).catch(() => null);
         const cs = content ? await calculateChecksum(content) : null;
-        map.set(String(serverFile.nodeId), { path: relativePath, checksum: cs, inode });
+        map.set(String(serverFile.nodeId), { path: relativePath, checksum: cs, inode, syncedAt: Date.now() });
       } catch (error) {
         console.error(`[SYNC] Failed to download ${relativePath} during initial sync:`, error.message);
       }
@@ -202,7 +232,7 @@ module.exports = {
       const localContent = await readFile(localPath);
       const localChecksum = await calculateChecksum(localContent);
       const inode = await nodeMap.getInode(localPath);
-      map.set(String(serverFile.nodeId), { path: relativePath, checksum: localChecksum, inode });
+      map.set(String(serverFile.nodeId), { path: relativePath, checksum: localChecksum, inode, syncedAt: Date.now() });
 
       if (isFutureFile(localStat.mtime, this.clockOffset)) {
         console.log(`[SYNC] PRESERVE ${relativePath} - future-dated file`);
@@ -249,7 +279,7 @@ module.exports = {
       const dlContent = await readFile(localPath).catch(() => null);
       const dlChecksum = dlContent ? await calculateChecksum(dlContent) : null;
       const dlInode = await nodeMap.getInode(localPath);
-      map.set(String(serverFile.nodeId), { path: relativePath, checksum: dlChecksum, inode: dlInode });
+      map.set(String(serverFile.nodeId), { path: relativePath, checksum: dlChecksum, inode: dlInode, syncedAt: Date.now() });
     } catch (error) {
       console.error(`[SYNC] Failed to process ${relativePath} during initial sync:`, error.message);
       if (!error.message.includes('Failed to download')) {
@@ -357,7 +387,7 @@ module.exports = {
             const inode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
             const content = await readFile(path.join(this.syncFolder, localFile)).catch(() => null);
             const cs = content ? await calculateChecksum(content) : entry.checksum;
-            return { path: localFile, checksum: cs, inode };
+            return { path: localFile, checksum: cs, inode, syncedAt: Date.now() };
           }
         },
         {
@@ -371,7 +401,7 @@ module.exports = {
             const newName = path.basename(localFile);
             await this._apiRenameNode(nid, newName);
             const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
-            return { path: localFile, checksum: entry.checksum, inode: localInode };
+            return { path: localFile, checksum: entry.checksum, inode: localInode, syncedAt: Date.now() };
           }
         },
         {
@@ -389,7 +419,7 @@ module.exports = {
             const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
             const content = await readFile(path.join(this.syncFolder, localFile)).catch(() => null);
             const cs = content ? await calculateChecksum(content) : entry.checksum;
-            return { path: localFile, checksum: cs, inode: localInode };
+            return { path: localFile, checksum: cs, inode: localInode, syncedAt: Date.now() };
           }
         }
       ];
@@ -415,14 +445,17 @@ module.exports = {
       if (handled) continue;
 
       // 4. No match → LOCAL DELETE
-      // Check for delete conflict: if server modified the file after our last sync, re-download instead
-      if (serverNode.modifiedAt && new Date(serverNode.modifiedAt).getTime() > this.lastSyncedAt) {
+      // Check for delete conflict: if server modified the file after this entry's last sync, re-download instead.
+      // Per-entry syncedAt avoids the global-lastSyncedAt staleness that misclassifies watcher-uploaded files.
+      const entrySyncedAt = entry.syncedAt ?? this.lastSyncedAt;
+      if (serverNode.modifiedAt && new Date(serverNode.modifiedAt).getTime() > entrySyncedAt) {
         console.log(`[SYNC] Delete conflict: ${entry.path} deleted locally but modified on server — re-downloading`);
         if (this.logger) {
           this.logger.warn('SYNC', 'Delete conflict - local delete overridden by server change', {
             file: entry.path,
             serverModifiedAt: serverNode.modifiedAt,
-            lastSyncedAt: new Date(this.lastSyncedAt).toISOString()
+            entrySyncedAt: new Date(entrySyncedAt).toISOString(),
+            usedFallback: entry.syncedAt == null
           });
         }
         try {
@@ -491,7 +524,7 @@ module.exports = {
               const inode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
               const buf = await readFileBuffer(path.join(this.syncFolder, localFile)).catch(() => null);
               const cs = buf ? calculateBufferChecksum(buf) : entry.checksum;
-              return { type: 'upload', path: localFile, checksum: cs, inode };
+              return { type: 'upload', path: localFile, checksum: cs, inode, syncedAt: Date.now() };
             }
           },
           {
@@ -505,7 +538,7 @@ module.exports = {
               const newName = path.basename(localFile);
               await this._apiRenameNode(nid, newName);
               const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
-              return { type: 'upload', path: localFile, checksum: entry.checksum, inode: localInode };
+              return { type: 'upload', path: localFile, checksum: entry.checksum, inode: localInode, syncedAt: Date.now() };
             }
           },
           {
@@ -523,7 +556,7 @@ module.exports = {
               const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
               const buf = await readFileBuffer(path.join(this.syncFolder, localFile)).catch(() => null);
               const cs = buf ? calculateBufferChecksum(buf) : entry.checksum;
-              return { type: 'upload', path: localFile, checksum: cs, inode: localInode };
+              return { type: 'upload', path: localFile, checksum: cs, inode: localInode, syncedAt: Date.now() };
             }
           }
         ];
@@ -610,7 +643,7 @@ module.exports = {
               await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
               this.stats.uploadsDownloaded++;
               if (serverUpload.nodeId) {
-                map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null });
+                map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null, syncedAt: Date.now() });
               }
             } catch (error) {
               console.error(`[SYNC] Failed to download upload ${serverUpload.path}:`, error.message);
@@ -670,7 +703,7 @@ module.exports = {
                   });
                 }
                 if (serverUpload.nodeId) {
-                  map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: localChecksum, inode: null });
+                  map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: localChecksum, inode: null, syncedAt: Date.now() });
                 }
                 continue;
               }
@@ -679,7 +712,7 @@ module.exports = {
               await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
               this.stats.uploadsDownloaded++;
               if (serverUpload.nodeId) {
-                map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null });
+                map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null, syncedAt: Date.now() });
               }
             } catch (error) {
               console.error(`[SYNC] Failed to process upload ${serverUpload.path}:`, error.message);
@@ -865,10 +898,11 @@ module.exports = {
         if (handled) continue;
 
         // No inode match — folder was deleted locally while offline.
-        // Delete from server (cascades to descendants on server side).
+        // Cascade=true tells the server to soft-delete every descendant first,
+        // which the platform requires before removing a non-empty folder.
         try {
           console.log(`[SYNC] Local folder delete detected: ${entry.path} (nodeId ${nid})`);
-          await this._apiDeleteNode(nid);
+          await this._apiDeleteNode(nid, { cascade: true });
 
           const descendants = this.repo.walkDescendants(entry.path);
           for (const { nodeId: descId } of descendants) {

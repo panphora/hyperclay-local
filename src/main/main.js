@@ -7,7 +7,10 @@ const syncEngine = require('../sync-engine');
 const syncLogger = require('../sync-engine/logger');
 const errorLogger = require('./error-logger');
 const { getServerBaseUrl } = require('./utils/utils');
+const { makeIsKnownPath } = require('./utils/known-path');
 const popover = require('./popover');
+
+const isKnownPath = makeIsKnownPath(syncEngine, fs);
 
 process.on('uncaughtException', (error) => {
   console.error('[FATAL] Uncaught exception:', error);
@@ -500,7 +503,7 @@ async function handleStartServer() {
   }
 
   try {
-    await startServer(selectedFolder, getDevHooks());
+    await startServer(selectedFolder, getDevHooks(), isKnownPath);
     serverRunning = isServerRunning();
 
     settings.serverEnabled = true;
@@ -997,15 +1000,13 @@ app.whenReady().then(async () => {
     console.log('[APP] Auto-restarting server from previous session...');
     try {
       selectedFolder = settings.serverFolder;
-      await startServer(selectedFolder, getDevHooks());
+      await startServer(selectedFolder, getDevHooks(), isKnownPath);
       serverRunning = isServerRunning();
       updateTrayMenu();
       console.log('[APP] Server auto-restart successful');
     } catch (err) {
       console.error('[APP] Failed to auto-start server:', err);
       errorLogger.error('App', 'Failed to auto-start server', err);
-      settings.serverEnabled = false;
-      saveSettings(settings);
     }
   }
 

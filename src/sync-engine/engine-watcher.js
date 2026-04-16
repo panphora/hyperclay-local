@@ -219,7 +219,7 @@ module.exports = {
       this.pendingUnlinks.delete(normalizedPath);
       console.log(`[SYNC] Watcher: Local ${type} delete detected: ${normalizedPath} (nodeId ${foundNodeId})`);
       try {
-        await this._apiDeleteNode(foundNodeId);
+        await this._apiDeleteNode(foundNodeId, { cascade: type === 'folder' });
 
         await this.repo.apply(async (map) => {
           if (type === 'folder') {
@@ -356,7 +356,8 @@ module.exports = {
         type,
         path: newPath,
         checksum: pending.entry.checksum,
-        inode: newInode
+        inode: newInode,
+        syncedAt: Date.now()
       });
     } catch (err) {
       console.error(`[SYNC] Watcher: Failed to sync ${shape} for ${oldPath}:`, err.message);

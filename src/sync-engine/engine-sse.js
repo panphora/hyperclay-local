@@ -90,7 +90,8 @@ module.exports = {
           type: 'site',
           path: localFilename,
           checksum: localChecksum,
-          inode
+          inode,
+          syncedAt: Date.now()
         });
         return;
       }
@@ -115,7 +116,8 @@ module.exports = {
       type: 'site',
       path: localFilename,
       checksum: cs,
-      inode
+      inode,
+      syncedAt: Date.now()
     });
 
     console.log(`[SYNC] SSE node-saved: Wrote site ${localFilename}`);
@@ -144,7 +146,8 @@ module.exports = {
           type: 'upload',
           path: localFilename,
           checksum: localChecksum,
-          inode
+          inode,
+          syncedAt: Date.now()
         });
         return;
       }
@@ -164,7 +167,8 @@ module.exports = {
       type: 'upload',
       path: localFilename,
       checksum: fetched.checksum,
-      inode
+      inode,
+      syncedAt: Date.now()
     });
 
     console.log(`[SYNC] SSE node-saved: Wrote upload ${localFilename}`);
@@ -362,7 +366,8 @@ module.exports = {
         type: nodeType,
         path: newPath,
         checksum: entry?.checksum || null,
-        inode
+        inode,
+        syncedAt: alreadyMoved ? Date.now() : entry?.syncedAt
       });
       return;
     }
@@ -380,7 +385,8 @@ module.exports = {
       type: nodeType,
       path: newPath,
       checksum: entry?.checksum || null,
-      inode
+      inode,
+      syncedAt: Date.now()
     });
 
     console.log(`[SYNC] SSE node-relocated: ${currentPath} → ${newPath}`);
@@ -676,7 +682,7 @@ module.exports = {
             changesFound = true;
             if (serverFile.nodeId) {
               const inode = await nodeMap.getInode(path.join(this.syncFolder, relativePath));
-              map.set(String(serverFile.nodeId), { path: relativePath, checksum: serverFile.checksum, inode });
+              map.set(String(serverFile.nodeId), { path: relativePath, checksum: serverFile.checksum, inode, syncedAt: Date.now() });
             }
           } else {
             const localInfo = localFiles.get(relativePath);
@@ -697,7 +703,7 @@ module.exports = {
                 changesFound = true;
                 if (serverFile.nodeId) {
                   const inode = await nodeMap.getInode(path.join(this.syncFolder, relativePath));
-                  map.set(String(serverFile.nodeId), { path: relativePath, checksum: serverFile.checksum, inode });
+                  map.set(String(serverFile.nodeId), { path: relativePath, checksum: serverFile.checksum, inode, syncedAt: Date.now() });
                 }
               }
             }
@@ -723,7 +729,7 @@ module.exports = {
             this.stats.uploadsDownloaded++;
             changesFound = true;
             if (serverUpload.nodeId) {
-              map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null });
+              map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null, syncedAt: Date.now() });
             }
           } else {
             const localInfo = localUploads.get(serverUpload.path);
@@ -740,7 +746,7 @@ module.exports = {
                 this.stats.uploadsDownloaded++;
                 changesFound = true;
                 if (serverUpload.nodeId) {
-                  map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null });
+                  map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null, syncedAt: Date.now() });
                 }
               }
             }

@@ -179,6 +179,87 @@ describe('reconcileServerFile — nodeId move detection', () => {
   });
 });
 
+describe('reconcileServerFile — offline rename (BUG-4)', () => {
+  test('defers download and detects rename via inode match (no duplicate node)', async () => {
+    const content = '<html>renamed offline</html>';
+    const cs = checksum(content);
+    const PRESERVED_INODE = 99999;
+
+    syncEngine.repo.seed([['42', entry('old-name.html', cs, PRESERVED_INODE)]]);
+    syncEngine.lastSyncedAt = new Date('2024-05-01').getTime();
+
+    apiClient.listNodes.mockResolvedValue([
+      { id: 42, type: 'site', name: 'old-name.html', path: '', checksum: cs, modifiedAt: '2024-05-01T00:00:00Z' }
+    ]);
+
+    fileOps.getLocalFiles.mockResolvedValue(new Map([
+      ['new-name.html', { path: '/test/sync/new-name.html', relativePath: 'new-name.html', mtime: new Date('2024-05-01'), size: 100 }]
+    ]));
+
+    nodeMapModule.getInode.mockImplementation(async (p) => {
+      if (p === '/test/sync/new-name.html') return PRESERVED_INODE;
+      return null;
+    });
+    fileOps.readFile.mockResolvedValue(content);
+
+    await syncEngine.performInitialSync();
+
+    expect(apiClient.getNodeContent).not.toHaveBeenCalled();
+    expect(apiClient.renameNode).toHaveBeenCalledWith(
+      'http://localhyperclay.com', 'hcsk_test', 42, 'new-name.html'
+    );
+    expect(apiClient.createNode).not.toHaveBeenCalled();
+    expect(syncEngine.repo.get('42').path).toBe('new-name.html');
+    expect(syncEngine.repo.size).toBe(1);
+  });
+
+  test('falls through to download when entry has no inode (legacy entry)', async () => {
+    const content = '<html>legacy</html>';
+    const cs = checksum(content);
+
+    syncEngine.repo.seed([['42', entry('old-name.html', cs, null)]]);
+    syncEngine.lastSyncedAt = new Date('2024-05-01').getTime();
+
+    apiClient.listNodes.mockResolvedValue([
+      { id: 42, type: 'site', name: 'old-name.html', path: '', checksum: cs, modifiedAt: '2024-05-01T00:00:00Z' }
+    ]);
+
+    fileOps.getLocalFiles.mockResolvedValue(new Map([
+      ['new-name.html', { path: '/test/sync/new-name.html', relativePath: 'new-name.html', mtime: new Date('2024-05-01'), size: 100 }]
+    ]));
+
+    nodeMapModule.getInode.mockResolvedValue(99999);
+    fileOps.readFile.mockResolvedValue(content);
+
+    await syncEngine.performInitialSync();
+
+    expect(apiClient.getNodeContent).toHaveBeenCalledWith(
+      'http://localhyperclay.com', 'hcsk_test', 42
+    );
+  });
+
+  test('falls through to download when no local inode matches', async () => {
+    syncEngine.repo.seed([['42', entry('old-name.html', 'serverchecksum', 99999)]]);
+    syncEngine.lastSyncedAt = new Date('2024-05-01').getTime();
+
+    apiClient.listNodes.mockResolvedValue([
+      { id: 42, type: 'site', name: 'old-name.html', path: '', checksum: 'serverchecksum', modifiedAt: '2024-05-01T00:00:00Z' }
+    ]);
+
+    fileOps.getLocalFiles.mockResolvedValue(new Map([
+      ['unrelated-file.html', { path: '/test/sync/unrelated-file.html', relativePath: 'unrelated-file.html', mtime: new Date('2024-05-01'), size: 100 }]
+    ]));
+
+    nodeMapModule.getInode.mockResolvedValue(55555);
+
+    await syncEngine.performInitialSync();
+
+    expect(apiClient.getNodeContent).toHaveBeenCalledWith(
+      'http://localhyperclay.com', 'hcsk_test', 42
+    );
+  });
+});
+
 describe('offline delete reconciliation', () => {
   test('skips entirely on first-ever sync (no lastSyncedAt)', async () => {
     syncEngine.repo.seed([['99', entry('deleted-on-server.html')]]);

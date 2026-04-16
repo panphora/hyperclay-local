@@ -252,11 +252,14 @@ async function moveNode(serverUrl, apiKey, nodeId, targetParentId, newName = nul
  * @param {string} serverUrl
  * @param {string} apiKey
  * @param {number} nodeId
+ * @param {{ cascade?: boolean }} [options] - cascade=true deletes folder + all descendants
  * @returns {Promise<{ nodeId: number, type: string }>}
  */
-async function deleteNode(serverUrl, apiKey, nodeId) {
-  const url = `${serverUrl}/sync/nodes/${nodeId}`;
-  console.log(`[API] Deleting node ${nodeId}`);
+async function deleteNode(serverUrl, apiKey, nodeId, { cascade = false } = {}) {
+  const url = cascade
+    ? `${serverUrl}/sync/nodes/${nodeId}?cascade=true`
+    : `${serverUrl}/sync/nodes/${nodeId}`;
+  console.log(`[API] Deleting node ${nodeId}${cascade ? ' (cascade)' : ''}`);
 
   return apiFetch(url, {
     method: 'DELETE',

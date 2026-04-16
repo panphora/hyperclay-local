@@ -236,7 +236,7 @@ module.exports = {
 
       if (result.nodeId) {
         const inode = await nodeMap.getInode(path.join(this.syncFolder, filename));
-        await this.repo.set(result.nodeId, { type: 'site', path: filename, checksum: localChecksum, inode });
+        await this.repo.set(result.nodeId, { type: 'site', path: filename, checksum: localChecksum, inode, syncedAt: Date.now() });
       }
 
       console.log(`[SYNC] Uploaded ${filename}`);
@@ -429,7 +429,7 @@ module.exports = {
       }
 
       if (resultNodeId) {
-        await this.repo.set(resultNodeId, { type: 'upload', path: relativePath, checksum: localChecksum, inode: null });
+        await this.repo.set(resultNodeId, { type: 'upload', path: relativePath, checksum: localChecksum, inode: null, syncedAt: Date.now() });
       }
 
       console.log(`[SYNC] Uploaded: ${relativePath}`);

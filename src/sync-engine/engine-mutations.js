@@ -27,9 +27,9 @@ module.exports = {
     this.invalidateServerNodesCache();
   },
 
-  async _apiDeleteNode(nodeId) {
+  async _apiDeleteNode(nodeId, { cascade = false } = {}) {
     this.outbox.markInFlight('delete', parseInt(nodeId));
-    await deleteNode(this.serverUrl, this.apiKey, parseInt(nodeId));
+    await deleteNode(this.serverUrl, this.apiKey, parseInt(nodeId), { cascade });
     this.invalidateServerNodesCache();
   }
 };

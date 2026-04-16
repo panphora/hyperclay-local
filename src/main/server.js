@@ -100,7 +100,7 @@ function resolveResourceFromHref(href) {
   return path.normalize(pathname);
 }
 
-function startServer(baseDir, devHooks = null) {
+function startServer(baseDir, devHooks = null, isKnownPath = null) {
   return new Promise((resolve, reject) => {
     if (server) {
       return reject(new Error('Server is already running'));
@@ -284,6 +284,13 @@ function startServer(baseDir, devHooks = null) {
         });
       }
       const filePath = validated.filePath;
+
+      if (isKnownPath && !isKnownPath(name, filePath)) {
+        return res.status(409).json({
+          msg: 'This file has been moved or deleted. Please refresh the page.',
+          msgType: 'error'
+        });
+      }
 
       // Ensure body content is a string
       if (typeof content !== 'string') {

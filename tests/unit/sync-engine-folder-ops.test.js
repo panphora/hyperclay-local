@@ -163,7 +163,7 @@ describe('folder delete cleans up descendants in nodeMap', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(deleteNode).toHaveBeenCalledWith(expect.any(String), expect.any(String), 10);
+    expect(deleteNode).toHaveBeenCalledWith(expect.any(String), expect.any(String), 10, { cascade: true });
     expect(syncEngine.repo.size).toBe(0);
 
     jest.useRealTimers();
