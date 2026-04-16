@@ -12,7 +12,7 @@
     "test:watch": "jest --watch",
     "start": "npm run build-react && cross-env NODE_ENV=production electron .",
     "dev": "concurrently \"npm run dev-css\" \"npm run dev-react\" \"npm run electron-dev\"",
-    "electron-dev": "wait-on dist/popover-bundle.js && cross-env NODE_ENV=development electron . --dev",
+    "electron-dev": "wait-on dist/popover-bundle.js && cross-env NODE_ENV=development electronmon . --dev",
     "build": "npm run build-css && npm run build-react && electron-builder",
     "build-css": "npx @tailwindcss/cli -i ./src/renderer/styles/src.css -o ./src/renderer/styles/renderer.css",
     "dev-css": "npx @tailwindcss/cli -i ./src/renderer/styles/src.css -o ./src/renderer/styles/renderer.css --watch",
@@ -135,6 +135,16 @@
     },
     "afterSign": "build-scripts/notarize-submit.js"
   },
+  "electronmon": {
+    "patterns": [
+      "src/main/**/*",
+      "src/sync-engine/**/*",
+      "!**/*.test.js",
+      "!src/renderer/**/*",
+      "!dist/**/*"
+    ],
+    "logLevel": "quiet"
+  },
   "devDependencies": {
     "@babel/core": "^7.28.4",
     "@babel/preset-react": "^7.27.1",
@@ -146,7 +156,7 @@
     "dotenv": "^17.2.3",
     "electron": "^38.3.0",
     "electron-builder": "^26.7.0",
-    "electron-reload": "^2.0.0-alpha.1",
+    "electronmon": "^2.0.4",
     "jest": "^30.2.0",
     "rimraf": "^6.1.0",
     "tslib": "^2.8.1",

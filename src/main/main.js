@@ -52,13 +52,6 @@ if (process.platform === 'darwin') {
   app.setAboutPanelOptions(aboutOptions);
 }
 
-if (process.argv.includes('--dev')) {
-  require('electron-reload')(__dirname, {
-    electron: path.join(__dirname, '../../node_modules', '.bin', 'electron'),
-    hardResetMethod: 'exit'
-  });
-}
-
 // =============================================================================
 // STATE AND STORAGE
 // =============================================================================
