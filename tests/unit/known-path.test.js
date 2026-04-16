@@ -9,8 +9,9 @@ function buildFs({ exists = true, throws = false } = {}) {
   };
 }
 
-function buildSync({ isRunning = true, knownPaths = [] } = {}) {
+function buildSync({ isRunning = true, knownPaths = [], tombstones = [] } = {}) {
   const map = new Map(knownPaths.map((p, i) => [String(i + 1), { path: p }]));
+  const tomb = new Set(tombstones);
   return {
     isRunning,
     repo: {
@@ -19,7 +20,8 @@ function buildSync({ isRunning = true, knownPaths = [] } = {}) {
           if (entry.path === rel) return { nodeId: nid, entry };
         }
         return null;
-      })
+      }),
+      isTombstoned: jest.fn((p) => tomb.has(p))
     }
   };
 }
@@ -65,5 +67,41 @@ describe('makeIsKnownPath', () => {
   test('allows save when sync engine reference is missing', () => {
     const isKnown = makeIsKnownPath(null, buildFs({ exists: true }));
     expect(isKnown('any.html', '/sync/any.html')).toBe(true);
+  });
+
+  // Stale tab after a real `mv`: the old path is gone from disk AND from the repo,
+  // but tombstoned so we remember it was there. Without the tombstone check, the
+  // absent file would look identical to a genuinely-new-file save and be allowed,
+  // creating a ghost node at the old URL.
+  test('blocks save when path is tombstoned and file is gone from disk (stale tab after mv)', () => {
+    const isKnown = makeIsKnownPath(
+      buildSync({ isRunning: true, knownPaths: ['b/stale.html'], tombstones: ['a/stale.html'] }),
+      buildFs({ exists: false })
+    );
+    expect(isKnown('a/stale.html', '/sync/a/stale.html')).toBe(false);
+  });
+
+  test('blocks save when path is tombstoned even if a file still exists on disk', () => {
+    const isKnown = makeIsKnownPath(
+      buildSync({ isRunning: true, knownPaths: ['b/stale.html'], tombstones: ['a/stale.html'] }),
+      buildFs({ exists: true })
+    );
+    expect(isKnown('a/stale.html', '/sync/a/stale.html')).toBe(false);
+  });
+
+  test('allows save when tombstone absent and file not on disk (genuinely new file)', () => {
+    const isKnown = makeIsKnownPath(
+      buildSync({ isRunning: true, knownPaths: [], tombstones: [] }),
+      buildFs({ exists: false })
+    );
+    expect(isKnown('new-page.html', '/sync/new-page.html')).toBe(true);
+  });
+
+  test('tracked path wins over tombstone check (defensive — tombstone should have been cleared)', () => {
+    const isKnown = makeIsKnownPath(
+      buildSync({ isRunning: true, knownPaths: ['x.html'], tombstones: ['x.html'] }),
+      buildFs({ exists: true })
+    );
+    expect(isKnown('x.html', '/sync/x.html')).toBe(true);
   });
 });

@@ -407,11 +407,9 @@ const PopoverApp = () => {
   if (arrowOnBottom) {
     arrowStyle.bottom = 0;
     arrowStyle.borderTop = `${ARROW_HALF_WIDTH}px solid #151722`;
-    arrowStyle.filter = 'drop-shadow(0 2px 3px rgba(0,0,0,0.3))';
   } else {
     arrowStyle.top = 2;
     arrowStyle.borderBottom = `${ARROW_HALF_WIDTH}px solid #151722`;
-    arrowStyle.filter = 'drop-shadow(0 -2px 3px rgba(0,0,0,0.3))';
   }
 
   return (
@@ -431,7 +429,6 @@ const PopoverApp = () => {
           borderRadius: 10,
           overflow: 'hidden',
           height: arrowOnBottom ? '100%' : `calc(100% - ${ARROW_HEIGHT}px)`,
-          boxShadow: '0 12px 40px rgba(0,0,0,0.5), 0 0 0 1px rgba(79,90,151,0.3)',
           display: 'flex',
           flexDirection: 'column',
         }}

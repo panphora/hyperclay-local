@@ -71,6 +71,7 @@ module.exports = {
     }
   },
 
+  // Every repo.set in this file records syncedAt: Date.now() so delete-conflict checks use per-file timestamps, not the stale global lastSyncedAt.
   async _applyNodeSavedSite(data) {
     const localFilename = data.path;
     this.resolveContainedPath(localFilename);
@@ -353,6 +354,11 @@ module.exports = {
     const localPath = path.join(this.syncFolder, currentPath);
     const newLocalPath = path.join(this.syncFolder, newPath);
 
+    // Tombstone the old path so a stale tab still holding the pre-move URL gets a 409 on /save instead of creating a ghost node.
+    if (currentPath && currentPath !== newPath) {
+      await this.repo.addTombstone(currentPath);
+    }
+
     const exists = await fileExists(localPath);
     if (!exists) {
       const alreadyMoved = await fileExists(newLocalPath);
@@ -417,6 +423,13 @@ module.exports = {
       ...Array.from(oldToNew.values()).map(v => v.newPath)
     ];
     this.cascade.mark(allSuppressedPaths);
+
+    // Tombstone the folder and every descendant's old path — a stale tab on any
+    // descendant URL gets a 409 on /save. Tombstones auto-clear when new nodes
+    // eventually land at those paths.
+    if (oldPath !== newPath) {
+      await this.repo.addTombstones([oldPath, ...descendants.map(({ entry: e }) => e.path)]);
+    }
 
     const exists = await fileExists(localOldPath);
     if (!exists) {

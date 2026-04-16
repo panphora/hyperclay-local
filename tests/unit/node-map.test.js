@@ -1,7 +1,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 const os = require('os');
-const { load, save, loadState, saveState, getInode } = require('../../src/sync-engine/node-map');
+const { load, save, loadState, saveState, getInode, loadTombstones, saveTombstones } = require('../../src/sync-engine/node-map');
 
 let tmpDir;
 
@@ -138,5 +138,54 @@ describe('sync state load/save', () => {
 
     const state = await loadState(tmpDir);
     expect(state).toEqual({});
+  });
+});
+
+describe('tombstone load/save', () => {
+  test('returns empty map when file missing', async () => {
+    const m = await loadTombstones(tmpDir);
+    expect(m).toBeInstanceOf(Map);
+    expect(m.size).toBe(0);
+  });
+
+  test('round-trips tombstones through save and load', async () => {
+    const now = Date.now();
+    const original = new Map([
+      ['a/stale.html', now],
+      ['folder/inner/other.html', now - 1000]
+    ]);
+    await saveTombstones(tmpDir, original);
+    const loaded = await loadTombstones(tmpDir);
+    expect(loaded.size).toBe(2);
+    expect(loaded.get('a/stale.html')).toBe(now);
+    expect(loaded.get('folder/inner/other.html')).toBe(now - 1000);
+  });
+
+  test('prunes entries older than 7 days on load', async () => {
+    const now = Date.now();
+    const stale = now - (8 * 24 * 60 * 60 * 1000); // 8 days
+    const fresh = now - (1 * 60 * 60 * 1000);       // 1 hour
+    await saveTombstones(tmpDir, new Map([['old.html', stale], ['new.html', fresh]]));
+    const loaded = await loadTombstones(tmpDir);
+    expect(loaded.has('old.html')).toBe(false);
+    expect(loaded.has('new.html')).toBe(true);
+  });
+
+  test('returns empty map on corrupt JSON', async () => {
+    await fs.mkdir(tmpDir, { recursive: true });
+    await fs.writeFile(path.join(tmpDir, 'tombstones.json'), '{not valid');
+    const m = await loadTombstones(tmpDir);
+    expect(m.size).toBe(0);
+  });
+
+  test('ignores entries with non-numeric values', async () => {
+    await fs.mkdir(tmpDir, { recursive: true });
+    await fs.writeFile(
+      path.join(tmpDir, 'tombstones.json'),
+      JSON.stringify({ 'a.html': 'not a number', 'b.html': Date.now() })
+    );
+    const loaded = await loadTombstones(tmpDir);
+    expect(loaded.has('a.html')).toBe(false);
+    expect(loaded.has('b.html')).toBe(true);
   });
 });

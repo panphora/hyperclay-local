@@ -25,6 +25,8 @@ class NodeRepository {
   constructor() {
     this._metaDir = null;
     this._map = new Map();
+    // path → createdAt timestamp. Auto-cleared when a new node lands at the path; TTL-pruned on load. See loadTombstones() for purpose.
+    this._tombstones = new Map();
     this._logger = null;
   }
 
@@ -49,6 +51,11 @@ class NodeRepository {
    */
   async load() {
     this._map = await nodeMapPersistence.load(this._metaDir, this._logger);
+  }
+
+  // Tombstones mark paths whose nodes moved away; /save checks them to 409 stale-tab writes to the pre-move URL, preventing ghost nodes.
+  async loadTombstones() {
+    this._tombstones = await nodeMapPersistence.loadTombstones(this._metaDir);
   }
 
   /**
@@ -109,7 +116,9 @@ class NodeRepository {
 
   async set(nodeId, entry) {
     this._map.set(String(nodeId), entry);
+    const cleared = entry && entry.path && this._tombstones.delete(entry.path);
     await this._save();
+    if (cleared) await this._saveTombstones();
   }
 
   /**
@@ -134,7 +143,56 @@ class NodeRepository {
    */
   async apply(fn) {
     await fn(this._map);
+    let tombstoneChanged = false;
+    if (this._tombstones.size > 0) {
+      const livePaths = new Set();
+      for (const entry of this._map.values()) {
+        if (entry && entry.path) livePaths.add(entry.path);
+      }
+      for (const tpath of Array.from(this._tombstones.keys())) {
+        if (livePaths.has(tpath)) {
+          this._tombstones.delete(tpath);
+          tombstoneChanged = true;
+        }
+      }
+    }
     await this._save();
+    if (tombstoneChanged) await this._saveTombstones();
+  }
+
+  // --- Tombstone API ---
+
+  isTombstoned(path) {
+    return this._tombstones.has(path);
+  }
+
+  async addTombstone(path) {
+    if (!path) return;
+    this._tombstones.set(path, Date.now());
+    await this._saveTombstones();
+  }
+
+  async addTombstones(paths) {
+    if (!paths || paths.length === 0) return;
+    const now = Date.now();
+    let changed = false;
+    for (const p of paths) {
+      if (p) {
+        this._tombstones.set(p, now);
+        changed = true;
+      }
+    }
+    if (changed) await this._saveTombstones();
+  }
+
+  async clearTombstone(path) {
+    if (this._tombstones.delete(path)) {
+      await this._saveTombstones();
+    }
+  }
+
+  get tombstoneSize() {
+    return this._tombstones.size;
   }
 
   /**
@@ -156,6 +214,10 @@ class NodeRepository {
 
   async _save() {
     await nodeMapPersistence.save(this._metaDir, this._map, this._logger);
+  }
+
+  async _saveTombstones() {
+    await nodeMapPersistence.saveTombstones(this._metaDir, this._tombstones);
   }
 }
 

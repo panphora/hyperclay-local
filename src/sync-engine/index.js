@@ -178,9 +178,10 @@ class SyncEngine extends EventEmitter {
       // (repo was already attached via the `this.metaDir = metaDir` setter above)
       this.repo.attachLogger(this.logger);
       await this.repo.load();
+      await this.repo.loadTombstones();
       const syncState = await this.repo.loadState();
       this.lastSyncedAt = syncState.lastSyncedAt || null;
-      console.log(`[SYNC] Loaded node map: ${this.repo.size} entries, lastSyncedAt: ${this.lastSyncedAt || 'never'}`);
+      console.log(`[SYNC] Loaded node map: ${this.repo.size} entries, ${this.repo.tombstoneSize} tombstone(s), lastSyncedAt: ${this.lastSyncedAt || 'never'}`);
 
       await this.performInitialFolderSync();
 

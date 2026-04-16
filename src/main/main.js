@@ -998,6 +998,7 @@ app.whenReady().then(async () => {
       updateTrayMenu();
       console.log('[APP] Server auto-restart successful');
     } catch (err) {
+      // Do not clobber settings.serverEnabled here — a transient port conflict (EADDRINUSE on restart) would otherwise silently disable the user's auto-start preference.
       console.error('[APP] Failed to auto-start server:', err);
       errorLogger.error('App', 'Failed to auto-start server', err);
     }

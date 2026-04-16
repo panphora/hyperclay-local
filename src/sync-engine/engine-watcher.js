@@ -219,6 +219,7 @@ module.exports = {
       this.pendingUnlinks.delete(normalizedPath);
       console.log(`[SYNC] Watcher: Local ${type} delete detected: ${normalizedPath} (nodeId ${foundNodeId})`);
       try {
+        // Folder rm -rf requires cascade=true; the platform returns 400 for a non-empty folder otherwise.
         await this._apiDeleteNode(foundNodeId, { cascade: type === 'folder' });
 
         await this.repo.apply(async (map) => {
@@ -350,6 +351,11 @@ module.exports = {
         console.log(`[SYNC] Watcher: Local ${type} move+rename detected: ${oldPath} → ${newPath}`);
         const targetParentId = this.resolveParentIdByPath(newFolderPath);
         await this._apiMoveNode(pending.nodeId, targetParentId, addBasename);
+      }
+
+      // Tombstone oldPath so a stale tab still holding the pre-move URL gets a 409 on /save instead of creating a ghost node.
+      if (oldPath !== newPath) {
+        await this.repo.addTombstone(oldPath);
       }
 
       await this.repo.set(pending.nodeId, {
@@ -789,6 +795,11 @@ module.exports = {
         console.log(`[SYNC] Watcher: Local folder move+rename detected: ${plan.oldPath} → ${plan.newPath}`);
         const targetParentId = this.resolveParentIdByPath(newFolderPath);
         await this._apiMoveNode(plan.pending.nodeId, targetParentId, addBasename);
+      }
+
+      // Tombstone the folder and every descendant's old path — a stale tab on any descendant URL gets a 409 on /save.
+      if (plan.oldPath !== plan.newPath) {
+        await this.repo.addTombstones([plan.oldPath, ...plan.oldDescendants.map(d => d.entry.path)]);
       }
 
       await this.repo.apply(async (map) => {

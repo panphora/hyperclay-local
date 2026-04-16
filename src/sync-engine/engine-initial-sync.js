@@ -185,12 +185,12 @@ module.exports = {
     map.set(String(serverFile.nodeId), { path: relativePath, checksum: existingEntry.checksum || null, inode: existingEntry.inode || null, syncedAt: existingEntry.syncedAt });
 
     if (!localExists) {
-      // Offline-rename pre-check (BUG-4): if the existing entry has an inode and a
-      // local file with that inode is present elsewhere on disk, the user renamed
-      // the file while offline. Skip the download and let detectLocalChanges
-      // correlate the rename against the preserved inode. Downloading first would
-      // overwrite the entry's inode with the new file's inode, breaking the
-      // inode-match strategy and producing a duplicate node + orphan file.
+      // Offline-rename pre-check: if the existing entry has an inode and a local
+      // file with that inode is present elsewhere on disk, the user renamed the
+      // file while offline. Skip the download and let detectLocalChanges correlate
+      // the rename against the preserved inode. Downloading first would overwrite
+      // the entry's inode with the new file's inode, breaking the inode-match
+      // strategy and producing a duplicate node + orphan file.
       if (existingEntry.inode) {
         let inodeMatchPath = null;
         for (const [candidatePath] of localFiles) {
@@ -445,8 +445,10 @@ module.exports = {
       if (handled) continue;
 
       // 4. No match → LOCAL DELETE
-      // Check for delete conflict: if server modified the file after this entry's last sync, re-download instead.
-      // Per-entry syncedAt avoids the global-lastSyncedAt staleness that misclassifies watcher-uploaded files.
+      // Check for delete conflict using per-entry syncedAt (falling back to the
+      // global lastSyncedAt for legacy entries). The global timestamp alone is
+      // stale for watcher-uploaded files and produces false-positive re-downloads
+      // when a file is deleted while offline.
       const entrySyncedAt = entry.syncedAt ?? this.lastSyncedAt;
       if (serverNode.modifiedAt && new Date(serverNode.modifiedAt).getTime() > entrySyncedAt) {
         console.log(`[SYNC] Delete conflict: ${entry.path} deleted locally but modified on server — re-downloading`);

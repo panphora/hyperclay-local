@@ -179,7 +179,7 @@ describe('reconcileServerFile — nodeId move detection', () => {
   });
 });
 
-describe('reconcileServerFile — offline rename (BUG-4)', () => {
+describe('reconcileServerFile — offline rename', () => {
   test('defers download and detects rename via inode match (no duplicate node)', async () => {
     const content = '<html>renamed offline</html>';
     const cs = checksum(content);

@@ -236,6 +236,7 @@ module.exports = {
 
       if (result.nodeId) {
         const inode = await nodeMap.getInode(path.join(this.syncFolder, filename));
+        // Record syncedAt on every upload so delete-conflict checks use per-file timestamps instead of the stale global lastSyncedAt.
         await this.repo.set(result.nodeId, { type: 'site', path: filename, checksum: localChecksum, inode, syncedAt: Date.now() });
       }
 

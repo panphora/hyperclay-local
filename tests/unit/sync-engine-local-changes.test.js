@@ -156,7 +156,7 @@ describe('detectLocalChanges — local delete', () => {
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
   });
 
-  test('deletes when entry.syncedAt is newer than server modifiedAt (BUG-5)', async () => {
+  test('deletes when entry.syncedAt is newer than server modifiedAt', async () => {
     // The watcher uploaded this file recently; entry.syncedAt reflects that.
     // The global lastSyncedAt is stale (initial sync timestamp).
     // Without per-file syncedAt this would false-positive as a server conflict.
@@ -203,8 +203,7 @@ describe('detectLocalChanges — local delete', () => {
   });
 
   test('falls back to lastSyncedAt when entry has no syncedAt (legacy entry)', async () => {
-    // Legacy entry from before BUG-5 fix — no syncedAt field.
-    // Should behave exactly as today: use global lastSyncedAt for comparison.
+    // Legacy entry without a syncedAt field — should fall back to global lastSyncedAt for comparison.
     syncEngine.lastSyncedAt = new Date('2024-06-01').getTime();
     syncEngine.repo.seed([['42', entry('my-site.html', 'abc', 111)]]); // no syncedAt
     syncEngine.serverFilesCache = [

@@ -4,6 +4,12 @@ const crypto = require('crypto');
 
 const MAP_FILE = 'node-map.json';
 const STATE_FILE = 'sync-state.json';
+// Tombstones record paths whose nodes have been renamed/moved away; the local
+// /save guard consults them so stale-tab writes to the pre-move URL return 409.
+const TOMBSTONES_FILE = 'tombstones.json';
+// Bounds the tombstone set size: entries older than this are pruned on load.
+// Anything shorter than a stale tab's realistic lifetime is safe here.
+const TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 async function atomicWrite(filePath, data) {
   const tmpPath = filePath + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
@@ -112,4 +118,38 @@ function walkDescendants(map, folderPath) {
   return results;
 }
 
-module.exports = { load, save, loadState, saveState, getInode, walkDescendants };
+async function loadTombstones(metaDir) {
+  const filePath = path.join(metaDir, TOMBSTONES_FILE);
+  let data;
+  try {
+    data = await fs.readFile(filePath, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return new Map();
+    throw err;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(data);
+  } catch (err) {
+    console.warn(`[SYNC] Corrupt ${TOMBSTONES_FILE}; starting with empty tombstone set`);
+    return new Map();
+  }
+
+  const map = new Map();
+  const cutoff = Date.now() - TOMBSTONE_TTL_MS;
+  for (const [key, value] of Object.entries(parsed)) {
+    if (typeof value === 'number' && value >= cutoff) {
+      map.set(key, value);
+    }
+  }
+  return map;
+}
+
+async function saveTombstones(metaDir, map) {
+  await fs.mkdir(metaDir, { recursive: true });
+  const obj = Object.fromEntries(map);
+  await atomicWrite(path.join(metaDir, TOMBSTONES_FILE), JSON.stringify(obj, null, 2));
+}
+
+module.exports = { load, save, loadState, saveState, getInode, walkDescendants, loadTombstones, saveTombstones };
