@@ -690,7 +690,7 @@ module.exports = {
 
           if (!localExists) {
             // New file on server
-            await this.downloadFile(serverFile.nodeId);
+            await this.downloadFile(serverFile.nodeId, relativePath);
             this.stats.filesDownloaded++;
             changesFound = true;
             if (serverFile.nodeId) {
@@ -711,7 +711,7 @@ module.exports = {
                 await this.uploadFile(relativePath);
               } else {
                 // Download newer version from server
-                await this.downloadFile(serverFile.nodeId);
+                await this.downloadFile(serverFile.nodeId, relativePath);
                 this.stats.filesDownloaded++;
                 changesFound = true;
                 if (serverFile.nodeId) {

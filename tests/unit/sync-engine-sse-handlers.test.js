@@ -349,7 +349,7 @@ describe('checkForRemoteChanges', () => {
 
       await syncEngine.checkForRemoteChanges();
 
-      expect(syncEngine.downloadFile).toHaveBeenCalledWith(1);
+      expect(syncEngine.downloadFile).toHaveBeenCalledWith(1, 'my-site.html');
       expect(syncEngine.uploadFile).not.toHaveBeenCalled();
     });
   });

@@ -32,20 +32,11 @@ module.exports = {
   /**
    * Download a site file from server by nodeId.
    *
-   * The local path is resolved from `this.serverFilesCache`, which the caller
-   * must have populated via `fetchAndCacheServerFiles()` earlier in the same
-   * sync cycle — all current call sites do this when they build the serverFiles
-   * list they're iterating over.
-   *
    * @param {number} nodeId - Server node id
+   * @param {string} relativePath - Path WITH extension (caller passes explicitly; see note below)
    */
-  async downloadFile(nodeId) {
-    const serverFile = this.serverFilesCache?.find(f => f.nodeId === nodeId);
-    if (!serverFile) {
-      throw new Error(`downloadFile: nodeId ${nodeId} not in server files cache — call fetchAndCacheServerFiles first`);
-    }
-    const relativePath = serverFile.path;
-
+  // Path is passed in rather than looked up from serverFilesCache — uploadFile() invalidates that cache mid-loop, which used to break the next downloadFile in the same iteration.
+  async downloadFile(nodeId, relativePath) {
     try {
       const { content, modifiedAt } = await getNodeContent(
         this.serverUrl,

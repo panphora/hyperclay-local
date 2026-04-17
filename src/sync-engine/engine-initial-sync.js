@@ -215,7 +215,7 @@ module.exports = {
       }
 
       try {
-        await this.downloadFile(serverFile.nodeId);
+        await this.downloadFile(serverFile.nodeId, relativePath);
         this.stats.filesDownloaded++;
         const inode = await nodeMap.getInode(localPath);
         const content = await readFile(localPath).catch(() => null);
@@ -274,7 +274,7 @@ module.exports = {
         return;
       }
 
-      await this.downloadFile(serverFile.nodeId);
+      await this.downloadFile(serverFile.nodeId, relativePath);
       this.stats.filesDownloaded++;
       const dlContent = await readFile(localPath).catch(() => null);
       const dlChecksum = dlContent ? await calculateChecksum(dlContent) : null;
@@ -461,7 +461,7 @@ module.exports = {
           });
         }
         try {
-          await this.downloadFile(serverNode.id);
+          await this.downloadFile(serverNode.id, serverPath);
         } catch (err) {
           console.error(`[SYNC] Failed to re-download ${serverPath} after delete conflict:`, err.message);
         }
