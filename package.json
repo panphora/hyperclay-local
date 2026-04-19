@@ -23,6 +23,7 @@
     "clean": "node build-scripts/clean-dist.js",
     "clean-mac": "node build-scripts/clean-dist.js mac",
     "clean-linux": "node build-scripts/clean-dist.js linux",
+    "clean-windows": "node build-scripts/clean-dist.js windows",
     "build-all": "npm test && npm run build-icons && npm run clean && npm run build-css && npm run build-react-prod && electron-builder --mac --linux && node build-scripts/move-executables.js linux",
     "linux-build:run": "npm test && npm run build-icons && npm run clean-linux && npm run build-css && npm run build-react-prod && electron-builder --linux && node build-scripts/move-executables.js linux",
     "mac-build:run": "npm test && npm run build-icons && npm run clean-mac && npm run build-css && npm run build-react-prod && electron-builder --mac",
