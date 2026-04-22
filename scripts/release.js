@@ -495,7 +495,7 @@ async function main() {
 
     try {
       const recommendation = execSafe(
-        `echo ${JSON.stringify(gitLog)} | npx @anthropic-ai/claude-code -p "Based on these git commit messages, should this be a patch or minor release? Reply with a single word: patch or minor"`,
+        `echo ${JSON.stringify(gitLog)} | claude -p "Based on these git commit messages, should this be a patch or minor release? Reply with a single word: patch or minor"`,
         { stdio: 'pipe' }
       ).trim().toLowerCase();
 
