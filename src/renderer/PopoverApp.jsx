@@ -67,6 +67,27 @@ const BevelButton = ({ label, onClick, variant, disabled, small, style: extraSty
   );
 };
 
+const STATE_CACHE_KEY = 'hyperclayPopoverStateCache';
+const DEFAULT_STATE = {
+  selectedFolder: null,
+  serverRunning: false,
+  serverPort: 4321,
+  syncEnabled: false,
+  syncStatus: { isRunning: false, username: null, stats: { lastSync: null } },
+};
+
+// Paint the popover from last-known state so it stays responsive even when
+// the main process is blocked (e.g. first-launch safeStorage Keychain hit).
+const readCachedState = () => {
+  try {
+    const raw = localStorage.getItem(STATE_CACHE_KEY);
+    if (!raw) return DEFAULT_STATE;
+    return { ...DEFAULT_STATE, ...JSON.parse(raw) };
+  } catch {
+    return DEFAULT_STATE;
+  }
+};
+
 const PopoverApp = () => {
   const [arrowX, setArrowX] = useState(null);
   const [arrowPosition, setArrowPosition] = useState('top');
@@ -75,13 +96,7 @@ const PopoverApp = () => {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [updateVersion, setUpdateVersion] = useState(null);
 
-  const [state, setState] = useState({
-    selectedFolder: null,
-    serverRunning: false,
-    serverPort: 4321,
-    syncEnabled: false,
-    syncStatus: { isRunning: false, username: null, stats: { lastSync: null } },
-  });
+  const [state, setState] = useState(readCachedState);
 
   // Error queue
   const [errorQueue, setErrorQueue] = useState([]);
@@ -137,6 +152,14 @@ const PopoverApp = () => {
   const clearAllErrors = () => {
     setErrorQueue([]);
   };
+
+  // Persist state to localStorage so the next popover open can paint instantly
+  // from cache, even if the main process is momentarily unresponsive.
+  useEffect(() => {
+    try {
+      localStorage.setItem(STATE_CACHE_KEY, JSON.stringify(state));
+    } catch {}
+  }, [state]);
 
   useEffect(() => {
     if (!window.electronAPI) return;

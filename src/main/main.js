@@ -955,54 +955,64 @@ app.whenReady().then(async () => {
 
   createTray();
 
+  // Eagerly create the popover window (hidden) so its renderer hydrates during
+  // launch. First tray click then shows an already-loaded window even if the
+  // main thread is mid-block in sync auto-restart.
+  popover.createPopoverWindow();
+
   checkForUpdates();
 
-  // Auto-restart sync if it was enabled before quit
-  if (settings.syncEnabled && settings.hasApiKey && settings.syncFolder) {
-    console.log('[APP] Auto-restarting sync from previous session...');
+  // Defer sync + server auto-restart until after whenReady resolves, so the
+  // tray and popover are fully interactive before any potentially-blocking work
+  // (safeStorage.decryptString can block for seconds on first call after a
+  // code-signature change).
+  setImmediate(async () => {
+    if (settings.syncEnabled && settings.hasApiKey && settings.syncFolder) {
+      console.log('[APP] Auto-restarting sync from previous session...');
 
-    const apiKey = getDecryptedApiKey();
-    if (apiKey) {
-      const result = await handleSyncStart(
-        apiKey,
-        settings.syncUsername,
-        settings.syncFolder,
-        settings.serverUrl
-      );
+      const apiKey = getDecryptedApiKey();
+      if (apiKey) {
+        const result = await handleSyncStart(
+          apiKey,
+          settings.syncUsername,
+          settings.syncFolder,
+          settings.serverUrl
+        );
 
-      if (result.success) {
-        console.log('[APP] Sync auto-restart successful');
+        if (result.success) {
+          console.log('[APP] Sync auto-restart successful');
+        } else {
+          console.error('[APP] Sync auto-restart failed:', result);
+          syncLogger.error('App', 'Sync auto-restart failed', result);
+          sendToPopover('sync-update', { syncing: false, error: result.error || 'Sync failed to restart automatically' });
+          settings.syncEnabled = false;
+          saveSettings(settings);
+        }
       } else {
-        console.error('[APP] Sync auto-restart failed:', result);
-        syncLogger.error('App', 'Sync auto-restart failed', result);
-        sendToPopover('sync-update', { syncing: false, error: result.error || 'Sync failed to restart automatically' });
+        console.error('[APP] Failed to auto-restart sync: could not decrypt API key');
+        syncLogger.error('App', 'Failed to auto-restart sync: could not decrypt API key');
+        sendToPopover('sync-update', { syncing: false, error: 'Could not decrypt API key — please re-enter your credentials' });
         settings.syncEnabled = false;
         saveSettings(settings);
       }
-    } else {
-      console.error('[APP] Failed to auto-restart sync: could not decrypt API key');
-      syncLogger.error('App', 'Failed to auto-restart sync: could not decrypt API key');
-      sendToPopover('sync-update', { syncing: false, error: 'Could not decrypt API key — please re-enter your credentials' });
-      settings.syncEnabled = false;
-      saveSettings(settings);
     }
-  }
 
-  // Auto-restart server if it was enabled before quit
-  if (settings.serverEnabled && settings.serverFolder) {
-    console.log('[APP] Auto-restarting server from previous session...');
-    try {
-      selectedFolder = settings.serverFolder;
-      await startServer(selectedFolder, getDevHooks(), isKnownPath);
-      serverRunning = isServerRunning();
-      updateTrayMenu();
-      console.log('[APP] Server auto-restart successful');
-    } catch (err) {
-      // Do not clobber settings.serverEnabled here — a transient port conflict (EADDRINUSE on restart) would otherwise silently disable the user's auto-start preference.
-      console.error('[APP] Failed to auto-start server:', err);
-      errorLogger.error('App', 'Failed to auto-start server', err);
+    if (settings.serverEnabled && settings.serverFolder) {
+      console.log('[APP] Auto-restarting server from previous session...');
+      try {
+        selectedFolder = settings.serverFolder;
+        await startServer(selectedFolder, getDevHooks(), isKnownPath);
+        serverRunning = isServerRunning();
+        updateTrayMenu();
+        updateUI();
+        console.log('[APP] Server auto-restart successful');
+      } catch (err) {
+        // Do not clobber settings.serverEnabled here — a transient port conflict (EADDRINUSE on restart) would otherwise silently disable the user's auto-start preference.
+        console.error('[APP] Failed to auto-start server:', err);
+        errorLogger.error('App', 'Failed to auto-start server', err);
+      }
     }
-  }
+  });
 
   // On first launch, auto-show popover so user isn't staring at an empty tray
   if (!settings.selectedFolder && !settings.syncFolder) {
