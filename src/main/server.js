@@ -100,6 +100,17 @@ function resolveResourceFromHref(href) {
   return path.normalize(pathname);
 }
 
+// `/_/<action>` system-route marker (mirrors hyperclay's SYSTEM_ROUTE_MARKER = '_').
+// Strips a leading `/_/` so `/_/save` → `/save`, `/_/live-sync/stream?x` →
+// `/live-sync/stream?x`. Non-marker URLs pass through unchanged. Pure + exported
+// for testing (the server binds a hardcoded port, so we don't boot it in unit tests).
+function stripSystemRouteMarker(url) {
+  if (typeof url === 'string' && url.startsWith('/_/')) {
+    return url.slice(2); // drop leading "/_", keep the rest starting at "/"
+  }
+  return url;
+}
+
 function startServer(baseDir, devHooks = null, isKnownPath = null) {
   return new Promise((resolve, reject) => {
     if (server) {
@@ -116,6 +127,17 @@ function startServer(baseDir, devHooks = null, isKnownPath = null) {
     }
 
     app = express();
+
+    // `/_/<action>` system-route marker: forward `/_/`-prefixed requests to the
+    // bare route so URLs emitted by newer hyperclayjs (e.g. `/_/save`,
+    // `/_/live-sync/stream`) resolve to the same handlers. Mirrors the hyperclay
+    // platform server (SYSTEM_ROUTE_MARKER = '_'). Bare routes stay working, so
+    // apps embedding older hyperclayjs are unaffected. Runs before the
+    // path-scoped body parsers and routes below.
+    app.use((req, res, next) => {
+      req.url = stripSystemRouteMarker(req.url);
+      next();
+    });
 
     // Cookie options for all local development cookies
     const cookieOptions = {
@@ -658,5 +680,6 @@ module.exports = {
   getAndClearSnapshot,  // For sync engine to get cached snapshot HTML for platform sync
   // Exported for testing
   resolveResourceFromHref,
-  validateAndResolvePath
+  validateAndResolvePath,
+  stripSystemRouteMarker
 };
