@@ -82,7 +82,7 @@ function decodeContent(content, nodeType) {
  * @returns {Promise<Array<{ id, type, name, parentId, path, size?, modifiedAt?, checksum? }>>}
  */
 async function listNodes(serverUrl, apiKey) {
-  const url = `${serverUrl}/sync/nodes`;
+  const url = `${serverUrl}/_/sync/nodes`;
   console.log(`[API] Listing nodes from: ${url}`);
 
   const data = await apiFetch(url, {
@@ -109,7 +109,7 @@ async function listNodes(serverUrl, apiKey) {
  * @returns {Promise<{ id, type, name, parentId, path }>}
  */
 async function createNode(serverUrl, apiKey, { type, name, parentId, content, modifiedAt }) {
-  const url = `${serverUrl}/sync/nodes`;
+  const url = `${serverUrl}/_/sync/nodes`;
   console.log(`[API] Creating ${type} node: ${name} (parentId=${parentId})`);
 
   const body = { type, name, parentId };
@@ -140,7 +140,7 @@ async function createNode(serverUrl, apiKey, { type, name, parentId, content, mo
  * @returns {Promise<{ content: string|Buffer, nodeType: string, modifiedAt: string, checksum: string, size: number }>}
  */
 async function getNodeContent(serverUrl, apiKey, nodeId) {
-  const url = `${serverUrl}/sync/nodes/${nodeId}/content`;
+  const url = `${serverUrl}/_/sync/nodes/${nodeId}/content`;
   console.log(`[API] Downloading content for node ${nodeId}`);
 
   const data = await apiFetch(url, {
@@ -169,7 +169,7 @@ async function getNodeContent(serverUrl, apiKey, nodeId) {
  * @returns {Promise<{ nodeId: number, checksum: string, size?: number }>}
  */
 async function putNodeContent(serverUrl, apiKey, nodeId, content, options = {}) {
-  const url = `${serverUrl}/sync/nodes/${nodeId}/content`;
+  const url = `${serverUrl}/_/sync/nodes/${nodeId}/content`;
   console.log(`[API] Writing content for node ${nodeId}`);
 
   const body = { content: encodeContent(content) };
@@ -200,7 +200,7 @@ async function putNodeContent(serverUrl, apiKey, nodeId, content, options = {}) 
  * @returns {Promise<{ nodeId: number, oldName: string, newName: string }>}
  */
 async function renameNode(serverUrl, apiKey, nodeId, newName) {
-  const url = `${serverUrl}/sync/nodes/${nodeId}/rename`;
+  const url = `${serverUrl}/_/sync/nodes/${nodeId}/rename`;
   console.log(`[API] Renaming node ${nodeId} → ${newName}`);
 
   return apiFetch(url, {
@@ -227,7 +227,7 @@ async function renameNode(serverUrl, apiKey, nodeId, newName) {
  * @returns {Promise<{ nodeId: number, fromPath: string, toPath: string, oldName: string, newName: string }>}
  */
 async function moveNode(serverUrl, apiKey, nodeId, targetParentId, newName = null) {
-  const url = `${serverUrl}/sync/nodes/${nodeId}/move`;
+  const url = `${serverUrl}/_/sync/nodes/${nodeId}/move`;
   if (newName) {
     console.log(`[API] Moving node ${nodeId} → parent ${targetParentId} (rename → ${newName})`);
   } else {
@@ -257,8 +257,8 @@ async function moveNode(serverUrl, apiKey, nodeId, targetParentId, newName = nul
  */
 async function deleteNode(serverUrl, apiKey, nodeId, { cascade = false } = {}) {
   const url = cascade
-    ? `${serverUrl}/sync/nodes/${nodeId}?cascade=true`
-    : `${serverUrl}/sync/nodes/${nodeId}`;
+    ? `${serverUrl}/_/sync/nodes/${nodeId}?cascade=true`
+    : `${serverUrl}/_/sync/nodes/${nodeId}`;
   console.log(`[API] Deleting node ${nodeId}${cascade ? ' (cascade)' : ''}`);
 
   return apiFetch(url, {
@@ -275,7 +275,7 @@ async function deleteNode(serverUrl, apiKey, nodeId, { cascade = false } = {}) {
  * Get server status and time (for clock calibration).
  */
 async function getServerStatus(serverUrl, apiKey) {
-  const url = `${serverUrl}/sync/status`;
+  const url = `${serverUrl}/_/sync/status`;
   console.log(`[API] Getting server status from: ${url}`);
 
   const data = await apiFetch(url, {

@@ -489,7 +489,7 @@ module.exports = {
       this.sseReconnectTimer = null;
     }
 
-    const url = `${this.serverUrl}/sync/stream`;
+    const url = `${this.serverUrl}/_/sync/stream`;
     console.log(`[SYNC] Connecting to SSE stream: ${url}`);
 
     const apiKey = this.apiKey;

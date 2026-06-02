@@ -62,7 +62,7 @@ function isFutureFile(mtime, clockOffset) {
  */
 async function calibrateClock(serverUrl, apiKey, logger = null) {
   try {
-    const response = await fetch(`${serverUrl}/sync/status`, {
+    const response = await fetch(`${serverUrl}/_/sync/status`, {
       headers: {
         'X-API-Key': apiKey
       }

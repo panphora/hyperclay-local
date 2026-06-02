@@ -735,7 +735,7 @@ ipcMain.handle('set-api-key', async (event, key, serverUrl) => {
     const baseUrl = getServerBaseUrl(serverUrl);
     console.log(`[SYNC] Validating API key with server: ${baseUrl}`);
 
-    const response = await fetch(`${baseUrl}/sync/status`, {
+    const response = await fetch(`${baseUrl}/_/sync/status`, {
       headers: { 'X-API-Key': key }
     });
 
