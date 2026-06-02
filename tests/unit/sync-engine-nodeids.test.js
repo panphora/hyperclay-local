@@ -213,7 +213,9 @@ describe('reconcileServerFile — offline rename', () => {
     expect(syncEngine.repo.size).toBe(1);
   });
 
-  test('falls through to download when entry has no inode (legacy entry)', async () => {
+  test('offline rename (no inode, checksum match) renames instead of redownloading', async () => {
+    // Option D: a known file missing at its unchanged server path is NOT redownloaded.
+    // It is deferred to detectLocalChanges, which here matches the rename by checksum.
     const content = '<html>legacy</html>';
     const cs = checksum(content);
 
@@ -233,12 +235,15 @@ describe('reconcileServerFile — offline rename', () => {
 
     await syncEngine.performInitialSync();
 
-    expect(apiClient.getNodeContent).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test', 42
+    expect(apiClient.getNodeContent).not.toHaveBeenCalled();
+    expect(apiClient.renameNode).toHaveBeenCalledWith(
+      'http://localhyperclay.com', 'hcsk_test', 42, 'new-name.html'
     );
   });
 
-  test('falls through to download when no local inode matches', async () => {
+  test('offline delete (no local match) propagates the delete instead of redownloading', async () => {
+    // Option D: a known file gone from its unchanged server path with no rename
+    // target is a genuine offline delete — propagate it, do NOT resurrect it.
     syncEngine.repo.seed([['42', entry('old-name.html', 'serverchecksum', 99999)]]);
     syncEngine.lastSyncedAt = new Date('2024-05-01').getTime();
 
@@ -254,8 +259,9 @@ describe('reconcileServerFile — offline rename', () => {
 
     await syncEngine.performInitialSync();
 
-    expect(apiClient.getNodeContent).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test', 42
+    expect(apiClient.getNodeContent).not.toHaveBeenCalled();
+    expect(apiClient.deleteNode).toHaveBeenCalledWith(
+      'http://localhyperclay.com', 'hcsk_test', 42, { cascade: false }
     );
   });
 });

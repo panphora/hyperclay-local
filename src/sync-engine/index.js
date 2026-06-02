@@ -183,6 +183,18 @@ class SyncEngine extends EventEmitter {
       this.lastSyncedAt = syncState.lastSyncedAt || null;
       console.log(`[SYNC] Loaded node map: ${this.repo.size} entries, ${this.repo.tombstoneSize} tombstone(s), lastSyncedAt: ${this.lastSyncedAt || 'never'}`);
 
+      // If the node-map loaded empty but we have a lastSyncedAt, the map was lost
+      // (corruption, or an interrupted prior sync). Comparing server state against
+      // an empty baseline would let offline-delete detection fire against files we
+      // simply lost track of. Treat this as a first sync so nothing gets deleted.
+      if (this.lastSyncedAt && this.repo.size === 0) {
+        console.warn('[SYNC] Node map empty but lastSyncedAt set — treating as first sync to avoid false deletes');
+        if (this.logger) {
+          this.logger.warn('SYNC', 'Node map empty but lastSyncedAt set — resetting to first-sync to avoid false deletes', { lastSyncedAt: this.lastSyncedAt });
+        }
+        this.lastSyncedAt = null;
+      }
+
       await this.performInitialFolderSync();
 
       // Perform initial sync for sites
