@@ -164,6 +164,26 @@ describe('Option D — offline deletes propagate (do not resurrect)', () => {
   });
 });
 
+describe('Folder safety — a failed local create never deletes the live server folder', () => {
+  test('mkdir failure on a baseline folder does not propagate a server delete', async () => {
+    // Baseline folder, still on the server at the same path, but missing from disk.
+    syncEngine.repo.seed([
+      ['9100', { type: 'folder', path: 'proj', parentId: null, inode: 222, syncedAt: new Date('2024-05-01').getTime() }]
+    ]);
+    apiClient.listNodes.mockResolvedValue([
+      { id: 9100, type: 'folder', name: 'proj', path: '', parentId: null }
+    ]);
+    fileOps.getLocalFolders.mockResolvedValue(new Map());
+    // Local recreate fails (e.g. a file occupies that path); the folder stays absent on disk.
+    fileOps.ensureDirectory.mockRejectedValue(new Error('EEXIST: file already exists'));
+
+    await syncEngine.performInitialFolderSync();
+
+    // The footgun would have cascade-deleted the live server folder + subtree.
+    expect(apiClient.deleteNode).not.toHaveBeenCalled();
+  });
+});
+
 describe('Option D — server-edit wins on delete conflict (uploads)', () => {
   test('upload deleted locally but edited on the server is re-downloaded, not deleted', async () => {
     syncEngine.lastSyncedAt = new Date('2024-01-01').getTime();

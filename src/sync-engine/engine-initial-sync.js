@@ -828,7 +828,13 @@ module.exports = {
     const knownNodeIdsAtStart = new Set([...this.repo].map(([nid]) => nid));
 
     // Step 1: Ensure all server folders exist locally and are tracked in the repo.
+    // Track folders whose local create FAILED. The delete branch in detect is only
+    // reachable when a server folder is still missing on disk after this loop, which
+    // means ensureDirectory threw — never a confirmed user delete. Without this guard
+    // a transient mkdir failure would cascade-delete the live server folder and its
+    // entire subtree.
     let added = 0;
+    const failedFolderCreates = new Set();
     await this.repo.apply(async (map) => {
       for (const folder of serverFolders) {
         const fullPath = folder.path ? `${folder.path}/${folder.name}` : folder.name;
@@ -838,6 +844,7 @@ module.exports = {
           await ensureDirectory(localPath);
         } catch (error) {
           console.warn(`[SYNC] Could not create local folder ${fullPath}:`, error.message);
+          failedFolderCreates.add(fullPath);
         }
 
         const inode = await nodeMap.getInode(localPath);
@@ -856,7 +863,7 @@ module.exports = {
     // Only runs when we have a baseline to compare against (not first-ever sync).
     if (this.lastSyncedAt) {
       const localFolders = await getLocalFolders(this.syncFolder, this.logger);
-      await this.detectLocalFolderChanges(allServerNodes, serverNodeIds, localFolders, knownNodeIdsAtStart);
+      await this.detectLocalFolderChanges(allServerNodes, serverNodeIds, localFolders, knownNodeIdsAtStart, failedFolderCreates);
     }
 
     console.log('[SYNC] Initial folder sync complete');
@@ -865,7 +872,7 @@ module.exports = {
   /**
    * Detect local folder structural changes (rename/move/delete) that happened while offline.
    */
-  async detectLocalFolderChanges(allServerNodes, serverNodeIds, localFolders, knownNodeIdsAtStart) {
+  async detectLocalFolderChanges(allServerNodes, serverNodeIds, localFolders, knownNodeIdsAtStart, failedFolderCreates) {
     const serverNodeById = new Map(allServerNodes.map(n => [String(n.id), n]));
 
     const trackedFolderPaths = new Map(); // relativePath → nid
@@ -894,6 +901,7 @@ module.exports = {
 
         if (serverPath !== entry.path) continue; // server moved it — server wins
         if (localFolders.has(entry.path)) continue; // folder still at expected path
+        if (failedFolderCreates && failedFolderCreates.has(entry.path)) continue; // local create failed this pass — never delete the live server folder over a local mkdir failure
 
         // Folder is gone from its expected local path but still exists on server.
         // Find where it went using inode identity.
