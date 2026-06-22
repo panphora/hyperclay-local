@@ -12,6 +12,8 @@ const {
 const { liveSync } = require('livesync-hyperclay');
 const errorLogger = require('./error-logger');
 const formatHtml = require('./format-html');
+const { serveSiteApiLocal, extractSiteDataLocal } = require('./utils/data-api');
+const { writeApiSidecar } = require('./utils/api-sidecar');
 
 // Initialize Eta
 const eta = new Eta({
@@ -79,6 +81,19 @@ async function serveHtml(res, filePath) {
   return res.send(html);
 }
 
+// Translate a data-api result object ({ status, headers?, json?, raw? }) into a
+// response. `raw` is a JSON string sent verbatim (res.json would double-encode it);
+// `json` is an object sent via res.json.
+function sendApiResult(res, result) {
+  if (result.headers) {
+    for (const [key, value] of Object.entries(result.headers)) res.setHeader(key, value);
+  }
+  if (result.raw !== undefined) {
+    return res.status(result.status).type('application/json').send(result.raw);
+  }
+  return res.status(result.status).json(result.json);
+}
+
 function resolveResourceFromHref(href) {
   let pathname;
   try {
@@ -111,22 +126,11 @@ function stripSystemRouteMarker(url) {
   return url;
 }
 
-function startServer(baseDir, devHooks = null, isKnownPath = null) {
-  return new Promise((resolve, reject) => {
-    if (server) {
-      return reject(new Error('Server is already running'));
-    }
-
-    if (!snapshotCleanupTimer) {
-      snapshotCleanupTimer = setInterval(() => {
-        const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-        for (const [key, entry] of pendingSnapshots) {
-          if (entry.timestamp < fiveMinutesAgo) pendingSnapshots.delete(key);
-        }
-      }, 60 * 1000);
-    }
-
-    app = express();
+// Build and return the configured Express app without listening. Split out of
+// startServer so tests can drive the real route wiring (ordering + the marker gate)
+// via supertest against an ephemeral port instead of the hardcoded 4321.
+function createApp(baseDir, devHooks = null, isKnownPath = null) {
+    const app = express();
 
     // `/_/<action>` system-route marker: forward `/_/`-prefixed requests to the
     // bare route so URLs emitted by newer hyperclayjs (e.g. `/_/save`,
@@ -369,6 +373,16 @@ function startServer(baseDir, devHooks = null, isKnownPath = null) {
         // Key is full path with extension so it matches engine-watcher's wasBrowserSave check.
         liveSync.markBrowserSave(name);
 
+        // Refresh the per-site API data sidecar BEFORE the fallible Tailwind compile,
+        // so a Tailwind failure can't skip it and leave stale API data on disk
+        // (mirrors the platform ordering in node-content.js). Non-fatal: a sidecar
+        // error must never fail the save.
+        try {
+          await writeApiSidecar(baseDir, name, content);
+        } catch (e) {
+          console.error('writeApiSidecar failed (non-fatal):', e && e.message ? e.message : e);
+        }
+
         // Generate Tailwind CSS if site uses it. `tailwindName` from
         // getTailwindCssName includes any path prefix present in the URL
         // (e.g. "blog/post"), so path.join naturally nests the CSS file. After
@@ -441,6 +455,59 @@ function startServer(baseDir, devHooks = null, isKnownPath = null) {
         return res.send(css);
       } catch {
         return res.send('');
+      }
+    });
+
+    // `/_/api/<name>.html` — per-site data API (parity with hyperclay.com's
+    // serveSiteApi). Gated on req.originalUrl so a BARE `/api/...` request still
+    // falls through to a user's real `api/` folder; only the `/_/` marker form is
+    // treated as the data API. Must come before the static catch-all. Reads the
+    // requested extension (unlike the Tailwind route, which hardcodes .html), since
+    // .htmlclay sites exist locally too.
+    app.get(/^\/api\/(.+)\.(html|htmlclay)$/, async (req, res, next) => {
+      if (!req.originalUrl.startsWith('/_/api/')) return next();
+      const name = `${req.params[0]}.${req.params[1]}`;
+      const validated = validateAndResolvePath(name, baseDir);
+      if (validated.error) {
+        return res.status(400).json({ error: validated.error });
+      }
+      try {
+        return sendApiResult(res, await serveSiteApiLocal(baseDir, name));
+      } catch (error) {
+        console.error('Site API endpoint error:', error);
+        return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });
+      }
+    });
+
+    // `/_/api` or `/_/api/` with no file → index.html's data (parity nicety).
+    app.get(/^\/api\/?$/, async (req, res, next) => {
+      if (!req.originalUrl.startsWith('/_/api')) return next();
+      try {
+        return sendApiResult(res, await serveSiteApiLocal(baseDir, 'index.html'));
+      } catch (error) {
+        console.error('Site API endpoint error:', error);
+        return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });
+      }
+    });
+
+    // `<name>.html?data={...}` — query-driven extraction (parity with
+    // extractSiteData). Intercepts a GET that carries ?data= before the static
+    // catch-all serves the raw HTML; a no-data GET passes straight through.
+    app.get(/.*/, async (req, res, next) => {
+      if (req.query.data === undefined) return next();
+      const requestedPath = req.path.replace(/^\//, '');
+      const htmlMatch = requestedPath.match(/^(.*?\.html(?:clay)?)(\/.*)?$/);
+      const name = htmlMatch ? htmlMatch[1] : (req.path === '/' ? 'index.html' : null);
+      if (!name) return next();
+      const validated = validateAndResolvePath(name, baseDir);
+      if (validated.error) {
+        return res.status(400).json({ error: validated.error });
+      }
+      try {
+        return sendApiResult(res, await extractSiteDataLocal(baseDir, name, req.query.data));
+      } catch (error) {
+        console.error('Data endpoint error:', error);
+        return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });
       }
     });
 
@@ -524,6 +591,26 @@ function startServer(baseDir, devHooks = null, isKnownPath = null) {
       errorLogger.error('Server', `Unhandled error: ${req.method} ${req.path}`, err);
       res.status(500).send('Internal server error');
     });
+
+  return app;
+}
+
+function startServer(baseDir, devHooks = null, isKnownPath = null) {
+  return new Promise((resolve, reject) => {
+    if (server) {
+      return reject(new Error('Server is already running'));
+    }
+
+    if (!snapshotCleanupTimer) {
+      snapshotCleanupTimer = setInterval(() => {
+        const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+        for (const [key, entry] of pendingSnapshots) {
+          if (entry.timestamp < fiveMinutesAgo) pendingSnapshots.delete(key);
+        }
+      }, 60 * 1000);
+    }
+
+    app = createApp(baseDir, devHooks, isKnownPath);
 
     // Start the server
     server = app.listen(PORT, 'localhost', (err) => {
@@ -679,6 +766,7 @@ module.exports = {
   isServerRunning,
   getAndClearSnapshot,  // For sync engine to get cached snapshot HTML for platform sync
   // Exported for testing
+  createApp,
   resolveResourceFromHref,
   validateAndResolvePath,
   stripSystemRouteMarker
