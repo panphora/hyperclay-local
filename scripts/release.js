@@ -495,12 +495,15 @@ async function main() {
 
     try {
       const recommendation = execSafe(
-        `echo ${JSON.stringify(gitLog)} | claude -p "Based on these git commit messages, should this be a patch or minor release? Reply with a single word: patch or minor"`,
+        `echo ${JSON.stringify(gitLog)} | env -u CLAUDECODE claude --model sonnet -p "Based on these git commit messages, should this be a patch or minor release? Reply with a single word: patch or minor"`,
         { stdio: 'pipe' }
       ).trim().toLowerCase();
 
-      if (recommendation === 'patch' || recommendation === 'minor') {
-        bumpType = recommendation;
+      // Claude sometimes answers in a sentence rather than a bare word, so take
+      // the first patch/minor token it mentions.
+      const match = recommendation.match(/patch|minor/);
+      if (match) {
+        bumpType = match[0];
         logSuccess(`Claude recommends: ${bumpType}`);
       } else {
         logError(`Unexpected response from Claude: "${recommendation}"`);
