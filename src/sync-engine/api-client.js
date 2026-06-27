@@ -180,6 +180,7 @@ async function putNodeContent(serverUrl, apiKey, nodeId, content, options = {}) 
   }
   if (options.snapshotHtml) body.snapshotHtml = options.snapshotHtml;
   if (options.senderId) body.senderId = options.senderId;
+  if (options.userDriven !== undefined) body.userDriven = options.userDriven;
 
   return apiFetch(url, {
     method: 'PUT',

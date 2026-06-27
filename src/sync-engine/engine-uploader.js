@@ -27,6 +27,7 @@ const { calculateChecksum } = require('./utils');
 const { validateFileName, validateFullPath, validateUploadPath } = require('./validation');
 const { ERROR_PRIORITY } = require('./constants');
 const nodeMap = require('./node-map');
+const dataGuard = require('../main/data-loss-guard');
 
 module.exports = {
   /**
@@ -47,6 +48,21 @@ module.exports = {
       this.resolveContainedPath(relativePath);
       const localPath = path.join(this.syncFolder, relativePath);
 
+      // Data-clobber guard: capture the last-good local body before overwriting,
+      // so a synced-down (external) write that destroys saved data is detectable.
+      // markBrowserSave() below suppresses the watcher, so this is the only place
+      // the guard can see a poll/initial-sync download.
+      const isHtmlSite = /\.(html|htmlclay)$/i.test(relativePath);
+      let preDownloadContent = null;
+      if (isHtmlSite) {
+        try {
+          const existing = await readFile(localPath);
+          preDownloadContent = typeof existing === 'string' ? existing : existing.toString('utf8');
+        } catch {
+          // No local file yet — nothing to clobber.
+        }
+      }
+
       // ANCILLARY: siteName without extension → maps to sites-versions/{siteName}/.
       const siteName = relativePath.replace(/\.(html|htmlclay)$/i, '');
       await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
@@ -56,6 +72,18 @@ module.exports = {
 
       // Write file with server modification time (ensures directories exist)
       await writeFile(localPath, content, modifiedAt);
+
+      // A synced-down apply is an off-page (external) write from the local
+      // perspective; preDownloadContent is the last-good local copy.
+      if (isHtmlSite && typeof content === 'string') {
+        dataGuard.runDataLossGuard({
+          baseDir: this.syncFolder,
+          name: relativePath,
+          newHtml: content,
+          prevContent: preDownloadContent,
+          prov: 'external',
+        }).catch(err => console.error('[data-guard] download guard error:', err && err.message ? err.message : err));
+      }
 
       console.log(`[SYNC] Downloaded ${relativePath}`);
 
@@ -172,14 +200,17 @@ module.exports = {
         }
       }
 
-      // Try to get cached snapshot for platform live sync.
+      // Try to get cached snapshot (+ userDriven bit) for platform live sync.
       // Lazy require — main/server.js may pull in Electron-only modules that
       // can't load at top level during unit tests.
       let snapshotHtml = null;
+      let userDriven;
       try {
         const { getAndClearSnapshot } = require('../main/server.js');
-        snapshotHtml = getAndClearSnapshot(filename);
-        if (snapshotHtml) {
+        const snap = getAndClearSnapshot(filename);
+        if (snap) {
+          snapshotHtml = snap.html;
+          userDriven = snap.userDriven;
           console.log(`[SYNC] Including snapshot for platform live sync: ${filename}`);
         }
       } catch (err) {
@@ -204,7 +235,8 @@ module.exports = {
           {
             modifiedAt: stat.mtime,
             snapshotHtml,
-            senderId: this.deviceId
+            senderId: this.deviceId,
+            userDriven
           }
         );
         result.nodeId = existingNodeId;

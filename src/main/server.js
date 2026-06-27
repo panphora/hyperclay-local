@@ -14,6 +14,7 @@ const errorLogger = require('./error-logger');
 const formatHtml = require('./format-html');
 const { serveSiteApiLocal, extractSiteDataLocal } = require('./utils/data-api');
 const { writeApiSidecar } = require('./utils/api-sidecar');
+const dataGuard = require('./data-loss-guard');
 
 // Initialize Eta
 const eta = new Eta({
@@ -27,15 +28,16 @@ const pendingSnapshots = new Map();
 let snapshotCleanupTimer = null;
 
 /**
- * Get and clear the cached snapshot HTML for a file
- * Called by sync engine before uploading to platform
+ * Get and clear the cached snapshot for a file.
+ * Called by the sync engine before uploading to the platform.
  * @param {string} filename - Filename including extension
- * @returns {string|null} The snapshot HTML or null if not available
+ * @returns {{html: string, userDriven: (boolean|undefined)}|null}
  */
 function getAndClearSnapshot(filename) {
   const entry = pendingSnapshots.get(filename);
   pendingSnapshots.delete(filename);
-  return entry?.html || null;
+  if (!entry?.html) return null;
+  return { html: entry.html, userDriven: entry.userDriven };
 }
 
 let server = null;
@@ -292,11 +294,12 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       const name = resolveResourceFromHref(pageUrl);
 
       // Handle both JSON and plain text requests
-      let content, snapshotHtml;
+      let content, snapshotHtml, userDriven;
       if (req.body && typeof req.body === 'object' && Object.hasOwn(req.body, 'content')) {
         // JSON request from Hyperclay Local browser
         content = req.body.content;
         snapshotHtml = req.body.snapshotHtml;
+        userDriven = req.body.userDriven;
       } else {
         // Plain text request (backwards compatibility)
         content = req.body;
@@ -335,6 +338,11 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         // Do NOT reuse `backupName` as a liveSync channel key — liveSync keys must
         // carry the extension (Rule 1).
         const backupName = name.replace(/\.(html|htmlclay)$/, '');
+
+        // Capture the pre-write body for the data-clobber guard (cold-start seed
+        // + whole-file Revert). Read once, before the overwrite below.
+        let dataLossPrev = null;
+        try { dataLossPrev = await fs.readFile(filePath, 'utf8'); } catch {}
 
         // Check if this is the first save (no versions exist yet)
         const siteVersionsDir = path.join(baseDir, 'sites-versions', backupName);
@@ -383,6 +391,15 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
           console.error('writeApiSidecar failed (non-fatal):', e && e.message ? e.message : e);
         }
 
+        // Data-clobber guard (non-blocking, non-fatal). A browser /save is always
+        // a UI save, split by the userDriven bit into ui-gestured / ui-background.
+        {
+          const dataLossProv = dataGuard.provenanceForLocalSave(userDriven);
+          dataGuard.runDataLossGuard({
+            baseDir, name, newHtml: content, prevContent: dataLossPrev, prov: dataLossProv,
+          }).catch(err => console.error('[data-guard] /save guard error:', err && err.message ? err.message : err));
+        }
+
         // Generate Tailwind CSS if site uses it. `tailwindName` from
         // getTailwindCssName includes any path prefix present in the URL
         // (e.g. "blog/post"), so path.join naturally nests the CSS file. After
@@ -398,10 +415,11 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
           console.log(`Generated Tailwind CSS: tailwindcss/${tailwindName}.css`);
         }
 
-        // Store snapshot HTML for platform sync (if provided)
-        // The sync engine will retrieve this when uploading to platform
+        // Store snapshot HTML (+ the userDriven provenance bit) for platform
+        // sync. The sync engine retrieves this when uploading to the platform so
+        // the platform guard can split a UI save from a background-script save.
         if (snapshotHtml) {
-          pendingSnapshots.set(name, { html: snapshotHtml, timestamp: Date.now() });
+          pendingSnapshots.set(name, { html: snapshotHtml, userDriven, timestamp: Date.now() });
           console.log(`[Platform Sync] Cached snapshot for ${name}`);
         }
 
@@ -418,6 +436,72 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
           msgType: 'error'
         });
       }
+    });
+
+    // Data-clobber guard endpoint (parity with hyperclay.com's /_/dataloss).
+    // The marker-strip middleware rewrites /_/data-loss -> /data-loss. The site
+    // is identified by ?file= (GET) / body.file (POST), falling back to the
+    // Page-URL header — the local server hosts many files by name.
+    app.use('/data-loss', express.json({ limit: '1mb' }));
+
+    const resolveGuardFile = (req) => {
+      const raw = (req.query && req.query.file) ||
+        (req.body && typeof req.body === 'object' && req.body.file) ||
+        (req.headers && req.headers['page-url']) || '';
+      if (!raw) return null;
+      const name = resolveResourceFromHref(String(raw));
+      const validated = validateAndResolvePath(name, baseDir);
+      if (validated.error) return null;
+      return { name, filePath: validated.filePath };
+    };
+
+    app.get('/data-loss', async (req, res) => {
+      const resolved = resolveGuardFile(req);
+      if (!resolved) return res.json({ event: null });
+      let currentHtml = '';
+      try { currentHtml = await fs.readFile(resolved.filePath, 'utf8'); } catch {}
+      const event = await dataGuard.getGuardEvent(baseDir, resolved.name, currentHtml);
+      return res.json({ event: event || null });
+    });
+
+    app.post(/^\/data-loss(?:\/(.+))?$/, async (req, res) => {
+      const resolved = resolveGuardFile(req);
+      if (!resolved) return res.status(400).json({ error: 'file required' });
+      const id = req.params[0] || (req.body && req.body.id) || null;
+      const choice = req.body && req.body.choice;
+      if (!['dismiss', 'revert', 'restore'].includes(choice)) {
+        return res.status(400).json({ error: 'choice must be dismiss | revert | restore' });
+      }
+      let currentHtml = '';
+      try { currentHtml = await fs.readFile(resolved.filePath, 'utf8'); } catch {}
+
+      const writeBack = async (html) => {
+        const backupName = resolved.name.replace(/\.(html|htmlclay)$/, '');
+        const formatted = formatHtml(scopeTailwindLink(resolved.name, html));
+        await fs.mkdir(path.dirname(resolved.filePath), { recursive: true });
+        await createBackup(baseDir, backupName, formatted);
+        await fs.writeFile(resolved.filePath, formatted, 'utf8');
+        // Resolving the guard writes through this app, not an external editor.
+        // Mark it so the file watcher doesn't treat the revert/restore as a fresh
+        // change and re-run the guard (which would raise a spurious new event).
+        liveSync.markBrowserSave(resolved.name);
+        try { await writeApiSidecar(baseDir, resolved.name, formatted); } catch {}
+        const tailwindName = getTailwindCssName(formatted);
+        if (tailwindName) {
+          try {
+            const css = await compileTailwind(formatted);
+            const cssPath = path.join(baseDir, 'tailwindcss', `${tailwindName}.css`);
+            await fs.mkdir(path.dirname(cssPath), { recursive: true });
+            await fs.writeFile(cssPath, css, 'utf8');
+          } catch {}
+        }
+      };
+
+      const result = await dataGuard.resolveGuard({
+        baseDir, name: resolved.name, id, choice, currentHtml, writeBack,
+      });
+      if (!result.ok) return res.status(result.statusCode || 400).json({ error: result.error });
+      return res.json({ ok: true, choice: result.choice, status: result.status });
     });
 
     // Tailwind CSS — serve from disk or auto-generate on first request.

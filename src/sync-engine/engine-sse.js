@@ -11,6 +11,7 @@ const path = require('upath');
 const { EventSource } = require('eventsource');
 const { liveSync } = require('livesync-hyperclay');
 const { createBackupIfExists, createBinaryBackupIfExists } = require('../main/utils/backup');
+const dataGuard = require('../main/data-loss-guard');
 const { classifyError, formatErrorForLog } = require('./error-handler');
 const {
   getLocalFiles,
@@ -81,8 +82,10 @@ module.exports = {
       throw new Error(`node-saved for site ${data.nodeId} missing inline content`);
     }
 
+    let preApplyContent = null;
     try {
       const localContent = await readFile(localPath);
+      preApplyContent = typeof localContent === 'string' ? localContent : localContent.toString('utf8');
       const localChecksum = await calculateChecksum(localContent);
       if (localChecksum === data.checksum) {
         console.log(`[SYNC] SSE node-saved: ${data.path} already up to date`);
@@ -123,6 +126,18 @@ module.exports = {
 
     console.log(`[SYNC] SSE node-saved: Wrote site ${localFilename}`);
     this.stats.filesDownloaded++;
+
+    // Data-clobber guard: a synced-down apply is an off-page (external) write
+    // from the local perspective. The pre-apply body is the last-good local copy.
+    if (typeof data.content === 'string') {
+      dataGuard.runDataLossGuard({
+        baseDir: this.syncFolder,
+        name: localFilename,
+        newHtml: data.content,
+        prevContent: preApplyContent,
+        prov: 'external',
+      }).catch(err => console.error('[data-guard] sse guard error:', err && err.message ? err.message : err));
+    }
 
     this.emit('file-synced', {
       file: localFilename,

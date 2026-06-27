@@ -21,6 +21,7 @@ const { SYNC_CONFIG } = require('./constants');
 const { classifyPath, ancestorPaths } = require('./path-helpers');
 const nodeMap = require('./node-map');
 const fs = require('fs/promises');
+const dataGuard = require('../main/data-loss-guard');
 
 module.exports = {
   startUnifiedWatcher() {
@@ -847,10 +848,11 @@ module.exports = {
     }
 
     // Content comparison: skip if file content hasn't actually changed
+    let newContent = null;
     try {
       const localPath = path.join(this.syncFolder, normalizedPath);
-      const content = await readFile(localPath);
-      const newChecksum = await calculateChecksum(content);
+      newContent = await readFile(localPath);
+      const newChecksum = await calculateChecksum(newContent);
 
       if (storedChecksum && storedChecksum === newChecksum) {
         console.log(`[SYNC] File changed but content identical (skipping): ${normalizedPath}`);
@@ -873,6 +875,20 @@ module.exports = {
         action: 'reload',
         persistent: true
       });
+
+      // Data-clobber guard: this is a genuine EXTERNAL raw write (not a browser
+      // save, not an SSE-applied save). The raw watcher has only the new bytes,
+      // not the old body, so detection runs against the private guard baseline.
+      if (newContent != null) {
+        const html = typeof newContent === 'string' ? newContent : newContent.toString('utf8');
+        dataGuard.runDataLossGuard({
+          baseDir: this.syncFolder,
+          name: normalizedPath,
+          newHtml: html,
+          prevContent: null,
+          prov: 'external',
+        }).catch(err => console.error('[data-guard] watcher guard error:', err && err.message ? err.message : err));
+      }
     } else if (recentSseSave) {
       console.log(`[SYNC] Suppressing toast for ${normalizedPath} (recent SSE node-saved)`);
     }
