@@ -156,6 +156,27 @@ test('cross-environment auto-clear: an incoming write that restores the pinned d
   assert.strictEqual(g.status, 'restored');
 });
 
+test('a pinned event is NOT auto-cleared when a later write MODIFIES (not restores) the recoverable atoms', async () => {
+  const baseDir = await freshBaseDir();
+  const orig = page({ title: 'Title', items: ['a', 'b', 'c'] });
+  // Wipe the title -> fires, pins {title:'Title', items:[a,b,c]}.
+  const ev = await seedThenWrite(baseDir, orig, page({ title: '', items: ['a', 'b', 'c'] }), 'external');
+  assert.ok(ev);
+  const pinned = JSON.parse(JSON.stringify((await guard._readGuard(baseDir, NAME)).event.recoverableData));
+
+  // A later write refills the title with a DIFFERENT value (modification, not
+  // restoration). The loss is NOT undone, so the event must stay pending and the
+  // pinned recoverable data must be untouched (regression for the auto-clear that
+  // used !anyDestruction, which treated modification as "undone").
+  await guard.runDataLossGuard({
+    baseDir, name: NAME, newHtml: page({ title: 'Different', items: ['a', 'b', 'c'] }),
+    prevContent: page({ title: '', items: ['a', 'b', 'c'] }), prov: 'external',
+  });
+  const g = await guard._readGuard(baseDir, NAME);
+  assert.ok(g.event, 'event must stay pending after a modifying write');
+  assert.deepStrictEqual(g.event.recoverableData, pinned); // pin-once intact
+});
+
 test('getGuardEvent seeds the baseline on first read without firing, then an external clobber fires', async () => {
   const baseDir = await freshBaseDir();
   const orig = page({ items: ['a', 'b', 'c'] });
@@ -177,4 +198,105 @@ test('getGuardEvent does not seed for an island-less page', async () => {
   assert.strictEqual(onRead, null);
   const g = await guard._readGuard(baseDir, NAME);
   assert.strictEqual(g, null); // no guard file created
+});
+
+test('a data-rules-version skew fails open: the write proceeds, no guard action', async () => {
+  const baseDir = await freshBaseDir();
+  const orig = page({ items: ['a', 'b', 'c'] });
+  await guard.runDataLossGuard({ baseDir, name: NAME, newHtml: orig, prevContent: orig, prov: 'external' });
+  const before = await guard._readGuard(baseDir, NAME);
+
+  // newHtml whose api tag carries an unsupported version -> extractViaTag throws
+  // -> safeExtractIsland is not-ok -> runDataLossGuard returns early (fail open).
+  const skew = `<!DOCTYPE html><html><head>
+<script type="application/json" data-rules-name="api" data-rules-version="2">
+{ "title": "h1", "items": ".item[]" }
+</script></head><body><h1>x</h1></body></html>`;
+  const ev = await guard.runDataLossGuard({ baseDir, name: NAME, newHtml: skew, prevContent: orig, prov: 'external' });
+  assert.strictEqual(ev, null);                                  // no throw, no event
+  const after = await guard._readGuard(baseDir, NAME);
+  assert.strictEqual(after.event, null);
+  assert.deepStrictEqual(after.baseline.data, before.baseline.data); // baseline untouched
+});
+
+test('external & ui-background non-firing writes never advance the baseline (external clears uiWorkPending, ui-background leaves it)', async () => {
+  const baseDir = await freshBaseDir();
+  // A clean ui-gestured save blesses items=['a','b'] and sets uiWorkPending.
+  await seedThenWrite(baseDir, page({ items: ['a', 'b', 'c'] }), page({ items: ['a', 'b'] }), 'ui-gestured');
+  let g = await guard._readGuard(baseDir, NAME);
+  assert.strictEqual(g.uiWorkPending, true);
+  assert.deepStrictEqual(g.baseline.data.api.items, ['a', 'b']);
+
+  // external additions-only (non-firing): baseline NOT advanced, uiWorkPending cleared.
+  const extEv = await guard.runDataLossGuard({
+    baseDir, name: NAME, newHtml: page({ items: ['a', 'b', 'c'] }), prevContent: page({ items: ['a', 'b'] }), prov: 'external',
+  });
+  assert.strictEqual(extEv, null);
+  g = await guard._readGuard(baseDir, NAME);
+  assert.deepStrictEqual(g.baseline.data.api.items, ['a', 'b']); // never auto-blessed
+  assert.strictEqual(g.uiWorkPending, false);                    // external clears it
+
+  // Re-bless so uiWorkPending is true again.
+  await guard.runDataLossGuard({
+    baseDir, name: NAME, newHtml: page({ items: ['a', 'b'] }), prevContent: page({ items: ['a', 'b'] }), prov: 'ui-gestured',
+  });
+  g = await guard._readGuard(baseDir, NAME);
+  assert.strictEqual(g.uiWorkPending, true);
+
+  // ui-background pure-modification (non-firing): baseline NOT advanced, and (per
+  // the core spec) ui-background does not clear uiWorkPending — only external does.
+  const bgEv = await guard.runDataLossGuard({
+    baseDir, name: NAME, newHtml: page({ title: 'Renamed', items: ['a', 'b'] }), prevContent: page({ items: ['a', 'b'] }), prov: 'ui-background',
+  });
+  assert.strictEqual(bgEv, null);
+  g = await guard._readGuard(baseDir, NAME);
+  assert.strictEqual(g.baseline.data.api.title, 'Title'); // not advanced to 'Renamed'
+  assert.strictEqual(g.uiWorkPending, true);              // ui-background leaves it
+});
+
+test('auto-clear also fires when the recoverable data returns WITH legitimate additions (no destruction of the recoverable set)', async () => {
+  const baseDir = await freshBaseDir();
+  const orig = page({ items: ['a', 'b', 'c'] });
+  const ev = await seedThenWrite(baseDir, orig, page({ items: ['a'] }), 'external'); // fires, pins a,b,c
+  assert.ok(ev);
+  // Incoming write restores a,b,c AND keeps a new item d (e.g. a concurrent add on
+  // the other env). Not byte-equal to the pinned data, but nothing recoverable is
+  // destroyed -> the loss is undone -> clear.
+  const cleared = await guard.runDataLossGuard({
+    baseDir, name: NAME, newHtml: page({ items: ['a', 'b', 'c', 'd'] }), prevContent: page({ items: ['a'] }), prov: 'external',
+  });
+  assert.strictEqual(cleared, null);
+  const g = await guard._readGuard(baseDir, NAME);
+  assert.strictEqual(g.event, null);
+  assert.strictEqual(g.status, 'restored');
+  assert.deepStrictEqual(g.baseline.data.api.items, ['a', 'b', 'c', 'd']); // adopts current
+});
+
+test('auto-clear does NOT fire on a partial restore (a recoverable atom is still missing -> warning preserved)', async () => {
+  const baseDir = await freshBaseDir();
+  const ev = await seedThenWrite(baseDir, page({ items: ['a', 'b', 'c'] }), page({ items: ['a'] }), 'external'); // pins a,b,c
+  assert.ok(ev);
+  // Only a,b come back; c is still gone -> destruction of the recoverable set -> keep the event.
+  const still = await guard.runDataLossGuard({
+    baseDir, name: NAME, newHtml: page({ items: ['a', 'b'] }), prevContent: page({ items: ['a'] }), prov: 'external',
+  });
+  assert.strictEqual(still, null); // pinned event only bumps lastWriteAt; no NEW event returned
+  const g = await guard._readGuard(baseDir, NAME);
+  assert.ok(g.event); // warning preserved
+  assert.deepStrictEqual(g.event.recoverableData.api.items, ['a', 'b', 'c']);
+});
+
+test('getGuardEvent re-validates on read: clears a stale event once the current content no longer destroys the recoverable set', async () => {
+  const baseDir = await freshBaseDir();
+  const ev = await seedThenWrite(baseDir, page({ items: ['a', 'b', 'c'] }), page({ items: ['a'] }), 'external'); // event pinned
+  assert.ok(ev);
+  // Still clobbered on read -> event surfaces.
+  const stillThere = await guard.getGuardEvent(baseDir, NAME, page({ items: ['a'] }));
+  assert.ok(stillThere && stillThere.id === ev.id);
+  // Read with restored content -> stale event cleared, returns null.
+  const onRestored = await guard.getGuardEvent(baseDir, NAME, page({ items: ['a', 'b', 'c'] }));
+  assert.strictEqual(onRestored, null);
+  const g = await guard._readGuard(baseDir, NAME);
+  assert.strictEqual(g.event, null);
+  assert.deepStrictEqual(g.baseline.data.api.items, ['a', 'b', 'c']);
 });

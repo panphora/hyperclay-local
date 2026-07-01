@@ -253,8 +253,12 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       }
 
       try {
-        // Cache snapshot for platform sync (consumed by uploadFile via getAndClearSnapshot)
-        pendingSnapshots.set(file, { html, timestamp: Date.now() });
+        // Cache snapshot for platform sync (consumed by uploadFile via getAndClearSnapshot).
+        // Preserve any userDriven bit a prior /save cached for this file: the peer
+        // live-sync body doesn't carry it, so overwriting blindly would drop the
+        // human-gesture provenance and make a clean save read as ui-unknown.
+        const prevSnap = pendingSnapshots.get(file);
+        pendingSnapshots.set(file, { html, userDriven: prevSnap ? prevSnap.userDriven : undefined, timestamp: Date.now() });
 
         // Broadcast to other local browsers on the same channel as /live-sync/stream
         liveSync.broadcast(file, { html, sender });

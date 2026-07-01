@@ -69,6 +69,25 @@ function islandHash(island) {
   return crypto.createHash('sha256').update(JSON.stringify(island || null)).digest('hex');
 }
 
+// classifyDestruction + log the cost-guard fallback (plan §4: "log() the skip").
+// The pure core only flags it on D; the environment wrapper does the logging.
+function classify(base, inc) {
+  const D = classifyDestruction(base, inc);
+  if (D.fuzzyFallback) {
+    console.warn('[data-guard] item list too large for fuzzy matching; used a coarser index-aligned compare (detection may be less precise).');
+  }
+  return D;
+}
+
+// The loss is undone only when the current island still CONTAINS every pinned
+// recoverable atom (additions allowed). `!anyDestruction` alone is too loose: it
+// also passes when a recoverable atom was MODIFIED to a different value or reset
+// to a placeholder, which would silently drop the recovery chip without the data
+// ever coming back. D here is classify(recoverableData, currentIsland).
+function lossUndone(D) {
+  return !D.anyDestruction && D.modifiedAtoms === 0 && D.placeholderResets === 0;
+}
+
 // ---------------------------------------------------------------------------
 // Store — one JSON file per site, serialized by a per-file in-process lock.
 // ---------------------------------------------------------------------------
@@ -179,9 +198,15 @@ async function runDataLossGuard({ baseDir, name, newHtml, prevContent, prov }) {
       const base = guard.baseline.data;
 
       if (guard.event) {
-        // Cross-environment auto-clear: an incoming write that restored the
-        // pinned recoverable data means the loss was undone elsewhere.
-        if (islandsEqual(inc.island, guard.event.recoverableData)) {
+        // Cross-environment auto-clear: the loss is undone once an incoming write
+        // still CONTAINS every pinned recoverable atom — an exact restore, OR a
+        // restore that also kept legitimate additions. `base` is the pinned
+        // recoverableData while an event is open (pin-once never advances it), so
+        // D measures destruction/modification of the recoverable set. A write that
+        // merely modifies a recoverable atom to a new value has NOT restored it, so
+        // lossUndone stays false and the (valid) warning is preserved.
+        const D = classify(base, inc.island);
+        if (lossUndone(D)) {
           autoResolvedId = guard.event.id;
           guard.event = null;
           guard.status = 'restored';
@@ -190,7 +215,6 @@ async function runDataLossGuard({ baseDir, name, newHtml, prevContent, prov }) {
           await writeGuard(baseDir, name, guard);
           return;
         }
-        const D = classifyDestruction(base, inc.island);
         if (shouldFire(prov, guard.uiWorkPending, base, inc.island, D)) {
           guard.event.lastWriteAt = Date.now();
         }
@@ -199,7 +223,7 @@ async function runDataLossGuard({ baseDir, name, newHtml, prevContent, prov }) {
         return;
       }
 
-      const D = classifyDestruction(base, inc.island);
+      const D = classify(base, inc.island);
       const fire = shouldFire(prov, guard.uiWorkPending, base, inc.island, D);
 
       if (fire) {
@@ -409,7 +433,19 @@ function truncate(s, n = 80) {
 async function getGuardEvent(baseDir, name, currentHtml) {
   try {
     const guard = await readGuard(baseDir, name);
-    if (guard && guard.event) return await toClientEvent(guard.event, currentHtml != null ? currentHtml : '');
+    if (guard && guard.event) {
+      // Re-validate on read: if the current content still contains every pinned
+      // recoverable atom, the loss was already undone (restored/reverted elsewhere
+      // and synced here) — clear the stale event instead of showing a dead chip.
+      const cur = currentHtml != null ? await safeExtractIsland(currentHtml) : { ok: false };
+      if (cur.ok && cur.island && lossUndone(classify(guard.event.recoverableData, cur.island))) {
+        const resolvedId = guard.event.id;
+        await clearEvent(baseDir, name, cur.island, 'restored');
+        notifyResolved(name, resolvedId);
+        return null;
+      }
+      return await toClientEvent(guard.event, currentHtml != null ? currentHtml : '');
+    }
     if (currentHtml != null) {
       const seed = await safeExtractIsland(currentHtml);
       if (seed.ok && seed.island && !isEmptyIsland(seed.island)) {
