@@ -287,6 +287,30 @@ async function getServerStatus(serverUrl, apiKey) {
   return data;
 }
 
+/**
+ * Best-effort control-lane poster. Unlike apiFetch it NEVER throws: 200 is
+ * delivered:true, and 400/404/409/500/network/abort are delivered:false with no
+ * throw (a no-match remote resolution is expected success, not an error). Bound
+ * by a 4s AbortController so a slow POST never hangs the caller's resolve path.
+ */
+async function postControlMessage(serverUrl, apiKey, envelope) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const r = await fetch(`${serverUrl}/_/sync/control`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+      body: JSON.stringify(envelope),
+      signal: ctrl.signal,
+    });
+    return { delivered: r.ok };
+  } catch {
+    return { delivered: false };
+  } finally {
+    clearTimeout(t); // always clear — fetch reject / abort / stringify throw too
+  }
+}
+
 module.exports = {
   listNodes,
   createNode,
@@ -295,5 +319,6 @@ module.exports = {
   renameNode,
   moveNode,
   deleteNode,
-  getServerStatus
+  getServerStatus,
+  postControlMessage
 };

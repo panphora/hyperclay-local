@@ -15,6 +15,8 @@ const formatHtml = require('./format-html');
 const { serveSiteApiLocal, extractSiteDataLocal } = require('./utils/data-api');
 const { writeApiSidecar } = require('./utils/api-sidecar');
 const dataGuard = require('./data-loss-guard');
+const syncEngine = require('../sync-engine');
+const { buildEnvelope } = require('../sync-engine/control-lane-core.cjs');
 
 // Initialize Eta
 const eta = new Eta({
@@ -505,6 +507,19 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         baseDir, name: resolved.name, id, choice, currentHtml, writeBack,
       });
       if (!result.ok) return res.status(result.statusCode || 400).json({ error: result.error });
+      // rider 1: after a local Dismiss, nudge the platform (and thence the owner's
+      // other devices) to clear the same incident. nodeId from the node map is an
+      // optional rename-resilience accelerator. Fire-and-forget: the local UI has
+      // already cleared, so the POST must not delay this response.
+      if (result.control && syncEngine.serverUrl && syncEngine.apiKey) {
+        const nodeId = syncEngine.repo?.getByPath?.(resolved.name)?.nodeId;
+        syncEngine
+          .sendControlMessage(buildEnvelope('data-loss/dismiss', 1, {
+            ...result.control,
+            ...(nodeId ? { nodeId } : {}),
+          }))
+          .catch(() => {});
+      }
       return res.json({ ok: true, choice: result.choice, status: result.status });
     });
 

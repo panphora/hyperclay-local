@@ -64,10 +64,7 @@ async function safeExtractIsland(html) {
   }
 }
 
-function islandHash(island) {
-  const crypto = require('crypto');
-  return crypto.createHash('sha256').update(JSON.stringify(island || null)).digest('hex');
-}
+const islandHash = core.islandHash;
 
 // classifyDestruction + log the cost-guard fallback (plan §4: "log() the skip").
 // The pure core only flags it on D; the environment wrapper does the logging.
@@ -482,7 +479,12 @@ async function resolveGuard({ baseDir, name, id, choice, currentHtml, writeBack 
     // island, else the old baseline stays and the next write re-fires.
     await clearEvent(baseDir, name, cur.ok ? cur.island : null, 'dismissed', true);
     notifyResolved(name, event.id);
-    return { ok: true, choice, status: 'dismissed' };
+    // rider 1: return the control payload so server.js can nudge the platform
+    // (and thence the owner's other devices). resolveGuard stays transport-pure.
+    return {
+      ok: true, choice, status: 'dismissed',
+      control: { fileKey: name, recoverableDataHash: islandHash(event.recoverableData) },
+    };
   }
 
   if (choice === 'restore') {
@@ -520,21 +522,65 @@ async function resolveGuard({ baseDir, name, id, choice, currentHtml, writeBack 
   return { ok: false, statusCode: 400, error: 'Unknown choice' };
 }
 
+// The read-modify-write body of a clear, WITHOUT withLock. Shared by clearEvent
+// (which wraps it in withLock) and applyRemoteResolution (which already holds the
+// lock for the whole check-and-clear). Splitting this out is what avoids the
+// non-reentrant withLock re-acquiring itself and hanging (plan §4c).
+async function clearEventLocked(baseDir, name, keptIsland, status, forceBaseline = false) {
+  const g = (await readGuard(baseDir, name)) || emptyGuard();
+  g.event = null;
+  g.status = status;
+  g.uiWorkPending = false;
+  if (forceBaseline) {
+    // Dismiss: adopt current as the baseline even when empty (the SCOPE gate
+    // keeps it quiet until data returns), so a dismissed wipe stays dismissed.
+    g.baseline = keptIsland ? { data: keptIsland, hash: islandHash(keptIsland), at: Date.now() } : null;
+  } else if (keptIsland && !isEmptyIsland(keptIsland)) {
+    g.baseline = { data: keptIsland, hash: islandHash(keptIsland), at: Date.now() };
+  }
+  await writeGuard(baseDir, name, g);
+}
+
 async function clearEvent(baseDir, name, keptIsland, status, forceBaseline = false) {
   await withLock(`${baseDir}::${name}`, async () => {
-    const g = (await readGuard(baseDir, name)) || emptyGuard();
-    g.event = null;
-    g.status = status;
-    g.uiWorkPending = false;
-    if (forceBaseline) {
-      // Dismiss: adopt current as the baseline even when empty (the SCOPE gate
-      // keeps it quiet until data returns), so a dismissed wipe stays dismissed.
-      g.baseline = keptIsland ? { data: keptIsland, hash: islandHash(keptIsland), at: Date.now() } : null;
-    } else if (keptIsland && !isEmptyIsland(keptIsland)) {
-      g.baseline = { data: keptIsland, hash: islandHash(keptIsland), at: Date.now() };
-    }
-    await writeGuard(baseDir, name, g);
+    await clearEventLocked(baseDir, name, keptIsland, status, forceBaseline);
   });
+}
+
+// ---------------------------------------------------------------------------
+// applyRemoteResolution — apply an inbound cross-device Dismiss (control lane,
+// rider 1). Clears THIS device's matching event iff the pinned recoverableData
+// hash equals the message's; never creates, never clears on mismatch. The whole
+// check-and-clear runs under ONE withLock (via clearEventLocked, NOT clearEvent,
+// which would re-acquire the same non-reentrant lock and hang). Non-fatal.
+// Returns true only if this side actually cleared.
+// ---------------------------------------------------------------------------
+async function applyRemoteResolution({ baseDir, name, recoverableDataHash }) {
+  try {
+    // Remote input — this is THE containment guard for the rider: reject '..',
+    // absolute, backslash, non-site, or a bad hash before any fs read.
+    // (handleControlFrame is a generic transport hop and does NOT pre-validate a
+    // rider's fileKey; readGuard/writeGuard also route through resolveGuardPath,
+    // which throws on escape — defense in depth.)
+    if (typeof name !== 'string' || name.startsWith('/') || name.includes('..') || name.includes('\\')) return false;
+    if (!/\.(html|htmlclay)$/.test(name)) return false;
+    if (!/^[0-9a-f]{64}$/.test(recoverableDataHash || '')) return false;
+    let resolvedId = null;
+    await withLock(`${baseDir}::${name}`, async () => {
+      const g = await readGuard(baseDir, name);
+      if (!g || !g.event) return;                                              // never create
+      if (islandHash(g.event.recoverableData) !== recoverableDataHash) return; // keep warning on mismatch
+      resolvedId = g.event.id;                                                 // real id for notifyResolved
+      let cur = { ok: false, island: null };
+      try { cur = await safeExtractIsland(await fs.readFile(path.join(baseDir, name), 'utf8')); } catch {}
+      await clearEventLocked(baseDir, name, cur.ok ? cur.island : null, 'dismissed', true); // NO nested withLock
+    });
+    if (resolvedId) notifyResolved(name, resolvedId);
+    return resolvedId != null;
+  } catch (e) {
+    console.error('[data-guard] applyRemoteResolution failed (non-fatal):', e && e.message ? e.message : e);
+    return false;
+  }
 }
 
 module.exports = {
@@ -543,6 +589,7 @@ module.exports = {
   provenanceForLocalSave,
   getGuardEvent,
   resolveGuard,
+  applyRemoteResolution,
   restoreDataOntoHtml,
   toClientEvent,
   // test seams

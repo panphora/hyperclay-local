@@ -10,7 +10,7 @@
   "scripts": {
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:node": "node --test tests/node/data-extractor.node-test.js tests/node/data-loss-guard.node-test.js",
+    "test:node": "node --test tests/node/data-extractor.node-test.js tests/node/data-loss-guard.node-test.js tests/node/control-lane.node-test.js tests/node/control-rider.node-test.js",
     "start": "npm run build-react && cross-env NODE_ENV=production electron .",
     "dev": "concurrently \"npm run dev-css\" \"npm run dev-react\" \"npm run electron-dev\"",
     "electron-dev": "wait-on dist/popover-bundle.js && cross-env NODE_ENV=development electronmon . --dev",

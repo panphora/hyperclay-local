@@ -13,6 +13,7 @@ const { liveSync } = require('livesync-hyperclay');
 const { createBackupIfExists, createBinaryBackupIfExists } = require('../main/utils/backup');
 const dataGuard = require('../main/data-loss-guard');
 const { classifyError, formatErrorForLog } = require('./error-handler');
+const { dispatchControlEnvelope } = require('./control-lane');
 const {
   getLocalFiles,
   readFile,
@@ -42,6 +43,13 @@ module.exports = {
       return true;
     }
     return false;
+  },
+
+  // Inbound control-lane frame on the per-user stream. Best-effort: the lane's
+  // dispatch swallows unknown types / handler errors, and onmessage has its own
+  // try/catch, so one bad rider can never abort stream processing.
+  async handleControlFrame(frame) {
+    await dispatchControlEnvelope(frame && frame.envelope, { engine: this, baseDir: this.syncFolder });
   },
 
   async handleNodeSaved(data) {
@@ -541,7 +549,8 @@ module.exports = {
       'node-saved':   async (data) => this.handleNodeSaved(data),
       'node-renamed': async (data) => this.handleNodeRenamed(data),
       'node-moved':   async (data) => this.handleNodeMoved(data),
-      'node-deleted': async (data) => this.handleNodeDeleted(data)
+      'node-deleted': async (data) => this.handleNodeDeleted(data),
+      'control':      async (data) => this.handleControlFrame(data)
     };
 
     this.sseConnection.onmessage = async (event) => {

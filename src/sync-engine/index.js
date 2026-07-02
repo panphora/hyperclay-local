@@ -390,6 +390,16 @@ class SyncEngine extends EventEmitter {
   hasFailedPermanently(filename) {
     return this.syncQueue.hasFailedPermanently(filename);
   }
+
+  /**
+   * Fire-and-forget a control-lane envelope to the platform (best-effort sidecar).
+   * Sync off (no serverUrl/apiKey) degrades to a silent no-op; the POST never throws.
+   */
+  async sendControlMessage(envelope) {
+    if (!this.serverUrl || !this.apiKey) return { delivered: false };
+    const { postControlMessage } = require('./api-client');
+    return postControlMessage(this.serverUrl, this.apiKey, envelope);
+  }
 }
 
 // Compose mixin modules onto the prototype. Order does not matter — mixin
@@ -404,6 +414,10 @@ Object.assign(SyncEngine.prototype,
   require('./engine-watcher'),
   require('./engine-mutations')
 );
+
+// Register control-lane rider handlers (data-loss/dismiss, ...) for their side
+// effect, once, after the prototype is composed. See riders/register.js.
+require('./riders/register');
 
 // Export singleton instance
 const syncEngine = new SyncEngine();
