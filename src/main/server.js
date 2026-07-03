@@ -10,6 +10,7 @@ const {
   getTailwindCssName
 } = require('tailwind-hyperclay');
 const { liveSync } = require('livesync-hyperclay');
+const { messageBus, isValidChannel } = require('hyper-wire');
 const errorLogger = require('./error-logger');
 const formatHtml = require('./format-html');
 const { serveSiteApiLocal, extractSiteDataLocal } = require('./utils/data-api');
@@ -130,6 +131,19 @@ function stripSystemRouteMarker(url) {
   return url;
 }
 
+// True when an Origin header value points at this machine's loopback interface.
+// Any port is accepted: the served port varies (tests bind ephemeral ports), and
+// a page on another loopback port is code already running on the user's machine,
+// which can reach the bus directly anyway. Remote origins are what this blocks.
+function isLoopbackOrigin(origin) {
+  try {
+    const { hostname } = new URL(origin);
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1';
+  } catch {
+    return false;
+  }
+}
+
 // Build and return the configured Express app without listening. Split out of
 // startServer so tests can drive the real route wiring (ordering + the marker gate)
 // via supertest against an ephemeral port instead of the hardcoded 4321.
@@ -205,6 +219,12 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         return res.status(400).send('could not resolve file from page-url');
       }
 
+      // Lane: edit-mode tabs ride 'live' (default) and get pre-strip peer
+      // snapshots; view-mode tabs pass ?lane=saved and only ever receive
+      // post-strip on-disk HTML broadcast from the save paths. No auth —
+      // this server is single-user/localhost.
+      const lane = req.query.lane === 'saved' ? 'saved' : 'live';
+
       // SSE headers
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
@@ -213,8 +233,8 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       res.flushHeaders();
 
       // Register client (channel key = full path with extension, e.g. "blog/post.html")
-      liveSync.subscribe(file, res);
-      console.log(`[LiveSync] Client connected: ${file}`);
+      liveSync.subscribe(file, res, { lane });
+      console.log(`[LiveSync] Client connected: ${file} (lane=${lane})`);
 
       // Keep-alive ping every 30 seconds
       const keepAlive = setInterval(() => {
@@ -273,6 +293,105 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         errorLogger.error('LiveSync', `Save error: ${file}`, err);
         res.status(500).json({ error: 'Failed to save file' });
       }
+    });
+
+    // `/_/bus` — local message bus (hyper-wire). Pages and user-run handler
+    // scripts publish/subscribe opaque JSON envelopes on named channels. The
+    // bus adds no capability: it executes nothing, stores nothing, and knows
+    // nothing about payloads; anything sharp lives in handlers the user runs
+    // in their own terminal. Gated on req.originalUrl like the data API so a
+    // bare `/bus/...` URL still falls through to a user's real bus/ folder.
+
+    // DNS-rebinding hardening for both lanes: a rebound hostname reaches this
+    // localhost-bound server carrying the attacker's Host header, and a
+    // same-origin EventSource sends no Origin, so the Origin check on send
+    // can't protect subscribe. A loopback Host is the only legitimate way to
+    // address this server.
+    app.use('/bus', (req, res, next) => {
+      if (!req.originalUrl.startsWith('/_/bus/')) return next();
+      if (!isLoopbackOrigin(`http://${req.headers.host}`)) {
+        return res.status(403).json({ error: 'Bus is localhost-only' });
+      }
+      next();
+    });
+
+    // 10mb matches /live-sync: ai-edit/request can carry full page HTML (@page).
+    app.use('/bus', express.json({ limit: '10mb' }));
+
+    // Body-parser failures on the bus get their truthful status (413 too large,
+    // 400 bad JSON) instead of falling into the generic 500 catch-all below.
+    app.use('/bus', (err, req, res, next) => {
+      if (!req.originalUrl.startsWith('/_/bus/')) return next(err);
+      res.status(err.status || 400).json({
+        error: err.type === 'entity.too.large' ? 'Payload too large (10mb limit)' : 'Invalid JSON body'
+      });
+    });
+
+    app.get('/bus/subscribe', (req, res, next) => {
+      if (!req.originalUrl.startsWith('/_/bus/')) return next();
+      const requested = [...new Set([].concat(req.query.channel || []))];
+      if (!requested.length) {
+        return res.status(400).json({ error: 'channel parameter required' });
+      }
+      for (const channel of requested) {
+        if (!isValidChannel(channel)) {
+          return res.status(400).json({ error: `Invalid channel name: ${channel}` });
+        }
+      }
+
+      // SSE headers (same shape as /live-sync/stream)
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      requested.forEach(channel => messageBus.subscribe(channel, res));
+
+      const keepAlive = setInterval(() => {
+        try {
+          res.write(': ping\n\n');
+        } catch (e) {
+          clearInterval(keepAlive);
+        }
+      }, 30000);
+
+      req.on('close', () => {
+        clearInterval(keepAlive);
+        requested.forEach(channel => messageBus.unsubscribe(channel, res));
+      });
+
+      res.write(': connected\n\n');
+    });
+
+    app.post('/bus/send', (req, res, next) => {
+      if (!req.originalUrl.startsWith('/_/bus/')) return next();
+      // Cross-origin hardening: a browser page always sends Origin on POST, so
+      // reject anything non-loopback. Handlers (curl, node) send no Origin and
+      // pass. The JSON body requirement above already forces a CORS preflight
+      // (which we never approve) for cross-origin browser senders; this check
+      // is defense in depth.
+      const requestOrigin = req.headers.origin;
+      if (requestOrigin && !isLoopbackOrigin(requestOrigin)) {
+        return res.status(403).json({ error: 'Cross-origin senders are not allowed' });
+      }
+      const body = req.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return res.status(400).json({ error: 'JSON body required (Content-Type: application/json)' });
+      }
+      const { channel, type, v, payload, sender } = body;
+      if (!isValidChannel(channel)) {
+        return res.status(400).json({ error: `Invalid channel name: ${channel}` });
+      }
+      if (typeof type !== 'string' || type.length === 0) {
+        return res.status(400).json({ error: 'type must be a non-empty string' });
+      }
+      // `origin` is advisory transport metadata (a local page could forge the
+      // header): handlers treat channel + type + payload shape as the contract.
+      const pageUrl = req.headers['page-url'];
+      const origin = pageUrl ? resolveResourceFromHref(String(pageUrl)) : 'process';
+      const delivered = messageBus.send({ channel, type, v, payload, sender, origin });
+      res.json({ delivered });
     });
 
     // Note: File watcher for live-sync broadcast has been removed.
@@ -387,6 +506,10 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         // Key is full path with extension so it matches engine-watcher's wasBrowserSave check.
         liveSync.markBrowserSave(name);
 
+        // Morph view-mode tabs with the persisted on-disk HTML. Edit-mode tabs
+        // are untouched — they sync via /live-sync/save on the live lane.
+        liveSync.broadcast(name, { html: content, sender: 'server-save' }, { lane: 'saved' });
+
         // Refresh the per-site API data sidecar BEFORE the fallible Tailwind compile,
         // so a Tailwind failure can't skip it and leave stale API data on disk
         // (mirrors the platform ordering in node-content.js). Non-fatal: a sidecar
@@ -491,6 +614,8 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         // Mark it so the file watcher doesn't treat the revert/restore as a fresh
         // change and re-run the guard (which would raise a spurious new event).
         liveSync.markBrowserSave(resolved.name);
+        // Revert/restore changed the on-disk file — morph view-mode tabs.
+        liveSync.broadcast(resolved.name, { html: formatted, sender: 'server-save' }, { lane: 'saved' });
         try { await writeApiSidecar(baseDir, resolved.name, formatted); } catch {}
         const tailwindName = getTailwindCssName(formatted);
         if (tailwindName) {
@@ -872,5 +997,6 @@ module.exports = {
   createApp,
   resolveResourceFromHref,
   validateAndResolvePath,
-  stripSystemRouteMarker
+  stripSystemRouteMarker,
+  isLoopbackOrigin
 };

@@ -876,6 +876,14 @@ module.exports = {
         persistent: true
       });
 
+      // External edit (e.g. a code editor save): morph view-mode tabs with the
+      // new on-disk content. Edit-mode tabs keep the reload toast above — a
+      // silent morph there could clobber unsaved in-page work.
+      if (newContent != null) {
+        const externalHtml = typeof newContent === 'string' ? newContent : newContent.toString('utf8');
+        liveSync.broadcast(normalizedPath, { html: externalHtml, sender: 'file-watcher' }, { lane: 'saved' });
+      }
+
       // Data-clobber guard: this is a genuine EXTERNAL raw write (not a browser
       // save, not an SSE-applied save). The raw watcher has only the new bytes,
       // not the old body, so detection runs against the private guard baseline.

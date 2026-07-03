@@ -41,6 +41,7 @@ const CascadeSuppression = require('../../src/sync-engine/state/cascade-suppress
 const EchoWindow = require('../../src/sync-engine/state/echo-window');
 
 let syncEngine;
+let liveSyncMock;
 
 beforeEach(() => {
   jest.useFakeTimers();
@@ -48,6 +49,9 @@ beforeEach(() => {
 
   jest.isolateModules(() => {
     syncEngine = require('../../src/sync-engine/index');
+    // Same-registry instance of the livesync mock — the engine's copy, not
+    // the outer test registry's.
+    liveSyncMock = require('livesync-hyperclay').liveSync;
   });
 
   syncEngine.syncFolder = '/tmp/test-sync';
@@ -125,6 +129,26 @@ describe('handleNodeSaved', () => {
         type: 'site',
         path: 'index.html'
       }));
+    });
+
+    it('broadcasts the persisted content to view-mode tabs on the saved lane', async () => {
+      fileOps.readFile.mockRejectedValueOnce(new Error('ENOENT'));
+
+      await syncEngine.handleNodeSaved({
+        nodeId: 42,
+        nodeType: 'site',
+        name: 'index.html',
+        path: 'index.html',
+        content: '<html>hi</html>',
+        checksum: 'cs-1',
+        modifiedAt: '2026-04-08T12:00:00Z'
+      });
+
+      expect(liveSyncMock.broadcast).toHaveBeenCalledWith(
+        'index.html',
+        { html: '<html>hi</html>', sender: 'sync-engine' },
+        { lane: 'saved' }
+      );
     });
 
     it('emits sync-error if site node-saved arrives without inline content', async () => {

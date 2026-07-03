@@ -3,6 +3,7 @@ const path = require('upath');
 const fs = require('fs');
 const crypto = require('crypto');
 const { startServer, stopServer, getServerPort, isServerRunning } = require('./server');
+const { startPlugins, stopPlugins } = require('./plugins');
 const syncEngine = require('../sync-engine');
 const syncLogger = require('../sync-engine/logger');
 const errorLogger = require('./error-logger');
@@ -269,6 +270,10 @@ function getTrayMenuTemplate() {
       label: `Sync: ${settings.syncEnabled ? 'On' : 'Off'}`,
       enabled: false
     },
+    {
+      label: `AI Editing: ${settings.aiEdit?.enabled !== false ? 'On' : 'Off'}`,
+      enabled: false
+    },
     { type: 'separator' },
     {
       label: serverRunning ? 'Stop Server' : 'Start Server',
@@ -299,6 +304,17 @@ function getTrayMenuTemplate() {
             }
           }
         }
+      }
+    },
+    {
+      label: settings.aiEdit?.enabled !== false ? 'Disable AI Editing' : 'Enable AI Editing',
+      click: () => {
+        settings.aiEdit = { ...settings.aiEdit, enabled: settings.aiEdit?.enabled === false };
+        saveSettings(settings);
+        if (serverRunning) {
+          startPlugins({ baseDir: selectedFolder, settings }); // re-serve with the new state
+        }
+        updateTrayMenu();
       }
     },
     { type: 'separator' },
@@ -498,6 +514,7 @@ async function handleStartServer() {
   try {
     await startServer(selectedFolder, getDevHooks(), isKnownPath);
     serverRunning = isServerRunning();
+    startPlugins({ baseDir: selectedFolder, settings });
 
     settings.serverEnabled = true;
     settings.serverFolder = selectedFolder;
@@ -514,6 +531,7 @@ async function handleStartServer() {
 
 async function handleStopServer() {
   try {
+    stopPlugins();
     await stopServer();
     serverRunning = isServerRunning();
 
@@ -1003,6 +1021,7 @@ app.whenReady().then(async () => {
         selectedFolder = settings.serverFolder;
         await startServer(selectedFolder, getDevHooks(), isKnownPath);
         serverRunning = isServerRunning();
+        startPlugins({ baseDir: selectedFolder, settings });
         updateTrayMenu();
         updateUI();
         console.log('[APP] Server auto-restart successful');

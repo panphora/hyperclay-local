@@ -122,6 +122,10 @@ module.exports = {
 
     await writeFile(localPath, data.content, new Date(data.modifiedAt));
 
+    // Morph view-mode tabs with the just-persisted content. Edit-mode tabs get
+    // the platform's live-sync relay (pre-strip snapshot) on the live lane.
+    liveSync.broadcast(localFilename, { html: data.content, sender: 'sync-engine' }, { lane: 'saved' });
+
     const inode = await nodeMap.getInode(localPath);
     const cs = await calculateChecksum(data.content);
     await this.repo.set(data.nodeId, {
