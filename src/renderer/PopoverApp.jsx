@@ -3,8 +3,96 @@ import React, { useState, useEffect, useRef } from 'react';
 const ARROW_HEIGHT = 10;
 const ARROW_HALF_WIDTH = 8;
 
-const StatusDot = ({ active }) => (
-  <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${active ? 'bg-[#28C83E]' : 'bg-[#F73D48]'}`} />
+// Revision B palette — single source for the bevel/LED colors used inline
+const C = {
+  surface: '#151722',
+  raised: '#1B1E2C',
+  well: '#10121C',
+  border: '#292F52',
+  bevelLt: '#474C65',
+  bevelDk: '#0D0F18',
+  text: '#E8EAF6',
+  text2: '#B8BFE5',
+  muted: '#6B7194',
+  faint: '#454A68',
+  ledGreen: '#28C83E',
+  greenFill: '#1E8136',
+  greenHover: '#23973F',
+  greenLt: '#56B96C',
+  greenDk: '#15311C',
+  blue: '#69AEFE',
+  blueFill: '#1D498E',
+  blueLt: '#4F7CC4',
+  blueDk: '#0F2447',
+  fault: '#F73D48',
+  faultFill: '#7B2525',
+  faultLt: '#B45454',
+  faultDk: '#371111',
+};
+
+const bevelOut = (lt, dk) => ({
+  borderWidth: 2,
+  borderStyle: 'solid',
+  borderTopColor: lt,
+  borderLeftColor: lt,
+  borderBottomColor: dk,
+  borderRightColor: dk,
+});
+
+const bevelIn = () => ({
+  borderWidth: 2,
+  borderStyle: 'solid',
+  borderTopColor: C.bevelDk,
+  borderLeftColor: C.bevelDk,
+  borderBottomColor: C.bevelLt,
+  borderRightColor: C.bevelLt,
+});
+
+const Led = ({ on, color = C.ledGreen, glow = 'rgba(40,200,62,0.55)' }) => (
+  <span
+    className="inline-block shrink-0"
+    style={{
+      width: 7,
+      height: 7,
+      background: on ? color : '#3A3F58',
+      boxShadow: on ? `0 0 6px ${glow}` : 'none',
+    }}
+  />
+);
+
+const Rocker = ({ on, disabled, onFlip, label }) => (
+  <button
+    role="switch"
+    aria-checked={on}
+    aria-label={label}
+    disabled={disabled}
+    onClick={disabled ? undefined : onFlip}
+    className="ml-auto flex p-0 shrink-0"
+    style={{
+      width: 58,
+      height: 21,
+      background: C.well,
+      cursor: disabled ? 'default' : 'pointer',
+      opacity: disabled ? 0.45 : 1,
+      ...bevelIn(),
+    }}
+  >
+    <span
+      className="flex items-center justify-center pointer-events-none"
+      style={{
+        width: '50%',
+        height: '100%',
+        marginLeft: on ? '50%' : 0,
+        fontFamily: '"Fixedsys", monospace',
+        fontSize: 12,
+        color: on ? '#F6F7FB' : C.text2,
+        background: on ? C.greenFill : '#2A2E45',
+        ...(on ? bevelOut(C.greenLt, C.greenDk) : bevelOut(C.bevelLt, C.bevelDk)),
+      }}
+    >
+      {on ? 'ON' : 'OFF'}
+    </span>
+  </button>
 );
 
 const BevelButton = ({ label, onClick, variant, disabled, small, style: extraStyle }) => {
@@ -12,37 +100,31 @@ const BevelButton = ({ label, onClick, variant, disabled, small, style: extraSty
   const [active, setActive] = useState(false);
 
   const colors = {
-    success: { bg: '#1E8136', hover: '#23973F', tl: '#56B96C', br: '#15311C' },
-    danger: { bg: '#7B2525', hover: '#9F3030', tl: '#B45454', br: '#371111' },
-    sync: { bg: '#1D498E', hover: '#2156A8', tl: '#4F7CC4', br: '#0F2447' },
-    neutral: { bg: '#1D1F2F', hover: '#232639', tl: '#474C65', br: '#131725' },
+    success: { bg: C.greenFill, hover: C.greenHover, tl: C.greenLt, br: C.greenDk },
+    danger: { bg: C.faultFill, hover: '#9F3030', tl: C.faultLt, br: C.faultDk },
+    sync: { bg: C.blueFill, hover: '#2156A8', tl: C.blueLt, br: C.blueDk },
+    neutral: { bg: '#1D1F2F', hover: '#232639', tl: C.bevelLt, br: '#131725' },
   };
 
   const c = colors[variant] || colors.neutral;
-  const bw = 2;
   const fontSize = small ? 15 : 16;
   const padding = small ? '4px 10px 5px' : '5px 12px 7px';
-
-  const borderTop = active ? c.br : c.tl;
-  const borderRight = active ? c.tl : c.br;
-  const borderBottom = active ? c.tl : c.br;
-  const borderLeft = active ? c.br : c.tl;
 
   return (
     <button
       style={{
-        width: '100%',
         padding,
         fontSize,
         fontFamily: '"Fixedsys", monospace',
-        border: `${bw}px solid`,
-        borderTopColor: borderTop,
-        borderRightColor: borderRight,
-        borderBottomColor: borderBottom,
-        borderLeftColor: borderLeft,
+        borderWidth: 2,
+        borderStyle: 'solid',
+        borderTopColor: active ? c.br : c.tl,
+        borderLeftColor: active ? c.br : c.tl,
+        borderBottomColor: active ? c.tl : c.br,
+        borderRightColor: active ? c.tl : c.br,
         borderRadius: 0,
         cursor: disabled ? 'not-allowed' : 'pointer',
-        color: '#fff',
+        color: '#F6F7FB',
         textAlign: 'center',
         background: disabled ? c.bg : (hover ? c.hover : c.bg),
         opacity: disabled ? 0.5 : 1,
@@ -74,10 +156,13 @@ const DEFAULT_STATE = {
   serverPort: 4321,
   syncEnabled: false,
   syncStatus: { isRunning: false, username: null, stats: { lastSync: null } },
+  appVersion: null,
 };
 
 // Paint the popover from last-known state so it stays responsive even when
 // the main process is blocked (e.g. first-launch safeStorage Keychain hit).
+// Includes hasStoredApiKey/username so a connected account paints as
+// paused/synced from cache, not as the not-connected state.
 const readCachedState = () => {
   try {
     const raw = localStorage.getItem(STATE_CACHE_KEY);
@@ -88,15 +173,23 @@ const readCachedState = () => {
   }
 };
 
+const CACHED_STATE = readCachedState();
+
+const folderName = (p) => {
+  if (!p) return '';
+  const parts = String(p).split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] || p;
+};
+
 const PopoverApp = () => {
   const [arrowX, setArrowX] = useState(null);
   const [arrowPosition, setArrowPosition] = useState('top');
-  const [hasStoredApiKey, setHasStoredApiKey] = useState(false);
+  const [hasStoredApiKey, setHasStoredApiKey] = useState(!!CACHED_STATE.cachedHasApiKey);
   const [currentView, setCurrentView] = useState('home');
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [updateVersion, setUpdateVersion] = useState(null);
 
-  const [state, setState] = useState(readCachedState);
+  const [state, setState] = useState(CACHED_STATE);
 
   // Error queue
   const [errorQueue, setErrorQueue] = useState([]);
@@ -106,12 +199,9 @@ const PopoverApp = () => {
   // Transfers
   const [recentUploads, setRecentUploads] = useState([]);
   const [recentDownloads, setRecentDownloads] = useState([]);
-  const [unseenTransfers, setUnseenTransfers] = useState(0);
-  const currentViewRef = useRef(currentView);
-  currentViewRef.current = currentView;
 
   // Credentials form
-  const [credUsername, setCredUsername] = useState('');
+  const [credUsername, setCredUsername] = useState(CACHED_STATE.cachedUsername || '');
   const [credApiKey, setCredApiKey] = useState('');
   const [credError, setCredError] = useState('');
   const [credLoading, setCredLoading] = useState(false);
@@ -119,6 +209,12 @@ const PopoverApp = () => {
   // Button loading states
   const [serverLoading, setServerLoading] = useState(false);
   const [syncLoading, setSyncLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef(null);
+  // Re-render lags a fast second click, so state alone can't debounce the
+  // rockers — these refs make the flips single-flight.
+  const serverBusy = useRef(false);
+  const syncBusy = useRef(false);
 
   const addError = (errorData) => {
     const errorId = errorIdCounter.current++;
@@ -145,6 +241,10 @@ const PopoverApp = () => {
     ));
   };
 
+  const dismissError = (errorId) => {
+    setErrorQueue(prev => prev.filter(e => e.id !== errorId));
+  };
+
   const markAllRead = () => {
     setErrorQueue(prev => prev.map(e => ({ ...e, read: true })));
   };
@@ -157,9 +257,13 @@ const PopoverApp = () => {
   // from cache, even if the main process is momentarily unresponsive.
   useEffect(() => {
     try {
-      localStorage.setItem(STATE_CACHE_KEY, JSON.stringify(state));
+      localStorage.setItem(STATE_CACHE_KEY, JSON.stringify({
+        ...state,
+        cachedHasApiKey: hasStoredApiKey,
+        cachedUsername: credUsername,
+      }));
     } catch {}
-  }, [state]);
+  }, [state, hasStoredApiKey, credUsername]);
 
   useEffect(() => {
     if (!window.electronAPI) return;
@@ -176,6 +280,8 @@ const PopoverApp = () => {
       if (info && info.hasApiKey) {
         setHasStoredApiKey(true);
         setCredUsername(info.username || '');
+      } else {
+        setHasStoredApiKey(false);
       }
     });
 
@@ -241,9 +347,6 @@ const PopoverApp = () => {
       } else if (data.action === 'upload') {
         setRecentUploads(prev => [entry, ...prev.filter(e => e.file !== entry.file)].slice(0, 100));
       }
-      if (currentViewRef.current !== 'transfers') {
-        setUnseenTransfers(prev => prev + 1);
-      }
     });
 
     window.electronAPI.onUpdateAvailable((data) => {
@@ -270,56 +373,45 @@ const PopoverApp = () => {
     return () => clearInterval(id);
   }, [lastSync]);
 
-  const lastSyncText = lastSync ? formatRelativeTime(lastSync) : null;
+  useEffect(() => () => clearTimeout(copiedTimer.current), []);
 
-  // Smart Start Server
-  const handleStartServer = async () => {
-    if (!state.selectedFolder) {
-      const result = await window.electronAPI?.selectFolder();
-      if (!result?.success) return;
-    }
+  const handleServerFlip = async () => {
+    if (serverBusy.current) return;
+    serverBusy.current = true;
     setServerLoading(true);
     try {
-      await window.electronAPI?.startServer();
+      if (state.serverRunning) {
+        await window.electronAPI?.stopServer();
+      } else {
+        await window.electronAPI?.startServer();
+      }
     } finally {
+      serverBusy.current = false;
       setServerLoading(false);
     }
   };
 
-  const handleStopServer = async () => {
-    setServerLoading(true);
-    try {
-      await window.electronAPI?.stopServer();
-    } finally {
-      setServerLoading(false);
-    }
-  };
+  const handleSyncFlip = async () => {
+    if (syncBusy.current) return;
 
-  // Smart Enable Sync
-  const handleToggleSync = async () => {
     if (state.syncEnabled) {
+      syncBusy.current = true;
       setSyncLoading(true);
       try {
         await window.electronAPI?.toggleSync(false);
       } finally {
+        syncBusy.current = false;
         setSyncLoading(false);
       }
       return;
     }
 
-    // Need folder first
-    if (!state.selectedFolder) {
-      const result = await window.electronAPI?.selectFolder();
-      if (!result?.success) return;
-    }
-
-    // Need credentials
     if (!hasStoredApiKey) {
       setCurrentView('credentials');
       return;
     }
 
-    // Has everything — just toggle on
+    syncBusy.current = true;
     setSyncLoading(true);
     try {
       const result = await window.electronAPI?.toggleSync(true);
@@ -329,11 +421,57 @@ const PopoverApp = () => {
         return;
       }
     } finally {
+      syncBusy.current = false;
       setSyncLoading(false);
     }
   };
 
-  // Credentials form submit
+  // First-run: choosing the folder also powers the server on, so one click
+  // takes a fresh install to a served folder.
+  const handleChooseFolder = async () => {
+    if (serverBusy.current) return;
+    const result = await window.electronAPI?.selectFolder();
+    if (!result?.success) return;
+    serverBusy.current = true;
+    setServerLoading(true);
+    try {
+      await window.electronAPI?.startServer();
+    } finally {
+      serverBusy.current = false;
+      setServerLoading(false);
+    }
+  };
+
+  // Change: repoint the unit. The server follows the new folder; sync pauses
+  // instead of silently continuing on the old folder or starting a full sync
+  // of a different folder — re-enabling it is an explicit flip of the rocker.
+  const handleChangeFolder = async () => {
+    if (serverBusy.current || syncBusy.current) return;
+    const result = await window.electronAPI?.selectFolder();
+    if (!result?.success) return;
+    if (state.syncEnabled) {
+      syncBusy.current = true;
+      setSyncLoading(true);
+      try {
+        await window.electronAPI?.toggleSync(false);
+      } finally {
+        syncBusy.current = false;
+        setSyncLoading(false);
+      }
+    }
+    if (state.serverRunning) {
+      serverBusy.current = true;
+      setServerLoading(true);
+      try {
+        await window.electronAPI?.stopServer();
+        await window.electronAPI?.startServer();
+      } finally {
+        serverBusy.current = false;
+        setServerLoading(false);
+      }
+    }
+  };
+
   const handleCredentialsSubmit = async () => {
     if (!credApiKey.trim()) {
       setCredError('API key is required');
@@ -371,6 +509,14 @@ const PopoverApp = () => {
     }
   };
 
+  const handleCopyUrl = async () => {
+    const url = `http://localhost:${state.serverPort || 4321}`;
+    await window.electronAPI?.copyText(url);
+    setCopied(true);
+    clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopied(false), 1400);
+  };
+
   const handleOpenBrowser = () => {
     window.electronAPI?.openBrowser();
   };
@@ -391,28 +537,25 @@ const PopoverApp = () => {
     setCurrentView('home');
   };
 
-  const toggleErrors = () => {
-    if (currentView === 'errors') {
-      setCurrentView('home');
-    } else {
-      setCurrentView('errors');
-    }
+  const toggleNotices = () => {
+    setCurrentView(currentView === 'notices' ? 'home' : 'notices');
   };
 
-  const toggleTransfers = () => {
-    if (currentView === 'transfers') {
-      setCurrentView('home');
-    } else {
-      setCurrentView('transfers');
-      setUnseenTransfers(0);
-    }
-  };
-
-  const clearTransfers = () => {
+  const clearActivity = () => {
     setRecentUploads([]);
     setRecentDownloads([]);
-    setUnseenTransfers(0);
   };
+
+  const activity = [
+    ...recentUploads.map(e => ({ ...e, dir: 'up' })),
+    ...recentDownloads.map(e => ({ ...e, dir: 'down' })),
+  ].sort((a, b) => b.timestamp - a.timestamp);
+
+  const criticalNotice = errorQueue
+    .filter(e => !e.read && e.priority === 1)
+    .sort((a, b) => b.timestamp - a.timestamp)[0] || null;
+
+  const syncUsername = state.syncStatus?.username || credUsername || null;
 
   const arrowOnBottom = arrowPosition === 'bottom';
 
@@ -429,10 +572,10 @@ const PopoverApp = () => {
 
   if (arrowOnBottom) {
     arrowStyle.bottom = 0;
-    arrowStyle.borderTop = `${ARROW_HALF_WIDTH}px solid #151722`;
+    arrowStyle.borderTop = `${ARROW_HALF_WIDTH}px solid ${C.surface}`;
   } else {
     arrowStyle.top = 2;
-    arrowStyle.borderBottom = `${ARROW_HALF_WIDTH}px solid #151722`;
+    arrowStyle.borderBottom = `${ARROW_HALF_WIDTH}px solid ${C.surface}`;
   }
 
   return (
@@ -448,7 +591,7 @@ const PopoverApp = () => {
       {/* Panel body */}
       <div
         style={{
-          background: '#151722',
+          background: C.surface,
           borderRadius: 10,
           overflow: 'hidden',
           height: arrowOnBottom ? '100%' : `calc(100% - ${ARROW_HEIGHT}px)`,
@@ -460,44 +603,19 @@ const PopoverApp = () => {
         <div className="flex items-center px-3.5 pt-3 pb-2.5 border-b border-[#292F52]">
           <button
             onClick={currentView !== 'home' ? navigateHome : undefined}
-            className={`bg-transparent border-none text-white text-[16px] font-semibold tracking-wide p-0 font-["Berkeley_Mono",monospace] ${currentView !== 'home' ? 'cursor-pointer' : 'cursor-default'}`}
+            className={`bg-transparent border-none text-[#E8EAF6] text-[15px] font-semibold tracking-wide p-0 font-["Berkeley_Mono",monospace] ${currentView !== 'home' ? 'cursor-pointer' : 'cursor-default'}`}
           >
             Hyperclay Local
           </button>
 
-          {updateAvailable && (
-            <button
-              onClick={() => window.electronAPI?.openBrowser('https://hyperclay.com/hyperclay-local')}
-              title={`Update available: v${updateVersion}`}
-              className="ml-2 bg-[#1E8136] border-[1.5px] border-[#56B96C] rounded-full w-5 h-5 flex items-center justify-center cursor-pointer p-0 shrink-0"
-            >
-              <svg className="w-[11px] h-[11px]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="3" stroke="#fff">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18" />
-              </svg>
-            </button>
-          )}
-
           <div className="ml-auto flex gap-1">
             <button
-              onClick={toggleTransfers}
-              title="Transfers"
-              className={`relative border-none rounded-[20px] px-2 py-1 cursor-pointer flex items-center justify-center ${currentView === 'transfers' ? 'bg-[#2D3847]' : 'bg-[#232D3A] hover:bg-[#2D3847]'}`}
+              onClick={toggleNotices}
+              title="Notices"
+              aria-label={unreadCount > 0 ? `Notices, ${unreadCount} unread` : 'Notices'}
+              className={`relative border-none rounded-[20px] px-2 py-1 cursor-pointer flex items-center justify-center ${currentView === 'notices' ? 'bg-[#2D3847]' : 'bg-[#232D3A] hover:bg-[#2D3847]'}`}
             >
-              <svg className="w-[14px] h-[14px]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 1118 1118">
-                <path fill="#fff" d="M544.357 648.648c19.531 19.531 19.531 51.172 0 70.703l-150 150c-9.765 9.765-22.562 14.645-35.354 14.645s-25.588-4.885-35.355-14.651l-150-150c-19.531-19.53-19.531-51.172 0-70.702s51.172-19.531 70.703 0l64.65 64.65V284c0-27.636 22.386-50 50-50s50 22.364 50 50v429.293l64.651-64.65c19.531-19.527 51.172-19.527 70.703.005zm400-250c19.531 19.531 19.531 51.172 0 70.703-9.765 9.765-22.562 14.645-35.354 14.645s-25.588-4.885-35.355-14.651L809.003 404.7v429.293c0 27.636-22.386 50-50 50s-50-22.364-50-50V404.7l-64.651 64.651c-19.531 19.53-51.172 19.53-70.703 0-19.53-19.531-19.53-51.172 0-70.703l150-150c19.531-19.531 51.172-19.531 70.703 0z"/>
-              </svg>
-              {unseenTransfers > 0 && (
-                <span className="absolute -top-0.5 -right-1 flex items-center justify-center min-w-4 h-4 px-1 text-[11px] font-bold font-['Berkeley_Mono',monospace] text-white bg-[#1D498E] rounded-[20px]">
-                  {unseenTransfers > 9 ? '9+' : unseenTransfers}
-                </span>
-              )}
-            </button>
-            <button
-              onClick={toggleErrors}
-              title="Notifications"
-              className={`relative border-none rounded-[20px] px-2 py-1 cursor-pointer flex items-center justify-center ${currentView === 'errors' ? 'bg-[#2D3847]' : 'bg-[#232D3A] hover:bg-[#2D3847]'}`}
-            >
-              <svg className="w-[14px] h-[14px] text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
+              <svg className="w-[14px] h-[14px] text-[#B8BFE5]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
               </svg>
               {unreadCount > 0 && (
@@ -509,36 +627,59 @@ const PopoverApp = () => {
           </div>
         </div>
 
+        {/* Update banner */}
+        {updateAvailable && currentView === 'home' && (
+          <button
+            onClick={() => window.electronAPI?.openBrowser('https://hyperclay.com/hyperclay-local')}
+            className="flex items-center gap-2 w-full px-3.5 py-1.5 bg-[#1B1E2C] border-none border-b border-b-[#292F52] cursor-pointer text-left font-['Berkeley_Mono',monospace]"
+            style={{ borderBottom: `1px solid ${C.border}` }}
+          >
+            <Led on color={C.ledGreen} />
+            <span className="text-[12px] text-[#B8BFE5]">Update v{updateVersion} available</span>
+            <span className="ml-auto text-[12px] text-[#69AEFE]">→</span>
+          </button>
+        )}
+
         {/* View content */}
         <div className="flex-1 overflow-hidden flex flex-col">
           {currentView === 'home' && (
             <HomeView
               state={state}
-              lastSyncText={lastSyncText}
+              hasStoredApiKey={hasStoredApiKey}
+              syncUsername={syncUsername}
+              lastSync={lastSync}
               serverLoading={serverLoading}
               syncLoading={syncLoading}
-              onStartServer={handleStartServer}
-              onStopServer={handleStopServer}
-              onToggleSync={handleToggleSync}
-              onOpenBrowser={handleOpenBrowser}
+              copied={copied}
+              activity={activity}
+              criticalNotice={criticalNotice}
+              onServerFlip={handleServerFlip}
+              onSyncFlip={handleSyncFlip}
+              onChooseFolder={handleChooseFolder}
+              onChangeFolder={handleChangeFolder}
               onOpenFolder={handleOpenFolder}
+              onOpenBrowser={handleOpenBrowser}
+              onCopyUrl={handleCopyUrl}
+              onConnect={() => setCurrentView('credentials')}
+              onShowActivity={() => setCurrentView('activity')}
+              onShowNotices={() => setCurrentView('notices')}
             />
           )}
 
-          {currentView === 'errors' && (
-            <ErrorsView
+          {currentView === 'notices' && (
+            <NoticesView
               errors={errorQueue}
               onMarkRead={markAllRead}
               onMarkErrorRead={markErrorRead}
+              onDismissError={dismissError}
               onClearAll={clearAllErrors}
             />
           )}
 
-          {currentView === 'transfers' && (
-            <TransfersView
-              uploads={recentUploads}
-              downloads={recentDownloads}
-              onClear={clearTransfers}
+          {currentView === 'activity' && (
+            <ActivityView
+              activity={activity}
+              onClear={clearActivity}
             />
           )}
 
@@ -548,6 +689,7 @@ const PopoverApp = () => {
               apiKey={credApiKey}
               error={credError}
               loading={credLoading}
+              folderLabel={folderName(state.selectedFolder)}
               onUsernameChange={setCredUsername}
               onApiKeyChange={setCredApiKey}
               onSubmit={handleCredentialsSubmit}
@@ -557,8 +699,11 @@ const PopoverApp = () => {
         </div>
 
         {/* Footer */}
-        <div className="flex justify-between items-center px-3.5 py-2 border-t border-[#292F52]">
+        <div className="flex items-center px-3.5 py-2 border-t border-[#292F52]">
           <FooterButton label="Options" onClick={handleOptions} />
+          <span className="flex-1 text-center text-[11px] text-[#454A68]">
+            {state.appVersion ? `v${state.appVersion}` : ''}
+          </span>
           <FooterButton label="Quit" onClick={handleQuit} />
         </div>
       </div>
@@ -570,61 +715,218 @@ const PopoverApp = () => {
 // HOME VIEW
 // =============================================================================
 
-const HomeView = ({ state, lastSyncText, serverLoading, syncLoading, onStartServer, onStopServer, onToggleSync, onOpenBrowser, onOpenFolder }) => (
-  <div className="flex-1 overflow-y-auto px-3.5 py-2.5">
-    <div className="flex items-center gap-2 mb-2">
-      <StatusDot active={state.serverRunning} />
-      <span className="text-[#B8BFE5] text-[13px]">
-        Server: {state.serverRunning ? `On (port ${state.serverPort})` : 'Off'}
-      </span>
-    </div>
+const HomeView = ({
+  state, hasStoredApiKey, syncUsername, lastSync, serverLoading, syncLoading,
+  copied, activity, criticalNotice,
+  onServerFlip, onSyncFlip, onChooseFolder, onChangeFolder, onOpenFolder,
+  onOpenBrowser, onCopyUrl, onConnect, onShowActivity, onShowNotices,
+}) => {
+  const hasFolder = !!state.selectedFolder;
+  const port = state.serverPort || 4321;
 
-    <div className="flex items-center gap-2 mb-1">
-      <StatusDot active={state.syncEnabled} />
-      <span className="text-[#B8BFE5] text-[13px]">
-        Sync: {state.syncEnabled
-          ? `Active${state.syncStatus?.username ? ` (${state.syncStatus.username})` : ''}`
-          : 'Off'}
-      </span>
-    </div>
+  const serverSub = serverLoading
+    ? (state.serverRunning ? 'stopping…' : 'starting…')
+    : state.serverRunning
+      ? (
+        <>
+          <button
+            onClick={onOpenBrowser}
+            className="bg-transparent border-none p-0 cursor-pointer text-[#69AEFE] text-[11.5px] font-['Berkeley_Mono',monospace] hover:underline"
+          >
+            localhost:{port}
+          </button>
+          <button
+            onClick={onCopyUrl}
+            title="Copy URL"
+            aria-label="Copy URL"
+            className="bg-transparent border-none p-0 cursor-pointer text-[11px] text-[#6B7194] font-['Berkeley_Mono',monospace] hover:text-[#B8BFE5]"
+          >
+            {copied ? 'copied' : '⧉'}
+          </button>
+        </>
+      )
+      : `starts at localhost:${port}`;
 
-    {lastSyncText && state.syncEnabled && (
-      <div className="text-[#6B7194] text-[11px] ml-4 mb-1">
-        Last sync: {lastSyncText}
+  const syncSub = syncLoading
+    ? (state.syncEnabled ? 'stopping…' : 'enabling…')
+    : !hasStoredApiKey
+      ? 'connects to your hyperclay.com account'
+      : state.syncEnabled
+        ? `@${syncUsername || '…'} · ${lastSync ? `synced ${formatRelativeTime(lastSync)}` : 'active'}`
+        : `@${syncUsername || '…'} · paused`;
+
+  return (
+    <div className="flex-1 overflow-hidden flex flex-col">
+      {/* Folder bay */}
+      {hasFolder ? (
+        <div
+          onClick={onOpenFolder}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onOpenFolder();
+            }
+          }}
+          role="button"
+          tabIndex={0}
+          aria-label={`Open folder ${folderName(state.selectedFolder)}`}
+          title="Open folder"
+          className="mx-3 mt-3 mb-2.5 px-2.5 py-2 cursor-pointer group"
+          style={{ background: C.well, ...bevelIn() }}
+        >
+          <div className="flex items-center gap-2">
+            <span className="relative shrink-0" style={{ width: 16, height: 12, background: C.greenFill, border: `1px solid ${C.greenLt}` }}>
+              <span className="absolute" style={{ top: -4, left: -1, width: 7, height: 3, background: C.greenFill, borderLeft: `1px solid ${C.greenLt}`, borderTop: `1px solid ${C.greenLt}`, borderRight: `1px solid ${C.greenLt}` }} />
+            </span>
+            <span className="text-[13px] font-medium text-[#E8EAF6] whitespace-nowrap overflow-hidden text-ellipsis group-hover:text-[#F6F7FB]">
+              {folderName(state.selectedFolder)}
+            </span>
+          </div>
+          <div className="flex mt-[3px] pl-6 text-[11px] text-[#6B7194]">
+            <span>mounted · open folder</span>
+            <button
+              onClick={(e) => { e.stopPropagation(); onChangeFolder(); }}
+              className="ml-auto bg-transparent border-none p-0 cursor-pointer text-[11px] text-[#6B7194] underline underline-offset-2 font-['Berkeley_Mono',monospace] hover:text-[#B8BFE5]"
+            >
+              change
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div
+          className="mx-3 mt-3 mb-2.5 px-3 pt-4 pb-3.5 text-center"
+          style={{ background: C.well, border: `2px dashed ${C.border}` }}
+        >
+          <BevelButton
+            label={serverLoading ? 'Starting…' : 'Choose Folder…'}
+            onClick={onChooseFolder}
+            variant="success"
+            disabled={serverLoading}
+          />
+          <div className="mt-2.5 text-[11.5px] leading-[1.5] text-[#6B7194]">
+            Serve your HTML apps locally.<br />Sync them to hyperclay.com.
+          </div>
+        </div>
+      )}
+
+      {/* Server row */}
+      <div className="flex items-center gap-[9px] px-3.5 pt-[7px]">
+        <Led on={state.serverRunning} />
+        <span className={`text-[12px] tracking-[0.14em] ${hasFolder ? 'text-[#B8BFE5]' : 'text-[#4A4F6E]'}`}>SERVER</span>
+        <Rocker
+          on={state.serverRunning}
+          disabled={!hasFolder || serverLoading}
+          onFlip={onServerFlip}
+          label={state.serverRunning ? 'Turn server off' : 'Turn server on'}
+        />
       </div>
-    )}
+      <div className={`flex items-center gap-1.5 pl-[30px] pr-3.5 pt-[2px] pb-1.5 text-[11.5px] ${hasFolder ? 'text-[#6B7194]' : 'text-[#4A4F6E]'}`}>
+        {serverSub}
+      </div>
 
-    <div className="border-t border-[#292F52] my-2.5" />
+      {/* Sync row */}
+      <div className="flex items-center gap-[9px] px-3.5 pt-[7px]">
+        <Led on={state.syncEnabled} />
+        <span className={`text-[12px] tracking-[0.14em] ${hasFolder ? 'text-[#B8BFE5]' : 'text-[#4A4F6E]'}`}>SYNC</span>
+        {hasStoredApiKey ? (
+          <Rocker
+            on={state.syncEnabled}
+            disabled={!hasFolder || syncLoading}
+            onFlip={onSyncFlip}
+            label={state.syncEnabled ? 'Turn sync off' : 'Turn sync on'}
+          />
+        ) : (
+          <button
+            onClick={onConnect}
+            disabled={!hasFolder}
+            className={`ml-auto bg-transparent border-none p-0 text-[12px] font-['Berkeley_Mono',monospace] ${hasFolder ? 'cursor-pointer text-[#69AEFE] hover:underline' : 'cursor-default text-[#4A4F6E]'}`}
+          >
+            Connect →
+          </button>
+        )}
+      </div>
+      <div className={`pl-[30px] pr-3.5 pt-[2px] pb-1.5 text-[11.5px] ${hasFolder ? 'text-[#6B7194]' : 'text-[#4A4F6E]'}`}>
+        {syncSub}
+      </div>
 
-    <div className="flex flex-col gap-[5px]">
-      {state.serverRunning ? (
-        <BevelButton label="Stop Server" onClick={onStopServer} variant="danger" disabled={serverLoading} />
-      ) : (
-        <BevelButton label={serverLoading ? 'Starting...' : 'Start Server'} onClick={onStartServer} variant="success" disabled={serverLoading} />
+      {/* Critical notice banner */}
+      {criticalNotice && (
+        <button
+          onClick={onShowNotices}
+          className="flex items-start gap-2 mx-3 mt-1.5 px-2.5 py-2 border-none cursor-pointer text-left font-['Berkeley_Mono',monospace]"
+          style={{ background: '#2A1518', borderLeft: `3px solid ${C.faultFill}` }}
+        >
+          <Led on color={C.fault} glow="rgba(247,61,72,0.55)" />
+          <span className="flex-1 min-w-0 text-[11.5px] leading-[1.4] text-[#E8C7CA] overflow-hidden" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+            {criticalNotice.error}
+          </span>
+          <span className="text-[11px] text-[#F73D48] whitespace-nowrap">Details →</span>
+        </button>
       )}
 
-      {state.syncEnabled ? (
-        <BevelButton label={syncLoading ? 'Stopping...' : 'Stop Sync'} onClick={onToggleSync} variant="danger" disabled={syncLoading} />
-      ) : (
-        <BevelButton label={syncLoading ? 'Enabling...' : 'Enable Sync'} onClick={onToggleSync} variant="sync" disabled={syncLoading} />
+      {/* Activity — only when sync is on or there is history to show. It is
+          fed solely by sync transfers, so server-only users never see it. */}
+      {hasFolder && (state.syncEnabled || activity.length > 0) && (
+        <>
+          <div className="flex items-center gap-2 mx-3.5 mt-2 mb-0.5">
+            <span className="text-[10px] tracking-[0.22em] text-[#6B7194]">ACTIVITY</span>
+            <span className="flex-1 h-px bg-[#292F52]" />
+            {activity.length > 0 && (
+              <button
+                onClick={onShowActivity}
+                className="bg-transparent border-none p-0 cursor-pointer text-[11px] text-[#6B7194] font-['Berkeley_Mono',monospace] hover:text-[#B8BFE5]"
+              >
+                all →
+              </button>
+            )}
+          </div>
+          <div className="flex-1 overflow-hidden px-3.5">
+            {activity.length === 0 ? (
+              <div className="pt-3 text-[11.5px] text-[#454A68]">
+                watching for changes
+              </div>
+            ) : (
+              activity.slice(0, 5).map((item, i) => (
+                <ActivityRow key={item.dir + item.file + '-' + i} item={item} />
+              ))
+            )}
+          </div>
+        </>
       )}
 
-      {state.serverRunning && (
-        <BevelButton label="Open in Browser" onClick={onOpenBrowser} variant="neutral" />
-      )}
-
-      {state.selectedFolder && (
-        <BevelButton label="Open Folder" onClick={onOpenFolder} variant="neutral" />
+      {/* First-run tip */}
+      {!hasFolder && (
+        <div className="flex-1 flex items-end justify-center px-3.5 pb-3">
+          <div className="text-[11px] leading-[1.55] text-[#454A68] text-center">
+            Any .html file in your folder becomes<br />
+            an app you can open, edit, and save,<br />
+            right in the browser.
+          </div>
+        </div>
       )}
     </div>
+  );
+};
+
+const ActivityRow = ({ item }) => (
+  <div className="flex items-baseline gap-2 py-[4px] border-b border-[#1D1F2F] last:border-b-0">
+    <span className={`shrink-0 w-3 text-[12px] ${item.dir === 'up' ? 'text-[#28C83E]' : 'text-[#69AEFE]'}`}>
+      {item.dir === 'up' ? '↑' : '↓'}
+    </span>
+    <span className="text-[12px] text-[#B8BFE5] whitespace-nowrap overflow-hidden text-ellipsis">
+      {item.file}
+    </span>
+    <span className="ml-auto shrink-0 text-[11px] text-[#6B7194] tabular-nums">
+      {formatShortTime(item.timestamp)}
+    </span>
   </div>
 );
 
 // =============================================================================
-// ERRORS VIEW
+// NOTICES VIEW
 // =============================================================================
 
-const ErrorsView = ({ errors, onMarkRead, onMarkErrorRead, onClearAll }) => {
+const NoticesView = ({ errors, onMarkRead, onMarkErrorRead, onDismissError, onClearAll }) => {
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -637,7 +939,7 @@ const ErrorsView = ({ errors, onMarkRead, onMarkErrorRead, onClearAll }) => {
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
       <div className="flex items-center gap-2 px-3.5 pt-2.5 pb-2">
-        <span className="text-[15px] font-semibold text-white">Notices</span>
+        <span className="text-[15px] font-semibold text-[#E8EAF6]">Notices</span>
         <div className="ml-auto flex gap-1">
           <BevelButton label="mark read" onClick={onMarkRead} variant="neutral" small />
           <BevelButton label="clear" onClick={onClearAll} variant="danger" small />
@@ -647,16 +949,21 @@ const ErrorsView = ({ errors, onMarkRead, onMarkErrorRead, onClearAll }) => {
       <div className="flex-1 overflow-y-auto px-3.5 pb-2.5">
         {sortedErrors.length === 0 ? (
           <div className="py-10 text-center text-[#6B7194] text-[13px]">
-            No notices
+            All quiet
           </div>
         ) : (
           sortedErrors.map(error => (
-            <div key={error.id} className="flex gap-2 items-start py-2 border-b border-[#1D1F2F]">
+            <div
+              key={error.id}
+              className="flex gap-2 items-start py-2 border-b border-[#1D1F2F]"
+              style={error.priority === 1 ? { borderLeft: `3px solid ${C.faultFill}`, paddingLeft: 8, marginLeft: -11 } : undefined}
+            >
               {!error.read ? (
                 <button
                   onClick={() => onMarkErrorRead(error.id)}
                   title="Mark as read"
-                  className="shrink-0 mt-[5px] w-[7px] h-[7px] rounded-full bg-gray-500 border-none cursor-pointer p-0"
+                  aria-label="Mark as read"
+                  className={`shrink-0 mt-[5px] w-[7px] h-[7px] rounded-full border-none cursor-pointer p-0 ${error.priority === 1 ? 'bg-[#F73D48]' : 'bg-gray-500'}`}
                 />
               ) : (
                 <div className="shrink-0 w-[7px]" />
@@ -665,6 +972,14 @@ const ErrorsView = ({ errors, onMarkRead, onMarkErrorRead, onClearAll }) => {
                 {error.error}
                 {error.file && (
                   <div className="mt-0.5 text-[11px] text-[#6B7194]">{error.file}</div>
+                )}
+                {error.dismissable !== false && error.priority !== 1 && (
+                  <button
+                    onClick={() => onDismissError(error.id)}
+                    className="block mt-1 bg-transparent border-none p-0 cursor-pointer text-[11px] text-[#6B7194] underline underline-offset-2 font-['Berkeley_Mono',monospace] hover:text-[#B8BFE5]"
+                  >
+                    Dismiss
+                  </button>
                 )}
               </div>
               <div className="shrink-0 text-[11px] text-gray-500 tabular-nums">
@@ -679,24 +994,10 @@ const ErrorsView = ({ errors, onMarkRead, onMarkErrorRead, onClearAll }) => {
 };
 
 // =============================================================================
-// TRANSFERS VIEW
+// ACTIVITY VIEW
 // =============================================================================
 
-const TransfersTab = ({ active, label, onClick }) => (
-  <button
-    onClick={onClick}
-    className={`cursor-pointer px-3 py-1.5 text-[13px] font-["Berkeley_Mono",monospace] text-white rounded-none -mb-px ${
-      active
-        ? 'bg-[#151722] border border-[#292F52] border-b-[#151722] z-[1]'
-        : 'bg-transparent border border-transparent'
-    }`}
-  >
-    {label}
-  </button>
-);
-
-const TransfersView = ({ uploads, downloads, onClear }) => {
-  const [tab, setTab] = useState('uploads');
+const ActivityView = ({ activity, onClear }) => {
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -704,38 +1005,23 @@ const TransfersView = ({ uploads, downloads, onClear }) => {
     return () => clearInterval(interval);
   }, []);
 
-  const items = tab === 'uploads' ? uploads : downloads;
-  const emptyText = tab === 'uploads' ? 'No uploads yet' : 'No downloads yet';
-
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
-      <div className="flex items-center pt-2 px-3.5">
-        <span className="text-[15px] font-semibold text-white">Transfers</span>
+      <div className="flex items-center px-3.5 pt-2.5 pb-2">
+        <span className="text-[15px] font-semibold text-[#E8EAF6]">Activity</span>
         <div className="ml-auto">
           <BevelButton label="clear" onClick={onClear} variant="danger" small />
         </div>
       </div>
 
-      <div className="flex items-end gap-2 border-b border-[#292F52] pt-2 px-3.5">
-        <TransfersTab active={tab === 'uploads'} label="Uploads" onClick={() => setTab('uploads')} />
-        <TransfersTab active={tab === 'downloads'} label="Downloads" onClick={() => setTab('downloads')} />
-      </div>
-
-      <div className="flex-1 overflow-auto px-3.5 pb-2.5">
-        {items.length === 0 ? (
+      <div className="flex-1 overflow-y-auto px-3.5 pb-2.5">
+        {activity.length === 0 ? (
           <div className="py-10 text-center text-[#6B7194] text-[13px]">
-            {emptyText}
+            Transfers show up here
           </div>
         ) : (
-          items.map((item, i) => (
-            <div key={item.file + '-' + i} className="flex gap-2 items-center py-[7px] border-b border-[#1D1F2F]">
-              <div className="shrink-0 text-[11px] text-gray-500 tabular-nums">
-                {formatShortTime(item.timestamp)}
-              </div>
-              <div className="text-[12px] text-[#D1D5E8] whitespace-nowrap pr-3.5">
-                {item.file}
-              </div>
-            </div>
+          activity.map((item, i) => (
+            <ActivityRow key={item.dir + item.file + '-' + i} item={item} />
           ))
         )}
       </div>
@@ -747,15 +1033,18 @@ const TransfersView = ({ uploads, downloads, onClear }) => {
 // CREDENTIALS VIEW
 // =============================================================================
 
-const CredentialsView = ({ username, apiKey, error, loading, onUsernameChange, onApiKeyChange, onSubmit, onCancel }) => {
+const CredentialsView = ({ username, apiKey, error, loading, folderLabel, onUsernameChange, onApiKeyChange, onSubmit, onCancel }) => {
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !loading) onSubmit();
   };
 
   return (
     <div className="flex-1 px-3.5 pt-3.5 pb-2.5">
-      <div className="text-sm font-semibold text-white mb-3">
+      <div className="text-sm font-semibold text-[#E8EAF6] mb-1">
         Connect to Hyperclay
+      </div>
+      <div className="text-[11.5px] text-[#6B7194] leading-[1.5] mb-3">
+        Two-way syncs {folderLabel ? `"${folderLabel}"` : 'your folder'} with your hyperclay.com account.
       </div>
 
       <div className="mb-2.5">
@@ -793,6 +1082,7 @@ const CredentialsView = ({ username, apiKey, error, loading, onUsernameChange, o
         onClick={onSubmit}
         variant="sync"
         disabled={loading}
+        style={{ width: '100%' }}
       />
 
       <div className="mt-2.5 flex justify-between items-center">
@@ -857,7 +1147,7 @@ function formatShortTime(timestamp) {
       else str = `${Math.floor(hours / 24)}d`;
     }
   }
-  return str.padStart(3, '\u00A0');
+  return str.padStart(3, ' ');
 }
 
 export default PopoverApp;

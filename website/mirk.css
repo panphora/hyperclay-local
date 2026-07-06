@@ -1,0 +1,787 @@
+/*
+ * mirk.css — the mirk UI kit, v2.
+ * Hand-written, no build. Fourteen form components as semantic BEM classes in
+ * @layer components, so utilities (Tailwind or your own) always override them
+ * with zero !important. Renders fully standalone; Tailwind is optional.
+ *
+ * Two hinges (see mirk-ui-guide.md):
+ *   1. Components live in @layer components → utilities win.
+ *   2. State serializes into the DOM (native attrs, :has(), inline --mirk-value)
+ *      so document.documentElement.outerHTML round-trips every visible state.
+ *
+ * This @layer statement makes the file self-sufficient without Tailwind, and
+ * merges into Tailwind's own order (@layer theme, base, components, utilities)
+ * when present.
+ */
+@layer base, components;
+
+@layer base {
+  /* Components are authored border-box (a 2px bevel must not grow the box). */
+  *, ::before, ::after { box-sizing: border-box; }
+  button, input, optgroup, select, textarea { margin: 0; }
+
+  @font-face {
+    font-family: 'Departure Mono';
+    src: url('fonts/DepartureMono-1.500/DepartureMono-Regular.woff2') format('woff2');
+    font-weight: 400; font-style: normal; font-display: swap;
+  }
+
+  body { font-family: 'Departure Mono', ui-monospace, "Menlo", monospace; }
+  /* Preflight sets these to ui-monospace; keep them in Departure Mono. */
+  pre, code, kbd, samp { font-family: inherit; }
+
+  /* 28 tokens, one value each. light-dark() picks the side from color-scheme.
+     :root paints the DEFAULT theme — "Pixel Quiet" (see 0030): mirk's warm soul
+     with the volume down. The louder original palette is the opt-in
+     [data-theme="full-volume"] block below. */
+  :root {
+    color-scheme: light dark;                 /* default: follow the OS */
+
+    --mirk-canvas:        light-dark(#FDF8F0, #0B0C13);
+    --mirk-bg:            light-dark(#FDF8F0, #11131E);
+    --mirk-fg:            light-dark(#2B241B, #ECEAF2);
+    --mirk-accent:        light-dark(#efefe5, #1D1F2F);
+    --mirk-destructive:   light-dark(#C24A3A, #ff5566);
+    --mirk-focus-color:   light-dark(#C7AE93, #4A506B);
+    --mirk-bevel-bg:      light-dark(#FCF8F1, #1A1D2C);
+    --mirk-bevel-fg:      light-dark(#2B241B, #ECEAF2);
+    --mirk-bevel-tl:      light-dark(#F0E7D8, #2A2E42);
+    --mirk-bevel-br:      light-dark(#E2D4BF, #14182A);
+    --mirk-bevel-hover-bg: light-dark(#F4ECDF, #202436);
+    --mirk-pill-inner-top: light-dark(#FBF6EE, #202436);
+    --mirk-input-border:  light-dark(#D8C8AF, #353B52);
+    --mirk-placeholder-color: light-dark(#A8987F, #6A7090);
+    --mirk-ctrl-bg:       light-dark(#8C7660, #5F6582);
+    --mirk-toggle-bg:     light-dark(#EFDBBD, #3E4660);
+    --mirk-toggle-hi:     light-dark(#F4EADA, #4E567A);
+    --mirk-toggle-lo:     light-dark(#C2A87E, #262B42);
+    --mirk-mark-fg:       light-dark(#6B5942, #C9CDE0);
+    --mirk-sortable-dot:  light-dark(#DDCBB0, #353B52);
+    --mirk-sortable-shadow:    light-dark(#C9B493, #0E1120);
+    --mirk-sortable-label:     light-dark(#8C7B62, #8A90AB);
+    --mirk-sortable-placeholder: light-dark(#A8987F, #6A7090);
+    --mirk-slider-fill:   light-dark(#F2E0BD, #2A2E42);
+    --mirk-slider-nub-bg: light-dark(#EFDBBD, #3E4660);
+    --mirk-slider-nub-hi: light-dark(#F4EADA, #4E567A);
+    --mirk-slider-nub-lo: light-dark(#C2A87E, #262B42);
+
+    /* Chip — the recovery/notification component reads from the kit's own tokens
+       via 5 slim hooks, so it matches the kit by default and reskins by overriding
+       a hook (not a rule). Each follows the theme (incl. the Full Volume variant)
+       and OS light/dark with no per-theme repaint; the one exception is the primary
+       fill, which the default (Pixel Quiet) leaves as the theme's fg ink while the
+       Full Volume variant tints it a warm brown in light (see below). */
+    --mirk-chip-surface:     var(--mirk-bg);            /* raised panel face */
+    --mirk-chip-edge:        var(--mirk-input-border);  /* panel + recess outline */
+    --mirk-chip-primary-bg:  var(--mirk-fg);            /* primary action fill — the theme's fg ink (Full Volume tints it warm brown in light) */
+    --mirk-chip-primary-fg:  var(--mirk-bg);
+    --mirk-chip-alert:       var(--mirk-destructive);   /* icon + struck "now" value */
+
+    --mirk-radius: 5px;                        /* the "rounded" corner */
+    --mirk-focus-offset: 2px;                  /* non-color → can't ride light-dark() */
+
+    background: var(--mirk-canvas);
+    color: var(--mirk-fg);
+  }
+
+  /* The one non-color token with a real light/dark split (was 2px / 3px). */
+  @media (prefers-color-scheme: dark) { :root { --mirk-focus-offset: 3px; } }
+
+  /* Force a mode on any subtree with one attribute (class aliases for hosts that
+     prefer class-based theming and Tailwind's dark-variant convention). Each also
+     paints its own canvas so a wrapper visibly flips. */
+  [data-theme="light"], .light {
+    color-scheme: light; --mirk-focus-offset: 2px;
+    background: var(--mirk-canvas); color: var(--mirk-fg);
+  }
+  [data-theme="dark"], .dark {
+    color-scheme: dark; --mirk-focus-offset: 3px;
+    background: var(--mirk-canvas); color: var(--mirk-fg);
+  }
+
+  /* Built-in brand variant — "Full Volume": mirk's original full-strength palette,
+     the loud pole of the volume axis (Pixel Quiet, now the default, is the quiet
+     end). Full-contrast bevel, warm cream / deep navy, crimson destructive.
+     Authored with light-dark() like :root, so it follows the OS and still flips
+     with .dark / .light. Opt in: data-theme="full-volume". Sits after :root
+     (equal specificity, source order wins). --mirk-radius / --mirk-focus-offset /
+     --mirk-ctrl-bg and the four shared --mirk-chip-* hooks inherit from :root
+     unchanged; only the tokens that differ from the default are re-declared here. */
+  [data-theme="full-volume"] {
+    --mirk-canvas:        light-dark(#F7F2EA, #0B0C13);
+    --mirk-bg:            light-dark(#F7F2EA, #1D1F2F);
+    --mirk-fg:            light-dark(#15120e, #F6F7F9);
+    --mirk-accent:        light-dark(#efefe5, #232639);
+    --mirk-destructive:   light-dark(#d4183d, #ff5566);
+    --mirk-focus-color:   light-dark(#BBA288, #5A607F);
+    --mirk-bevel-bg:      light-dark(#e9d3bd, #1D1F2F);
+    --mirk-bevel-fg:      light-dark(#15120e, #F6F7F9);
+    --mirk-bevel-tl:      light-dark(#f3ddc7, #474C65);
+    --mirk-bevel-br:      light-dark(#c2ad95, #131725);
+    --mirk-bevel-hover-bg: light-dark(#dfc9b3, #232639);
+    --mirk-pill-inner-top: light-dark(#efdac7, #232639);
+    --mirk-input-border:  light-dark(#957E65, #6E738E);
+    --mirk-placeholder-color: light-dark(#7F7366, #545973);
+    --mirk-toggle-bg:     light-dark(#DFC9AF, #656D95);
+    --mirk-toggle-hi:     light-dark(#E9D6C3, #7F87AD);
+    --mirk-toggle-lo:     light-dark(#C7A88A, #505677);
+    --mirk-mark-fg:       light-dark(#3F3225, #E1E3EA);
+    --mirk-sortable-dot:  light-dark(#e2c5a6, #393f5b);
+    --mirk-sortable-shadow:    light-dark(#c7a47f, #111527);
+    --mirk-sortable-label:     light-dark(#231e18, #edeef2);
+    --mirk-sortable-placeholder: light-dark(#99826c, #6f7695);
+    --mirk-slider-fill:   light-dark(#e9d3bd, #232639);
+    --mirk-slider-nub-bg: light-dark(#DFC9AF, #656D95);
+    --mirk-slider-nub-hi: light-dark(#E9D6C3, #7F87AD);
+    --mirk-slider-nub-lo: light-dark(#C7A88A, #505677);
+    /* :root (Pixel Quiet) leaves the chip primary as its own fg ink; the original
+       default tinted it a warm brown in light — restore that here. */
+    --mirk-chip-primary-bg: light-dark(#1C170E, var(--mirk-fg));
+  }
+
+  /* Roll your own the same way — an explicit [data-theme] block is the escape hatch:
+     [data-theme="sunset"] { color-scheme: light; --mirk-accent: #f0a868; … } */
+}
+
+@layer components {
+  /* Visually hidden, still focusable/announced. The hidden native input behind
+     every custom control relies on it; Tailwind is optional now. */
+  .mirk-sr-only {
+    position: absolute; width: 1px; height: 1px;
+    padding: 0; margin: -1px; overflow: hidden;
+    clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0;
+  }
+
+  /* ============================ BUTTON ============================ */
+  .mirk-button {
+    display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+    font: inherit; line-height: 1.5; cursor: pointer; user-select: none;
+    text-align: center;
+    color: var(--mirk-bevel-fg);
+    background: var(--mirk-bevel-bg);
+    border: 2px solid;
+    /* Raised bevel: light top+left, dark right+bottom. Shorthand is T R B L. */
+    border-color: var(--mirk-bevel-tl) var(--mirk-bevel-br) var(--mirk-bevel-br) var(--mirk-bevel-tl);
+    padding: 4px 14px 5px;                     /* medium */
+    outline: none;
+  }
+  .mirk-button__label { white-space: nowrap; user-select: none; display: inline-block; }
+
+  /* States, written once, shared by every size and shape. */
+  .mirk-button:hover { background-color: var(--mirk-bevel-hover-bg); }
+  .mirk-button:active {
+    border-color: var(--mirk-bevel-br) var(--mirk-bevel-tl) var(--mirk-bevel-tl) var(--mirk-bevel-br);
+  }
+  .mirk-button:not(.mirk-button--round):active .mirk-button__label { translate: 1.5px 1.5px; }
+  /* Direct focus (a real <button>) or a focus-visible descendant (a <label>
+     wrapping a hidden input, as the file/image upload triggers do). */
+  .mirk-button:focus-visible,
+  .mirk-button:has(:focus-visible) {
+    outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset);
+  }
+  .mirk-button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Sizes set padding + font (rect); round re-homes padding to the label below. */
+  .mirk-button--small { padding: 3px 12px; font-size: 14px; }
+  .mirk-button--large { padding: 4px 17px 7px; font-size: 18px; border-width: 3px; }
+
+  /* Round register: a gradient pill frame with the label as the inner fill. */
+  .mirk-button--round {
+    border: none; padding: 2px; border-radius: 14px;
+    background-color: var(--mirk-canvas);
+    background-image: linear-gradient(to top in oklab, var(--mirk-bevel-br), var(--mirk-bevel-tl));
+    opacity: 0.9; transition: opacity 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .mirk-button--round:hover { opacity: 1; }
+  .mirk-button--round:active {
+    background-image: linear-gradient(to bottom in oklab, var(--mirk-bevel-br), var(--mirk-bevel-tl));
+  }
+  .mirk-button--round .mirk-button__label {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 4px 17px 6px; border-radius: 12px;
+    color: var(--mirk-bevel-fg);
+    background-color: var(--mirk-bevel-bg);
+    background-image: linear-gradient(to top in oklab, var(--mirk-bevel-bg), var(--mirk-pill-inner-top));
+  }
+  .mirk-button--round.mirk-button--small { border-radius: 12px; }
+  .mirk-button--round.mirk-button--small .mirk-button__label { padding: 2px 14px; border-radius: 10px; }
+  .mirk-button--round.mirk-button--large { border-radius: 16px; }
+  .mirk-button--round.mirk-button--large .mirk-button__label { padding: 7px 24px 9px; border-radius: 14px; }
+
+  /* Quiet: a borderless text button (transparent border keeps the hit area + the
+     baseline aligned with neighbouring bevel buttons). For tertiary actions. */
+  .mirk-button--quiet {
+    background: none; background-image: none;
+    border-color: transparent; color: var(--mirk-placeholder-color);
+  }
+  .mirk-button--quiet:hover { background: none; color: var(--mirk-fg); }
+  .mirk-button--quiet:active { border-color: transparent; }
+
+  /* ============================ TEXT INPUT ============================ */
+  .mirk-input {
+    width: 100%;
+    background: var(--mirk-bevel-bg); color: var(--mirk-bevel-fg);
+    border: 1px solid var(--mirk-input-border);
+    padding: 5px 14px 6px;                     /* medium */
+    font: inherit; line-height: 1.5; border-radius: 0; outline: none;
+  }
+  .mirk-input::placeholder { color: var(--mirk-placeholder-color); }
+  .mirk-input:focus-visible {
+    outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset);
+  }
+  .mirk-input--small { padding: 4px 12px; font-size: 14px; }
+  .mirk-input--large { padding: 6px 17px 9px; font-size: 18px; }
+  .mirk-input--rounded { border-radius: var(--mirk-radius); }
+
+  /* ============================ TEXTAREA ============================ */
+  .mirk-textarea {
+    width: 100%;
+    background: var(--mirk-bevel-bg); color: var(--mirk-bevel-fg);
+    border: 1px solid var(--mirk-input-border);
+    padding: 6px 17px 9px; font: inherit; font-size: 18px; line-height: 1.5;
+    border-radius: 0; outline: none; resize: vertical;
+  }
+  .mirk-textarea::placeholder { color: var(--mirk-placeholder-color); }
+  .mirk-textarea:focus-visible {
+    outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset);
+  }
+  .mirk-textarea--rounded { border-radius: var(--mirk-radius); }
+
+  /* ============================ NUMBER ============================ */
+  .mirk-number {
+    display: flex; align-items: stretch; width: 100%;
+    background: var(--mirk-bevel-bg);
+    border: 1px solid var(--mirk-input-border); border-radius: 0;
+  }
+  .mirk-number:has(:focus-visible) {
+    outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset);
+  }
+  .mirk-number__input {
+    flex: 1; min-width: 0; background: transparent; color: var(--mirk-bevel-fg);
+    padding: 5px 10px 6px 14px;                /* medium */
+    font: inherit; line-height: 1.5; outline: none;
+    appearance: textfield; -webkit-appearance: textfield;
+  }
+  .mirk-number__input::-webkit-outer-spin-button,
+  .mirk-number__input::-webkit-inner-spin-button { -webkit-appearance: none; appearance: none; }
+  .mirk-number__steps { display: flex; flex-direction: column; padding: 2px; gap: 2px; }
+  .mirk-number__step {
+    flex: 1; cursor: pointer; line-height: 1; padding: 0 10px; font-size: 9px;  /* medium */
+    display: flex; align-items: center; justify-content: center;
+    background: var(--mirk-bevel-bg); outline: none;
+    border: 2px solid;
+    border-color: var(--mirk-bevel-tl) var(--mirk-bevel-br) var(--mirk-bevel-br) var(--mirk-bevel-tl);
+  }
+  .mirk-number__step:hover { background: var(--mirk-bevel-hover-bg); }
+  .mirk-number__step:active {
+    border-color: var(--mirk-bevel-br) var(--mirk-bevel-tl) var(--mirk-bevel-tl) var(--mirk-bevel-br);
+  }
+  .mirk-number__step:focus-visible { outline: 1px solid var(--mirk-focus-color); outline-offset: 1px; }
+
+  .mirk-number--small .mirk-number__input { padding: 4px 8px 4px 12px; font-size: 14px; }
+  .mirk-number--small .mirk-number__step  { padding: 0 8px; font-size: 8px; }
+  .mirk-number--large .mirk-number__input { padding: 6px 12px 9px 17px; font-size: 18px; }
+  .mirk-number--large .mirk-number__step  { padding: 0 12px; font-size: 10px; }
+
+  .mirk-number--rounded { border-radius: var(--mirk-radius); }
+  .mirk-number--rounded .mirk-number__step { border-radius: 3px; }
+
+  /* ============================ SELECT / DROPDOWN ============================ */
+  /* Keeps appearance:none + a real chevron (renders identically everywhere today);
+     base-select/::picker is a future enhancement. */
+  .mirk-select { position: relative; }
+  .mirk-select__field {
+    width: 100%; appearance: none; -webkit-appearance: none;
+    background: var(--mirk-bevel-bg); color: var(--mirk-bevel-fg);
+    border: 2px solid;
+    border-color: var(--mirk-bevel-tl) var(--mirk-bevel-br) var(--mirk-bevel-br) var(--mirk-bevel-tl);
+    padding: 4px 40px 5px 14px;                /* medium */
+    font: inherit; line-height: 1.5; border-radius: 0; outline: none;
+  }
+  .mirk-select__field:focus-visible {
+    outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset);
+  }
+  .mirk-select__chevron {
+    pointer-events: none; position: absolute; top: 50%; right: 14px;  /* medium */
+    translate: 0 -50%; rotate: 90deg; display: inline-block; line-height: 1; font-size: 20px;
+  }
+  .mirk-select--small .mirk-select__field { padding: 3px 36px 3px 12px; font-size: 14px; }
+  .mirk-select--small .mirk-select__chevron { right: 12px; font-size: 18px; }
+  .mirk-select--large .mirk-select__field { padding: 4px 48px 7px 17px; font-size: 18px; border-width: 3px; }
+  .mirk-select--large .mirk-select__chevron { right: 16px; font-size: 24px; }
+
+  /* Round: gradient pill frame around a borderless, pill-filled select. */
+  .mirk-select--round .mirk-select__frame {
+    padding: 2px; border-radius: 14px;         /* medium */
+    background-color: var(--mirk-canvas);
+    background-image: linear-gradient(to top in oklab, var(--mirk-bevel-br), var(--mirk-bevel-tl));
+  }
+  .mirk-select--round .mirk-select__frame:has(:focus-visible) {
+    outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset);
+  }
+  .mirk-select--round .mirk-select__field {
+    border: none; background-color: transparent;
+    background-image: linear-gradient(to top in oklab, var(--mirk-bevel-bg), var(--mirk-pill-inner-top));
+    border-radius: 12px; padding: 4px 40px 6px 17px;   /* medium */
+  }
+  .mirk-select--round.mirk-select--small .mirk-select__frame { border-radius: 12px; }
+  .mirk-select--round.mirk-select--small .mirk-select__field { border-radius: 10px; padding: 2px 36px 2px 14px; }
+  .mirk-select--round.mirk-select--large .mirk-select__frame { border-radius: 16px; }
+  .mirk-select--round.mirk-select--large .mirk-select__field { border-radius: 14px; padding: 7px 48px 9px 24px; }
+  .mirk-select--round.mirk-select--large .mirk-select__chevron { right: 16px; font-size: 24px; }
+
+  /* ============================ CHECKBOX ============================ */
+  .mirk-checkbox { display: inline-flex; align-items: center; gap: 0.75rem; cursor: pointer; width: fit-content; }
+  .mirk-checkbox__box {
+    position: relative; flex-shrink: 0; width: 22px; height: 22px;
+    display: flex; align-items: center; justify-content: center; border-radius: 0;
+    background: var(--mirk-bevel-bg);
+    border: 2px solid;
+    border-color: var(--mirk-bevel-tl) var(--mirk-bevel-br) var(--mirk-bevel-br) var(--mirk-bevel-tl);
+  }
+  .mirk-checkbox__mark {
+    opacity: 0; display: block; width: 6px; height: 12px;
+    border-right: 2.5px solid var(--mirk-mark-fg); border-bottom: 2.5px solid var(--mirk-mark-fg);
+    rotate: 45deg; translate: 0.5px -1.5px;
+  }
+  .mirk-checkbox__label { font-size: 18px; line-height: 1.5; }
+
+  .mirk-checkbox:has(:checked) .mirk-checkbox__box { border-color: var(--mirk-input-border); }
+  .mirk-checkbox:has(:checked) .mirk-checkbox__mark { opacity: 1; }
+  .mirk-checkbox:has(:focus-visible) .mirk-checkbox__box {
+    outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset);
+  }
+
+  .mirk-checkbox--small { gap: 0.5rem; }
+  .mirk-checkbox--small .mirk-checkbox__box { width: 18px; height: 18px; }
+  .mirk-checkbox--small .mirk-checkbox__mark {
+    width: 5px; height: 10px;
+    border-right-width: 2px; border-bottom-width: 2px; translate: 0.5px -1px;
+  }
+  .mirk-checkbox--small .mirk-checkbox__label { font-size: 14px; }
+
+  /* ============================ RADIO ============================ */
+  .mirk-radio { display: inline-flex; align-items: center; gap: 0.75rem; cursor: pointer; width: fit-content; }
+  .mirk-radio__ring {
+    position: relative; flex-shrink: 0; width: 25px; height: 25px; border-radius: 9999px;
+    background-image: linear-gradient(to top in oklab, var(--mirk-bevel-br), var(--mirk-bevel-tl));
+  }
+  .mirk-radio__fill {
+    display: block; position: absolute; inset: 2px; border-radius: 9999px;
+    background-image: linear-gradient(to top in oklab, var(--mirk-bevel-bg), var(--mirk-pill-inner-top));
+  }
+  .mirk-radio__dot {
+    display: none; position: absolute; top: 50%; left: 50%; translate: -50% -50%;
+    width: 9px; height: 9px; border-radius: 9999px; background: var(--mirk-mark-fg);
+  }
+  .mirk-radio__label { font-size: 18px; line-height: 1.5; }
+
+  .mirk-radio:has(:checked) .mirk-radio__ring {
+    background-image: none; background-color: var(--mirk-bevel-bg);
+    border: 2px solid var(--mirk-input-border);
+  }
+  .mirk-radio:has(:checked) .mirk-radio__fill { display: none; }
+  .mirk-radio:has(:checked) .mirk-radio__dot { display: block; }
+  .mirk-radio:has(:focus-visible) .mirk-radio__ring {
+    outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset);
+  }
+
+  .mirk-radio--small { gap: 0.5rem; }
+  .mirk-radio--small .mirk-radio__ring { width: 20px; height: 20px; }
+  .mirk-radio--small .mirk-radio__dot { width: 7px; height: 7px; }
+  .mirk-radio--small .mirk-radio__label { font-size: 14px; }
+
+  /* ============================ TOGGLE ============================ */
+  .mirk-toggle { display: inline-flex; align-items: center; gap: 0.75rem; cursor: pointer; width: fit-content; }
+  .mirk-toggle__track {
+    position: relative; flex-shrink: 0; width: 49px; height: 27px; border-radius: 0;
+    border: 1px solid var(--mirk-input-border);
+  }
+  .mirk-toggle__thumb {
+    position: absolute; top: 3px; left: 3px; width: 19px; height: 19px;
+    background-color: var(--mirk-toggle-bg);
+    border: 2px solid;
+    border-color: var(--mirk-toggle-hi) var(--mirk-toggle-lo) var(--mirk-toggle-lo) var(--mirk-toggle-hi);
+    transition-property: transform, translate, scale, rotate;
+    transition-duration: 0.15s; transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .mirk-toggle__label { font-size: 18px; line-height: 1.5; }
+
+  .mirk-toggle:has(:checked) .mirk-toggle__thumb { translate: 22px; }
+  .mirk-toggle:has(:focus-visible) .mirk-toggle__track {
+    outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset);
+  }
+
+  .mirk-toggle--round .mirk-toggle__track { width: 50px; height: 29px; border-radius: 9999px; }
+  .mirk-toggle--round .mirk-toggle__thumb {
+    width: 21px; height: 21px; border: none; border-radius: 9999px;
+    background-color: transparent;
+    background-image: linear-gradient(to top in oklab, var(--mirk-toggle-lo), var(--mirk-toggle-hi));
+  }
+  .mirk-toggle--round .mirk-toggle__thumb::after {
+    content: ""; position: absolute; inset: 2px; border-radius: 9999px; background: var(--mirk-toggle-bg);
+  }
+  .mirk-toggle--round:has(:checked) .mirk-toggle__thumb { translate: 21px; }
+
+  .mirk-toggle--small { gap: 0.5rem; }
+  .mirk-toggle--small .mirk-toggle__track { width: 42px; height: 23px; }
+  .mirk-toggle--small .mirk-toggle__thumb { top: 2px; left: 2px; width: 17px; height: 17px; }
+  .mirk-toggle--small:has(:checked) .mirk-toggle__thumb { translate: 19px; }
+  .mirk-toggle--small .mirk-toggle__label { font-size: 14px; }
+  .mirk-toggle--round.mirk-toggle--small .mirk-toggle__track { width: 43px; height: 25px; }
+  .mirk-toggle--round.mirk-toggle--small .mirk-toggle__thumb { width: 19px; height: 19px; }
+  .mirk-toggle--round.mirk-toggle--small:has(:checked) .mirk-toggle__thumb { translate: 18px; }
+
+  /* ============================ SLIDER ============================ */
+  .mirk-slider { position: relative; height: 32px; width: 100%; --mirk-value: 0%; }
+  .mirk-slider__input {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    opacity: 0; cursor: pointer; z-index: 10;
+  }
+  .mirk-slider__track {
+    position: absolute; left: 0; right: 0; top: 50%; translate: 0 -50%; height: 12px;
+    background: var(--mirk-canvas); border: 1px solid var(--mirk-input-border); overflow: hidden;
+  }
+  .mirk-slider__fill { height: 100%; width: var(--mirk-value); background: var(--mirk-slider-fill); }
+  .mirk-slider__nub {
+    position: absolute; top: 50%; left: var(--mirk-value); translate: -50% -50%;
+    width: 21px; height: 21px; pointer-events: none;
+    background-color: var(--mirk-slider-nub-bg);
+    border: 2px solid;
+    border-color: var(--mirk-slider-nub-hi) var(--mirk-slider-nub-lo) var(--mirk-slider-nub-lo) var(--mirk-slider-nub-hi);
+  }
+  .mirk-slider__input:focus-visible ~ .mirk-slider__nub {
+    outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset);
+  }
+
+  .mirk-slider--round .mirk-slider__track { height: 10px; border-radius: 9999px; }
+  .mirk-slider--round .mirk-slider__nub {
+    width: 24px; height: 24px; border: none; border-radius: 9999px;
+    background-color: transparent;
+    background-image: linear-gradient(to top in oklab, var(--mirk-slider-nub-lo), var(--mirk-slider-nub-hi));
+  }
+  .mirk-slider--round .mirk-slider__nub::after {
+    content: ""; position: absolute; inset: 2px; border-radius: 9999px; background: var(--mirk-slider-nub-bg);
+  }
+
+  .mirk-slider--small { height: 24px; }
+  .mirk-slider--small .mirk-slider__track { height: 8px; }
+  .mirk-slider--small .mirk-slider__nub { width: 16px; height: 16px; }
+  .mirk-slider--round.mirk-slider--small .mirk-slider__track { height: 7px; }
+  .mirk-slider--round.mirk-slider--small .mirk-slider__nub { width: 18px; height: 18px; }
+
+  /* ============================ DATE ============================ */
+  .mirk-date { position: relative; }
+  .mirk-date__field {
+    width: 100%; background: var(--mirk-bevel-bg); color: var(--mirk-bevel-fg);
+    border: 1px solid var(--mirk-input-border);
+    padding: 6px 44px 9px 17px; font: inherit; font-size: 18px; line-height: 1.5;
+    border-radius: 0; outline: none;
+  }
+  .mirk-date__field:focus-visible {
+    outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset);
+  }
+  .mirk-date__field::-webkit-calendar-picker-indicator {
+    opacity: 0; position: absolute; right: 0; top: 0; bottom: 0; width: 44px; margin: 0; cursor: pointer;
+  }
+  .mirk-date__field::-webkit-inner-spin-button { -webkit-appearance: none; appearance: none; }
+  .mirk-date__field::-webkit-clear-button { -webkit-appearance: none; appearance: none; }
+  .mirk-date__icon {
+    pointer-events: none; position: absolute; right: 16px; top: 50%; translate: 0 -50%;
+  }
+  .mirk-date--rounded .mirk-date__field { border-radius: var(--mirk-radius); }
+
+  .mirk-date--small .mirk-date__field { padding: 4px 36px 4px 12px; font-size: 14px; }
+  .mirk-date--small .mirk-date__field::-webkit-calendar-picker-indicator { width: 36px; }
+  .mirk-date--small .mirk-date__icon { right: 12px; }
+
+  /* The native file/image inputs are visually hidden; their styled label drives
+     them, and the focus ring rides :has(:focus-visible) on button or container. */
+  .mirk-file__input, .mirk-image__input {
+    position: absolute; width: 1px; height: 1px;
+    padding: 0; margin: -1px; overflow: hidden;
+    clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0;
+  }
+
+  /* ============================ FILE ============================ */
+  .mirk-file { display: flex; align-items: center; gap: 0.75rem; width: 100%; }
+  .mirk-file__name {
+    color: var(--mirk-placeholder-color); font-size: 18px; line-height: 1.5;
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .mirk-file__name[data-filled] { color: var(--mirk-bevel-fg); }
+
+  /* Compact: a shared bordered container holds a smaller button + the name. */
+  .mirk-file--compact {
+    padding: 4px 8px; background: var(--mirk-bevel-bg);
+    border: 1px solid var(--mirk-input-border); border-radius: 0;
+  }
+  .mirk-file--compact:has(:focus-visible) {
+    outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset);
+  }
+  /* The upload trigger is a .mirk-button; nudge it onto the container's left
+     border so the bevel sits flush (covers compact and round-compact). */
+  .mirk-file--compact .mirk-button { margin-left: -1px; }
+  .mirk-file--compact .mirk-file__name { font-size: 16px; }
+  .mirk-file--compact.mirk-file--round { border-radius: 15px; }
+
+  /* Filled: the name slot becomes a link to the chosen file, beside a circular ×
+     to clear it: a 1px ring over a bevel fill that turns destructive on hover.
+     Empty keeps the placeholder span. */
+  a.mirk-file__name { text-decoration: underline; text-underline-offset: 2px; }
+  .mirk-file__remove {
+    appearance: none; -webkit-appearance: none; flex-shrink: 0;
+    width: 18px; height: 18px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    margin: 0; padding: 0; cursor: pointer; line-height: 0;
+    color: var(--mirk-bevel-fg); background: var(--mirk-bevel-bg);
+    border: 1px solid var(--mirk-input-border);
+  }
+  .mirk-file__remove svg { display: block; width: 66%; height: 66%; }
+  .mirk-file__remove:hover { border-color: var(--mirk-destructive); color: var(--mirk-destructive); }
+
+  /* Small: tighter name + gap + remove ×; pair the trigger with mirk-button--small.
+     Composes with --compact (densest) and --round. */
+  .mirk-file--small { gap: 0.5rem; }
+  .mirk-file--small .mirk-file__name { font-size: 14px; }
+  .mirk-file--small .mirk-file__remove { width: 16px; height: 16px; }
+  .mirk-file--small.mirk-file--compact { padding: 3px 8px; }
+  .mirk-file--small.mirk-file--compact .mirk-file__name { font-size: 13px; }
+
+  /* ============================ IMAGE ============================ */
+  .mirk-image { display: flex; flex-direction: column; gap: 0.5rem; }
+  .mirk-image__frame {
+    position: relative; width: 120px; height: 120px; overflow: hidden; border-radius: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--mirk-bevel-bg); border: 1px solid var(--mirk-input-border);
+    color: var(--mirk-placeholder-color); font-size: 14px; line-height: 1.5;
+  }
+  .mirk-image__preview { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .mirk-image--rounded .mirk-image__frame { border-radius: var(--mirk-radius); }
+  /* The upload trigger is a .mirk-button; keep it hugging its label instead of
+     stretching to fill this column-flex container. */
+  .mirk-image .mirk-button { width: fit-content; }
+
+  /* Compact: a focused 56px thumbnail upload. Empty shows a small upload button;
+     once an image is chosen the button hides and a thumbnail + corner × takes its
+     place. The frame clips the image (overflow hidden) while the thumb wrapper
+     stays visible, so the × can sit just outside the corner without being cut. */
+  .mirk-image--compact { flex-direction: row; align-items: center; gap: 0; }
+  .mirk-image__thumb { position: relative; display: inline-block; width: fit-content; margin: 0; line-height: 0; }
+  .mirk-image--compact .mirk-image__frame {
+    width: 56px; height: 56px; overflow: hidden; border-radius: 0;
+    border: 1px solid var(--mirk-input-border);
+  }
+  .mirk-image--compact.mirk-image--rounded .mirk-image__frame { border-radius: var(--mirk-radius); }
+  .mirk-image--compact .mirk-image__preview {
+    position: static; inset: auto; width: 100%; height: 100%; display: block; object-fit: cover;
+  }
+  .mirk-image__remove {
+    position: absolute; top: -7px; right: -7px;
+    width: 18px; height: 18px; border-radius: 50%; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    appearance: none; -webkit-appearance: none; cursor: pointer; line-height: 0;
+    color: var(--mirk-bevel-fg); background: var(--mirk-bevel-bg);
+    border: 1px solid var(--mirk-input-border);
+  }
+  .mirk-image__remove svg { display: block; width: 10px; height: 10px; }
+  .mirk-image__remove:hover { color: var(--mirk-destructive); border-color: var(--mirk-destructive); }
+
+  /* ============================ TAGS ============================ */
+  .mirk-tags {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.5rem;
+    background: var(--mirk-bevel-bg); border: 1px solid var(--mirk-input-border);
+    border-radius: 0; cursor: text;
+  }
+  .mirk-tags:has(:focus-visible) {
+    outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset);
+  }
+  .mirk-tags__chip {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    padding: 2px 8px 2px 12px; font-size: 14px; line-height: 1.5;
+    color: var(--mirk-bevel-fg); background: var(--mirk-bevel-bg);
+    border: 2px solid;
+    border-color: var(--mirk-bevel-tl) var(--mirk-bevel-br) var(--mirk-bevel-br) var(--mirk-bevel-tl);
+  }
+  .mirk-tags__remove {
+    appearance: none; -webkit-appearance: none;
+    margin: 0; padding: 0; border: 0; background: none; color: inherit;
+    cursor: pointer; font-size: 14px; line-height: 1;
+  }
+  .mirk-tags__remove:hover { color: var(--mirk-destructive); }
+  .mirk-tags__input {
+    appearance: none; -webkit-appearance: none;
+    border: 0; padding: 0;
+    flex: 1; min-width: 120px; background: transparent; color: var(--mirk-bevel-fg);
+    outline: none; font-size: 18px; line-height: 1.5;
+  }
+  .mirk-tags__input::placeholder { color: var(--mirk-placeholder-color); }
+
+  .mirk-tags--round { border-radius: 15px; }
+  .mirk-tags--round .mirk-tags__chip {
+    padding: 2px; border: none; border-radius: 12px;
+    background-color: transparent;
+    background-image: linear-gradient(to top in oklab, var(--mirk-bevel-br), var(--mirk-bevel-tl));
+  }
+  .mirk-tags__chip-inner {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    padding: 1px 8px 1px 12px; border-radius: 10px;
+    color: var(--mirk-bevel-fg); background-color: var(--mirk-bevel-bg);
+    background-image: linear-gradient(to top in oklab, var(--mirk-bevel-bg), var(--mirk-pill-inner-top));
+  }
+
+  .mirk-tags--small { gap: 0.375rem; padding: 0.375rem; }
+  .mirk-tags--small .mirk-tags__chip { padding: 1px 6px 1px 10px; font-size: 12px; }
+  .mirk-tags--small .mirk-tags__remove { font-size: 12px; }
+  .mirk-tags--small .mirk-tags__input { font-size: 14px; min-width: 90px; }
+  .mirk-tags--small.mirk-tags--round { border-radius: 12px; }
+  .mirk-tags--small.mirk-tags--round .mirk-tags__chip-inner { padding: 1px 6px 1px 10px; }
+
+  /* ============================ SORTABLE ============================ */
+  .mirk-sortable { display: flex; flex-direction: column; gap: 0.5rem; }
+  .mirk-sortable__item {
+    display: flex; flex-direction: row; width: 100%;
+    background: var(--mirk-bevel-bg); border: 1px solid var(--mirk-input-border);
+  }
+  .mirk-sortable__grip {
+    width: 28px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    cursor: grab; border-right: 1px solid var(--mirk-input-border);
+  }
+  .mirk-sortable__grip:active { cursor: grabbing; }
+  .mirk-sortable__dots { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; }
+  .mirk-sortable__dot {
+    display: block; width: 4px; height: 4px; background: var(--mirk-sortable-dot);
+    box-shadow: 1px 0 0 0 var(--mirk-sortable-shadow), 0 1px 0 0 var(--mirk-sortable-shadow), 1px 1px 0 0 var(--mirk-sortable-shadow);
+  }
+  .mirk-sortable__body { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+  .mirk-sortable__row { padding: 8px 17px 9px; }
+  .mirk-sortable__row:not(:last-child) { border-bottom: 1px solid var(--mirk-input-border); }
+  .mirk-sortable__label {
+    display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.2em;
+    margin-bottom: 2px; color: var(--mirk-sortable-label);
+  }
+  .mirk-sortable__field {
+    width: 100%; background: transparent; color: var(--mirk-bevel-fg);
+    font-size: 18px; line-height: 1.5; outline: none;
+  }
+  .mirk-sortable__field::placeholder { color: var(--mirk-sortable-placeholder); }
+  .mirk-sortable__field:focus-visible {
+    outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset);
+  }
+  .mirk-sortable--small { gap: 0.375rem; }
+  .mirk-sortable--small .mirk-sortable__grip { width: 24px; }
+  .mirk-sortable--small .mirk-sortable__row { padding: 5px 13px 6px; }
+  .mirk-sortable--small .mirk-sortable__label { font-size: 10px; margin-bottom: 1px; }
+  .mirk-sortable--small .mirk-sortable__field { font-size: 14px; }
+
+  /* ============================ CHIP ============================ */
+  /* A collapsible recovery/notification: a round pill that expands into a RAISED
+     panel — the kit's one elevated surface (a distinct --mirk-bg face, a hairline
+     outline, and a soft drop shadow, the only shadow in the kit, reserved for this
+     raised tier). State lives in classes (--open, is-changes) so it round-trips via
+     outerHTML; mirk.js only flips them on click. Color reads from generic kit
+     tokens through 5 slim --mirk-chip-* hooks, so it matches the kit and reskins by
+     overriding a hook, not a rule. In a Hyperclay app, add `save-remove` to the
+     block so a transient prompt never persists into the saved file. */
+  .mirk-chip { display: inline-flex; flex-direction: column; align-items: flex-start; }
+  .mirk-chip__panel { display: none; }
+  .mirk-chip--open .mirk-chip__trigger { display: none; }
+  .mirk-chip--open .mirk-chip__panel { display: flex; }
+
+  /* Collapsed chip — a round mirk-button pill (mirk-button--round in the markup),
+     the alert glyph seated in the label, so it reads as a distinct affordance, not
+     a flat button. A soft, tight lift sets it above the page; deeper on a dark
+     canvas (same media + forced-mode pattern as the panel shadow below). */
+  .mirk-chip__trigger .mirk-button__label { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+  .mirk-chip__trigger { box-shadow: 0 6px 14px -8px rgba(43, 36, 27, 0.5), 0 2px 5px -3px rgba(43, 36, 27, 0.32); }
+  @media (prefers-color-scheme: dark) { .mirk-chip__trigger { box-shadow: 0 6px 14px -8px rgba(0, 0, 0, 0.6), 0 2px 6px -3px rgba(0, 0, 0, 0.5); } }
+  .light .mirk-chip__trigger, [data-theme="light"] .mirk-chip__trigger { box-shadow: 0 6px 14px -8px rgba(43, 36, 27, 0.5), 0 2px 5px -3px rgba(43, 36, 27, 0.32); }
+  .dark .mirk-chip__trigger, [data-theme="dark"] .mirk-chip__trigger { box-shadow: 0 6px 14px -8px rgba(0, 0, 0, 0.6), 0 2px 6px -3px rgba(0, 0, 0, 0.5); }
+  /* Drive the warning fill from CSS, not an SVG fill="var(...)" presentation
+     attribute (var() is not reliably honored there). */
+  .mirk-chip__warn { fill: var(--mirk-chip-alert); }
+  .mirk-chip__trigger .mirk-chip__warn { vertical-align: -2px; }
+
+  /* The panel — the raised surface: a --mirk-bg face over the page, a hairline
+     outline, a soft drop shadow. */
+  .mirk-chip__panel {
+    width: 300px; max-width: calc(100vw - 44px);
+    background: var(--mirk-chip-surface); color: var(--mirk-fg);
+    border: 1px solid var(--mirk-chip-edge); border-radius: var(--mirk-radius);
+    box-shadow: 0 20px 50px -30px rgba(43, 36, 27, 0.6);
+    padding: 14px 15px 13px; flex-direction: column; gap: 12px;
+  }
+  /* The panel's larger drop (the collapsed pill above carries a tighter one); deepen
+     both on a dark canvas. Mirrors the --focus-offset pattern: a media default for
+     the OS, plus explicit forced-mode overrides. */
+  @media (prefers-color-scheme: dark) { .mirk-chip__panel { box-shadow: 0 20px 52px -26px rgba(0, 0, 0, 0.78); } }
+  .light .mirk-chip__panel, [data-theme="light"] .mirk-chip__panel { box-shadow: 0 20px 50px -30px rgba(43, 36, 27, 0.6); }
+  .dark .mirk-chip__panel, [data-theme="dark"] .mirk-chip__panel { box-shadow: 0 20px 52px -26px rgba(0, 0, 0, 0.78); }
+
+  /* Head — icon, text, collapse glyph. */
+  .mirk-chip__head { display: flex; gap: 10px; align-items: flex-start; }
+  .mirk-chip__icon { flex-shrink: 0; line-height: 0; margin-top: 1px; }
+  .mirk-chip__headtext { min-width: 0; }
+  .mirk-chip__eyebrow {
+    font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.2em;
+    color: var(--mirk-placeholder-color); margin-bottom: 3px;
+  }
+  .mirk-chip__title { margin: 0; font-size: 13px; font-weight: 400; line-height: 1.3; color: var(--mirk-fg); }
+  .mirk-chip__collapse {
+    margin-left: auto; flex-shrink: 0; width: 24px; height: 24px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: none; border: 0; cursor: pointer; padding: 0;
+    color: var(--mirk-placeholder-color);
+  }
+  .mirk-chip__collapse:hover { color: var(--mirk-fg); }
+  .mirk-chip__collapse svg { display: block; }
+
+  /* Meta line. */
+  .mirk-chip__meta { font-size: 11px; letter-spacing: 0.04em; color: var(--mirk-placeholder-color); }
+  .mirk-chip__changes-toggle {
+    background: none; border: 0; cursor: pointer; font: inherit; font-size: 11px; padding: 0 0 0 4px;
+    color: var(--mirk-placeholder-color); text-decoration: underline; text-underline-offset: 2px;
+  }
+  .mirk-chip__changes-toggle:hover { color: var(--mirk-fg); }
+
+  /* Before/after field table — a recessed stack, revealed by the changes toggle. */
+  .mirk-chip__preview {
+    display: none; flex-direction: column; gap: 11px;
+    background: var(--mirk-bevel-bg); border: 1px solid var(--mirk-chip-edge);
+    padding: 10px 11px;
+  }
+  .mirk-chip__panel.is-changes .mirk-chip__preview { display: flex; }
+  .mirk-chip__row { display: flex; flex-direction: column; gap: 2px; }
+  .mirk-chip__key {
+    font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.1em;
+    color: var(--mirk-placeholder-color);
+  }
+  .mirk-chip__old, .mirk-chip__new { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mirk-chip__old { font-size: 11px; color: var(--mirk-chip-alert); text-decoration: line-through; opacity: 0.85; }
+  .mirk-chip__new { font-size: 12px; color: var(--mirk-fg); }
+
+  /* Action stack — full-width buttons by weight: an embossed primary, a plain bevel
+     revert, a quiet (--quiet) dismiss. */
+  .mirk-chip__actions { display: flex; flex-direction: column; gap: 8px; margin-top: 1px; }
+  .mirk-chip__actions .mirk-button { width: 100%; }
+  /* Primary action — a genuine kit bevel button whose bevel palette is derived from
+     the chip's primary fill (lighter top-left, darker bottom-right), so it embosses
+     on any color. The base .mirk-button rules then drive its border, hover, and the
+     :active flip, identical to the kit's other buttons. */
+  .mirk-chip__actions .mirk-chip__action--primary {
+    --mirk-bevel-bg:       var(--mirk-chip-primary-bg);
+    --mirk-bevel-fg:       var(--mirk-chip-primary-fg);
+    --mirk-bevel-tl:       color-mix(in srgb, var(--mirk-chip-primary-bg), white 24%);
+    --mirk-bevel-br:       color-mix(in srgb, var(--mirk-chip-primary-bg), black 32%);
+    --mirk-bevel-hover-bg: color-mix(in srgb, var(--mirk-chip-primary-bg), white 10%);
+  }
+}
+
+/* Respect the machine — outside @layer components so it always wins. */
+@media (prefers-reduced-motion: reduce) {
+  .mirk-button--round, .mirk-toggle__thumb { transition: none; }
+  .mirk-button:active .mirk-button__label { translate: none; }
+}
+@media (forced-colors: active) {
+  .mirk-button, .mirk-select__field, .mirk-checkbox__box, .mirk-toggle__track { border: 1px solid ButtonText; }
+}

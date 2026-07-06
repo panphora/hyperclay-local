@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openFolder: () => ipcRenderer.invoke('open-folder'),
   openLogs: () => ipcRenderer.invoke('open-logs'),
   openBrowser: (url) => ipcRenderer.invoke('open-browser', url),
+  copyText: (text) => ipcRenderer.invoke('copy-text', text),
 
   syncStart: (apiKey, username, syncFolder, serverUrl) => ipcRenderer.invoke('sync-start', { apiKey, username, syncFolder, serverUrl }),
   syncStop: () => ipcRenderer.invoke('sync-stop'),

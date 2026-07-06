@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, shell, Menu, Tray, nativeImage, ipcMain, safeStorage } = require('electron');
+const { app, BrowserWindow, dialog, shell, Menu, Tray, nativeImage, ipcMain, safeStorage, clipboard } = require('electron');
 const path = require('upath');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -667,8 +667,13 @@ ipcMain.handle('get-state', () => ({
   serverPort: getServerPort(),
   syncEnabled: settings.syncEnabled,
   syncStatus: syncEngine.getStatus(),
-  availableUpdate
+  availableUpdate,
+  appVersion: app.getVersion()
 }));
+
+ipcMain.handle('copy-text', (event, text) => {
+  clipboard.writeText(String(text ?? ''));
+});
 
 ipcMain.handle('open-folder', () => {
   if (selectedFolder) {
@@ -864,6 +869,20 @@ ipcMain.handle('show-options-menu', (event) => {
       enabled: serverRunning,
       click: () => {
         if (serverRunning) shell.openExternal(`http://localhost:${getServerPort()}`);
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'AI Editing',
+      type: 'checkbox',
+      checked: settings.aiEdit?.enabled !== false,
+      click: () => {
+        settings.aiEdit = { ...settings.aiEdit, enabled: settings.aiEdit?.enabled === false };
+        saveSettings(settings);
+        if (serverRunning) {
+          startPlugins({ baseDir: selectedFolder, settings });
+        }
+        updateTrayMenu();
       }
     },
     { type: 'separator' },
