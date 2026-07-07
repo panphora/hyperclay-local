@@ -90,6 +90,8 @@ npm run dev
 
 For building and releasing, see [BUILD.md](./BUILD.md).
 
+The standalone `hyperclaylocal.com` marketing page lives in `website/`. See [WEBSITE.md](./WEBSITE.md) for its structure, local preview workflow, download-link contract, and tests.
+
 ## 🎯 User Interface
 
 ### Tray Popover

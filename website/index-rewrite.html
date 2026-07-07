@@ -1,0 +1,1216 @@
+<!DOCTYPE html>
+<!--
+  hyperclaylocal.com standalone marketing page.
+  Self-contained static directory: index.html + mirk.css + mirk.js + sap.min.js
+  + assets/app-popover.png + fonts/DepartureMono-1.500/. No build, no CDN.
+
+  Anchor decision: data-theme="full-volume" makes mirk's Full Volume palette the
+  page palette. Its dark side (navy #1D1F2F, indigo #474C65 bevels, #0B0C13 canvas)
+  is the exact palette the app screenshot was designed in, so the hero image drops
+  into the page chrome seamlessly; its light side is a finished warm cream. Palette
+  and mode stay orthogonal: this attribute picks the palette, the .light / .dark
+  class picks the mode, and both follow the OS until the toggle is clicked.
+-->
+<html lang="en" data-theme="full-volume">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <!-- Flash-of-wrong-theme guard: apply the saved mode class before mirk.css
+       paints. Absent value = follow the OS (the default). -->
+  <script>
+    (function () {
+      try {
+        var m = localStorage.getItem('hcl-theme');
+        if (m === 'light' || m === 'dark') document.documentElement.classList.add(m);
+      } catch (e) {}
+    })();
+  </script>
+
+  <title>Hyperclay Local: An HTML file that saves itself</title>
+  <meta name="description" content="A free, open-source desktop app that lets you create, modify, and use HTML files like local applications. Works offline. No account required.">
+  <link rel="canonical" href="https://hyperclaylocal.com/">
+
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Hyperclay Local: An HTML file that saves itself">
+  <meta property="og:description" content="A free, open-source desktop app that lets you create, modify, and use HTML files like local applications. Works offline. No account required.">
+  <meta property="og:url" content="https://hyperclaylocal.com/">
+  <meta property="og:image" content="https://hyperclaylocal.com/assets/app-popover.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Hyperclay Local: An HTML file that saves itself">
+  <meta name="twitter:description" content="A free, open-source desktop app for HTML files that save themselves. Works offline. No account required.">
+  <meta name="twitter:image" content="https://hyperclaylocal.com/assets/app-popover.png">
+
+  <!-- Inline favicon: a navy tile with a green LED, echoing the app. -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231D1F2F'/%3E%3Crect x='9' y='9' width='14' height='14' rx='2' fill='%2356B96C'/%3E%3C/svg%3E">
+
+  <link rel="stylesheet" href="mirk.css">
+
+  <style>
+    /* --------------------------------------------------------------------
+       Page tokens. Everything else derives from mirk's --mirk-* tokens so
+       both light and dark stay finished for free. The only non-mirk color
+       is the single page green accent, tied to the app's SERVER ON / SYNC ON
+       greens; use it sparingly (feature bolds, live dots, active chip, the
+       download arrow, focus accents).
+       -------------------------------------------------------------------- */
+    :root {
+      --accent-green: light-dark(#1E8136, #56B96C);
+      --shot-shadow: light-dark(rgba(43, 36, 27, 0.26), rgba(6, 7, 12, 0.72));
+      --content-width: 660px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; line-height: 1.6; -webkit-font-smoothing: antialiased; overflow-x: hidden; text-wrap: pretty; }
+
+    a { color: inherit; text-decoration-skip-ink: none; }
+    .container { max-width: var(--content-width); margin: 0 auto; padding: 0 22px; }
+
+    /* ---------------- Header ---------------- */
+    .site-header {
+      position: static;
+      border-bottom: 1px solid var(--mirk-input-border);
+      background: var(--mirk-canvas);
+    }
+    /* Full-width bar: wordmark flush left, controls flush right. */
+    .header-inner {
+      max-width: none; padding: 13px 22px;
+      display: flex; align-items: center; justify-content: space-between; gap: 18px;
+    }
+    .wordmark {
+      display: inline-flex; align-items: center; gap: 9px;
+      color: var(--mirk-fg); text-decoration: none; font-size: 16px; letter-spacing: 0.01em;
+    }
+    .wm-led {
+      width: 9px; height: 9px; border-radius: 2px; flex: none;
+      background: var(--accent-green);
+    }
+    .header-nav { display: inline-flex; align-items: center; gap: 16px; }
+    .header-link {
+      color: var(--mirk-fg); text-decoration: none; font-size: 14px;
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .header-link:hover { color: var(--accent-green); }
+    .header-link svg { width: 18px; height: 18px; display: block; }
+
+    .theme-toggle { flex: none; }
+    .theme-toggle .mirk-button__label { padding: 6px 10px; }
+    .theme-toggle svg { width: 18px; height: 18px; display: block; }
+
+    /* Section-nav (grafted from C, restyled to mirk tokens). Hidden on
+       narrow screens where the page is a single scroll. */
+    .section-nav { display: inline-flex; align-items: center; gap: 18px; }
+    .section-nav a { color: var(--mirk-placeholder-color); text-decoration: none; font-size: 14px; white-space: nowrap; }
+    .section-nav a:hover { color: var(--accent-green); }
+
+    /* Green eyebrow labels above each section (grafted from C). Inherits
+       Departure Mono from the body; centers under the centered hero. */
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: 8px; margin: 0 0 12px;
+      font-size: 12px; letter-spacing: 0.09em; text-transform: uppercase;
+      color: var(--accent-green);
+    }
+    .eyebrow-led {
+      width: 8px; height: 8px; flex: none;
+      background: var(--accent-green);
+    }
+
+    /* ---------------- Hero ---------------- */
+    .hero { text-align: center; padding: 56px 0 8px; }
+    .hero-h1 {
+      font-size: clamp(28px, 6vw, 40px); line-height: 1.3; margin: 0 0 16px;
+      text-wrap: balance; color: var(--mirk-fg);
+    }
+    .lede { font-size: 19px; margin: 0 auto; max-width: 32em; color: var(--mirk-fg); }
+    .lede + .lede { margin-top: 14px; }
+    .lede-tagline { margin-top: 22px; font-size: 16px; color: var(--mirk-placeholder-color); }
+
+    /* Framed screenshot as a menu-bar tray popover. */
+    .hero-shot { display: flex; flex-direction: column; align-items: center; margin-top: 40px; }
+    .shot-frame {
+      position: relative; margin-top: 0; width: 300px; max-width: 100%;
+      border-radius: 11px; overflow: hidden;
+      box-shadow: 0 32px 60px -32px var(--shot-shadow), 0 12px 22px -18px var(--shot-shadow);
+    }
+    /* Gradient bevel border: same tl->br colors, drawn as a masked ring so it
+       follows the rounded corners (border-image can't with a border-radius). */
+    .shot-frame::after {
+      content: ''; position: absolute; inset: 0; border-radius: inherit; padding: 2px;
+      background: linear-gradient(135deg, var(--mirk-bevel-tl), var(--mirk-bevel-br));
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor; mask-composite: exclude;
+      pointer-events: none;
+    }
+    .shot-frame::before {
+      content: ''; position: absolute; top: -8px; left: 50%; translate: -50% 0; width: 0; height: 0;
+      border-left: 8px solid transparent; border-right: 8px solid transparent;
+      border-bottom: 8px solid var(--mirk-bevel-tl);
+    }
+    .shot-frame img { display: block; width: 100%; height: auto; }
+    .shot-caption { margin: 12px 0 0; font-size: 13px; color: var(--mirk-placeholder-color); }
+
+    /* Interactive hero: transparent hotspots over the real controls in the
+       screenshot. Clicking swaps between the five captured UI states. The shot
+       is always the dark app, so a light highlight reads on any page theme. */
+    .shot-hotspot {
+      position: absolute; margin: 0; padding: 0; border: 0; background: transparent;
+      cursor: pointer; border-radius: 7px; -webkit-tap-highlight-color: transparent;
+      transition: background .12s ease;
+    }
+    /* Gradient outline ring on hover/focus, masked so it hugs the rounded corners. */
+    .shot-hotspot::after {
+      content: ''; position: absolute; inset: 0; border-radius: inherit; padding: 2px;
+      background: linear-gradient(135deg, rgba(255, 255, 255, .55), rgba(255, 255, 255, .1));
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor; mask-composite: exclude;
+      opacity: 0; transition: opacity .12s ease;
+    }
+    .shot-hotspot:hover, .shot-hotspot:focus-visible { outline: none; background: rgba(255, 255, 255, .06); }
+    .shot-hotspot:hover::after, .shot-hotspot:focus-visible::after { opacity: 1; }
+    .shot-hotspot--server { left: 71%; top: 25.5%; width: 27%; height: 8%; }
+    .shot-hotspot--sync   { left: 71%; top: 36.5%; width: 27%; height: 8%; }
+    .shot-hotspot--bell   { left: 82.5%; top: 1.8%; width: 15%; height: 7.5%; border-radius: 20px; }
+    .shot-hotspot--back   { left: 2.5%;  top: 1.8%; width: 15%; height: 7.5%; border-radius: 20px; }
+    #hero-shot[data-view="home"] .shot-hotspot--back { display: none; }
+    #hero-shot[data-view="notices"] .shot-hotspot--server,
+    #hero-shot[data-view="notices"] .shot-hotspot--sync,
+    #hero-shot[data-view="notices"] .shot-hotspot--bell { display: none; }
+    @media (prefers-reduced-motion: reduce) { .shot-hotspot, .shot-hotspot::after { transition: none; } }
+
+    /* ---------------- Download CTA ---------------- */
+    .download-cta { text-align: center; padding: 30px 0 8px; }
+    .download-cta .mirk-button--large { font-size: 21px; padding: 8px 26px 11px; text-decoration: none; max-width: 100%; }
+    /* The OS label ("Download for macOS (Apple Silicon)") is long; let it wrap so
+       it never forces horizontal page overflow on a narrow screen. */
+    .download-cta .mirk-button__label { white-space: normal; text-align: center; }
+    .dl-subtext { margin: 16px 0 0; font-size: 14px; color: var(--mirk-placeholder-color); }
+    .dl-subtext a { color: var(--mirk-placeholder-color); text-decoration: underline; text-underline-offset: 2px; }
+    .dl-subtext a:hover { color: var(--mirk-fg); }
+    .trust { margin: 0 0 16px; font-size: 14px; color: var(--mirk-placeholder-color); }
+
+    /* ---------------- Sections + prose ---------------- */
+    .section { margin-top: 68px; scroll-margin-top: 72px; }
+    .section-h {
+      font-size: 22px; font-weight: 700; margin: 0 0 20px; padding-bottom: 12px;
+      border-bottom: 1px solid var(--mirk-input-border); color: var(--mirk-fg);
+    }
+    .prose { line-height: 1.65; }
+    .prose > * + * { margin-top: 16px; }
+    .prose ul { margin: 0; padding-left: 22px; }
+    .prose li + li { margin-top: 8px; }
+    .prose .result-line { margin-top: 24px; }
+    .result-label { color: var(--accent-green); }
+    .prose a, .faq a, .dl-source a, footer a {
+      text-decoration: underline; text-decoration-color: currentColor;
+      text-underline-offset: 2px;
+    }
+
+    /* Feature list with green leads. */
+    .features { list-style: none; margin: 0; padding: 0; }
+    .features li { margin: 0; }
+    .features li + li { margin-top: 22px; }
+    .features b { color: var(--accent-green); font-weight: 700; }
+    .features .prose-line { color: var(--mirk-fg); }
+
+    /* 2x2 workflow card grid (grafted from C, mirk tokens + A's truthful copy). */
+    .feature-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .feature-card {
+      background: var(--mirk-bg); border: 1px solid var(--mirk-input-border);
+      padding: 18px; line-height: 1.6;
+    }
+    .feature-card b { display: block; margin-bottom: 6px; color: var(--accent-green); font-weight: 700; }
+    .feature-card span { color: var(--mirk-fg); }
+
+    /* Inline + block code, recessed mirk surfaces. */
+    code.inline {
+      font-family: 'Departure Mono', ui-monospace, monospace; font-size: 0.88em;
+      background: var(--mirk-bevel-bg); border: 1px solid var(--mirk-input-border);
+      padding: 1px 6px;
+    }
+    .code-block {
+      background: var(--mirk-bevel-bg); border: 1px solid var(--mirk-input-border);
+      border-left: 3px solid var(--accent-green); padding: 14px 16px; margin: 0; overflow-x: auto;
+    }
+    .code-block pre, .code-block code {
+      font-family: 'Departure Mono', ui-monospace, monospace; font-size: 13.5px; line-height: 1.5;
+      color: var(--mirk-fg); background: none; white-space: pre; margin: 0;
+    }
+    .code-note { margin: 12px 0 0; font-size: 14px; color: var(--mirk-placeholder-color); }
+
+    /* ---------------- Demos: tablist + windows ---------------- */
+    .demo-lead { line-height: 1.65; margin: 0 0 20px; }
+    .demo-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+    .demo-tab {
+      appearance: none; font: inherit; font-size: 14px; cursor: pointer; line-height: 1.4;
+      color: var(--mirk-bevel-fg); background: var(--mirk-bevel-bg);
+      border: 2px solid;
+      border-color: var(--mirk-bevel-tl) var(--mirk-bevel-br) var(--mirk-bevel-br) var(--mirk-bevel-tl);
+      padding: 4px 13px 5px;
+    }
+    .demo-tab:hover { background: var(--mirk-bevel-hover-bg); }
+    .demo-tab:active {
+      border-color: var(--mirk-bevel-br) var(--mirk-bevel-tl) var(--mirk-bevel-tl) var(--mirk-bevel-br);
+    }
+    .demo-tab:focus-visible { outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset); }
+    .demo-tab[aria-selected="true"] { color: var(--accent-green); border-color: var(--accent-green); }
+
+    .demo-panel[hidden] { display: none; }
+    .demo-window {
+      background: var(--mirk-bg); border: 2px solid;
+      border-color: var(--mirk-bevel-tl) var(--mirk-bevel-br) var(--mirk-bevel-br) var(--mirk-bevel-tl);
+      overflow: hidden;
+    }
+    .demo-titlebar {
+      display: flex; align-items: center; gap: 10px; padding: 9px 14px;
+      background: var(--mirk-accent); border-bottom: 1px solid var(--mirk-bevel-br);
+    }
+    .demo-dots { display: inline-flex; gap: 6px; }
+    .demo-dots i { width: 11px; height: 11px; border-radius: 50%; background: var(--mirk-input-border); }
+    .demo-fname { font-size: 12.5px; color: var(--mirk-placeholder-color); }
+    .demo-live { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--mirk-placeholder-color); }
+    .demo-live .led {
+      width: 8px; height: 8px; border-radius: 2px;
+      background: var(--accent-green);
+    }
+    .demo-body { padding: 22px; overflow-x: auto; }
+
+    /* Native inputs the demos bind to: token-styled, markup untouched so the
+       sapjs item-template clones keep round-tripping. */
+    .demo-body input[type=text], .demo-body input[type=number], .demo-body input[type=date],
+    .demo-body input[type=search], .demo-body textarea {
+      font: inherit; color: var(--mirk-bevel-fg); background: var(--mirk-bevel-bg);
+      border: 1px solid var(--mirk-input-border); border-radius: 0; padding: 8px 11px;
+    }
+    .demo-body input:focus-visible, .demo-body textarea:focus-visible {
+      outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset);
+    }
+    .demo-body textarea { width: 100%; resize: vertical; min-height: 124px; line-height: 1.6; }
+    .demo-body main[sap] { margin: 0; }
+    .app-h { font-size: 16px; margin: 0 0 14px; color: var(--mirk-fg); }
+    .app-note { color: var(--mirk-placeholder-color); font-size: 14px; margin: 14px 0 0; }
+
+    /* to-do */
+    .demo-panel[data-app="todo"] .demo-body { position: relative; }
+    .demo-panel[data-app="todo"] .app-note { position: absolute; top: 22px; right: 22px; margin: 0; }
+    .todo-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+    .todo-list .mirk-checkbox { width: 100%; padding: 9px 4px; }
+    .todo-list .mirk-checkbox__label { font-size: 16px; }
+    .todo-list .mirk-checkbox:has(:checked) .mirk-checkbox__label { color: var(--mirk-placeholder-color); text-decoration: line-through; }
+
+    /* journal */
+    .journal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 14px; }
+    .journal-head .app-h { margin: 0; }
+
+    /* budget */
+    .budget-table { width: 100%; border-collapse: collapse; }
+    .budget-table th {
+      text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .05em;
+      color: var(--mirk-placeholder-color); padding: 0 0 8px; font-weight: 700;
+    }
+    .budget-table th:last-child, .budget-table td:last-child { text-align: right; }
+    .budget-table td { padding: 7px 0; border-top: 1px solid var(--mirk-input-border); }
+    .budget-table tbody td:first-child { width: 60%; }
+    .budget-table input[type=number] { width: 116px; text-align: right; }
+    .budget-table tfoot td {
+      border-top: 2px solid var(--mirk-fg); font-weight: 700; font-size: 18px; padding-top: 12px;
+    }
+
+    /* recipe + wiki two-pane */
+    .pane { display: grid; grid-template-columns: 152px 1fr; gap: 18px; align-items: start; }
+    .pane-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; align-content: start; }
+    .pane-list li { padding: 8px 11px; cursor: pointer; font-size: 15px; border: 1px solid transparent; }
+    .pane-list li:hover { background: var(--mirk-bevel-hover-bg); }
+    .pane-list li.active { background: var(--mirk-bevel-bg); border-color: var(--mirk-input-border); font-weight: 700; }
+    .pane-detail .app-h { margin-bottom: 10px; }
+    .pane-detail textarea { min-height: 150px; }
+    .wiki-pagetitle {
+      width: 100%; margin: 0 0 12px; padding: 10px 12px; font-weight: 700; font-size: 17px;
+      color: var(--mirk-bevel-fg); background: var(--mirk-bevel-bg); border: 1px solid var(--mirk-input-border);
+    }
+    .add-row {
+      margin-top: 6px; display: flex; align-items: center; gap: 8px; padding: 0 11px;
+      border: 1px solid transparent;
+    }
+    .add-row:hover { background: var(--mirk-bevel-hover-bg); }
+    .add-row:focus-within { background: var(--mirk-bevel-bg); border-color: var(--accent-green); }
+    .add-row-plus { flex: none; color: var(--mirk-placeholder-color); font-size: 17px; line-height: 1; }
+    .add-row:focus-within .add-row-plus { color: var(--accent-green); }
+    .add-row input { flex: 1; min-width: 0; border: none; background: transparent; padding: 9px 0; font: inherit; color: var(--mirk-bevel-fg); }
+    .add-row input::placeholder { color: var(--mirk-placeholder-color); }
+    .add-row input:focus-visible { outline: none; }
+
+    /* habit */
+    .habit-grid { display: grid; grid-template-columns: 1fr repeat(7, 26px) 40px; gap: 9px 7px; align-items: center; }
+    .habit-grid .col-h { font-size: 11px; color: var(--mirk-placeholder-color); text-align: center; }
+    .habit-grid .hname { font-size: 15px; }
+    .habit-grid .cnt { font-size: 13px; color: var(--mirk-placeholder-color); text-align: right; }
+    .habit-grid .mirk-checkbox { justify-self: center; }
+
+    /* reading */
+    .reading-list { list-style: none; margin: 0; padding: 0; }
+    .reading-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; border-top: 1px solid var(--mirk-input-border); }
+    .reading-list li:first-child { border-top: none; }
+    .reading-list .btitle { font-size: 16px; }
+    .reading-list .status-tag {
+      font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; padding: 5px 13px;
+      color: var(--mirk-bevel-fg); background: var(--mirk-bevel-bg);
+      border: 2px solid;
+      border-color: var(--mirk-bevel-tl) var(--mirk-bevel-br) var(--mirk-bevel-br) var(--mirk-bevel-tl);
+      appearance: none;
+    }
+    .reading-list .status-tag:hover { background: var(--mirk-bevel-hover-bg); }
+    .reading-list .status-tag:active {
+      border-color: var(--mirk-bevel-br) var(--mirk-bevel-tl) var(--mirk-bevel-tl) var(--mirk-bevel-br);
+    }
+    .reading-list .status-tag:focus-visible { outline: 1px solid var(--mirk-focus-color); outline-offset: var(--mirk-focus-offset); }
+
+    /* ---------------- Example code tabs ---------------- */
+    .code-tabs .tablist { display: flex; gap: 2px; border-bottom: 1px solid var(--mirk-input-border); }
+    .code-tab {
+      appearance: none; font: inherit; font-size: 14px; cursor: pointer;
+      background: transparent; color: var(--mirk-placeholder-color);
+      border: 1px solid transparent; border-bottom: none; padding: 8px 14px; margin-bottom: -1px;
+    }
+    .code-tab:hover { color: var(--mirk-fg); }
+    .code-tab[aria-selected="true"] {
+      color: var(--mirk-fg); border-color: var(--mirk-input-border);
+      border-bottom: 1px solid var(--mirk-bg); background: var(--mirk-bg);
+    }
+    .code-tab:focus-visible { outline: 1px solid var(--mirk-focus-color); outline-offset: -2px; }
+    .code-panel { border: 1px solid var(--mirk-input-border); border-top: none; padding: 16px; }
+    .code-panel[hidden] { display: none; }
+    .code-panel .code-block { border-left-width: 3px; }
+    .code-features { margin: 18px 0 0; font-size: 15px; line-height: 1.6; }
+    .code-features b { display: block; margin-bottom: 6px; color: var(--mirk-fg); }
+    .code-features ul { margin: 0; padding-left: 22px; }
+
+    /* ---------------- Download full list ---------------- */
+    .dl-intro { margin: 0 0 18px; color: var(--mirk-placeholder-color); }
+    .dl-list { list-style: none; margin: 0 0 16px; padding: 0; border: 1px solid var(--mirk-input-border); }
+    .dl-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 14px;
+      padding: 13px 16px; border-top: 1px solid var(--mirk-input-border);
+    }
+    .dl-row:first-child { border-top: none; }
+    .dl-os { font-weight: 700; flex: none; }
+    .dl-file { font-size: 13px; text-decoration: underline; text-decoration-color: currentColor; text-underline-offset: 2px; }
+    .dl-size { color: var(--mirk-placeholder-color); font-size: 13px; flex: none; }
+    .dl-source { margin: 0; color: var(--mirk-placeholder-color); }
+    .dl-arch { color: var(--mirk-placeholder-color); font-weight: 400; margin-left: 7px; }
+    .version-tag { font-size: 15px; font-weight: 400; color: var(--mirk-placeholder-color); }
+
+    /* ---------------- FAQ ---------------- */
+    .faq details { border: 1px solid var(--mirk-input-border); background: var(--mirk-bg); }
+    .faq details + details { margin-top: 10px; }
+    .faq summary {
+      cursor: pointer; padding: 14px 16px; font-weight: 700; list-style: none; user-select: none;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    }
+    .faq summary::-webkit-details-marker { display: none; }
+    .faq summary::after { content: '+'; color: var(--accent-green); font-size: 20px; line-height: 1; flex: none; }
+    .faq details[open] summary::after { content: '\2212'; }
+    .faq summary:hover { background: var(--mirk-bevel-hover-bg); }
+    .faq summary:focus-visible { outline: 1px solid var(--mirk-focus-color); outline-offset: -3px; }
+    .faq__body { padding: 0 16px 16px; line-height: 1.65; }
+    .faq__body > * + * { margin-top: 12px; }
+    .faq__body ul { margin: 0; padding-left: 22px; }
+    .faq__body li + li { margin-top: 6px; }
+
+    /* ---------------- Closing + footer ---------------- */
+    .closer { text-align: center; margin-top: 72px; padding-top: 32px; border-top: 1px solid var(--mirk-input-border); }
+    .closer p { max-width: 34em; margin: 0 auto; line-height: 1.7; color: var(--mirk-fg); }
+    .closer .closer-lead { margin-bottom: 24px; }
+    footer { padding: 40px 0 64px; text-align: center; color: var(--mirk-placeholder-color); font-size: 14px; }
+    footer p { margin: 0 0 8px; }
+    footer a { text-decoration: underline; text-decoration-color: currentColor; text-underline-offset: 2px; }
+
+    /* ---------------- Responsive ---------------- */
+    @media (max-width: 560px) {
+      .feature-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 480px) {
+      .hero { padding-top: 40px; }
+      .section { margin-top: 56px; }
+      .pane { grid-template-columns: 1fr; }
+      .habit-grid { grid-template-columns: 1fr repeat(7, 1fr) 34px; }
+      .demo-body { padding: 16px; }
+      .demo-panel[data-app="todo"] .app-note { position: static; margin-top: 14px; }
+      .dl-row { flex-direction: column; align-items: flex-start; gap: 3px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+  </style>
+</head>
+<body id="top">
+
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="wordmark" href="#top"><span class="wm-led" aria-hidden="true"></span>Hyperclay&nbsp;Local</a>
+      <nav class="header-nav" aria-label="Primary">
+        <button id="theme-toggle" class="theme-toggle mirk-button mirk-button--round" type="button" aria-label="Switch to light mode" aria-pressed="false">
+          <span class="mirk-button__label">
+            <svg data-icon="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            <svg data-icon="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" hidden><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+          </span>
+        </button>
+        <a class="header-link" href="https://github.com/panphora/hyperclay-local" target="_blank" rel="noopener" aria-label="Hyperclay Local on GitHub">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+          <span>GitHub</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- 1. Hero -->
+    <section class="hero">
+      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Local-first HTML apps</p>
+      <h1 class="hero-h1">An HTML file that saves itself</h1>
+      <p class="lede">Hyperclay Local is a free, open-source desktop app that runs a tiny server on your machine.</p>
+      <p class="lede lede-tagline">No database. No build step. No backend.</p>
+
+      <div class="hero-shot">
+        <div class="shot-frame" id="hero-shot" data-view="home">
+          <img id="hero-img" src="assets/app-popover.png" width="300" height="460" alt="Hyperclay Local menu-bar app: a folder set to local-hyperclay-apps, the server running on localhost:4321, sync on as @panphora synced two minutes ago, and a recent-activity feed of saved HTML files.">
+          <button type="button" class="shot-hotspot shot-hotspot--server" data-act="server" aria-label="Toggle the local server on or off"></button>
+          <button type="button" class="shot-hotspot shot-hotspot--sync" data-act="sync" aria-label="Toggle cloud sync on or off"></button>
+          <button type="button" class="shot-hotspot shot-hotspot--bell" data-act="bell" aria-label="Open notices"></button>
+          <button type="button" class="shot-hotspot shot-hotspot--back" data-act="back" aria-label="Back to the app"></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 1b. Download CTA -->
+    <div class="download-cta">
+      <p class="trust">Free and open source. No account required. Works offline.</p>
+      <a id="download-btn" class="mirk-button mirk-button--large" href="#downloads" download>
+        <span class="mirk-button__label" id="download-btn-text">Download</span>
+      </a>
+      <p class="dl-subtext" id="download-subtext"><a href="#downloads">See all downloads</a></p>
+    </div>
+
+    <!-- 2. Point it at a folder -->
+    <section class="section">
+      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Getting started</p>
+      <h2 class="section-h">Point it at a folder</h2>
+      <div class="prose">
+        <ul>
+          <li>Pick a folder on your machine.</li>
+          <li>Click start in the tray, and the app serves that folder on localhost.</li>
+          <li>Open a page in your browser and edit the file using its own UI.</li>
+          <li>Hit save, and the page writes its new HTML back to the real file on disk.</li>
+        </ul>
+        <p class="result-line"><span class="result-label">Result:</span> You have a real desktop application in a single HTML file.</p>
+      </div>
+    </section>
+
+    <!-- 3. A file that remembers -->
+    <section class="section">
+      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>The idea</p>
+      <h2 class="section-h">A file that remembers</h2>
+      <div class="prose">
+        <p>An HTML file can do almost anything. It can lay out an interface, run JavaScript, call browser APIs, and respond to every click and keystroke.</p>
+        <p>The one thing it cannot do is remember. Close the tab and every change is gone.</p>
+        <p>A malleable HTML file fixes that. It serializes its own DOM and posts it to a local server, which writes it back to the file on disk. Open it again and your changes are still there.</p>
+        <p>That makes one file a complete application. Its layout, its logic, and its data all live in the same document. You can email it, commit it to git, or drop it in Dropbox, and it still works.</p>
+      </div>
+    </section>
+
+    <!-- 4. What Hyperclay Local does -->
+    <section class="section" id="how-it-saves">
+      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>How it works</p>
+      <h2 class="section-h">What the app actually does</h2>
+      <div class="prose">
+        <p>Browsers can open an HTML file, but the sandbox stops them from writing back to disk. Hyperclay Local closes that gap. It runs a small local Express server with a single endpoint:</p>
+        <div class="code-block"><pre>POST /_/save</pre></div>
+        <p>When a page saves, it posts its own HTML to that endpoint with a <code class="inline">Page-URL</code> header naming the page, and the server maps it to the right file inside the folder you chose. It writes the file and keeps the previous version as a backup. That is the whole system. You can read the server in an afternoon.</p>
+      </div>
+    </section>
+
+    <!-- 5. Interactive demos (the star) -->
+    <section class="section" id="apps">
+      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Live demos</p>
+      <h2 class="section-h">See what you can build</h2>
+      <p class="demo-lead">These are not screenshots. Every app below is a single HTML file running live in this page. Type in the wiki, check off a to-do, change a number in the budget and watch the total update. Run the same file under Hyperclay Local and every change saves itself to disk.</p>
+
+      <div class="demo-tabs" id="demo-tabs" role="tablist" aria-label="Example apps">
+        <button class="demo-tab" data-app="wiki" role="tab" id="tab-wiki" aria-controls="panel-wiki" aria-selected="true" tabindex="0" type="button">Personal wiki</button>
+        <button class="demo-tab" data-app="todo" role="tab" id="tab-todo" aria-controls="panel-todo" aria-selected="false" tabindex="-1" type="button">To-do list</button>
+        <button class="demo-tab" data-app="journal" role="tab" id="tab-journal" aria-controls="panel-journal" aria-selected="false" tabindex="-1" type="button">Journal</button>
+        <button class="demo-tab" data-app="budget" role="tab" id="tab-budget" aria-controls="panel-budget" aria-selected="false" tabindex="-1" type="button">Budget tracker</button>
+        <button class="demo-tab" data-app="recipe" role="tab" id="tab-recipe" aria-controls="panel-recipe" aria-selected="false" tabindex="-1" type="button">Recipe box</button>
+        <button class="demo-tab" data-app="habit" role="tab" id="tab-habit" aria-controls="panel-habit" aria-selected="false" tabindex="-1" type="button">Habit tracker</button>
+        <button class="demo-tab" data-app="reading" role="tab" id="tab-reading" aria-controls="panel-reading" aria-selected="false" tabindex="-1" type="button">Reading list</button>
+      </div>
+
+      <div id="demo-panels" aria-live="polite">
+
+        <!-- Personal wiki -->
+        <div class="demo-panel" data-app="wiki" data-autoselect hidden role="tabpanel" id="panel-wiki" aria-labelledby="tab-wiki">
+          <div class="demo-window">
+            <div class="demo-titlebar"><span class="demo-dots"><i></i><i></i><i></i></span><span class="demo-fname">wiki.html</span><span class="demo-live"><span class="led"></span>saved</span></div>
+            <div class="demo-body">
+              <main sap state="selected">
+                <div class="pane">
+                  <div>
+                    <ul class="pane-list" items="pages">
+                      <li item template set:selected="item.$key" class:active="state.selected === item.$key"><span bind="title"></span><input type="hidden" bind="content" value=""></li>
+                      <li item class="pick" set:selected="item.$key" class:active="state.selected === item.$key"><span bind="title">Home</span><input type="hidden" bind="content" value="Welcome to my wiki. Everything lives in this one file."></li>
+                      <li item set:selected="item.$key" class:active="state.selected === item.$key"><span bind="title">Ideas</span><input type="hidden" bind="content" value="- a single-file recipe app&#10;- a habit tracker for the fridge"></li>
+                      <li item set:selected="item.$key" class:active="state.selected === item.$key"><span bind="title">Reading</span><input type="hidden" bind="content" value="Dune, The Hobbit, Project Hail Mary"></li>
+                    </ul>
+                    <form trigger-add="pages" class="add-row">
+                      <span class="add-row-plus" aria-hidden="true">+</span>
+                      <input bind="title" placeholder="New page" required aria-label="New page title">
+                    </form>
+                  </div>
+                  <div class="pane-detail" detail="pages by state.selected">
+                    <input class="wiki-pagetitle" bind="title" aria-label="Page title">
+                    <textarea bind="content" placeholder="Start writing…"></textarea>
+                  </div>
+                </div>
+              </main>
+            </div>
+          </div>
+        </div>
+
+        <!-- To-do list -->
+        <div class="demo-panel" data-app="todo" hidden role="tabpanel" id="panel-todo" aria-labelledby="tab-todo">
+          <div class="demo-window">
+            <div class="demo-titlebar"><span class="demo-dots"><i></i><i></i><i></i></span><span class="demo-fname">todos.html</span><span class="demo-live"><span class="led"></span>saved</span></div>
+            <div class="demo-body">
+              <main sap>
+                <ul class="todo-list" items="todos">
+                  <li item template><label class="mirk-checkbox"><input type="checkbox" class="mirk-sr-only" bind="done"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span><span class="mirk-checkbox__label" bind="title"></span></label></li>
+                  <li item><label class="mirk-checkbox"><input type="checkbox" class="mirk-sr-only" bind="done"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span><span class="mirk-checkbox__label" bind="title">Draft the release notes</span></label></li>
+                  <li item><label class="mirk-checkbox"><input type="checkbox" class="mirk-sr-only" bind="done"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span><span class="mirk-checkbox__label" bind="title">Reply to the beta testers</span></label></li>
+                  <li item><label class="mirk-checkbox"><input type="checkbox" class="mirk-sr-only" bind="done"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span><span class="mirk-checkbox__label" bind="title">Back up the sites folder</span></label></li>
+                </ul>
+                <form trigger-add="todos" class="add-row">
+                  <span class="add-row-plus" aria-hidden="true">+</span>
+                  <input bind="title" placeholder="Add a task" required aria-label="New task">
+                </form>
+                <p class="app-note" text="plural(count(state.todos, t => !t.done), 'thing', 'things') + ' left to do'"></p>
+              </main>
+            </div>
+          </div>
+        </div>
+
+        <!-- Journal -->
+        <div class="demo-panel" data-app="journal" hidden role="tabpanel" id="panel-journal" aria-labelledby="tab-journal">
+          <div class="demo-window">
+            <div class="demo-titlebar"><span class="demo-dots"><i></i><i></i><i></i></span><span class="demo-fname">journal.html</span><span class="demo-live"><span class="led"></span>saved</span></div>
+            <div class="demo-body">
+              <main sap>
+                <div class="journal-head">
+                  <h3 class="app-h">What I did today</h3>
+                  <input type="date" data-default-today aria-label="Entry date">
+                </div>
+                <textarea bind="entry" placeholder="Today I…"></textarea>
+              </main>
+            </div>
+          </div>
+        </div>
+
+        <!-- Budget tracker -->
+        <div class="demo-panel" data-app="budget" hidden role="tabpanel" id="panel-budget" aria-labelledby="tab-budget">
+          <div class="demo-window">
+            <div class="demo-titlebar"><span class="demo-dots"><i></i><i></i><i></i></span><span class="demo-fname">budget.html</span><span class="demo-live"><span class="led"></span>saved</span></div>
+            <div class="demo-body">
+              <main sap>
+                <table class="budget-table">
+                  <thead><tr><th>Item</th><th>Cost</th></tr></thead>
+                  <tbody items="items">
+                    <tr item template><td bind="name"></td><td><input type="number" min="0" step="1" bind="cost" value="0"></td></tr>
+                    <tr item><td bind="name">Rent</td><td><input type="number" min="0" step="1" bind="cost" value="1200"></td></tr>
+                    <tr item><td bind="name">Groceries</td><td><input type="number" min="0" step="1" bind="cost" value="320"></td></tr>
+                    <tr item><td bind="name">Coffee</td><td><input type="number" min="0" step="1" bind="cost" value="60"></td></tr>
+                    <tr item><td bind="name">Internet</td><td><input type="number" min="0" step="1" bind="cost" value="50"></td></tr>
+                  </tbody>
+                  <tfoot>
+                    <tr><td>Total</td><td calc:total="sum(state.items, 'cost')" text:usd="state.total"></td></tr>
+                  </tfoot>
+                </table>
+                <form trigger-add="items" class="add-row">
+                  <span class="add-row-plus" aria-hidden="true">+</span>
+                  <input bind="name" placeholder="Add an item" required aria-label="New item">
+                </form>
+              </main>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recipe box -->
+        <div class="demo-panel" data-app="recipe" data-autoselect hidden role="tabpanel" id="panel-recipe" aria-labelledby="tab-recipe">
+          <div class="demo-window">
+            <div class="demo-titlebar"><span class="demo-dots"><i></i><i></i><i></i></span><span class="demo-fname">recipes.html</span><span class="demo-live"><span class="led"></span>saved</span></div>
+            <div class="demo-body">
+              <main sap state="selected">
+                <div class="pane">
+                  <div>
+                    <ul class="pane-list" items="recipes">
+                      <li item template set:selected="item.$key" class:active="state.selected === item.$key"><span bind="name"></span><input type="hidden" bind="recipe" value=""></li>
+                      <li item class="pick" set:selected="item.$key" class:active="state.selected === item.$key"><span bind="name">Pancakes</span><input type="hidden" bind="recipe" value="Whisk 1 cup flour, 1 cup milk, 1 egg, and 2 tbsp melted butter until smooth.&#10;Pour rounds onto a hot, greased pan.&#10;Flip when bubbles form; cook till golden.&#10;Top with maple syrup."></li>
+                      <li item set:selected="item.$key" class:active="state.selected === item.$key"><span bind="name">Guacamole</span><input type="hidden" bind="recipe" value="Mash 2 ripe avocados with a fork.&#10;Stir in the juice of 1 lime, 1/4 diced onion, a handful of chopped cilantro, and salt to taste.&#10;Serve right away with chips."></li>
+                      <li item set:selected="item.$key" class:active="state.selected === item.$key"><span bind="name">Spaghetti</span><input type="hidden" bind="recipe" value="Boil spaghetti in salted water till al dente.&#10;Gently cook sliced garlic in olive oil, add crushed tomatoes, and simmer 10 min.&#10;Toss with the pasta and fresh basil."></li>
+                    </ul>
+                    <form trigger-add="recipes" class="add-row">
+                      <span class="add-row-plus" aria-hidden="true">+</span>
+                      <input bind="name" placeholder="Add a recipe" required aria-label="New recipe">
+                    </form>
+                  </div>
+                  <div class="pane-detail" detail="recipes by state.selected">
+                    <h3 class="app-h" bind="name"></h3>
+                    <textarea bind="recipe" placeholder="Recipe…"></textarea>
+                  </div>
+                </div>
+                <p class="app-note" show="!state.selected">Pick a recipe.</p>
+              </main>
+            </div>
+          </div>
+        </div>
+
+        <!-- Habit tracker -->
+        <div class="demo-panel" data-app="habit" hidden role="tabpanel" id="panel-habit" aria-labelledby="tab-habit">
+          <div class="demo-window">
+            <div class="demo-titlebar"><span class="demo-dots"><i></i><i></i><i></i></span><span class="demo-fname">habits.html</span><span class="demo-live"><span class="led"></span>saved</span></div>
+            <div class="demo-body">
+              <main sap>
+                <div class="habit-grid" items="habits">
+                  <span></span>
+                  <span class="col-h">M</span><span class="col-h">T</span><span class="col-h">W</span><span class="col-h">T</span><span class="col-h">F</span><span class="col-h">S</span><span class="col-h">S</span>
+                  <span></span>
+                  <div item template class="habit-row" style="display:contents">
+                    <span class="hname" bind="name"></span>
+                    <label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d0"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d1"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d2"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d3"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d4"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d5"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d6"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label>
+                    <span class="cnt" text="count([item.d0,item.d1,item.d2,item.d3,item.d4,item.d5,item.d6], v => v) + '/7'"></span>
+                  </div>
+                  <div item class="habit-row" style="display:contents">
+                    <span class="hname" bind="name">Meditate</span>
+                    <label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d0" checked><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d1" checked><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d2" checked><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d3"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d4"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d5"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d6"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label>
+                    <span class="cnt" text="count([item.d0,item.d1,item.d2,item.d3,item.d4,item.d5,item.d6], v => v) + '/7'"></span>
+                  </div>
+                  <div item class="habit-row" style="display:contents">
+                    <span class="hname" bind="name">Exercise</span>
+                    <label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d0" checked><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d1"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d2" checked><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d3"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d4" checked><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d5"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d6"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label>
+                    <span class="cnt" text="count([item.d0,item.d1,item.d2,item.d3,item.d4,item.d5,item.d6], v => v) + '/7'"></span>
+                  </div>
+                  <div item class="habit-row" style="display:contents">
+                    <span class="hname" bind="name">Read</span>
+                    <label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d0"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d1" checked><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d2"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d3" checked><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d4"><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d5" checked><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label><label class="mirk-checkbox mirk-checkbox--small"><input type="checkbox" class="mirk-sr-only" bind="d6" checked><span class="mirk-checkbox__box"><span class="mirk-checkbox__mark"></span></span></label>
+                    <span class="cnt" text="count([item.d0,item.d1,item.d2,item.d3,item.d4,item.d5,item.d6], v => v) + '/7'"></span>
+                  </div>
+                </div>
+                <form trigger-add="habits" class="add-row">
+                  <span class="add-row-plus" aria-hidden="true">+</span>
+                  <input bind="name" placeholder="Add a habit" required aria-label="New habit">
+                </form>
+              </main>
+            </div>
+          </div>
+        </div>
+
+        <!-- Reading list -->
+        <div class="demo-panel" data-app="reading" hidden role="tabpanel" id="panel-reading" aria-labelledby="tab-reading">
+          <div class="demo-window">
+            <div class="demo-titlebar"><span class="demo-dots"><i></i><i></i><i></i></span><span class="demo-fname">reading-list.html</span><span class="demo-live"><span class="led"></span>saved</span></div>
+            <div class="demo-body">
+              <main sap>
+                <ul class="reading-list" items="books">
+                  <li item template><span class="btitle" bind="title"></span><input type="hidden" bind="status" value="Want to read"><button type="button" class="status-tag" text="item.status" set:status="item.status === 'Want to read' ? 'Reading' : (item.status === 'Reading' ? 'Read' : 'Want to read')"></button></li>
+                  <li item><span class="btitle" bind="title">Dune</span><input type="hidden" bind="status" value="Read"><button type="button" class="status-tag" text="item.status" set:status="item.status === 'Want to read' ? 'Reading' : (item.status === 'Reading' ? 'Read' : 'Want to read')"></button></li>
+                  <li item><span class="btitle" bind="title">The Hobbit</span><input type="hidden" bind="status" value="Reading"><button type="button" class="status-tag" text="item.status" set:status="item.status === 'Want to read' ? 'Reading' : (item.status === 'Reading' ? 'Read' : 'Want to read')"></button></li>
+                  <li item><span class="btitle" bind="title">Project Hail Mary</span><input type="hidden" bind="status" value="Want to read"><button type="button" class="status-tag" text="item.status" set:status="item.status === 'Want to read' ? 'Reading' : (item.status === 'Reading' ? 'Read' : 'Want to read')"></button></li>
+                  <li item><span class="btitle" bind="title">Sapiens</span><input type="hidden" bind="status" value="Read"><button type="button" class="status-tag" text="item.status" set:status="item.status === 'Want to read' ? 'Reading' : (item.status === 'Reading' ? 'Read' : 'Want to read')"></button></li>
+                </ul>
+                <form trigger-add="books" class="add-row">
+                  <span class="add-row-plus" aria-hidden="true">+</span>
+                  <input bind="title" placeholder="Add a book" required aria-label="New book">
+                </form>
+                <p class="app-note" text="count(state.books, b => b.status === 'Read') + ' of ' + count(state.books) + ' read'"></p>
+              </main>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- 6. Example malleable HTML file -->
+    <section class="section">
+      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Under the hood</p>
+      <h2 class="section-h">Example malleable HTML file</h2>
+      <p class="demo-lead">Here is a complete malleable HTML file. Ten lines with HyperclayJS, or the same idea hand-rolled in plain JavaScript so you can see there is nothing hidden.</p>
+      <div class="code-tabs" id="code-tabs">
+        <div class="tablist" role="tablist" aria-label="Example code">
+          <button class="code-tab" role="tab" id="ctab-hyperclayjs" aria-controls="cpanel-hyperclayjs" aria-selected="true" tabindex="0" type="button">With HyperclayJS</button>
+          <button class="code-tab" role="tab" id="ctab-plainjs" aria-controls="cpanel-plainjs" aria-selected="false" tabindex="-1" type="button">Plain JavaScript</button>
+        </div>
+        <div class="code-panel" role="tabpanel" id="cpanel-hyperclayjs" aria-labelledby="ctab-hyperclayjs" tabindex="0">
+          <div class="code-block"><pre><code>&lt;!DOCTYPE html&gt;
+&lt;html lang="en"&gt;
+&lt;head&gt;
+  &lt;meta charset="utf-8"&gt;
+  &lt;meta name="viewport" content="width=device-width, initial-scale=1.0"&gt;
+  &lt;title&gt;Notes&lt;/title&gt;
+  &lt;script src="https://cdn.jsdelivr.net/npm/hyperclayjs@latest/src/hyperclay.js?preset=minimal&amp;features=autosave" type="module"&gt;&lt;/script&gt;
+&lt;/head&gt;
+&lt;body&gt;
+  &lt;h1 editmode:contenteditable&gt;Notes&lt;/h1&gt;
+  &lt;p editmode:contenteditable&gt;Start typing here. Everything saves to disk automatically.&lt;/p&gt;
+&lt;/body&gt;
+&lt;/html&gt;</code></pre></div>
+          <p class="code-note">This example loads HyperclayJS from a CDN so it is easy to try. For a fully offline file, vendor the script next to your HTML instead.</p>
+          <div class="code-features">
+            <b>HyperclayJS handles the rest:</b>
+            <ul>
+              <li>autosave</li>
+              <li>prevent leaving before saving</li>
+              <li>save keyboard shortcut</li>
+              <li>toast notification on save</li>
+              <li>edit mode</li>
+            </ul>
+            <p class="code-note">Edit mode is how these files become editable in place: click text to change it, then press Cmd+S or let autosave write it to disk.</p>
+          </div>
+        </div>
+        <div class="code-panel" role="tabpanel" id="cpanel-plainjs" aria-labelledby="ctab-plainjs" tabindex="0" hidden>
+          <div class="code-block"><pre><code>&lt;!DOCTYPE html&gt;
+&lt;html lang="en"&gt;
+&lt;head&gt;
+  &lt;meta charset="utf-8"&gt;
+  &lt;meta name="viewport" content="width=device-width, initial-scale=1.0"&gt;
+  &lt;title&gt;Notes&lt;/title&gt;
+&lt;/head&gt;
+&lt;body&gt;
+  &lt;h1 contenteditable&gt;Notes&lt;/h1&gt;
+  &lt;p contenteditable&gt;Start typing here. Everything saves to disk automatically.&lt;/p&gt;
+  &lt;script&gt;
+    // This code handles saving the file whenever it changes
+    const save = () =&gt; fetch('/_/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/html; charset=utf-8', 'Page-URL': location.href },
+      body: '&lt;!DOCTYPE html&gt;\n' + document.documentElement.outerHTML
+    })
+    document.addEventListener('input', save)
+    new MutationObserver(save).observe(document, {
+      childList: true, subtree: true, attributes: true, characterData: true
+    })
+  &lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;</code></pre></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Compared to what? -->
+    <section class="section">
+      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Compared to what?</p>
+      <h2 class="section-h">Why not a static file, localStorage, or a backend?</h2>
+      <ul class="features">
+        <li><b>A static file can't save.</b> <span class="prose-line">Open one from disk and every edit vanishes on refresh. Hyperclay Local gives that same file one new power: it can write its own changes back.</span></li>
+        <li><b>localStorage is trapped.</b> <span class="prose-line">Its data lives inside one browser profile, in a form you can't read, and clearing your browser wipes it. Here the data is the file. Open it in any editor and it's all there, in plain HTML.</span></li>
+        <li><b>A backend is a lot to own.</b> <span class="prose-line">A database, a server, a build, a deploy, a host. This is one file and a local process. When you want more, sync to hyperclay.com is one toggle, and it stays off until you turn it on.</span></li>
+      </ul>
+    </section>
+
+    <!-- What you get -->
+    <section class="section" id="workflow">
+      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>The details</p>
+      <h2 class="section-h">What you get</h2>
+      <div class="feature-grid">
+        <div class="feature-card"><b>Inspect everything.</b> <span>Right-click, View Source, and the whole app is in front of you. Interface, logic, and data in the same markup. Nothing minified away or hidden behind a bundler.</span></div>
+        <div class="feature-card"><b>Backups on every save.</b> <span>Before the server overwrites a file, it keeps the previous version. If a save goes wrong, the last good copy is still on disk.</span></div>
+        <div class="feature-card"><b>Works offline.</b> <span>The server and your files both sit on your machine. No internet needed to run the app or edit your files.</span></div>
+        <div class="feature-card"><b>No accounts, no telemetry.</b> <span>Local editing sends nothing anywhere: no analytics and no telemetry except an update check. No sign-up to edit your own files.</span></div>
+      </div>
+    </section>
+
+    <!-- 7. Extra features -->
+    <section class="section">
+      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Also included</p>
+      <h2 class="section-h">Extra features</h2>
+      <ul class="features">
+        <li><b>Tailwind CSS on save.</b> <span class="prose-line">Point a stylesheet at <code class="inline">/tailwindcss/{yourFileName}.css</code> and the server compiles Tailwind on every save, including only the utilities that file actually uses. No build step to run yourself.</span></li>
+        <li><b>Cloud sync, if you want it.</b> <span class="prose-line">Turn on sync to mirror your folder to your hyperclay.com account and back. It is off by default, the API key is encrypted with your OS keychain, and your files work exactly the same with it off.</span></li>
+        <li><b><a href="https://github.com/panphora/hyperclayjs" target="_blank" rel="noopener">HyperclayJS</a>.</b> <span class="prose-line">A modular toolkit for malleable HTML files: autosave, edit mode, sortable lists, toasts, dialogs, and more. Load a ready-made preset or pick the exact features you want.</span></li>
+      </ul>
+    </section>
+
+    <!-- 8. Download (full list). This static list is the single source of truth
+         for filenames and sizes: the hero button clones the OS-matched row, the
+         version tag reads data-version, release tooling reads the literal
+         filenames, and it works with JavaScript off. Bump the version by editing
+         the four filenames + data-version here. Sizes are the repo README values. -->
+    <section class="section" id="downloads" data-version="1.18.0">
+      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Download</p>
+      <h2 class="section-h">Download <span class="version-tag" id="version-tag"></span></h2>
+      <p class="dl-intro">Desktop app for macOS, Windows, and Linux. Free and open source, no account required. It is an Electron app, so each download is around 100 MB.</p>
+      <ul class="dl-list">
+        <li class="dl-row" data-os="mac-arm">
+          <span class="dl-os">macOS <span class="dl-arch">Apple Silicon</span></span>
+          <a class="dl-file" download href="https://local.hyperclay.com/HyperclayLocal-1.18.0-arm64.dmg">HyperclayLocal-1.18.0-arm64.dmg</a>
+          <span class="dl-size">101.8 MB</span>
+        </li>
+        <li class="dl-row" data-os="mac-intel">
+          <span class="dl-os">macOS <span class="dl-arch">Intel</span></span>
+          <a class="dl-file" download href="https://local.hyperclay.com/HyperclayLocal-1.18.0.dmg">HyperclayLocal-1.18.0.dmg</a>
+          <span class="dl-size">109.4 MB</span>
+        </li>
+        <li class="dl-row" data-os="windows">
+          <span class="dl-os">Windows <span class="dl-arch">64-bit</span></span>
+          <a class="dl-file" download href="https://local.hyperclay.com/HyperclayLocal-Setup-1.18.0.exe">HyperclayLocal-Setup-1.18.0.exe</a>
+          <span class="dl-size">82.1 MB</span>
+        </li>
+        <li class="dl-row" data-os="linux">
+          <span class="dl-os">Linux <span class="dl-arch">AppImage</span></span>
+          <a class="dl-file" download href="https://local.hyperclay.com/HyperclayLocal-1.18.0.AppImage">HyperclayLocal-1.18.0.AppImage</a>
+          <span class="dl-size">120.1 MB</span>
+        </li>
+      </ul>
+      <p class="dl-source">Source code: <a href="https://github.com/panphora/hyperclay-local" target="_blank" rel="noopener">github.com/panphora/hyperclay-local</a></p>
+    </section>
+
+    <!-- 9. FAQ -->
+    <section class="section faq" id="faq">
+      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Questions</p>
+      <h2 class="section-h">FAQ</h2>
+
+      <details>
+        <summary>How does the saving actually work?</summary>
+        <div class="faq__body">
+          <p>Your HTML file includes a small script that serializes the page's DOM and posts it to the local server at <code class="inline">POST /_/save</code>, with a <code class="inline">Page-URL</code> header naming the page. The server maps that to the right file, writes it to disk, and keeps a backup of the previous version in a <code class="inline">sites-versions/</code> folder. <a href="https://github.com/panphora/hyperclayjs" target="_blank" rel="noopener">HyperclayJS</a> handles this for you. The minimal preset includes saving, snapshots, and edit mode out of the box.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Is it safe to run?</summary>
+        <div class="faq__body">
+          <p>The app uses several layers of protection:</p>
+          <ul>
+            <li><b>Sandboxed renderer.</b> Web content runs in an isolated Electron context, separate from the main process.</li>
+            <li><b>IPC security.</b> The renderer and main process talk over secure Electron IPC channels.</li>
+            <li><b>Path traversal protection.</b> The server validates every file path so nothing can be written outside the selected folder.</li>
+            <li><b>Filename sanitization.</b> Saved filenames allow only letters, numbers, hyphens, and underscores.</li>
+            <li><b>Versioned backups.</b> The server keeps the previous version of a file before it overwrites.</li>
+          </ul>
+          <p>The app is open source. You can audit the full codebase at <a href="https://github.com/panphora/hyperclay-local" target="_blank" rel="noopener">github.com/panphora/hyperclay-local</a>.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Do my files ever leave my machine?</summary>
+        <div class="faq__body">
+          <p>No. Local editing is entirely on your computer, with no analytics and no telemetry except an occasional update check. The only time a file leaves is if you turn on cloud sync yourself, which pushes to your own hyperclay.com account. It stays off until you enable it.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Do I have to use HyperclayJS?</summary>
+        <div class="faq__body">
+          <p>No. HyperclayJS is a convenience. Any file that posts its own HTML to <code class="inline">/_/save</code> with a <code class="inline">Page-URL</code> header will save. The Plain JavaScript tab above is a complete, working example in about a dozen lines.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>How do I build from source?</summary>
+        <div class="faq__body">
+          <p>Clone the repo and install dependencies:</p>
+          <div class="code-block"><pre>git clone https://github.com/panphora/hyperclay-local.git
+cd hyperclay-local
+npm install</pre></div>
+          <p>Run it in development mode with live reload:</p>
+          <div class="code-block"><pre>npm run dev</pre></div>
+          <p>Build a distributable for your current platform:</p>
+          <div class="code-block"><pre>npm run build</pre></div>
+          <p>For signed, platform-specific installers, see <a href="https://github.com/panphora/hyperclay-local/blob/main/BUILD.md" target="_blank" rel="noopener">BUILD.md</a>.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Port 4321 is already in use</summary>
+        <div class="faq__body">
+          <p>The server binds to port 4321 by default. If another process is using that port, the app shows an error. Kill the other process or wait for it to release the port.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>The server won't start</summary>
+        <div class="faq__body">
+          <p>Check that:</p>
+          <ul>
+            <li>The folder you selected actually contains files</li>
+            <li>The folder path does not contain unusual special characters</li>
+            <li>Try selecting the folder again using the folder picker</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary>Linux says permission denied</summary>
+        <div class="faq__body">
+          <p>AppImage files need to be marked as executable:</p>
+          <div class="code-block"><pre>chmod +x HyperclayLocal-*.AppImage</pre></div>
+        </div>
+      </details>
+
+    </section>
+
+    <!-- 10. Closing -->
+    <div class="closer">
+      <p class="closer-lead">The app is the file. Read it, edit it, save it, or walk away with it.</p>
+      <p>Most tools sit between you and your work. Hyperclay Local does not: one file on your disk, yours for as long as you keep it. Frontend and done.</p>
+    </div>
+
+  </main>
+
+  <footer>
+    <p>Open source: <a href="https://github.com/panphora/hyperclay-local" target="_blank" rel="noopener">github.com/panphora/hyperclay-local</a></p>
+    <p>Part of <a href="https://hyperclay.com" target="_blank" rel="noopener">Hyperclay</a></p>
+  </footer>
+
+  <!-- ==================== Theme toggle ==================== -->
+  <script>
+    (function () {
+      var root = document.documentElement;
+      var btn = document.getElementById('theme-toggle');
+      if (!btn) return;
+      var sun = btn.querySelector('[data-icon="sun"]');
+      var moon = btn.querySelector('[data-icon="moon"]');
+
+      function getStored() { try { return localStorage.getItem('hcl-theme'); } catch (e) { return null; } }
+      function store(m) { try { localStorage.setItem('hcl-theme', m); } catch (e) {} }
+
+      function effective() {
+        if (root.classList.contains('dark')) return 'dark';
+        if (root.classList.contains('light')) return 'light';
+        return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+      function syncIcon(mode) {
+        var dark = mode === 'dark';
+        btn.setAttribute('aria-pressed', String(dark));
+        btn.setAttribute('aria-label', dark ? 'Switch to light mode' : 'Switch to dark mode');
+        if (sun) sun.hidden = !dark;   // in dark mode, show the sun (what you switch to)
+        if (moon) moon.hidden = dark;
+      }
+      function setMode(mode) {
+        root.classList.remove('light', 'dark');
+        root.classList.add(mode);
+        store(mode);
+        syncIcon(mode);
+      }
+
+      // First click flips away from what is shown now, then persists. Initial load
+      // never writes storage, so "follow OS" survives until an explicit click.
+      btn.addEventListener('click', function () { setMode(effective() === 'dark' ? 'light' : 'dark'); });
+      syncIcon(effective());
+
+      var mq = matchMedia('(prefers-color-scheme: dark)');
+      var onChange = function () { if (!getStored()) syncIcon(effective()); };
+      if (mq.addEventListener) mq.addEventListener('change', onChange);
+      else if (mq.addListener) mq.addListener(onChange);
+    })();
+  </script>
+
+  <!-- ==================== Download: detect + render ==================== -->
+  <script>
+    (function () {
+      // The static list in #downloads is the single source of truth. We detect the
+      // OS and clone the matching row's href into the hero button; nothing here
+      // hardcodes a filename or size, so a version bump is one edit in the markup.
+      var section = document.getElementById('downloads');
+      var btn = document.getElementById('download-btn');
+      var text = document.getElementById('download-btn-text');
+      var sub = document.getElementById('download-subtext');
+      var tag = document.getElementById('version-tag');
+      if (!section || !btn || !text || !sub) return;
+
+      if (tag) tag.textContent = 'v' + section.dataset.version;
+
+      function hrefFor(os) {
+        var a = section.querySelector('.dl-row[data-os="' + os + '"] a');
+        return a ? a.getAttribute('href') : '#downloads';
+      }
+
+      var ua = navigator.userAgent;
+      var os = 'other';
+      if (/Mac/.test(ua) && !/iPhone|iPad|iPod/.test(ua)) os = 'mac';
+      else if (/Win/.test(ua)) os = 'windows';
+      else if (/Linux/.test(ua) && !/Android/.test(ua)) os = 'linux';   // desktop Linux only
+
+      function feature(url, label) {
+        btn.href = url;
+        btn.setAttribute('download', '');
+        text.textContent = label;
+      }
+
+      if (os === 'mac') {
+        feature(hrefFor('mac-arm'), 'Download for macOS (Apple Silicon)');
+        sub.innerHTML = '<a href="' + hrefFor('mac-intel') + '" download>Intel Mac?</a> &middot; <a href="#downloads">See all downloads</a>';
+        // Best effort: switch to the Intel build if the CPU reports x86.
+        if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+          navigator.userAgentData.getHighEntropyValues(['architecture']).then(function (d) {
+            if (d && d.architecture === 'x86') {
+              feature(hrefFor('mac-intel'), 'Download for macOS (Intel)');
+              sub.innerHTML = '<a href="' + hrefFor('mac-arm') + '" download>Apple Silicon?</a> &middot; <a href="#downloads">See all downloads</a>';
+            }
+          }).catch(function () {});
+        }
+      } else if (os === 'windows') {
+        feature(hrefFor('windows'), 'Download for Windows');
+        sub.innerHTML = '<a href="#downloads">Not on Windows? See all downloads</a>';
+      } else if (os === 'linux') {
+        feature(hrefFor('linux'), 'Download for Linux');
+        sub.innerHTML = '<a href="#downloads">Not on Linux? See all downloads</a>';
+      } else {
+        // Mobile or unknown: send to the full desktop list instead of a file.
+        btn.href = '#downloads';
+        btn.removeAttribute('download');
+        text.textContent = 'Download';
+        sub.innerHTML = '<a href="#downloads">See all downloads</a>';
+      }
+    })();
+  </script>
+
+  <!-- ==================== Interactive hero: swap popover states ==================== -->
+  <script>
+    (function () {
+      // The hero screenshot is a tiny state machine over the five captured PNGs.
+      // Clicking the SERVER/SYNC hotspots flips that flag; the bell opens the
+      // notices shot; the back arrow returns. Pure src swaps, no dependencies.
+      var frame = document.getElementById('hero-shot');
+      var img = document.getElementById('hero-img');
+      if (!frame || !img) return;
+
+      var SHOTS = {
+        'on-on':   { src: 'assets/app-popover.png',         alt: 'Hyperclay Local: folder mounted, server on at localhost:4321, sync on as @panphora, and a recent-activity feed.' },
+        'on-off':  { src: 'assets/app-popover-on-off.png',  alt: 'Hyperclay Local: server on at localhost:4321, sync paused.' },
+        'off-off': { src: 'assets/app-popover-off-off.png', alt: 'Hyperclay Local: server off, sync paused.' },
+        'off-on':  { src: 'assets/app-popover-off-on.png',  alt: 'Hyperclay Local: server off, sync on as @panphora with a recent-activity feed.' },
+        'notices': { src: 'assets/app-popover-notices.png', alt: 'Hyperclay Local notices: calm status messages with a back arrow to return.' }
+      };
+      // Warm the states the visitor can reach (on-on is already the loaded hero).
+      Object.keys(SHOTS).forEach(function (k) { if (k !== 'on-on') new Image().src = SHOTS[k].src; });
+
+      var server = true, sync = true, view = 'home';
+      function stateKey() { return view === 'notices' ? 'notices' : (server ? 'on' : 'off') + '-' + (sync ? 'on' : 'off'); }
+      function render() {
+        var s = SHOTS[stateKey()];
+        img.src = s.src;
+        img.alt = s.alt;
+        frame.dataset.view = view;
+      }
+
+      frame.addEventListener('click', function (e) {
+        var btn = e.target.closest('.shot-hotspot');
+        if (!btn) return;
+        switch (btn.dataset.act) {
+          case 'server': server = !server; break;
+          case 'sync':   sync = !sync; break;
+          case 'bell':   view = 'notices'; break;
+          case 'back':   view = 'home'; break;
+        }
+        render();
+      });
+    })();
+  </script>
+
+  <!-- ==================== Example-code tabs (no Prism) ==================== -->
+  <script>
+    (function () {
+      var group = document.getElementById('code-tabs');
+      if (!group) return;
+      var tabs = Array.prototype.slice.call(group.querySelectorAll('[role="tab"]'));
+      var panels = Array.prototype.slice.call(group.querySelectorAll('[role="tabpanel"]'));
+
+      function activate(tab, focus) {
+        tabs.forEach(function (t) {
+          var on = t === tab;
+          t.setAttribute('aria-selected', String(on));
+          t.tabIndex = on ? 0 : -1;
+        });
+        panels.forEach(function (p) { p.hidden = p.id !== tab.getAttribute('aria-controls'); });
+        if (focus) tab.focus();
+      }
+      tabs.forEach(function (tab) { tab.addEventListener('click', function () { activate(tab, false); }); });
+      group.querySelector('[role="tablist"]').addEventListener('keydown', function (e) {
+        var i = tabs.indexOf(document.activeElement);
+        if (i === -1) return;
+        var n;
+        switch (e.key) {
+          case 'ArrowRight': case 'ArrowDown': n = (i + 1) % tabs.length; break;
+          case 'ArrowLeft': case 'ArrowUp': n = (i - 1 + tabs.length) % tabs.length; break;
+          case 'Home': n = 0; break;
+          case 'End': n = tabs.length - 1; break;
+          default: return;
+        }
+        e.preventDefault();
+        activate(tabs[n], true);
+      });
+    })();
+  </script>
+
+  <!-- ==================== Live demos: sap engine + gallery switcher ==================== -->
+  <script src="sap.min.js"></script>
+  <script>
+    (function () {
+      var tablist = document.getElementById('demo-tabs');
+      if (!tablist) return;
+      var chips = Array.prototype.slice.call(tablist.querySelectorAll('[role="tab"]'));
+      var panels = Array.prototype.slice.call(document.querySelectorAll('#demo-panels .demo-panel'));
+
+      function autoSelect(p) {
+        if (!p || p.__did || !p.hasAttribute('data-autoselect')) return;
+        p.__did = true;
+        var first = p.querySelector('.pick');
+        if (first) first.click();
+      }
+      function show(app, focusChip) {
+        chips.forEach(function (c) {
+          var on = c.dataset.app === app;
+          c.setAttribute('aria-selected', String(on));
+          c.tabIndex = on ? 0 : -1;
+          if (on && focusChip) c.focus();
+        });
+        panels.forEach(function (p) {
+          var on = p.dataset.app === app;
+          if (on) { if (p.hidden) p.hidden = false; autoSelect(p); }
+          else if (!p.hidden) p.hidden = true;
+        });
+      }
+      chips.forEach(function (c) { c.addEventListener('click', function () { show(c.dataset.app, false); }); });
+      tablist.addEventListener('keydown', function (e) {
+        var i = chips.indexOf(document.activeElement);
+        if (i === -1) return;
+        var n;
+        switch (e.key) {
+          case 'ArrowRight': case 'ArrowDown': n = (i + 1) % chips.length; break;
+          case 'ArrowLeft': case 'ArrowUp': n = (i - 1 + chips.length) % chips.length; break;
+          case 'Home': n = 0; break;
+          case 'End': n = chips.length - 1; break;
+          default: return;
+        }
+        e.preventDefault();
+        show(chips[n].dataset.app, true);
+      });
+
+      function init() {
+        document.querySelectorAll('input[type=date][data-default-today]').forEach(function (el) {
+          el.value = new Date().toISOString().slice(0, 10);
+        });
+        show('wiki', false);
+      }
+      // sapjs mounts and attaches its action listeners on DOMContentLoaded, and it
+      // registers that handler before this script runs. Defer the initial
+      // autoselect to the same event so the wiki's first-row click is handled.
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+      else init();
+    })();
+  </script>
+
+  <!-- mirk kit runtime (delegated listeners for its interactive components). -->
+  <script src="mirk.js"></script>
+</body>
+</html>

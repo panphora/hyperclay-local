@@ -1,8 +1,7 @@
 const { BrowserWindow, screen } = require('electron');
 const path = require('upath');
+const { PANEL_WIDTH, PANEL_HEIGHT } = require('./popover-dimensions');
 
-const PANEL_WIDTH = 300;
-const PANEL_HEIGHT = 460;
 const MARGIN_Y = 4;
 
 let popoverWindow = null;

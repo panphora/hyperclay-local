@@ -85,17 +85,20 @@ const Rocker = ({ on, disabled, onFlip, label }) => (
         marginLeft: on ? '50%' : 0,
         fontFamily: '"Fixedsys", monospace',
         fontSize: 12,
+        lineHeight: 1,
         color: on ? '#F6F7FB' : C.text2,
         background: on ? C.greenFill : '#2A2E45',
         ...(on ? bevelOut(C.greenLt, C.greenDk) : bevelOut(C.bevelLt, C.bevelDk)),
       }}
     >
-      {on ? 'ON' : 'OFF'}
+      <span style={{ display: 'block', transform: 'translateY(-1px)' }}>
+        {on ? 'ON' : 'OFF'}
+      </span>
     </span>
   </button>
 );
 
-const BevelButton = ({ label, onClick, variant, disabled, small, style: extraStyle }) => {
+const BevelButton = ({ label, onClick, variant, disabled, small, tiny, style: extraStyle }) => {
   const [hover, setHover] = useState(false);
   const [active, setActive] = useState(false);
 
@@ -107,8 +110,8 @@ const BevelButton = ({ label, onClick, variant, disabled, small, style: extraSty
   };
 
   const c = colors[variant] || colors.neutral;
-  const fontSize = small ? 15 : 16;
-  const padding = small ? '4px 10px 5px' : '5px 12px 7px';
+  const fontSize = tiny ? 12 : small ? 15 : 16;
+  const padding = tiny ? '2px 7px 3px' : small ? '4px 10px 5px' : '5px 12px 7px';
 
   return (
     <button
@@ -599,32 +602,58 @@ const PopoverApp = () => {
           flexDirection: 'column',
         }}
       >
-        {/* Header */}
-        <div className="flex items-center px-3.5 pt-3 pb-2.5 border-b border-[#292F52]">
-          <button
-            onClick={currentView !== 'home' ? navigateHome : undefined}
-            className={`bg-transparent border-none text-[#E8EAF6] text-[15px] font-semibold tracking-wide p-0 font-["Berkeley_Mono",monospace] ${currentView !== 'home' ? 'cursor-pointer' : 'cursor-default'}`}
-          >
-            Hyperclay Local
-          </button>
-
-          <div className="ml-auto flex gap-1">
-            <button
-              onClick={toggleNotices}
-              title="Notices"
-              aria-label={unreadCount > 0 ? `Notices, ${unreadCount} unread` : 'Notices'}
-              className={`relative border-none rounded-[20px] px-2 py-1 cursor-pointer flex items-center justify-center ${currentView === 'notices' ? 'bg-[#2D3847]' : 'bg-[#232D3A] hover:bg-[#2D3847]'}`}
-            >
-              <svg className="w-[14px] h-[14px] text-[#B8BFE5]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
-              </svg>
-              {unreadCount > 0 && (
-                <span className="absolute -top-0.5 -right-1 flex items-center justify-center min-w-4 h-4 px-1 text-[11px] font-bold font-['Berkeley_Mono',monospace] text-white bg-[#8B2020] rounded-[20px]">
-                  {unreadCount > 9 ? '9+' : unreadCount}
-                </span>
-              )}
-            </button>
-          </div>
+        {/* Header — context-aware: title + bell on home, back button + view title on sub-views */}
+        <div className="flex items-center gap-2 px-3.5 pt-3 pb-2.5 border-b border-[#292F52]">
+          {currentView === 'home' ? (
+            <>
+              <span className="text-[#E8EAF6] text-[15px] font-semibold tracking-wide font-['Berkeley_Mono',monospace]">
+                Hyperclay Local
+              </span>
+              <button
+                onClick={toggleNotices}
+                title="Notices"
+                aria-label={unreadCount > 0 ? `Notices, ${unreadCount} unread` : 'Notices'}
+                className="relative ml-auto border-none rounded-[20px] px-2 py-1 cursor-pointer flex items-center justify-center bg-[#232D3A] hover:bg-[#2D3847]"
+              >
+                <svg className="w-[14px] h-[14px] text-[#B8BFE5]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
+                </svg>
+                {unreadCount > 0 && (
+                  <span className="absolute -top-0.5 -right-1 flex items-center justify-center min-w-4 h-4 px-1 text-[11px] font-bold font-['Berkeley_Mono',monospace] text-white bg-[#8B2020] rounded-[20px]">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={navigateHome}
+                title="Back"
+                aria-label="Back"
+                className="border-none rounded-[20px] px-2 py-1 cursor-pointer flex items-center justify-center bg-[#232D3A] hover:bg-[#2D3847]"
+              >
+                <svg className="w-[14px] h-[14px] text-[#B8BFE5]" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M20 11v2H4v-2zM8 13v2H6v-2zm2 2v2H8v-2zm2 2v2h-2v-2zm-4-6V9H6v2z" />
+                  <path d="M10 15V7H8v8zm2 2V5h-2v12z" />
+                </svg>
+              </button>
+              <span className="text-[#E8EAF6] text-[15px] font-semibold tracking-wide font-['Berkeley_Mono',monospace]">
+                {currentView === 'notices' ? 'Notices' : currentView === 'activity' ? 'Activity' : 'Connect'}
+              </span>
+              <div className="ml-auto flex gap-1">
+                {currentView === 'notices' && (
+                  <>
+                    <BevelButton label="mark read" onClick={markAllRead} variant="neutral" tiny />
+                    <BevelButton label="clear" onClick={clearAllErrors} variant="sync" tiny />
+                  </>
+                )}
+                {currentView === 'activity' && (
+                  <BevelButton label="clear" onClick={clearActivity} variant="sync" tiny />
+                )}
+              </div>
+            </>
+          )}
         </div>
 
         {/* Update banner */}
@@ -669,17 +698,14 @@ const PopoverApp = () => {
           {currentView === 'notices' && (
             <NoticesView
               errors={errorQueue}
-              onMarkRead={markAllRead}
               onMarkErrorRead={markErrorRead}
               onDismissError={dismissError}
-              onClearAll={clearAllErrors}
             />
           )}
 
           {currentView === 'activity' && (
             <ActivityView
               activity={activity}
-              onClear={clearActivity}
             />
           )}
 
@@ -926,7 +952,7 @@ const ActivityRow = ({ item }) => (
 // NOTICES VIEW
 // =============================================================================
 
-const NoticesView = ({ errors, onMarkRead, onMarkErrorRead, onDismissError, onClearAll }) => {
+const NoticesView = ({ errors, onMarkErrorRead, onDismissError }) => {
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -938,15 +964,7 @@ const NoticesView = ({ errors, onMarkRead, onMarkErrorRead, onDismissError, onCl
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
-      <div className="flex items-center gap-2 px-3.5 pt-2.5 pb-2">
-        <span className="text-[15px] font-semibold text-[#E8EAF6]">Notices</span>
-        <div className="ml-auto flex gap-1">
-          <BevelButton label="mark read" onClick={onMarkRead} variant="neutral" small />
-          <BevelButton label="clear" onClick={onClearAll} variant="danger" small />
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-3.5 pb-2.5">
+      <div className="flex-1 overflow-y-auto px-3.5 pt-3 pb-2.5">
         {sortedErrors.length === 0 ? (
           <div className="py-10 text-center text-[#6B7194] text-[13px]">
             All quiet
@@ -997,7 +1015,7 @@ const NoticesView = ({ errors, onMarkRead, onMarkErrorRead, onDismissError, onCl
 // ACTIVITY VIEW
 // =============================================================================
 
-const ActivityView = ({ activity, onClear }) => {
+const ActivityView = ({ activity }) => {
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -1007,14 +1025,7 @@ const ActivityView = ({ activity, onClear }) => {
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
-      <div className="flex items-center px-3.5 pt-2.5 pb-2">
-        <span className="text-[15px] font-semibold text-[#E8EAF6]">Activity</span>
-        <div className="ml-auto">
-          <BevelButton label="clear" onClick={onClear} variant="danger" small />
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-3.5 pb-2.5">
+      <div className="flex-1 overflow-y-auto px-3.5 pt-3 pb-2.5">
         {activity.length === 0 ? (
           <div className="py-10 text-center text-[#6B7194] text-[13px]">
             Transfers show up here
@@ -1040,9 +1051,6 @@ const CredentialsView = ({ username, apiKey, error, loading, folderLabel, onUser
 
   return (
     <div className="flex-1 px-3.5 pt-3.5 pb-2.5">
-      <div className="text-sm font-semibold text-[#E8EAF6] mb-1">
-        Connect to Hyperclay
-      </div>
       <div className="text-[11.5px] text-[#6B7194] leading-[1.5] mb-3">
         Two-way syncs {folderLabel ? `"${folderLabel}"` : 'your folder'} with your hyperclay.com account.
       </div>
