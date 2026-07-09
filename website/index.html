@@ -27,19 +27,24 @@
     })();
   </script>
 
-  <title>Hyperclay Local: An HTML file can be a standalone application</title>
-  <meta name="description" content="A free, open-source desktop app that lets you create, modify, and use HTML files like local applications. Works offline. No account required.">
+  <title>Hyperclay Local: HTML files that save themselves to disk</title>
+  <meta name="description" content="Free, open-source desktop app that lets plain HTML files save their own changes back to disk. One file is the whole app. No backend, no build, works offline.">
   <link rel="canonical" href="https://hyperclaylocal.com/">
 
-  <meta property="og:type" content="website">
-  <meta property="og:title" content="Hyperclay Local: An HTML file can be a standalone application">
-  <meta property="og:description" content="A free, open-source desktop app that lets you create, modify, and use HTML files like local applications. Works offline. No account required.">
   <meta property="og:url" content="https://hyperclaylocal.com/">
-  <meta property="og:image" content="https://hyperclaylocal.com/assets/app-popover.png">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Hyperclay Local: An HTML file that saves itself">
+  <meta property="og:description" content="Plain HTML files that save their own changes to disk. One file is the whole app. Free, offline, no backend.">
+  <meta property="og:image" content="https://hyperclaylocal.com/open-graph.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Hyperclay Local: an HTML file that saves itself.">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Hyperclay Local: An HTML file can be a standalone application">
-  <meta name="twitter:description" content="A free, open-source desktop app for HTML files that save themselves. Works offline. No account required.">
-  <meta name="twitter:image" content="https://hyperclaylocal.com/assets/app-popover.png">
+  <meta property="twitter:domain" content="hyperclaylocal.com">
+  <meta property="twitter:url" content="https://hyperclaylocal.com/">
+  <meta name="twitter:title" content="Hyperclay Local: An HTML file that saves itself">
+  <meta name="twitter:description" content="Plain HTML files that save their own changes to disk. One file is the whole app. Free, offline, no backend.">
+  <meta name="twitter:image" content="https://hyperclaylocal.com/open-graph.png">
 
   <!-- Inline favicon: a navy tile with a green LED, echoing the app. -->
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231D1F2F'/%3E%3Crect x='9' y='9' width='14' height='14' rx='2' fill='%2356B96C'/%3E%3C/svg%3E">
@@ -123,6 +128,8 @@
       text-wrap: balance; color: var(--mirk-fg);
     }
     .lede { font-size: 19px; margin: 0 auto; max-width: 32em; color: var(--mirk-fg); }
+    .lede + .lede { margin-top: 14px; }
+    .lede-tagline { margin-top: 22px; font-size: 16px; color: var(--mirk-placeholder-color); }
 
     /* Framed screenshot as a menu-bar tray popover. */
     .hero-shot { display: flex; flex-direction: column; align-items: center; margin-top: 40px; }
@@ -197,6 +204,8 @@
     .prose > * + * { margin-top: 16px; }
     .prose ul { margin: 0; padding-left: 22px; }
     .prose li + li { margin-top: 8px; }
+    .prose .result-line { margin-top: 24px; }
+    .result-label { color: var(--accent-green); }
     .prose a, .faq a, .dl-source a, footer a {
       text-decoration: underline; text-decoration-color: currentColor;
       text-underline-offset: 2px;
@@ -416,6 +425,7 @@
     /* ---------------- Closing + footer ---------------- */
     .closer { text-align: center; margin-top: 72px; padding-top: 32px; border-top: 1px solid var(--mirk-input-border); }
     .closer p { max-width: 34em; margin: 0 auto; line-height: 1.7; color: var(--mirk-fg); }
+    .closer .closer-lead { margin-bottom: 24px; }
     footer { padding: 40px 0 64px; text-align: center; color: var(--mirk-placeholder-color); font-size: 14px; }
     footer p { margin: 0 0 8px; }
     footer a { text-decoration: underline; text-decoration-color: currentColor; text-underline-offset: 2px; }
@@ -463,8 +473,9 @@
     <!-- 1. Hero -->
     <section class="hero">
       <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Local-first HTML apps</p>
-      <h1 class="hero-h1">An HTML file can be a standalone application</h1>
-      <p class="lede">Hyperclay Local is a free, open-source desktop app that lets you create, modify, and use HTML files like local applications.</p>
+      <h1 class="hero-h1">An HTML file that saves itself</h1>
+      <p class="lede">Hyperclay Local is a free, open-source desktop app that runs a tiny server on your machine.</p>
+      <p class="lede lede-tagline">No database. No build step. No backend.</p>
 
       <div class="hero-shot">
         <div class="shot-frame" id="hero-shot" data-view="home">
@@ -479,45 +490,48 @@
 
     <!-- 1b. Download CTA -->
     <div class="download-cta">
-      <p class="trust">Free, no account required. Works offline.</p>
+      <p class="trust">Free and open source. No account required. Works offline.</p>
       <a id="download-btn" class="mirk-button mirk-button--large" href="#downloads" download>
         <span class="mirk-button__label" id="download-btn-text">Download</span>
       </a>
       <p class="dl-subtext" id="download-subtext"><a href="#downloads">See all downloads</a></p>
     </div>
 
-    <!-- 2. Dev-friendly workflow -->
-    <section class="section" id="workflow">
-      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Developer workflow</p>
-      <h2 class="section-h">Dev-friendly workflow</h2>
-      <div class="feature-grid">
-        <div class="feature-card"><b>Inspect everything.</b> <span>Right-click, View Source. The interface, the logic, and the data all live in the markup.</span></div>
-        <div class="feature-card"><b>No accounts, no tracking.</b> <span>No analytics and no telemetry. Local editing needs no sign-up. Cloud sync is there if you want it, and stays off until you turn it on.</span></div>
-        <div class="feature-card"><b>Works offline.</b> <span>The server and your files sit on your machine. No internet required.</span></div>
-        <div class="feature-card"><b>Backups on every save.</b> <span>The server keeps the previous version before it overwrites.</span></div>
+    <!-- 2. Point it at a folder -->
+    <section class="section">
+      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Getting started</p>
+      <h2 class="section-h">Point it at a folder</h2>
+      <div class="prose">
+        <ul>
+          <li>Pick a folder on your machine.</li>
+          <li>Click start in the tray, and the app serves that folder on localhost.</li>
+          <li>Open a page in your browser and edit the file using its own UI.</li>
+          <li>Hit save, and the page writes its new HTML back to the real file on disk.</li>
+        </ul>
+        <p class="result-line"><span class="result-label">Result:</span> You have a real desktop application in a single HTML file.</p>
       </div>
     </section>
 
     <!-- 3. A file that remembers -->
     <section class="section">
-      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Why it matters</p>
+      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>The idea</p>
       <h2 class="section-h">A file that remembers</h2>
       <div class="prose">
-        <p>An HTML file can do a lot. It can lay out any interface, run JavaScript, hook into browser APIs, and respond to input.</p>
-        <p>The one thing it cannot do is remember. Refresh the page and everything resets.</p>
-        <p>A malleable HTML file saves itself. It serializes its own DOM and sends it to a local server. No database, no build pipeline, no dependencies.</p>
-        <p>One file is a complete application. You can email it, commit it to git, or drop it in Dropbox.</p>
+        <p>An HTML file can do almost anything. It can lay out an interface, run JavaScript, call browser APIs, and respond to every click and keystroke.</p>
+        <p>The one thing it cannot do is remember. Close the tab and every change is gone.</p>
+        <p>A malleable HTML file fixes that. It serializes its own DOM and posts it to a local server, which writes it back to the file on disk. Open it again and your changes are still there.</p>
+        <p>That makes one file a complete application. Its layout, its logic, and its data all live in the same document. You can email it, commit it to git, or drop it in Dropbox, and it still works.</p>
       </div>
     </section>
 
     <!-- 4. What Hyperclay Local does -->
     <section class="section" id="how-it-saves">
       <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>How it works</p>
-      <h2 class="section-h">What Hyperclay Local does</h2>
+      <h2 class="section-h">What the app actually does</h2>
       <div class="prose">
-        <p>Browsers can open HTML files but cannot write back to disk. Hyperclay Local fills that gap with a small local Express server and a single endpoint:</p>
+        <p>Browsers can open an HTML file, but the sandbox stops them from writing back to disk. Hyperclay Local closes that gap. It runs a small local Express server with a single endpoint:</p>
         <div class="code-block"><pre>POST /_/save</pre></div>
-        <p>Point it at a folder and click start. Your malleable HTML files save themselves to disk. That is the whole system.</p>
+        <p>When a page saves, it posts its own HTML to that endpoint with a <code class="inline">Page-URL</code> header naming the page, and the server maps it to the right file inside the folder you chose. It writes the file and keeps the previous version as a backup. That is the whole system. You can read the server in an afternoon.</p>
       </div>
     </section>
 
@@ -525,7 +539,7 @@
     <section class="section" id="apps">
       <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Live demos</p>
       <h2 class="section-h">See what you can build</h2>
-      <p class="demo-lead">These are live, running right here in the page. Each one is a single HTML file that saves itself: a personal wiki, a to-do list, a journal, a budget, a recipe box, a habit tracker, a reading list. Type in them, check things off, watch the totals update.</p>
+      <p class="demo-lead">These are not screenshots. Every app below is a single HTML file running live in this page. Type in the wiki, check off a to-do, change a number in the budget and watch the total update. Run the same file under Hyperclay Local and every change saves itself to disk.</p>
 
       <div class="demo-tabs" id="demo-tabs" role="tablist" aria-label="Example apps">
         <button class="demo-tab" data-app="wiki" role="tab" id="tab-wiki" aria-controls="panel-wiki" aria-selected="true" tabindex="0" type="button">Personal wiki</button>
@@ -734,6 +748,7 @@
     <section class="section">
       <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Under the hood</p>
       <h2 class="section-h">Example malleable HTML file</h2>
+      <p class="demo-lead">Here is a complete malleable HTML file. Ten lines with HyperclayJS, or the same idea hand-rolled in plain JavaScript so you can see there is nothing hidden.</p>
       <div class="code-tabs" id="code-tabs">
         <div class="tablist" role="tablist" aria-label="Example code">
           <button class="code-tab" role="tab" id="ctab-hyperclayjs" aria-controls="cpanel-hyperclayjs" aria-selected="true" tabindex="0" type="button">With HyperclayJS</button>
@@ -755,7 +770,7 @@
 &lt;/html&gt;</code></pre></div>
           <p class="code-note">This example loads HyperclayJS from a CDN so it is easy to try. For a fully offline file, vendor the script next to your HTML instead.</p>
           <div class="code-features">
-            <b>Core features of HyperclayJS:</b>
+            <b>HyperclayJS handles the rest:</b>
             <ul>
               <li>autosave</li>
               <li>prevent leaving before saving</li>
@@ -763,6 +778,7 @@
               <li>toast notification on save</li>
               <li>edit mode</li>
             </ul>
+            <p class="code-note">Edit mode is how these files become editable in place: click text to change it, then press Cmd+S or let autosave write it to disk.</p>
           </div>
         </div>
         <div class="code-panel" role="tabpanel" id="cpanel-plainjs" aria-labelledby="ctab-plainjs" tabindex="0" hidden>
@@ -794,13 +810,37 @@
       </div>
     </section>
 
+    <!-- Compared to what? -->
+    <section class="section">
+      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Compared to what?</p>
+      <h2 class="section-h">Why not a static file, localStorage, or a backend?</h2>
+      <ul class="features">
+        <li><b>A static file can't save.</b> <span class="prose-line">Open one from disk and every edit vanishes on refresh. Hyperclay Local gives that same file one new power: it can write its own changes back.</span></li>
+        <li><b>localStorage is trapped.</b> <span class="prose-line">Its data lives inside one browser profile, in a form you can't read, and clearing your browser wipes it. Here the data is the file. Open it in any editor and it's all there, in plain HTML.</span></li>
+        <li><b>A backend is a lot to own.</b> <span class="prose-line">A database, a server, a build, a deploy, a host. This is one file and a local process. When you want more, sync to hyperclay.com is one toggle, and it stays off until you turn it on.</span></li>
+      </ul>
+    </section>
+
+    <!-- What you get -->
+    <section class="section" id="workflow">
+      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>The details</p>
+      <h2 class="section-h">What you get</h2>
+      <div class="feature-grid">
+        <div class="feature-card"><b>Inspect everything.</b> <span>Right-click, View Source, and the whole app is in front of you. Interface, logic, and data in the same markup. Nothing minified away or hidden behind a bundler.</span></div>
+        <div class="feature-card"><b>Backups on every save.</b> <span>Before the server overwrites a file, it keeps the previous version. If a save goes wrong, the last good copy is still on disk.</span></div>
+        <div class="feature-card"><b>Works offline.</b> <span>The server and your files both sit on your machine. No internet needed to run the app or edit your files.</span></div>
+        <div class="feature-card"><b>No accounts, no telemetry.</b> <span>Local editing sends nothing anywhere: no analytics and no telemetry except an update check. No sign-up to edit your own files.</span></div>
+      </div>
+    </section>
+
     <!-- 7. Extra features -->
     <section class="section">
       <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Also included</p>
       <h2 class="section-h">Extra features</h2>
       <ul class="features">
-        <li><b>Tailwind CSS on save.</b> <span class="prose-line">Add a stylesheet that points to <code class="inline">/tailwindcss/{yourFileName}.css</code>. The server builds optimized Tailwind CSS on every save, only the utilities you actually use.</span></li>
-        <li><b><a href="https://github.com/panphora/hyperclayjs" target="_blank" rel="noopener">HyperclayJS</a>.</b> <span class="prose-line">A modular toolkit for malleable HTML files: autosave, edit mode, sortable lists, toasts, dialogs, and more. Load a preset or pick individual features.</span></li>
+        <li><b>Tailwind CSS on save.</b> <span class="prose-line">Point a stylesheet at <code class="inline">/tailwindcss/{yourFileName}.css</code> and the server compiles Tailwind on every save, including only the utilities that file actually uses. No build step to run yourself.</span></li>
+        <li><b>Cloud sync, if you want it.</b> <span class="prose-line">Turn on sync to mirror your folder to your hyperclay.com account and back. It is off by default, the API key is encrypted with your OS keychain, and your files work exactly the same with it off.</span></li>
+        <li><b><a href="https://github.com/panphora/hyperclayjs" target="_blank" rel="noopener">HyperclayJS</a>.</b> <span class="prose-line">A modular toolkit for malleable HTML files: autosave, edit mode, sortable lists, toasts, dialogs, and more. Load a ready-made preset or pick the exact features you want.</span></li>
       </ul>
     </section>
 
@@ -812,7 +852,7 @@
     <section class="section" id="downloads" data-version="1.18.0">
       <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Download</p>
       <h2 class="section-h">Download <span class="version-tag" id="version-tag"></span></h2>
-      <p class="dl-intro">Desktop app for macOS, Windows, and Linux. Free, no account required.</p>
+      <p class="dl-intro">Desktop app for macOS, Windows, and Linux. Free and open source, no account required. It is an Electron app, so each download is around 100 MB.</p>
       <ul class="dl-list">
         <li class="dl-row" data-os="mac-arm">
           <span class="dl-os">macOS <span class="dl-arch">Apple Silicon</span></span>
@@ -846,15 +886,51 @@
       <details>
         <summary>How does the saving actually work?</summary>
         <div class="faq__body">
-          <p>Your HTML file includes a small script that serializes the page's DOM and sends it via <code class="inline">POST /_/save</code> to the local server. The server writes it to disk and keeps a backup of the previous version in a <code class="inline">sites-versions/</code> folder. <a href="https://github.com/panphora/hyperclayjs" target="_blank" rel="noopener">HyperclayJS</a> handles this for you. The minimal preset includes saving, snapshots, and edit mode out of the box.</p>
+          <p>Your HTML file includes a small script that serializes the page's DOM and posts it to the local server at <code class="inline">POST /_/save</code>, with a <code class="inline">Page-URL</code> header naming the page. The server maps that to the right file, writes it to disk, and keeps a backup of the previous version in a <code class="inline">sites-versions/</code> folder. <a href="https://github.com/panphora/hyperclayjs" target="_blank" rel="noopener">HyperclayJS</a> handles this for you. The minimal preset includes saving, snapshots, and edit mode out of the box.</p>
         </div>
       </details>
 
       <details>
-        <summary>Linux says permission denied</summary>
+        <summary>Is it safe to run?</summary>
         <div class="faq__body">
-          <p>AppImage files need to be marked as executable:</p>
-          <div class="code-block"><pre>chmod +x HyperclayLocal-*.AppImage</pre></div>
+          <p>The app uses several layers of protection:</p>
+          <ul>
+            <li><b>Sandboxed renderer.</b> Web content runs in an isolated Electron context, separate from the main process.</li>
+            <li><b>IPC security.</b> The renderer and main process talk over secure Electron IPC channels.</li>
+            <li><b>Path traversal protection.</b> The server validates every file path so nothing can be written outside the selected folder.</li>
+            <li><b>Filename sanitization.</b> Saved filenames allow only letters, numbers, hyphens, and underscores.</li>
+            <li><b>Versioned backups.</b> The server keeps the previous version of a file before it overwrites.</li>
+          </ul>
+          <p>The app is open source. You can audit the full codebase at <a href="https://github.com/panphora/hyperclay-local" target="_blank" rel="noopener">github.com/panphora/hyperclay-local</a>.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Do my files ever leave my machine?</summary>
+        <div class="faq__body">
+          <p>No. Local editing is entirely on your computer, with no analytics and no telemetry except an occasional update check. The only time a file leaves is if you turn on cloud sync yourself, which pushes to your own hyperclay.com account. It stays off until you enable it.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Do I have to use HyperclayJS?</summary>
+        <div class="faq__body">
+          <p>No. HyperclayJS is a convenience. Any file that posts its own HTML to <code class="inline">/_/save</code> with a <code class="inline">Page-URL</code> header will save. The Plain JavaScript tab above is a complete, working example in about a dozen lines.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>How do I build from source?</summary>
+        <div class="faq__body">
+          <p>Clone the repo and install dependencies:</p>
+          <div class="code-block"><pre>git clone https://github.com/panphora/hyperclay-local.git
+cd hyperclay-local
+npm install</pre></div>
+          <p>Run it in development mode with live reload:</p>
+          <div class="code-block"><pre>npm run dev</pre></div>
+          <p>Build a distributable for your current platform:</p>
+          <div class="code-block"><pre>npm run build</pre></div>
+          <p>For signed, platform-specific installers, see <a href="https://github.com/panphora/hyperclay-local/blob/main/BUILD.md" target="_blank" rel="noopener">BUILD.md</a>.</p>
         </div>
       </details>
 
@@ -878,32 +954,10 @@
       </details>
 
       <details>
-        <summary>How do I build from source?</summary>
+        <summary>Linux says permission denied</summary>
         <div class="faq__body">
-          <p>Clone the repo and install dependencies:</p>
-          <div class="code-block"><pre>git clone https://github.com/panphora/hyperclay-local.git
-cd hyperclay-local
-npm install</pre></div>
-          <p>Run it in development mode with live reload:</p>
-          <div class="code-block"><pre>npm run dev</pre></div>
-          <p>Build a distributable for your current platform:</p>
-          <div class="code-block"><pre>npm run build</pre></div>
-          <p>For signed, platform-specific installers, see <a href="https://github.com/panphora/hyperclay-local/blob/main/BUILD.md" target="_blank" rel="noopener">BUILD.md</a>.</p>
-        </div>
-      </details>
-
-      <details>
-        <summary>Is it safe to run?</summary>
-        <div class="faq__body">
-          <p>The app uses several layers of protection:</p>
-          <ul>
-            <li><b>Sandboxed renderer.</b> Web content runs in an isolated Electron context, separate from the main process.</li>
-            <li><b>IPC security.</b> The renderer and main process talk over secure Electron IPC channels.</li>
-            <li><b>Path traversal protection.</b> The server validates every file path so nothing can be written outside the selected folder.</li>
-            <li><b>Filename sanitization.</b> Saved filenames allow only letters, numbers, hyphens, and underscores.</li>
-            <li><b>Versioned backups.</b> The server keeps the previous version of a file before it overwrites.</li>
-          </ul>
-          <p>The app is open source. You can audit the full codebase at <a href="https://github.com/panphora/hyperclay-local" target="_blank" rel="noopener">github.com/panphora/hyperclay-local</a>.</p>
+          <p>AppImage files need to be marked as executable:</p>
+          <div class="code-block"><pre>chmod +x HyperclayLocal-*.AppImage</pre></div>
         </div>
       </details>
 
@@ -911,7 +965,8 @@ npm install</pre></div>
 
     <!-- 10. Closing -->
     <div class="closer">
-      <p>Most software asks you to be beholden to someone else's ideas.<br>Hyperclay Local lets you own the full stack in one HTML file.</p>
+      <p class="closer-lead">The app is the file. Read it, edit it, save it, or walk away with it.</p>
+      <p>Most tools sit between you and your work. Hyperclay Local does not: one file on your disk, yours for as long as you keep it. Frontend and done.</p>
     </div>
 
   </main>

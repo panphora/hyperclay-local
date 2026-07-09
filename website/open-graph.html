@@ -1,0 +1,256 @@
+<meta charset="utf-8">
+<title>Hyperclay Local - Open Graph image</title>
+<!-- Source for open-graph.png (1200x630). Edit here, then screenshot the #og
+     element at 1200x630 to regenerate website/open-graph.png. -->
+<style>
+  @font-face {
+    font-family: 'Departure Mono';
+    src: url('fonts/DepartureMono-1.500/DepartureMono-Regular.woff2') format('woff2');
+    font-display: block;
+  }
+
+  :root {
+    --canvas: #0B0C13;
+    --navy:   #1D1F2F;
+    --indigo: #474C65;
+    --green:  #56B96C;
+    --cream:  #ECE7DE;
+    --muted:  #8B93B5;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #333;
+    display: grid;
+    place-items: center;
+    min-height: 100vh;
+    font-family: 'Departure Mono', monospace;
+  }
+
+  #og {
+    width: 1200px;
+    height: 630px;
+    overflow: hidden;
+    position: relative;
+    background: var(--canvas);
+    color: var(--cream);
+    font-family: 'Departure Mono', monospace;
+    -webkit-font-smoothing: none;
+    font-smooth: never;
+  }
+
+  /* ---- Pixel-block backdrop (right edge, dissolves left into canvas) ---- */
+  #pixels {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 430px;
+    height: 630px;
+    -webkit-mask-image: linear-gradient(to left, #000 0px, #000 34px, transparent 190px);
+            mask-image: linear-gradient(to left, #000 0px, #000 34px, transparent 190px);
+  }
+  #pixels i {
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    display: block;
+  }
+
+  /* ---- Wordmark ---- */
+  .wordmark {
+    position: absolute;
+    top: 62px;
+    left: 72px;
+    display: inline-flex;
+    align-items: center;
+    gap: 13px;
+    font-size: 25px;
+    letter-spacing: 0.01em;
+    color: var(--cream);
+  }
+  .wm-square {
+    width: 18px;
+    height: 18px;
+    background: var(--green);
+    box-shadow: 3px -3px 0 0 rgba(71,76,101,0.55);
+  }
+
+  /* ---- Eyebrow ---- */
+  .eyebrow {
+    position: absolute;
+    top: 188px;
+    left: 74px;
+    font-size: 14px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--green);
+  }
+
+  /* ---- Headline (hero) ---- */
+  .headline {
+    position: absolute;
+    top: 216px;
+    left: 72px;
+    width: 900px;
+    font-size: 74px;
+    line-height: 1.1;
+    letter-spacing: -0.01em;
+    color: var(--cream);
+    text-shadow: 2px -2px 0 rgba(71,76,101,0.32);
+  }
+  .headline .caret {
+    display: inline-block;
+    width: 34px;
+    height: 62px;
+    background: var(--green);
+    transform: translateY(9px);
+    margin-left: 10px;
+    box-shadow: 4px -4px 0 0 rgba(71,76,101,0.45);
+  }
+
+  /* ---- Description ---- */
+  .desc {
+    position: absolute;
+    top: 416px;
+    left: 74px;
+    width: 640px;
+    font-size: 22px;
+    line-height: 1.55;
+    color: var(--muted);
+  }
+
+  /* ---- Control status strip ---- */
+  .rule {
+    position: absolute;
+    top: 500px;
+    left: 74px;
+    width: 560px;
+    height: 2px;
+    background: var(--indigo);
+    opacity: 0.5;
+  }
+  .controls {
+    position: absolute;
+    top: 522px;
+    left: 74px;
+    display: flex;
+    align-items: center;
+    gap: 52px;
+  }
+  .ctl {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+  }
+  .led {
+    width: 14px;
+    height: 14px;
+    background: var(--green);
+    box-shadow: 3px -3px 0 0 rgba(71,76,101,0.5);
+  }
+  .ctl-label {
+    font-size: 19px;
+    letter-spacing: 0.08em;
+    color: var(--cream);
+  }
+  .ctl-sub {
+    font-size: 17px;
+    color: var(--muted);
+    margin-left: 2px;
+  }
+
+  /* rocker/pill toggle: dark track, green ON pill on the right */
+  .toggle {
+    position: relative;
+    width: 60px;
+    height: 30px;
+    background: var(--navy);
+    border: 1px solid var(--indigo);
+    box-shadow: inset 0 2px 0 0 rgba(71,76,101,0.35);
+  }
+  .toggle-on {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    bottom: 3px;
+    width: 32px;
+    background: var(--green);
+    color: var(--canvas);
+    font-size: 14px;
+    letter-spacing: 0.05em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+</style>
+
+<div id="og">
+  <div id="pixels"></div>
+
+  <div class="wordmark"><span class="wm-square"></span>Hyperclay&nbsp;Local</div>
+
+  <div class="eyebrow">Free &middot; Open source &middot; Offline</div>
+
+  <div class="headline">An HTML file<br>that saves itself.<span class="caret"></span></div>
+
+  <div class="desc">Point it at a folder. Every HTML file saves its own changes to disk.</div>
+
+  <div class="rule"></div>
+  <div class="controls">
+    <div class="ctl">
+      <span class="led"></span>
+      <span class="ctl-label">SERVER</span>
+      <span class="toggle"><span class="toggle-on">ON</span></span>
+      <span class="ctl-sub">localhost:4321</span>
+    </div>
+    <div class="ctl">
+      <span class="led"></span>
+      <span class="ctl-label">SYNC</span>
+      <span class="toggle"><span class="toggle-on">ON</span></span>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    var field = document.getElementById('pixels');
+    var W = 430, H = 630, cell = 20, block = 14;
+    var cols = Math.ceil(W / cell), rows = Math.ceil(H / cell);
+    var palette = ['#ECE7DE', '#8B93B5', '#474C65', '#ECE7DE', '#8B93B5'];
+
+    function rnd(x, y) {
+      var s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+      return s - Math.floor(s);
+    }
+
+    var frag = document.createDocumentFragment();
+    for (var c = 0; c < cols; c++) {
+      for (var r = 0; r < rows; r++) {
+        var edge = c / cols;                 // 0 = left (dissolving), 1 = right edge
+        var density = 0.26 + 0.46 * edge;    // denser toward the visible right edge
+        if (rnd(c, r) > density) continue;
+
+        var pick = rnd(c + 7.3, r + 1.9);
+        var color, alpha;
+        if (pick > 0.95) {                   // rare green pixels tie the accent
+          color = '#56B96C';
+          alpha = 0.20 + 0.30 * edge;
+        } else {
+          color = palette[Math.floor(rnd(c + 3.1, r + 5.7) * palette.length)];
+          alpha = 0.14 + 0.40 * edge;        // fainter as it dissolves inward
+        }
+        var b = document.createElement('i');
+        b.style.left = (c * cell) + 'px';
+        b.style.top = (r * cell) + 'px';
+        b.style.width = block + 'px';
+        b.style.height = block + 'px';
+        b.style.background = color;
+        b.style.opacity = alpha.toFixed(2);
+        b.style.boxShadow = '3px -3px 0 0 rgba(71,76,101,0.45)';
+        frag.appendChild(b);
+      }
+    }
+    field.appendChild(frag);
+  })();
+</script>

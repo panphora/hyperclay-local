@@ -185,7 +185,7 @@ async function getLocalUploads(syncFolder, logger = null) {
 
         if (entry.isDirectory()) {
           await scanDirectory(fullPath, relPath);
-        } else if (entry.isFile() && !entry.name.endsWith('.html')) {
+        } else if (entry.isFile() && !entry.name.endsWith('.html') && !entry.name.endsWith('.htmlclay')) {
           const stats = await fs.stat(fullPath);
           files.set(relPath, {
             path: fullPath,

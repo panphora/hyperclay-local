@@ -169,6 +169,16 @@ describe('getLocalUploads', () => {
     expect(files.has('image.png')).toBe(true);
   });
 
+  test('excludes htmlclay files (sites, not uploads)', async () => {
+    await fs.writeFile(path.join(tempDir, 'app.htmlclay'), 'content');
+    await fs.writeFile(path.join(tempDir, 'image.png'), 'content');
+
+    const files = await getLocalUploads(tempDir);
+
+    expect(files.size).toBe(1);
+    expect(files.has('image.png')).toBe(true);
+  });
+
   test('returns empty map for empty directory', async () => {
     const files = await getLocalUploads(tempDir);
     expect(files.size).toBe(0);
