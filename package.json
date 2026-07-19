@@ -188,5 +188,10 @@
     "tailwind-hyperclay": "^0.1.16",
     "tailwindcss": "^4.1.14",
     "upath": "^2.0.1"
+  },
+  "hyper": {
+    "kind": "app",
+    "status": "active",
+    "url": "https://hyperclaylocal.com"
   }
 }
