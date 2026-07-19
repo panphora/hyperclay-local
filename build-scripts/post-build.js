@@ -61,8 +61,7 @@ async function uploadReleaseInfo(uploadedFiles, publicUrl) {
   try {
     commit = execSync('git rev-parse HEAD', { cwd: path.join(__dirname, '..'), encoding: 'utf8' }).trim();
   } catch (error) {
-    console.log('⚠️  Could not get git commit hash. Skipping release-info.json upload.');
-    return;
+    throw new Error('Could not get git commit hash, so release-info.json cannot be written.');
   }
 
   const releaseInfo = {
@@ -141,8 +140,8 @@ function generateReport(uploadedFiles, publicUrl) {
 async function main() {
   // Check if R2 credentials exist
   if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY || !R2_SECRET_KEY || !R2_BUCKET) {
-    console.log('⚠️  R2 credentials not found in .env file. Skipping uploads.');
-    return;
+    console.error('❌ R2 credentials not found in .env file. Nothing was uploaded.');
+    process.exit(1);
   }
 
   // Check for R2_PUBLIC_URL in .env, otherwise use default R2 URL
@@ -151,9 +150,9 @@ async function main() {
   // Find distributable files in executables directory
   const executablesDir = path.join(__dirname, '..', 'executables');
   if (!fs.existsSync(executablesDir)) {
-    console.log('❌ executables/ directory not found.');
-    console.log('   Run the build scripts first to generate executables.');
-    return;
+    console.error('❌ executables/ directory not found.');
+    console.error('   Run the build scripts first to generate executables.');
+    process.exit(1);
   }
 
   const files = fs.readdirSync(executablesDir);
@@ -164,14 +163,15 @@ async function main() {
   );
 
   if (distributables.length === 0) {
-    console.log('❌ No distributable files found.');
-    return;
+    console.error('❌ No distributable files found.');
+    process.exit(1);
   }
 
   console.log(`📦 Uploading ${distributables.length} file(s) to R2...\n`);
 
   // Track uploaded files with URLs
   const uploadedFiles = [];
+  const failedUploads = [];
 
   // Upload each file
   for (const file of distributables) {
@@ -187,6 +187,7 @@ async function main() {
       });
     } catch (error) {
       console.error(`❌ Failed to upload ${file}:`, error.message);
+      failedUploads.push(file);
     }
   }
 
@@ -200,8 +201,15 @@ async function main() {
     try {
       await uploadReleaseInfo(uploadedFiles, R2_PUBLIC_URL);
     } catch (error) {
-      console.error('⚠️  Failed to upload release-info.json:', error.message);
+      console.error('❌ Failed to upload release-info.json:', error.message);
+      failedUploads.push('release-info.json');
     }
+  }
+
+  if (failedUploads.length > 0) {
+    console.error(`\n❌ ${failedUploads.length} upload(s) failed: ${failedUploads.join(', ')}`);
+    console.error('   Not recording this as a completed release.');
+    process.exit(1);
   }
 }
 
