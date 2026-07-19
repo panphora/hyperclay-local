@@ -485,17 +485,41 @@ async function main() {
     log(`Platforms: ${PLATFORMS.join(', ')}`);
     logInfo('Skipping version bump, commit, push, and Windows trigger');
 
-    // Resume assumes steps 1-4 completed. The Windows build is triggered by that
-    // push, so an unpushed HEAD means Windows was never built and the docs step
-    // would publish a link to an installer that does not exist.
-    let unpushed = '';
+    // Resume assumes steps 1-4 completed. Two things must hold, and neither is
+    // implied by the other.
+    //
+    // 1. The version being resumed must be the COMMITTED one. If step 3 wrote a
+    //    new version into package.json but the commit failed, the working tree
+    //    version was never released, and resuming it would skip the commit,
+    //    push and Windows trigger for a version nothing knows about.
+    // 2. That commit must have reached origin, because the push is what
+    //    triggers the Windows build. Checked against origin/<branch> rather
+    //    than @{upstream}: the release pushes with `git push origin HEAD`,
+    //    which updates the remote-tracking ref without configuring tracking,
+    //    so @{upstream} would spuriously fail on a branch that pushed fine.
+    let committedVersion = null;
     try {
-      unpushed = execSafe('git rev-list --count @{upstream}..HEAD').trim();
+      committedVersion = JSON.parse(execSafe('git show HEAD:package.json')).version;
     } catch {
-      unpushed = 'unknown';
+      committedVersion = null;
     }
-    if (unpushed !== '0') {
-      logError(`HEAD has ${unpushed} unpushed commit(s).`);
+    if (committedVersion !== newVersion) {
+      logError(`package.json says ${newVersion}, but HEAD has ${committedVersion || 'no readable version'}.`);
+      logError('That version was never committed, so it was never pushed and never');
+      logError('triggered a Windows build. Commit it, or run a fresh release.');
+      process.exit(1);
+    }
+
+    const branch = execSafe('git rev-parse --abbrev-ref HEAD').trim();
+    let pushed = false;
+    try {
+      execSafe(`git merge-base --is-ancestor HEAD origin/${branch}`, { stdio: 'pipe' });
+      pushed = true;
+    } catch {
+      pushed = false;
+    }
+    if (!pushed) {
+      logError(`HEAD is not present on origin/${branch}.`);
       logError('Resume expects the release commit to already be pushed, because that');
       logError('push is what triggers the Windows build. Push first, or run a fresh release.');
       process.exit(1);
