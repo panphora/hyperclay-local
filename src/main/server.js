@@ -10,7 +10,7 @@ const {
   getTailwindCssName
 } = require('tailwind-hyperclay');
 const { liveSync } = require('livesync-hyperclay');
-const { messageBus, isValidChannel } = require('hyper-wire');
+const { messageBus, isValidChannel } = require('@panphora/hyper-wire');
 const errorLogger = require('./error-logger');
 const formatHtml = require('./format-html');
 const { serveSiteApiLocal, extractSiteDataLocal } = require('./utils/data-api');

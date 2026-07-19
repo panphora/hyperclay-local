@@ -11,7 +11,7 @@
  * Lifecycle: main.js starts plugins after the server starts and stops them
  * with it (the served folder is a per-run constant).
  */
-const { messageBus, serve, localBus } = require('hyper-wire');
+const { messageBus, serve, localBus } = require('@panphora/hyper-wire');
 const { aiEditPlugin } = require('./ai-edit');
 
 let handles = [];
