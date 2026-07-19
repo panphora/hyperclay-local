@@ -1,0 +1,9 @@
+{
+  "name": "hyperclaylocal",
+  "compatibility_date": "2026-07-19",
+  "assets": { "directory": "./" },
+  "routes": [
+    { "pattern": "hyperclaylocal.com", "custom_domain": true },
+    { "pattern": "www.hyperclaylocal.com", "custom_domain": true }
+  ]
+}

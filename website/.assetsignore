@@ -1,0 +1,5 @@
+# Not part of the public site served at hyperclaylocal.com
+.DS_Store
+.assetsignore
+wrangler.jsonc
+.wrangler
