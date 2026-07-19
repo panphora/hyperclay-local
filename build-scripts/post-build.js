@@ -155,6 +155,9 @@ async function main() {
     process.exit(1);
   }
 
+  const pkgPath = path.join(__dirname, '..', 'package.json');
+  const version = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).version;
+
   const files = fs.readdirSync(executablesDir);
   const distributables = files.filter(file =>
     file.endsWith('.dmg') ||
@@ -164,6 +167,20 @@ async function main() {
 
   if (distributables.length === 0) {
     console.error('❌ No distributable files found.');
+    process.exit(1);
+  }
+
+  // release.js clears executables/ only on a fresh release, so a partial rebuild
+  // (--resume --platforms=...) can leave prior-version artifacts behind. They
+  // would upload cleanly and release-info.json would stamp them with the current
+  // version, advertising a release over binaries that are not it.
+  const versionTag = new RegExp(`-${version.replace(/\./g, '\\.')}[-.]`);
+  const stale = distributables.filter(file => !versionTag.test(file));
+  if (stale.length > 0) {
+    console.error(`❌ executables/ holds ${stale.length} file(s) that are not v${version}:`);
+    stale.forEach(file => console.error(`   ${file}`));
+    console.error(`   Uploading would advertise v${version} over them.`);
+    console.error('   Delete them, or rebuild every platform, then re-run.');
     process.exit(1);
   }
 
