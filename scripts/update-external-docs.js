@@ -132,25 +132,29 @@ function detectOldVersion(content) {
 // ============================================
 
 function updateVersionInContent(content, oldVersion, newVersion) {
-  // Replace all version occurrences in download URLs and filenames
-  // Patterns: HyperclayLocal-X.X.X and HyperclayLocal-Setup-X.X.X
+  // Replace every mention of the old version, not just the ones inside download
+  // URLs and filenames. Prose like "install the latest version (1.18.0)" matched
+  // no download pattern, so it went stale on every release.
+  //
+  // The old version was detected from a HyperclayLocal-X.X.X link in this same
+  // file, so a bare mention of that exact version here is the same release.
+  // Changes outside a download reference are returned so they show up in the
+  // output instead of being silently committed.
   const oldEscaped = oldVersion.replace(/\./g, '\\.');
+  const proseChanges = [];
 
-  let updated = content;
+  const updated = content
+    .split('\n')
+    .map(line => {
+      const next = line.replace(new RegExp(`(?<!\\d)${oldEscaped}(?!\\d)`, 'g'), newVersion);
+      if (next !== line && !line.includes('HyperclayLocal-')) {
+        proseChanges.push(next.trim());
+      }
+      return next;
+    })
+    .join('\n');
 
-  // HyperclayLocal-X.X.X (dmg, AppImage)
-  updated = updated.replace(
-    new RegExp(`HyperclayLocal-${oldEscaped}`, 'g'),
-    `HyperclayLocal-${newVersion}`
-  );
-
-  // HyperclayLocal-Setup-X.X.X (exe)
-  updated = updated.replace(
-    new RegExp(`HyperclayLocal-Setup-${oldEscaped}`, 'g'),
-    `HyperclayLocal-Setup-${newVersion}`
-  );
-
-  return updated;
+  return { updated, proseChanges };
 }
 
 // ============================================
@@ -199,8 +203,8 @@ function main() {
       continue;
     }
 
-    const updatedContent = updateVersionInContent(content, oldVersion, targetVersion);
-    filesToUpdate.push({ ...file, oldVersion, updatedContent });
+    const { updated, proseChanges } = updateVersionInContent(content, oldVersion, targetVersion);
+    filesToUpdate.push({ ...file, oldVersion, updatedContent: updated, proseChanges });
   }
 
   if (filesToUpdate.length === 0) {
@@ -228,6 +232,9 @@ function main() {
   for (const file of filesToUpdate) {
     fs.writeFileSync(file.path, file.updatedContent);
     logSuccess(`Updated ${file.name} (${file.oldVersion} → ${targetVersion})`);
+    for (const line of file.proseChanges) {
+      logInfo(`  also updated: ${line}`);
+    }
   }
 
   // Commit and push
