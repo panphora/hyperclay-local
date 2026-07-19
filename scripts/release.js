@@ -10,27 +10,67 @@ const readline = require('readline');
 // ============================================
 
 let VERSION_TYPE = '';
+let RESUME = false;
+let PLATFORMS = ['mac', 'linux'];
+
 for (const arg of process.argv.slice(2)) {
+  if (arg.startsWith('--platforms=')) {
+    PLATFORMS = arg.slice('--platforms='.length).split(',').map(p => p.trim()).filter(Boolean);
+    const invalid = PLATFORMS.filter(p => p !== 'mac' && p !== 'linux');
+    if (invalid.length > 0) {
+      console.error(`Unknown platform(s): ${invalid.join(', ')}`);
+      console.error('Valid platforms: mac, linux');
+      process.exit(1);
+    }
+    if (PLATFORMS.length === 0) {
+      console.error('--platforms needs at least one of: mac, linux');
+      process.exit(1);
+    }
+    continue;
+  }
+
   switch (arg) {
     case '--major': VERSION_TYPE = 'major'; break;
     case '--minor': VERSION_TYPE = 'minor'; break;
     case '--patch': VERSION_TYPE = 'patch'; break;
+    case '--resume': RESUME = true; break;
     case '--help':
     case '-h':
-      console.log('Usage: node scripts/release.js [--major|--minor|--patch]');
+      console.log('Usage: node scripts/release.js [--major|--minor|--patch] [--resume] [--platforms=mac,linux]');
       console.log('');
       console.log('Options:');
-      console.log('  --major    Major version bump (breaking changes)');
-      console.log('  --minor    Minor version bump (new features)');
-      console.log('  --patch    Patch version bump (bug fixes)');
+      console.log('  --major              Major version bump (breaking changes)');
+      console.log('  --minor              Minor version bump (new features)');
+      console.log('  --patch              Patch version bump (bug fixes)');
+      console.log('  --resume             Rebuild and redistribute the version already in');
+      console.log('                       package.json. Skips version bump, commit, push, and');
+      console.log('                       the Windows CI trigger. Use after a failed build.');
+      console.log('  --platforms=LIST     Comma-separated platforms to build: mac, linux');
+      console.log('                       (default: mac,linux)');
       console.log('');
-      console.log('If no option is provided, you\'ll be prompted to choose.');
+      console.log('If no version option is provided, you\'ll be prompted to choose.');
+      console.log('');
+      console.log('Example: resume a release whose macOS build failed');
+      console.log('  node scripts/release.js --resume --platforms=mac');
       process.exit(0);
     default:
       console.error(`Unknown argument: ${arg}`);
       console.error('Use --help for usage information');
       process.exit(1);
   }
+}
+
+if (RESUME && VERSION_TYPE) {
+  console.error('--resume cannot be combined with --major/--minor/--patch');
+  console.error('Resume reuses the version already in package.json.');
+  process.exit(1);
+}
+
+if (!RESUME && process.argv.slice(2).some(arg => arg.startsWith('--platforms='))) {
+  console.error('--platforms requires --resume');
+  console.error('A fresh release must build every platform. Skipping one would publish');
+  console.error('download links for an artifact that was never built.');
+  process.exit(1);
 }
 
 // ============================================
@@ -207,6 +247,12 @@ function formatFileSize(bytes) {
 function updateReadmeSizes(version) {
   const readmePath = path.join(ROOT_DIR, 'README.md');
   const executablesDir = path.join(ROOT_DIR, 'executables');
+
+  if (!fs.existsSync(executablesDir)) {
+    logWarn('No executables/ directory; skipping README size update');
+    return;
+  }
+
   let content = fs.readFileSync(readmePath, 'utf8');
 
   const files = fs.readdirSync(executablesDir);
@@ -429,124 +475,158 @@ async function main() {
   console.log(`${colors.cyan}╚════════════════════════════════════════════════════╝${colors.reset}`);
   console.log('');
 
-  // ==========================================
-  // STEP 1: Version bump selection
-  // ==========================================
+  let newVersion;
 
-  logSection('Step 1: Pre-flight Checks');
+  if (RESUME) {
+    logSection('Resume');
 
-  // Check for uncommitted changes (other than the files we'll modify)
-  const status = execSafe('git status --porcelain').trim();
-  if (status) {
-    const lines = status.split('\n');
-    const allowedFiles = FILES_TO_UPDATE.map(f => f.path);
-    const unexpectedChanges = lines.filter(line => {
-      const file = line.slice(3); // Remove status prefix like " M " or "?? "
-      return !allowedFiles.some(allowed => file.endsWith(allowed));
-    });
+    newVersion = getCurrentVersion();
+    log(`Resuming release of v${newVersion}`);
+    log(`Platforms: ${PLATFORMS.join(', ')}`);
+    logInfo('Skipping version bump, commit, push, and Windows trigger');
 
-    if (unexpectedChanges.length > 0) {
-      logError('Uncommitted changes detected:');
-      unexpectedChanges.forEach(line => log(`  ${line}`));
-      log('');
-      log('Please commit or stash these changes before releasing.');
-      process.exit(1);
-    }
-  }
-
-  logSuccess('Working directory clean');
-
-  // Clear executables folder
-  const executablesDir = path.join(ROOT_DIR, 'executables');
-  if (fs.existsSync(executablesDir)) {
-    fs.rmSync(executablesDir, { recursive: true });
-  }
-  fs.mkdirSync(executablesDir, { recursive: true });
-  logSuccess('Cleared executables folder');
-
-  // ==========================================
-  // STEP 2: Version bump selection
-  // ==========================================
-
-  logSection('Step 2: Version');
-
-  const currentVersion = getCurrentVersion();
-  log(`Current version: ${currentVersion}`);
-
-  let bumpType;
-  if (VERSION_TYPE) {
-    bumpType = VERSION_TYPE;
-    logSuccess(`Using version type from argument: ${bumpType}`);
-  } else {
-    logInfo('Asking Claude Code for version bump recommendation...');
-
-    const lastTag = execSafe('git tag --sort=-version:refname | head -1').trim();
-    let gitLog = '';
-    if (lastTag) {
-      gitLog = execSafe(`git log ${lastTag}..HEAD --pretty=format:"%s"`).trim();
-    } else {
-      gitLog = execSafe('git log --pretty=format:"%s" -20').trim();
-    }
-
-    if (!gitLog) {
-      logError('No commits found to analyze');
-      process.exit(1);
-    }
-
+    // Resume assumes steps 1-4 completed. The Windows build is triggered by that
+    // push, so an unpushed HEAD means Windows was never built and the docs step
+    // would publish a link to an installer that does not exist.
+    let unpushed = '';
     try {
-      const recommendation = execSafe(
-        `echo ${JSON.stringify(gitLog)} | env -u CLAUDECODE claude --model sonnet -p "Based on these git commit messages, should this be a patch or minor release? Reply with a single word: patch or minor"`,
-        { stdio: 'pipe' }
-      ).trim().toLowerCase();
+      unpushed = execSafe('git rev-list --count @{upstream}..HEAD').trim();
+    } catch {
+      unpushed = 'unknown';
+    }
+    if (unpushed !== '0') {
+      logError(`HEAD has ${unpushed} unpushed commit(s).`);
+      logError('Resume expects the release commit to already be pushed, because that');
+      logError('push is what triggers the Windows build. Push first, or run a fresh release.');
+      process.exit(1);
+    }
 
-      // Claude sometimes answers in a sentence rather than a bare word, so take
-      // the first patch/minor token it mentions.
-      const match = recommendation.match(/patch|minor/);
-      if (match) {
-        bumpType = match[0];
-        logSuccess(`Claude recommends: ${bumpType}`);
-      } else {
-        logError(`Unexpected response from Claude: "${recommendation}"`);
+    const dirty = execSafe('git status --porcelain').trim();
+    if (dirty) {
+      logWarn('Working tree has uncommitted changes; this build will include them:');
+      dirty.split('\n').forEach(line => log(`  ${line}`));
+    }
+  } else {
+
+    // ==========================================
+    // STEP 1: Version bump selection
+    // ==========================================
+
+    logSection('Step 1: Pre-flight Checks');
+
+    // Check for uncommitted changes (other than the files we'll modify)
+    const status = execSafe('git status --porcelain').trim();
+    if (status) {
+      const lines = status.split('\n');
+      const allowedFiles = FILES_TO_UPDATE.map(f => f.path);
+      const unexpectedChanges = lines.filter(line => {
+        const file = line.slice(3); // Remove status prefix like " M " or "?? "
+        return !allowedFiles.some(allowed => file.endsWith(allowed));
+      });
+
+      if (unexpectedChanges.length > 0) {
+        logError('Uncommitted changes detected:');
+        unexpectedChanges.forEach(line => log(`  ${line}`));
+        log('');
+        log('Please commit or stash these changes before releasing.');
         process.exit(1);
       }
-    } catch (error) {
-      logError('Claude Code failed');
-      process.exit(1);
     }
+
+    logSuccess('Working directory clean');
+
+    // Clear executables folder
+    const executablesDir = path.join(ROOT_DIR, 'executables');
+    if (fs.existsSync(executablesDir)) {
+      fs.rmSync(executablesDir, { recursive: true });
+    }
+    fs.mkdirSync(executablesDir, { recursive: true });
+    logSuccess('Cleared executables folder');
+
+    // ==========================================
+    // STEP 2: Version bump selection
+    // ==========================================
+
+    logSection('Step 2: Version');
+
+    const currentVersion = getCurrentVersion();
+    log(`Current version: ${currentVersion}`);
+
+    let bumpType;
+    if (VERSION_TYPE) {
+      bumpType = VERSION_TYPE;
+      logSuccess(`Using version type from argument: ${bumpType}`);
+    } else {
+      logInfo('Asking Claude Code for version bump recommendation...');
+
+      const lastTag = execSafe('git tag --sort=-version:refname | head -1').trim();
+      let gitLog = '';
+      if (lastTag) {
+        gitLog = execSafe(`git log ${lastTag}..HEAD --pretty=format:"%s"`).trim();
+      } else {
+        gitLog = execSafe('git log --pretty=format:"%s" -20').trim();
+      }
+
+      if (!gitLog) {
+        logError('No commits found to analyze');
+        process.exit(1);
+      }
+
+      try {
+        const recommendation = execSafe(
+          `echo ${JSON.stringify(gitLog)} | env -u CLAUDECODE claude --model sonnet -p "Based on these git commit messages, should this be a patch or minor release? Reply with a single word: patch or minor"`,
+          { stdio: 'pipe' }
+        ).trim().toLowerCase();
+
+        // Claude sometimes answers in a sentence rather than a bare word, so take
+        // the first patch/minor token it mentions.
+        const match = recommendation.match(/patch|minor/);
+        if (match) {
+          bumpType = match[0];
+          logSuccess(`Claude recommends: ${bumpType}`);
+        } else {
+          logError(`Unexpected response from Claude: "${recommendation}"`);
+          process.exit(1);
+        }
+      } catch (error) {
+        logError('Claude Code failed');
+        process.exit(1);
+      }
+    }
+
+    newVersion = bumpVersion(currentVersion, bumpType);
+    log('');
+    logSuccess(`Version: ${currentVersion} → ${newVersion}`);
+
+    // ==========================================
+    // STEP 3: Update version in files
+    // ==========================================
+
+    logSection('Step 3: Update Files');
+
+    for (const file of FILES_TO_UPDATE) {
+      updateVersionInFile(file.path, currentVersion, newVersion);
+      logSuccess(`Updated ${file.path}`);
+    }
+
+    // ==========================================
+    // STEP 4: Commit and push version bump
+    // ==========================================
+
+    logSection('Step 4: Commit & Push');
+
+    // Stage only the files we modified
+    for (const file of FILES_TO_UPDATE) {
+      execSafe(`git add "${file.path}"`);
+    }
+    execSafe(`git commit -m "chore: release v${newVersion}"`);
+    logSuccess('Committed version bump');
+
+    // Push to remote so GitHub Actions builds the new version
+    logInfo('Pushing to remote...');
+    execSafe('git push origin HEAD');
+    logSuccess('Pushed to remote');
   }
-
-  const newVersion = bumpVersion(currentVersion, bumpType);
-  log('');
-  logSuccess(`Version: ${currentVersion} → ${newVersion}`);
-
-  // ==========================================
-  // STEP 3: Update version in files
-  // ==========================================
-
-  logSection('Step 3: Update Files');
-
-  for (const file of FILES_TO_UPDATE) {
-    updateVersionInFile(file.path, currentVersion, newVersion);
-    logSuccess(`Updated ${file.path}`);
-  }
-
-  // ==========================================
-  // STEP 4: Commit and push version bump
-  // ==========================================
-
-  logSection('Step 4: Commit & Push');
-
-  // Stage only the files we modified
-  for (const file of FILES_TO_UPDATE) {
-    execSafe(`git add "${file.path}"`);
-  }
-  execSafe(`git commit -m "chore: release v${newVersion}"`);
-  logSuccess('Committed version bump');
-
-  // Push to remote so GitHub Actions builds the new version
-  logInfo('Pushing to remote...');
-  execSafe('git push origin HEAD');
-  logSuccess('Pushed to remote');
 
   // ==========================================
   // STEP 5: Build all platforms
@@ -554,21 +634,28 @@ async function main() {
 
   logSection('Step 5: Build');
 
-  // Clear old notarization submissions
-  if (fs.existsSync(NOTARIZATION_FILE)) {
+  // Clear old notarization submissions (only when rebuilding macOS)
+  if (PLATFORMS.includes('mac') && fs.existsSync(NOTARIZATION_FILE)) {
     fs.unlinkSync(NOTARIZATION_FILE);
   }
 
-  // Trigger Windows build (runs independently on GitHub Actions)
-  triggerWindowsBuild();
+  // Trigger Windows build (runs independently on GitHub Actions). On resume the
+  // push already triggered it; use `npm run win-build:run` to retrigger by hand.
+  if (RESUME) {
+    logInfo('Skipping Windows trigger (already triggered by the original push)');
+  } else {
+    triggerWindowsBuild();
+  }
 
-  // Start macOS and Linux builds in parallel
-  logInfo('Starting macOS and Linux builds in parallel...');
+  const buildPromises = [];
+  if (PLATFORMS.includes('mac')) {
+    buildPromises.push(runBuild('macOS', 'mac-build:run').then(() => logSuccess('macOS build complete')));
+  }
+  if (PLATFORMS.includes('linux')) {
+    buildPromises.push(runBuild('Linux', 'linux-build:run').then(() => logSuccess('Linux build complete')));
+  }
 
-  const buildPromises = [
-    runBuild('macOS', 'mac-build:run').then(() => logSuccess('macOS build complete')),
-    runBuild('Linux', 'linux-build:run').then(() => logSuccess('Linux build complete'))
-  ];
+  logInfo(`Starting ${PLATFORMS.join(' and ')} build(s)...`);
 
   await Promise.all(buildPromises);
 
@@ -578,10 +665,14 @@ async function main() {
 
   logSection('Step 6: Wait for Notarization');
 
-  logInfo('Waiting for macOS notarization...');
-  logInfo('(Windows build runs independently on GitHub Actions)');
+  if (PLATFORMS.includes('mac')) {
+    logInfo('Waiting for macOS notarization...');
+    logInfo('(Windows build runs independently on GitHub Actions)');
 
-  await pollNotarizationUntilComplete();
+    await pollNotarizationUntilComplete();
+  } else {
+    logInfo('Skipping notarization (macOS not in --platforms)');
+  }
 
   // ==========================================
   // STEP 7: Finalize macOS
@@ -589,42 +680,47 @@ async function main() {
 
   logSection('Step 7: Finalize');
 
-  stapleAndMoveExecutables();
+  if (PLATFORMS.includes('mac')) {
+    stapleAndMoveExecutables();
+  }
 
-  // Move Linux executable too
-  logInfo('Moving Linux executable...');
-  execSafe('node build-scripts/move-executables.js linux');
+  if (PLATFORMS.includes('linux')) {
+    logInfo('Moving Linux executable...');
+    execSafe('node build-scripts/move-executables.js linux');
+  }
 
   // Update README with actual file sizes
   logInfo('Updating README with file sizes...');
   updateReadmeSizes(newVersion);
   logSuccess('README sizes updated');
 
-  // Install to local Applications folder
-  logInfo('Installing to /Applications...');
-  const dmgPath = path.join(ROOT_DIR, 'executables', `HyperclayLocal-${newVersion}-arm64.dmg`);
-  const volumeName = `HyperclayLocal ${newVersion}-arm64`;
-  try {
-    try { execSafe('pkill -f "HyperclayLocal.app"'); } catch {}
-    await sleep(1000);
-    execSafe(`hdiutil attach "${dmgPath}" -nobrowse -quiet`);
-    execSafe('rm -rf "/Applications/HyperclayLocal.app"');
-    execSafe(`cp -R "/Volumes/${volumeName}/HyperclayLocal.app" "/Applications/HyperclayLocal.app"`);
-    execSafe(`hdiutil detach "/Volumes/${volumeName}" -quiet`);
-    logSuccess('Installed to /Applications');
-    spawn('open', ['/Applications/HyperclayLocal.app'], { detached: true, stdio: 'ignore' }).unref();
-    logSuccess('Launched HyperclayLocal');
-  } catch (error) {
-    try { execSafe(`hdiutil detach "/Volumes/${volumeName}" -quiet`); } catch {}
-    logWarn(`Could not install locally: ${error.message}`);
+  if (PLATFORMS.includes('mac')) {
+    // Install to local Applications folder
+    logInfo('Installing to /Applications...');
+    const dmgPath = path.join(ROOT_DIR, 'executables', `HyperclayLocal-${newVersion}-arm64.dmg`);
+    const volumeName = `HyperclayLocal ${newVersion}-arm64`;
+    try {
+      try { execSafe('pkill -f "HyperclayLocal.app"'); } catch {}
+      await sleep(1000);
+      execSafe(`hdiutil attach "${dmgPath}" -nobrowse -quiet`);
+      execSafe('rm -rf "/Applications/HyperclayLocal.app"');
+      execSafe(`cp -R "/Volumes/${volumeName}/HyperclayLocal.app" "/Applications/HyperclayLocal.app"`);
+      execSafe(`hdiutil detach "/Volumes/${volumeName}" -quiet`);
+      logSuccess('Installed to /Applications');
+      spawn('open', ['/Applications/HyperclayLocal.app'], { detached: true, stdio: 'ignore' }).unref();
+      logSuccess('Launched HyperclayLocal');
+    } catch (error) {
+      try { execSafe(`hdiutil detach "/Volumes/${volumeName}" -quiet`); } catch {}
+      logWarn(`Could not install locally: ${error.message}`);
+    }
   }
 
   // Commit README size updates so release-info.json points to final state
   logInfo('Committing README size updates...');
   execSafe('git add README.md');
-  const stagedChanges = execSafe('git diff --cached --name-only').trim();
+  const stagedChanges = execSafe('git diff --cached --name-only -- README.md').trim();
   if (stagedChanges) {
-    execSafe(`git commit -m "chore: update download sizes for v${newVersion}"`);
+    execSafe(`git commit -m "chore: update download sizes for v${newVersion}" -- README.md`);
     execSafe('git push origin HEAD');
     logSuccess('README sizes committed and pushed');
   } else {
