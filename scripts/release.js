@@ -87,7 +87,8 @@ const NOTARIZATION_FILE = path.join(ROOT_DIR, '.notarization-submissions-mac.jso
 const FILES_TO_UPDATE = [
   { path: 'package.json', type: 'json' },
   { path: 'README.md', type: 'readme' },
-  { path: 'src/main/main.js', type: 'main-js' }
+  { path: 'src/main/main.js', type: 'main-js' },
+  { path: 'website/index.html', type: 'website' }
 ];
 
 const NOTARIZATION_POLL_INTERVAL = 30000; // 30 seconds
@@ -233,6 +234,21 @@ function updateVersionInFile(filePath, oldVersion, newVersion) {
     content = content.replace(
       new RegExp(`version: '${oldVersion.replace(/\./g, '\\.')}'`, 'g'),
       `version: '${newVersion}'`
+    );
+  } else if (filePath === 'website/index.html') {
+    // Download links plus the data-version marker on the downloads section.
+    const escaped = oldVersion.replace(/\./g, '\\.');
+    content = content.replace(
+      new RegExp(`HyperclayLocal-${escaped}`, 'g'),
+      `HyperclayLocal-${newVersion}`
+    );
+    content = content.replace(
+      new RegExp(`HyperclayLocal-Setup-${escaped}`, 'g'),
+      `HyperclayLocal-Setup-${newVersion}`
+    );
+    content = content.replace(
+      new RegExp(`data-version="${escaped}"`, 'g'),
+      `data-version="${newVersion}"`
     );
   }
 
@@ -443,6 +459,22 @@ function uploadToR2() {
     logSuccess('Upload complete');
   } catch (error) {
     throw new Error(`Failed to upload to R2: ${error.message}`);
+  }
+}
+
+function deployWebsite() {
+  logInfo('Deploying hyperclaylocal.com...');
+
+  const websiteDir = path.join(ROOT_DIR, 'website');
+  if (!fs.existsSync(path.join(websiteDir, 'wrangler.jsonc'))) {
+    throw new Error('website/wrangler.jsonc not found; cannot deploy hyperclaylocal.com');
+  }
+
+  try {
+    execSafe('npx wrangler deploy', { cwd: websiteDir, stdio: 'inherit' });
+    logSuccess('Deployed hyperclaylocal.com');
+  } catch (error) {
+    throw new Error(`Failed to deploy hyperclaylocal.com: ${error.message}`);
   }
 }
 
@@ -758,6 +790,8 @@ async function main() {
   logSection('Step 8: Upload');
 
   uploadToR2();
+
+  deployWebsite();
 
   fs.writeFileSync(path.join(ROOT_DIR, '.deploy'), execSafe('git rev-parse HEAD').trim() + '\n');
   logSuccess('Wrote .deploy tracking file');
