@@ -627,12 +627,20 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         // the replaceTailwindLink above, the URL is always scoped to the site's
         // folder, which mirrors the platform's
         // public-assets/tailwindcss/{username}/{path}/{baseName}.css layout.
+        // Non-fatal, for the same reason as the sidecar above and the two remote
+        // writers: the file is already written, backed up and broadcast by this
+        // point, so a compiler error must not report the save as failed, and must
+        // not skip the snapshot cache below.
         const tailwindName = getTailwindCssName(content);
         if (tailwindName) {
-          const css = await compileTailwind(content);
-          const cssPath = await resolveDerivedWrite(`tailwindcss/${tailwindName}.css`);
-          await atomicWriteFile(cssPath, css);
-          console.log(`Generated Tailwind CSS: tailwindcss/${tailwindName}.css`);
+          try {
+            const css = await compileTailwind(content);
+            const cssPath = await resolveDerivedWrite(`tailwindcss/${tailwindName}.css`);
+            await atomicWriteFile(cssPath, css);
+            console.log(`Generated Tailwind CSS: tailwindcss/${tailwindName}.css`);
+          } catch (e) {
+            console.error('compileTailwind failed (non-fatal):', e && e.message ? e.message : e);
+          }
         }
 
         // Store snapshot HTML (+ the userDriven provenance bit) for platform
