@@ -13,21 +13,37 @@ describe('generateTimestamp', () => {
   test('returns correctly formatted timestamp', () => {
     const timestamp = generateTimestamp();
 
-    // Format: YYYY-MM-DD-HH-MM-SS-mmmZ — UTC, so names never repeat across a
-    // DST fall-back and stay sortable as instants.
-    expect(timestamp).toMatch(/^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d{3}Z$/);
+    // Format: YYYY-MM-DD-HH-MM-SS-mmm±HHMM — LOCAL wall time so it reads right
+    // in a file browser, with the offset that pins it to one instant across a
+    // DST fall-back.
+    expect(timestamp).toMatch(/^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d{3}[+-]\d{4}$/);
   });
 
-  test('encodes UTC, not local wall time', () => {
-    const before = new Date();
+  test('encodes LOCAL wall time plus the signed UTC offset', () => {
+    const before = Date.now();
     const timestamp = generateTimestamp();
-    const [, y, mo, d, h, mi] = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})/.exec(timestamp);
+    const after = Date.now();
 
-    expect(+y).toBe(before.getUTCFullYear());
-    expect(+mo).toBe(before.getUTCMonth() + 1);
-    expect(+d).toBe(before.getUTCDate());
-    expect(+h).toBe(before.getUTCHours());
-    expect(+mi).toBe(before.getUTCMinutes());
+    const parts = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{3})([+-])(\d{2})(\d{2})$/
+      .exec(timestamp);
+    expect(parts).not.toBeNull();
+
+    const [, y, mo, d, h, mi, s, ms, sign, offsetHours, offsetMinutes] = parts;
+    const offset = (sign === '-' ? -1 : 1) * (+offsetHours * 60 + +offsetMinutes);
+
+    // getTimezoneOffset() is POSITIVE for zones BEHIND UTC, so the rendered
+    // offset is its negation: New York in summer reports 240 and writes -0400.
+    expect(offset).toBe(-new Date(before).getTimezoneOffset());
+
+    // Reading the wall clock as local time must land back on the instant the
+    // name was generated at — that is what makes it an orderable instant.
+    const instant = Date.UTC(+y, +mo - 1, +d, +h, +mi, +s, +ms) - offset * 60 * 1000;
+    expect(instant).toBeGreaterThanOrEqual(before);
+    expect(instant).toBeLessThanOrEqual(after);
+
+    // And the fields really are the local ones, not the UTC ones.
+    expect(+h).toBe(new Date(instant).getHours());
+    expect(+d).toBe(new Date(instant).getDate());
   });
 
   test('generates unique timestamps', async () => {

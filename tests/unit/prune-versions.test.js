@@ -7,9 +7,12 @@ const {
   KEEP_NEWEST,
   parseVersionTimestamp,
   sortKey,
+  collisionSuffix,
+  compareNewestFirst,
   pruneSiteVersions,
   pruneAllVersions
 } = require('../../src/main/utils/prune-versions');
+const { generateTimestamp } = require('../../src/main/utils/backup');
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -17,6 +20,29 @@ describe('parseVersionTimestamp', () => {
   test('parses a UTC name as UTC', () => {
     expect(parseVersionTimestamp('2026-07-19-14-22-08-431Z.html'))
       .toBe(Date.UTC(2026, 6, 19, 14, 22, 8, 431));
+  });
+
+  test('parses a negative offset by adding it back', () => {
+    // 01:30:00.431 at UTC-4 is 05:30:00.431Z. The `-` before `0400` is the
+    // sign, not a separator: the offset group is fixed width and positional.
+    expect(parseVersionTimestamp('2026-11-01-01-30-00-431-0400.html'))
+      .toBe(Date.UTC(2026, 10, 1, 5, 30, 0, 431));
+  });
+
+  test('parses a positive offset by subtracting it', () => {
+    // 01:30:00.431 at UTC+5:30 is the previous day, 20:00:00.431Z.
+    expect(parseVersionTimestamp('2026-11-01-01-30-00-431+0530.html'))
+      .toBe(Date.UTC(2026, 9, 31, 20, 0, 0, 431));
+  });
+
+  test('a zero offset is written +0000 and parses as UTC', () => {
+    expect(parseVersionTimestamp('2026-07-19-14-22-08-431+0000.html'))
+      .toBe(parseVersionTimestamp('2026-07-19-14-22-08-431Z.html'));
+  });
+
+  test('an offset survives the collision suffix', () => {
+    expect(parseVersionTimestamp('2026-11-01-01-30-00-431-0400-002.html'))
+      .toBe(Date.UTC(2026, 10, 1, 5, 30, 0, 431));
   });
 
   test('refuses to guess at a legacy local-time name', () => {
@@ -54,6 +80,157 @@ describe('sortKey', () => {
 
     const byInstant = [older, newer].sort((a, b) => sortKey(b) - sortKey(a))[0];
     expect(byInstant).toBe(newer);
+  });
+});
+
+// THE REASON THE OFFSET IS NOT OPTIONAL.
+//
+// Across an autumn fall-back local wall time repeats for an hour. A collision
+// suffix cannot rescue that: it only fires when two names are byte-identical,
+// and 01:30 EDT and 01:30 EST are the same wall clock in two different offsets.
+// This is the delete path, so mis-ranking here destroys data.
+describe('DST fall-back with recorded offsets', () => {
+  // Written in this real-time order. C is genuinely the newest even though it
+  // wears the same wall clock as A.
+  const a = { name: '2026-11-01-01-30-00-431-0400.html', mtimeMs: 0 }; // 05:30:00.431Z
+  const b = { name: '2026-11-01-01-45-00-123-0400.html', mtimeMs: 0 }; // 05:45:00.123Z
+  const c = { name: '2026-11-01-01-30-00-431-0500.html', mtimeMs: 0 }; // 06:30:00.431Z
+
+  test('the three names resolve to their real instants', () => {
+    expect(sortKey(a)).toBe(Date.UTC(2026, 10, 1, 5, 30, 0, 431));
+    expect(sortKey(b)).toBe(Date.UTC(2026, 10, 1, 5, 45, 0, 123));
+    expect(sortKey(c)).toBe(Date.UTC(2026, 10, 1, 6, 30, 0, 431));
+  });
+
+  test('newest-first ranks C, B, A', () => {
+    expect([a, b, c].sort(compareNewestFirst).map((e) => e.name)).toEqual([
+      c.name, b.name, a.name
+    ]);
+  });
+
+  // The pruner deletes and the guard restores. If they disagreed about which
+  // version is newest, the guard would hand back content the pruner had already
+  // decided was expendable — so pin them against the same real files.
+  test('the pruner and the data-loss guard pick the same newest file', async () => {
+    const { _newestVersionPath } = require('../../src/main/data-loss-guard');
+
+    const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'guard-dst-')));
+    const siteDir = path.join(base, 'sites-versions', 'notes');
+    await fs.mkdir(siteDir, { recursive: true });
+    for (const entry of [a, b, c]) {
+      await fs.writeFile(path.join(siteDir, entry.name), entry.name);
+    }
+
+    const recovered = await _newestVersionPath(base, 'notes.html');
+    expect(path.basename(recovered)).toBe(c.name);
+
+    const ranked = [];
+    for (const name of await fs.readdir(siteDir)) {
+      ranked.push({ name, mtimeMs: (await fs.stat(path.join(siteDir, name))).mtimeMs });
+    }
+    expect(ranked.sort(compareNewestFirst)[0].name).toBe(path.basename(recovered));
+
+    await fs.rm(base, { recursive: true, force: true });
+  });
+
+  test('without the offset the same sequence ranks B as newest, which is wrong', () => {
+    // Strip the offsets and the wall clock is all that is left to go on: B's
+    // 01:45 outranks both 01:30s, so B looks newest when C is. That is exactly
+    // the bug the offset exists to prevent.
+    const strip = (name) => name.replace(/[+-]\d{4}(?=(-\d{3})?\.html$)/, '');
+    const newestByWallClock = [a, b, c]
+      .map((entry) => strip(entry.name))
+      .sort((x, y) => y.localeCompare(x))[0];
+
+    expect(newestByWallClock).toBe(strip(b.name));
+    // A and C collapse onto one name once the offset is gone, which is why a
+    // collision suffix could never have separated them either.
+    expect(strip(a.name)).toBe(strip(c.name));
+  });
+});
+
+describe('collision suffix ordering', () => {
+  test('-002 ranks before -010 and breaks ties inside one millisecond', () => {
+    const stamp = '2026-11-01-01-30-00-431-0400';
+    const entries = [
+      { name: `${stamp}-002.html`, mtimeMs: 0 },
+      { name: `${stamp}.html`, mtimeMs: 0 },
+      { name: `${stamp}-010.html`, mtimeMs: 0 },
+      { name: `${stamp}-001.html`, mtimeMs: 0 }
+    ];
+
+    // Every one of these is the same instant, so only the suffix orders them.
+    expect(new Set(entries.map(sortKey)).size).toBe(1);
+    expect(entries.map((e) => collisionSuffix(e.name)).sort((x, y) => x - y))
+      .toEqual([0, 1, 2, 10]);
+
+    expect([...entries].sort(compareNewestFirst).map((e) => e.name)).toEqual([
+      `${stamp}-010.html`,
+      `${stamp}-002.html`,
+      `${stamp}-001.html`,
+      `${stamp}.html`
+    ]);
+  });
+});
+
+describe('generateTimestamp', () => {
+  test('emits local wall time with a signed four-digit offset', () => {
+    const stamp = generateTimestamp();
+    expect(stamp).toMatch(/^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d{3}[+-]\d{4}$/);
+  });
+
+  test('the name round-trips back to the instant it was written at', () => {
+    const before = Date.now();
+    const stamp = generateTimestamp();
+    const after = Date.now();
+
+    const parsed = parseVersionTimestamp(`${stamp}.html`);
+    expect(parsed).not.toBeNull();
+    expect(parsed).toBeGreaterThanOrEqual(before);
+    expect(parsed).toBeLessThanOrEqual(after);
+  });
+
+  // getTimezoneOffset() returns POSITIVE minutes for zones BEHIND UTC — New
+  // York in summer returns 240 and must render as `-0400`. Backwards here and
+  // every ordering inverts, so pin the sign directly. Node caches the process
+  // timezone on first use, so switching process.env.TZ mid-run does not take;
+  // stubbing the accessor is the only reading that stays honest on any host.
+  describe('the offset sign is inverted from getTimezoneOffset', () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    function stampWithOffset(minutes) {
+      jest.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(minutes);
+      return generateTimestamp().slice(-5);
+    }
+
+    test('a zone BEHIND UTC (positive minutes) renders a NEGATIVE offset', () => {
+      expect(stampWithOffset(240)).toBe('-0400'); // America/New_York, summer
+      expect(stampWithOffset(480)).toBe('-0800'); // America/Los_Angeles, winter
+    });
+
+    test('a zone AHEAD of UTC (negative minutes) renders a POSITIVE offset', () => {
+      expect(stampWithOffset(-60)).toBe('+0100');  // Europe/Berlin, winter
+      expect(stampWithOffset(-330)).toBe('+0530'); // Asia/Kolkata, half hour
+      expect(stampWithOffset(-345)).toBe('+0545'); // Asia/Kathmandu, quarter hour
+    });
+
+    test('UTC itself is written +0000, never omitted and never Z', () => {
+      expect(stampWithOffset(0)).toBe('+0000');
+    });
+  });
+
+  test('the wall-clock part really is local, not UTC', () => {
+    const stamp = generateTimestamp();
+    const local = new Date(parseVersionTimestamp(`${stamp}.html`));
+    const p = (n, w = 2) => String(n).padStart(w, '0');
+
+    // Read the name back against the local fields of the instant it encodes,
+    // rather than against a second clock reading that could tick over.
+    expect(stamp).toBe(
+      `${local.getFullYear()}-${p(local.getMonth() + 1)}-${p(local.getDate())}-` +
+      `${p(local.getHours())}-${p(local.getMinutes())}-${p(local.getSeconds())}-` +
+      `${p(local.getMilliseconds(), 3)}${stamp.slice(-5)}`
+    );
   });
 });
 

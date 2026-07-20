@@ -8,25 +8,34 @@ const path = require('upath');
 const { pruneSiteVersions } = require('./prune-versions');
 
 /**
- * Generate a backup timestamp, in UTC with an explicit `Z`.
+ * Generate a backup timestamp: LOCAL wall time plus the signed UTC offset in
+ * force at that moment, e.g. `2026-11-01-01-30-00-431-0400`.
  *
- * Local wall time repeats for one hour on every DST fall-back, which makes two
- * distinct versions carry names that cannot be ordered — fatal for the pruner,
- * which deletes. UTC never repeats, so these names are both a correct instant
- * and correctly lexically sortable. Legacy local-time names already on disk stay
- * readable: prune-versions.js falls back to mtime for anything without the `Z`.
+ * Local time is what the user reads in their file browser. The offset is what
+ * makes it orderable: local wall time repeats for one hour on every DST
+ * fall-back, and the pruner DELETES, so a name that cannot be resolved to one
+ * instant can cost the user the version they wanted back. With the offset
+ * recorded, the two 01:30s carry different zones and rank correctly.
+ *
+ * Note the sign. getTimezoneOffset() returns POSITIVE minutes for zones BEHIND
+ * UTC — New York in summer returns 240 — so it is negated here to render as
+ * `-0400`. Getting that backwards inverts every ordering.
+ *
+ * Older names stay readable: prune-versions.js still parses the all-UTC `Z`
+ * form exactly, and still falls back to mtime for legacy names with no zone.
  */
 function generateTimestamp() {
   const now = new Date();
-  const year = now.getUTCFullYear();
-  const month = String(now.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(now.getUTCDate()).padStart(2, '0');
-  const hours = String(now.getUTCHours()).padStart(2, '0');
-  const minutes = String(now.getUTCMinutes()).padStart(2, '0');
-  const seconds = String(now.getUTCSeconds()).padStart(2, '0');
-  const milliseconds = String(now.getUTCMilliseconds()).padStart(3, '0');
+  const pad = (value, width = 2) => String(value).padStart(width, '0');
 
-  return `${year}-${month}-${day}-${hours}-${minutes}-${seconds}-${milliseconds}Z`;
+  const offsetMinutes = -now.getTimezoneOffset();
+  const sign = offsetMinutes < 0 ? '-' : '+';
+  const absMinutes = Math.abs(offsetMinutes);
+  const offset = `${sign}${pad(Math.floor(absMinutes / 60))}${pad(absMinutes % 60)}`;
+
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-` +
+    `${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}-` +
+    `${pad(now.getMilliseconds(), 3)}${offset}`;
 }
 
 // The bare name plus suffixes `-001` through `-999`, so at most 1000 versions

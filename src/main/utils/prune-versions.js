@@ -5,12 +5,19 @@
 // ranking the newest version as oldest destroys the one copy the user wants back.
 // Sorting must therefore go through a parsed instant, never the filename:
 //
-//   - New names are UTC and carry a trailing `Z` (see backup.generateTimestamp).
-//     They parse unambiguously and also happen to sort lexically.
-//   - Legacy names are LOCAL WALL TIME with no zone. Local wall time repeats for
-//     one hour every DST fall-back, so both a lexical sort and a parsed-local
-//     sort can rank two versions in the wrong order. For those we fall back to
-//     the file's mtime, which is a real instant and cannot repeat.
+//   - New names are LOCAL WALL TIME with an explicit signed UTC offset, e.g.
+//     `2026-11-01-01-30-00-431-0400` (see backup.generateTimestamp). The offset
+//     resolves each name to exactly one instant, which is the whole point: local
+//     time alone repeats for one hour every DST fall-back.
+//   - Older names are UTC with a trailing `Z`. Also an exact instant; still
+//     parsed exactly.
+//   - Legacy names are LOCAL WALL TIME with NO zone. Those are genuinely
+//     ambiguous, so we do not guess. For them we fall back to the file's mtime,
+//     which is a real instant and cannot repeat.
+//
+// Note that these names no longer sort lexically, because a local timestamp with
+// an offset does not. Nothing here sorts by filename, so that is fine — but any
+// new caller must go through compareNewestFirst rather than comparing names.
 
 const fs = require('fs').promises;
 const path = require('upath');
@@ -18,28 +25,39 @@ const path = require('upath');
 const MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000;
 const KEEP_NEWEST = 20;
 
-// `YYYY-MM-DD-HH-MM-SS-mmm`, an optional trailing `Z`, and an optional
-// zero-padded collision suffix (backup.writeVersionExclusive appends `-001`,
-// `-002`, ... when several versions land in one millisecond). The suffix MUST be
-// matched here: an unrecognised name is one this pruner refuses to touch, so
-// without it every collision-suffixed version would accumulate forever.
-const VERSION_NAME = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{3})(Z)?(?:-(\d{3}))?\.[A-Za-z0-9]+$/;
+// `YYYY-MM-DD-HH-MM-SS-mmm`, an optional zone (a signed four-digit UTC offset,
+// or the older bare `Z`), and an optional zero-padded collision suffix
+// (backup.writeVersionExclusive appends `-001`, `-002`, ... when several
+// versions land in one millisecond). The suffix MUST be matched here: an
+// unrecognised name is one this pruner refuses to touch, so without it every
+// collision-suffixed version would accumulate forever.
+//
+// The offset group is fixed width and positional, so `431-0400` splits into
+// millis `431` and offset `-0400`; the `-` cannot be mistaken for a separator.
+const VERSION_NAME = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{3})(Z|[+-]\d{4})?(?:-(\d{3}))?\.[A-Za-z0-9]+$/;
 
 /**
  * Epoch ms for a version filename, or null when the name is not a version name
- * or is legacy local wall time (ambiguous — the caller must use mtime instead).
+ * or is legacy local wall time with no zone (ambiguous — the caller must use
+ * mtime instead).
  */
 function parseVersionTimestamp(filename) {
   const match = VERSION_NAME.exec(filename);
   if (!match) return null;
-  const [, year, month, day, hours, minutes, seconds, ms, zulu] = match;
-  if (!zulu) return null; // legacy local wall time: not a trustworthy instant
-  return Date.UTC(+year, +month - 1, +day, +hours, +minutes, +seconds, +ms);
+  const [, year, month, day, hours, minutes, seconds, ms, zone] = match;
+  if (!zone) return null; // legacy local wall time: not a trustworthy instant
+
+  const wallClock = Date.UTC(+year, +month - 1, +day, +hours, +minutes, +seconds, +ms);
+  if (zone === 'Z') return wallClock;
+
+  // The wall clock is local; subtract the offset to land on the real instant.
+  const offsetMinutes = (+zone.slice(1, 3) * 60 + +zone.slice(3, 5)) * (zone[0] === '-' ? -1 : 1);
+  return wallClock - offsetMinutes * 60 * 1000;
 }
 
 /**
- * Sort key for one entry. Prefers the unambiguous parsed UTC instant and falls
- * back to mtime, so a legacy DST-ambiguous name can never outrank a real one.
+ * Sort key for one entry. Prefers the unambiguous parsed instant and falls back
+ * to mtime, so a legacy DST-ambiguous name can never outrank a real one.
  */
 function sortKey(entry) {
   const parsed = parseVersionTimestamp(entry.name);

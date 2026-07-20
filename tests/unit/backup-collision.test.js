@@ -11,7 +11,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
 
-const { createBackup, createBinaryBackup } = require('../../src/main/utils/backup');
+const { createBackup, createBinaryBackup, generateTimestamp } = require('../../src/main/utils/backup');
 const { pruneSiteVersions, compareNewestFirst, parseVersionTimestamp } = require('../../src/main/utils/prune-versions');
 
 describe('A7: backup filename collisions', () => {
@@ -77,7 +77,9 @@ describe('A7: backup filename collisions', () => {
       await createBackup(dir, 'my-site', `<html>version ${i}</html>`);
     }
 
-    const stamp = '2026-07-19-14-22-08-431Z';
+    // Names are local time plus offset, so derive the stamp from the frozen
+    // clock rather than hard-coding one machine's zone.
+    const stamp = generateTimestamp();
     const files = (await fs.readdir(path.join(dir, 'sites-versions', 'my-site'))).sort();
 
     expect(files).toContain(`${stamp}.html`);
