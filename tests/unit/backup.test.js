@@ -13,8 +13,21 @@ describe('generateTimestamp', () => {
   test('returns correctly formatted timestamp', () => {
     const timestamp = generateTimestamp();
 
-    // Format: YYYY-MM-DD-HH-MM-SS-mmm
-    expect(timestamp).toMatch(/^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d{3}$/);
+    // Format: YYYY-MM-DD-HH-MM-SS-mmmZ — UTC, so names never repeat across a
+    // DST fall-back and stay sortable as instants.
+    expect(timestamp).toMatch(/^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d{3}Z$/);
+  });
+
+  test('encodes UTC, not local wall time', () => {
+    const before = new Date();
+    const timestamp = generateTimestamp();
+    const [, y, mo, d, h, mi] = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})/.exec(timestamp);
+
+    expect(+y).toBe(before.getUTCFullYear());
+    expect(+mo).toBe(before.getUTCMonth() + 1);
+    expect(+d).toBe(before.getUTCDate());
+    expect(+h).toBe(before.getUTCHours());
+    expect(+mi).toBe(before.getUTCMinutes());
   });
 
   test('generates unique timestamps', async () => {

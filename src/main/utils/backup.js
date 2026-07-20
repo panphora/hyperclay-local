@@ -5,21 +5,49 @@
 
 const fs = require('fs').promises;
 const path = require('upath');
+const { pruneSiteVersions } = require('./prune-versions');
 
 /**
- * Generate timestamp in same format as hyperclay hosted platform
+ * Generate a backup timestamp, in UTC with an explicit `Z`.
+ *
+ * Local wall time repeats for one hour on every DST fall-back, which makes two
+ * distinct versions carry names that cannot be ordered — fatal for the pruner,
+ * which deletes. UTC never repeats, so these names are both a correct instant
+ * and correctly lexically sortable. Legacy local-time names already on disk stay
+ * readable: prune-versions.js falls back to mtime for anything without the `Z`.
  */
 function generateTimestamp() {
   const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  const hours = String(now.getHours()).padStart(2, '0');
-  const minutes = String(now.getMinutes()).padStart(2, '0');
-  const seconds = String(now.getSeconds()).padStart(2, '0');
-  const milliseconds = String(now.getMilliseconds()).padStart(3, '0');
+  const year = now.getUTCFullYear();
+  const month = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(now.getUTCDate()).padStart(2, '0');
+  const hours = String(now.getUTCHours()).padStart(2, '0');
+  const minutes = String(now.getUTCMinutes()).padStart(2, '0');
+  const seconds = String(now.getUTCSeconds()).padStart(2, '0');
+  const milliseconds = String(now.getUTCMilliseconds()).padStart(3, '0');
 
-  return `${year}-${month}-${day}-${hours}-${minutes}-${seconds}-${milliseconds}`;
+  return `${year}-${month}-${day}-${hours}-${minutes}-${seconds}-${milliseconds}Z`;
+}
+
+// Opportunistic pruning: at most once an hour per site directory, never on the
+// caller's critical path, and never able to fail a save.
+const lastPruneAt = new Map();
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+
+function maybePrune(siteVersionsDir) {
+  const now = Date.now();
+  const previous = lastPruneAt.get(siteVersionsDir) || 0;
+  if (now - previous < PRUNE_INTERVAL_MS) return;
+  lastPruneAt.set(siteVersionsDir, now);
+  pruneSiteVersions(siteVersionsDir)
+    .then(({ deleted }) => {
+      if (deleted.length) {
+        console.log(`[BACKUP] Pruned ${deleted.length} old version(s) from ${siteVersionsDir}`);
+      }
+    })
+    .catch((error) => {
+      console.error('[BACKUP] Prune failed (non-fatal):', error && error.message ? error.message : error);
+    });
 }
 
 /**
@@ -49,6 +77,8 @@ async function createBackup(baseDir, siteName, content, emit, logger = null) {
     // Write backup file
     await fs.writeFile(backupPath, content, 'utf8');
     console.log(`[BACKUP] Created: sites-versions/${siteName}/${backupFilename}`);
+
+    maybePrune(siteVersionsDir);
 
     // Log backup creation
     if (logger) {
@@ -139,6 +169,8 @@ async function createBinaryBackup(baseDir, uploadPath, content, emit, logger = n
     // Write backup file as binary
     await fs.writeFile(backupPath, content);
     console.log(`[BACKUP] Created: sites-versions/${backupSubdir}/${backupFilename}`);
+
+    maybePrune(uploadVersionsDir);
 
     // Log backup creation
     if (logger) {

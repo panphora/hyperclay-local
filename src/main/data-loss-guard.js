@@ -19,6 +19,7 @@ const cheerio = require('cheerio');
 const { liveSync } = require('livesync-hyperclay');
 const core = require('./data-loss-core.cjs');
 const { extractViaTag } = require('./utils/data-extractor');
+const { sortKey } = require('./utils/prune-versions');
 
 const {
   classifyDestruction,
@@ -137,13 +138,26 @@ function emptyGuard() {
 }
 
 // Newest sites-versions/<base>/*.html (the last-good full file for a raw write).
+// Ranked by parsed instant, NOT by filename: legacy backup names are local wall
+// time, which repeats across a DST fall-back, so a lexical sort could hand back
+// the older of the two as "newest" and silently revert to stale content.
 async function newestVersionPath(baseDir, name) {
   try {
     const base = name.replace(/\.(html|htmlclay)$/, '');
     const dir = path.join(baseDir, 'sites-versions', base);
-    const files = (await fs.readdir(dir)).filter((f) => f.endsWith('.html')).sort();
+    const files = (await fs.readdir(dir)).filter((f) => f.endsWith('.html'));
     if (!files.length) return null;
-    return path.join(dir, files[files.length - 1]);
+
+    const ranked = [];
+    for (const file of files) {
+      const full = path.join(dir, file);
+      try {
+        ranked.push({ full, key: sortKey({ name: file, mtimeMs: (await fs.stat(full)).mtimeMs }) });
+      } catch {}
+    }
+    if (!ranked.length) return null;
+    ranked.sort((a, b) => a.key - b.key);
+    return ranked[ranked.length - 1].full;
   } catch {
     return null;
   }
@@ -274,20 +288,37 @@ async function seedBlind(guard, island) {
   guard.uiWorkPending = false;
 }
 
-// The whole last-good file for Revert. Prefer the pre-write body (write it to a
-// stable guard recover file); else the newest sites-versions entry (raw writes).
+// The whole last-good file for Revert, always COPIED INTO THE GUARD'S OWN
+// STORAGE. Prefer the pre-write body; else the newest sites-versions entry.
+//
+// Returning a sites-versions path directly (as this used to for raw writes)
+// would pin a file the retention pruner is free to delete. The alternative —
+// teaching the pruner an exemption list — would need that list consulted under
+// a lock the pruner does not hold, which is a race. Copying the bytes here
+// keeps the pruner a dumb, predictable function with no shared state.
 async function captureRecoverPath(baseDir, name, prevContent) {
-  if (prevContent != null) {
+  let body = prevContent;
+
+  if (body == null) {
+    const versionPath = await newestVersionPath(baseDir, name);
+    if (versionPath == null) return null;
     try {
-      const abs = recoverHtmlPath(baseDir, name);
-      await fs.mkdir(path.dirname(abs), { recursive: true });
-      await fs.writeFile(abs, prevContent, 'utf8');
-      return abs;
+      body = await fs.readFile(versionPath, 'utf8');
     } catch (e) {
-      console.error('[data-guard] captureRecoverPath write failed:', e && e.message ? e.message : e);
+      console.error('[data-guard] captureRecoverPath read failed:', e && e.message ? e.message : e);
+      return null;
     }
   }
-  return await newestVersionPath(baseDir, name);
+
+  try {
+    const abs = recoverHtmlPath(baseDir, name);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, body, 'utf8');
+    return abs;
+  } catch (e) {
+    console.error('[data-guard] captureRecoverPath write failed:', e && e.message ? e.message : e);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -596,4 +627,6 @@ module.exports = {
   _readGuard: readGuard,
   _writeGuard: writeGuard,
   _resolveGuardPath: resolveGuardPath,
+  _captureRecoverPath: captureRecoverPath,
+  _newestVersionPath: newestVersionPath,
 };

@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog, shell, Menu, Tray, nativeImage, ipcMain, safeStorage, clipboard } = require('electron');
 const path = require('upath');
 const fs = require('fs');
+const fsPromises = require('fs').promises;
 const crypto = require('crypto');
 const { startServer, stopServer, getServerPort, isServerRunning } = require('./server');
 const { startPlugins, stopPlugins } = require('./plugins');
@@ -325,6 +326,18 @@ function getTrayMenuTemplate() {
         if (selectedFolder) {
           shell.openPath(selectedFolder);
         }
+      }
+    },
+    {
+      label: 'Backups',
+      enabled: !!selectedFolder,
+      click: async () => {
+        if (!selectedFolder) return;
+        const backupsPath = path.join(selectedFolder, 'sites-versions');
+        try {
+          await fsPromises.mkdir(backupsPath, { recursive: true });
+        } catch {}
+        shell.openPath(backupsPath);
       }
     },
     {
