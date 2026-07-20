@@ -31,7 +31,7 @@
             <% if (index === it.breadcrumbs.length - 1) { %>
               <span class="breadcrumb-current"><%= crumb.name %></span>
             <% } else { %>
-              <a href="<%= crumb.path %>" class="breadcrumb-link"><%= crumb.name %></a>
+              <a href="<%= crumb.url %>" class="breadcrumb-link"><%= crumb.name %></a>
             <% } %>
           <% }) %>
         <% } %>
@@ -61,7 +61,7 @@
         <hr class="divider-dashed">
 
         <% it.dirs.forEach(function(dir) { %>
-          <a href="/<%= dir.path %>" class="list-item">
+          <a href="/<%= dir.url %>" class="list-item">
             <span class="list-item-icon">
               <svg viewBox="0 0 23 20" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path d="M1.3 18.3V1.6h8.3v3.1h11.5v13.6H1.3Z" stroke="#fff" stroke-width="2.3"/>
@@ -73,7 +73,7 @@
         <% }) %>
 
         <% it.files.forEach(function(file) { %>
-          <a href="/<%= file.path %>" class="list-item">
+          <a href="/<%= file.url %>" class="list-item">
             <span class="list-item-icon">
               <% if (file.isHtml) { %>
                 <svg viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">

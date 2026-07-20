@@ -30,6 +30,8 @@ const { getNodeContent } = require('./api-client');
 const { calculateChecksum, isLocalNewer } = require('./utils');
 const { SYNC_CONFIG } = require('./constants');
 const nodeMap = require('./node-map');
+const { getConsentRegistry, resolveWritePath } = require('../main/utils/path-resolver');
+const { withFileLock } = require('../main/utils/write-queue');
 
 module.exports = {
   async _applyRemoteFsChange(paths, fn) {
@@ -84,57 +86,70 @@ module.exports = {
   async _applyNodeSavedSite(data) {
     const localFilename = data.path;
     this.resolveContainedPath(localFilename);
-    const localPath = path.join(this.syncFolder, localFilename);
+    // A1/A3: canonical resolved path — the file to write AND the queue key,
+    // resolved through the same registry the route server uses.
+    const localPath = await resolveWritePath(getConsentRegistry(this.syncFolder), localFilename);
 
     if (typeof data.content !== 'string') {
       throw new Error(`node-saved for site ${data.nodeId} missing inline content`);
     }
 
-    let preApplyContent = null;
-    try {
-      const localContent = await readFile(localPath);
-      preApplyContent = typeof localContent === 'string' ? localContent : localContent.toString('utf8');
-      const localChecksum = await calculateChecksum(localContent);
-      if (localChecksum === data.checksum) {
-        console.log(`[SYNC] SSE node-saved: ${data.path} already up to date`);
-        const inode = await nodeMap.getInode(localPath);
-        await this.repo.set(data.nodeId, {
-          type: 'site',
-          path: localFilename,
-          checksum: localChecksum,
-          inode,
-          syncedAt: Date.now()
-        });
-        return;
+    // A1: read, checksum-compare, back up and write are ONE critical section.
+    // Reading the local body outside it would let a concurrent /save land in
+    // between, so an up-to-date check could pass against bytes that are already
+    // stale by the time the write happens.
+    const applied = await withFileLock(localPath, async () => {
+      let preApplyContent = null;
+      try {
+        const localContent = await readFile(localPath);
+        preApplyContent = typeof localContent === 'string' ? localContent : localContent.toString('utf8');
+        const localChecksum = await calculateChecksum(localContent);
+        if (localChecksum === data.checksum) {
+          console.log(`[SYNC] SSE node-saved: ${data.path} already up to date`);
+          const inode = await nodeMap.getInode(localPath);
+          await this.repo.set(data.nodeId, {
+            type: 'site',
+            path: localFilename,
+            checksum: localChecksum,
+            inode,
+            syncedAt: Date.now()
+          });
+          return { upToDate: true, preApplyContent };
+        }
+      } catch (e) {
+        // File doesn't exist locally yet — fall through to write
       }
-    } catch (e) {
-      // File doesn't exist locally yet — fall through to write
-    }
 
-    // ANCILLARY: siteName without extension → maps to sites-versions/{siteName}/.
-    const siteName = localFilename.replace(/\.(html|htmlclay)$/i, '');
-    await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
+      // ANCILLARY: siteName without extension → maps to sites-versions/{siteName}/.
+      const siteName = localFilename.replace(/\.(html|htmlclay)$/i, '');
+      await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
 
-    await ensureDirectory(path.dirname(localPath));
+      await ensureDirectory(path.dirname(localPath));
 
-    // liveSync channel key = full path with extension (Rule 1 / Rule 2).
-    liveSync.markBrowserSave(localFilename);
+      // liveSync channel key = full path with extension (Rule 1 / Rule 2).
+      liveSync.markBrowserSave(localFilename);
 
-    await writeFile(localPath, data.content, new Date(data.modifiedAt));
+      await writeFile(localPath, data.content, new Date(data.modifiedAt));
+
+      const inode = await nodeMap.getInode(localPath);
+      const cs = await calculateChecksum(data.content);
+      await this.repo.set(data.nodeId, {
+        type: 'site',
+        path: localFilename,
+        checksum: cs,
+        inode,
+        syncedAt: Date.now()
+      });
+
+      return { upToDate: false, preApplyContent };
+    });
+
+    if (applied.upToDate) return;
+    const preApplyContent = applied.preApplyContent;
 
     // Morph view-mode tabs with the just-persisted content. Edit-mode tabs get
     // the platform's live-sync relay (pre-strip snapshot) on the live lane.
     liveSync.broadcast(localFilename, { html: data.content, sender: 'sync-engine' }, { lane: 'saved' });
-
-    const inode = await nodeMap.getInode(localPath);
-    const cs = await calculateChecksum(data.content);
-    await this.repo.set(data.nodeId, {
-      type: 'site',
-      path: localFilename,
-      checksum: cs,
-      inode,
-      syncedAt: Date.now()
-    });
 
     console.log(`[SYNC] SSE node-saved: Wrote site ${localFilename}`);
     this.stats.filesDownloaded++;

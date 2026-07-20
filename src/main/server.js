@@ -2,8 +2,18 @@ const express = require('express');
 const fs = require('fs').promises;
 const path = require('upath');
 const { Eta } = require('eta');
-const { validateFileName } = require('../sync-engine/validation.js');
 const { createBackup } = require('./utils/backup.js');
+const {
+  PathError,
+  RESERVED_ROOT_SEGMENTS,
+  getConsentRegistry,
+  decodeOnce,
+  validateSegments,
+  resolveReadPath,
+  resolveWritePath
+} = require('./utils/path-resolver.js');
+const { withFileLock, atomicWriteFile } = require('./utils/write-queue.js');
+const { pruneAllVersions } = require('./utils/prune-versions.js');
 const { scopeTailwindLink } = require('./utils/tailwind-scoping.js');
 const {
   compileTailwind,
@@ -48,40 +58,47 @@ let app = null;
 const PORT = 4321;
 let connections = new Set();
 
+// Local file-serving validation. Deliberately NOT the sync engine's
+// validateFileName (sync-engine/validation.js), which enforces a lowercase-ASCII
+// *site-name* policy for cloud sync. A file on your own disk may contain spaces,
+// `%`, `#` and non-ASCII, and must stay reachable locally even when its name
+// could never be a hosted site name.
 function validateAndResolvePath(name, baseDir) {
-  if (typeof name !== 'string' ||
-      name.length === 0 ||
-      name.length > 255 ||
-      name.includes('..') ||
-      name.includes('\\') ||
-      name.startsWith('.') ||
-      name.startsWith('/') ||
-      (!name.endsWith('.html') && !name.endsWith('.htmlclay')) ||
-      path.isAbsolute(name) ||
-      !/^[\w/.-]+$/.test(name) ||
-      name.split('/').some(seg => seg.startsWith('.') || seg.length === 0)) {
+  if (typeof name !== 'string' || !/\.(html|htmlclay)$/.test(name)) {
     return { error: 'Invalid file path' };
   }
 
-  const baseName = name.split('/').pop();
-  const result = validateFileName(baseName);
-  if (!result.valid) {
-    return { error: result.error };
+  let segments;
+  try {
+    segments = validateSegments(name);
+  } catch {
+    return { error: 'Invalid file path' };
   }
 
   const filePath = path.join(baseDir, name);
   const resolvedPath = path.resolve(filePath);
   const resolvedBase = path.resolve(baseDir);
 
-  if (!resolvedPath.startsWith(resolvedBase + path.sep)) {
+  if (!resolvedPath.startsWith(resolvedBase + '/')) {
     return { error: 'Path escapes base directory' };
   }
 
-  return { filePath, resolvedPath, baseName };
+  return { filePath, resolvedPath, baseName: segments[segments.length - 1] };
 }
 
+// Name check + phase-4 canonical write resolution. The returned path is both the
+// file to write and the write-queue key; every writer must use exactly this.
+async function resolveWriteTarget(paths, name) {
+  await paths.ready();
+  const validated = validateAndResolvePath(name, paths.baseReal);
+  if (validated.error) throw new PathError(400, validated.error);
+  return await resolveWritePath(paths, name);
+}
+
+// Serve the file's ORIGINAL BYTES. Reading as utf8 and re-encoding on the way
+// out silently rewrites any file that is not valid UTF-8.
 async function serveHtml(res, filePath) {
-  const html = await fs.readFile(filePath, 'utf8');
+  const html = await fs.readFile(filePath);
   res.set('Content-Type', 'text/html');
   return res.send(html);
 }
@@ -107,6 +124,15 @@ function resolveResourceFromHref(href) {
     pathname = href;
   }
 
+  // Decode exactly once, for the same reason the static catch-all does: a
+  // browser sends `Page-URL: .../50%25%20off.html`, and without this the save
+  // would land in a NEW file literally named `50%25%20off.html` while the real
+  // one sat untouched. A malformed `%` leaves the value as-is so the caller's
+  // own validation rejects it.
+  try {
+    pathname = decodeURIComponent(pathname);
+  } catch {}
+
   if (pathname === '/') return 'index.html';
 
   pathname = pathname.replace(/^\//, '');
@@ -131,14 +157,42 @@ function stripSystemRouteMarker(url) {
   return url;
 }
 
+// True when a hostname (already parsed out of a URL or a Host header) names this
+// machine's loopback interface. The whole 127/8 block counts, as does every
+// spelling of IPv6 loopback — `new URL` normalizes `[0:0:0:0:0:0:0:1]` to `[::1]`,
+// and the brackets are stripped before comparison.
+function isLoopbackHostname(hostname) {
+  if (typeof hostname !== 'string' || hostname.length === 0) return false;
+  const bare = hostname.startsWith('[') && hostname.endsWith(']')
+    ? hostname.slice(1, -1)
+    : hostname;
+  return bare === 'localhost' ||
+         bare === '::1' ||
+         bare === '0:0:0:0:0:0:0:1' ||
+         /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(bare);
+}
+
 // True when an Origin header value points at this machine's loopback interface.
 // Any port is accepted: the served port varies (tests bind ephemeral ports), and
 // a page on another loopback port is code already running on the user's machine,
 // which can reach the bus directly anyway. Remote origins are what this blocks.
 function isLoopbackOrigin(origin) {
   try {
-    const { hostname } = new URL(origin);
-    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1';
+    return isLoopbackHostname(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+
+// True when a Host header addresses this server legitimately. Parsed through
+// `new URL` rather than split on ':' — splitting mangles an IPv6 literal like
+// `[::1]:4321` into `[` + `:1]:4321`. Userinfo and path tricks (`localhost@evil.com`,
+// `localhost/../evil.com`) fall out correctly because URL parsing resolves them
+// to the real hostname before the comparison.
+function isLoopbackHostHeader(hostHeader) {
+  if (typeof hostHeader !== 'string' || hostHeader.length === 0) return false;
+  try {
+    return isLoopbackHostname(new URL(`http://${hostHeader}`).hostname);
   } catch {
     return false;
   }
@@ -149,6 +203,32 @@ function isLoopbackOrigin(origin) {
 // via supertest against an ephemeral port instead of the hardcoded 4321.
 function createApp(baseDir, devHooks = null, isKnownPath = null) {
     const app = express();
+
+    // Canonical path resolution + symlink consent for every route below. The
+    // open-time walk is kicked off here so a folder that legitimately links out
+    // of tree keeps working; links created later are not registered and are
+    // refused on both reads and writes.
+    const paths = getConsentRegistry(baseDir);
+    paths.rescan();
+
+    // Derived artifacts (Tailwind CSS) go through the same phase-2 + phase-4
+    // pass as user files, so a crafted site name can't steer a generated file
+    // out of the served folder.
+    const resolveDerivedWrite = async (relPath) => {
+      validateSegments(relPath);
+      return await resolveWritePath(paths, relPath);
+    };
+
+    // DNS-rebinding hardening for the WHOLE origin, not just /bus. Binding to
+    // localhost does not help: a rebound hostname resolves to 127.0.0.1 and the
+    // request arrives here carrying the attacker's Host header. A loopback Host
+    // is the only legitimate way to address this server.
+    app.use((req, res, next) => {
+      if (!isLoopbackHostHeader(req.headers.host)) {
+        return res.status(403).send('Invalid Host header');
+      }
+      next();
+    });
 
     // `/_/<action>` system-route marker: forward `/_/`-prefixed requests to the
     // bare route so URLs emitted by newer hyperclayjs (e.g. `/_/save`,
@@ -307,9 +387,11 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     // same-origin EventSource sends no Origin, so the Origin check on send
     // can't protect subscribe. A loopback Host is the only legitimate way to
     // address this server.
+    // (The global Host gate above already rejects a rebound hostname; this stays
+    // as the bus's own explicit, JSON-shaped statement of the same rule.)
     app.use('/bus', (req, res, next) => {
       if (!req.originalUrl.startsWith('/_/bus/')) return next();
-      if (!isLoopbackOrigin(`http://${req.headers.host}`)) {
+      if (!isLoopbackHostHeader(req.headers.host)) {
         return res.status(403).json({ error: 'Bus is localhost-only' });
       }
       next();
@@ -430,14 +512,18 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         content = req.body;
       }
 
-      const validated = validateAndResolvePath(name, baseDir);
-      if (validated.error) {
-        return res.status(400).json({
-          msg: validated.error,
+      // Phase-4 canonical resolution. `filePath` is the real path on disk (an
+      // in-tree symlink is followed only when it was consented at open time),
+      // and it is also the write-queue key below.
+      let filePath;
+      try {
+        filePath = await resolveWriteTarget(paths, name);
+      } catch (error) {
+        return res.status(error.status || 400).json({
+          msg: error.message,
           msgType: 'error'
         });
       }
-      const filePath = validated.filePath;
 
       if (isKnownPath && !isKnownPath(name, filePath)) {
         return res.status(409).json({
@@ -455,6 +541,11 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       }
 
       try {
+        // A1: the queue wraps the ENTIRE read-modify-write region — the pre-write
+        // read, the first-save check, the backup, the write, and the derived
+        // sidecar/Tailwind work. Serializing only the write would still let two
+        // concurrent saves read the same stale base and compute from it.
+        await withFileLock(filePath, async () => {
         // Ensure directory exists for subfolder files
         await fs.mkdir(path.dirname(filePath), { recursive: true });
 
@@ -499,8 +590,9 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         // Create backup of the new content
         await createBackup(baseDir, backupName, content);
 
-        // Write file (creates if not exists, overwrites if exists)
-        await fs.writeFile(filePath, content, 'utf8');
+        // Write via temp + rename: a crash or a full disk can never leave the
+        // served file holding partial bytes.
+        await atomicWriteFile(filePath, content);
 
         // Mark as browser save so file watcher doesn't send redundant notification.
         // Key is full path with extension so it matches engine-watcher's wasBrowserSave check.
@@ -538,9 +630,8 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         const tailwindName = getTailwindCssName(content);
         if (tailwindName) {
           const css = await compileTailwind(content);
-          const cssPath = path.join(baseDir, 'tailwindcss', `${tailwindName}.css`);
-          await fs.mkdir(path.dirname(cssPath), { recursive: true });
-          await fs.writeFile(cssPath, css, 'utf8');
+          const cssPath = await resolveDerivedWrite(`tailwindcss/${tailwindName}.css`);
+          await atomicWriteFile(cssPath, css);
           console.log(`Generated Tailwind CSS: tailwindcss/${tailwindName}.css`);
         }
 
@@ -551,6 +642,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
           pendingSnapshots.set(name, { html: snapshotHtml, userDriven, timestamp: Date.now() });
           console.log(`[Platform Sync] Cached snapshot for ${name}`);
         }
+        });
 
         res.status(200).json({
           msg: 'Saved',
@@ -573,19 +665,21 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     // Page-URL header — the local server hosts many files by name.
     app.use('/data-loss', express.json({ limit: '1mb' }));
 
-    const resolveGuardFile = (req) => {
+    const resolveGuardFile = async (req) => {
       const raw = (req.query && req.query.file) ||
         (req.body && typeof req.body === 'object' && req.body.file) ||
         (req.headers && req.headers['page-url']) || '';
       if (!raw) return null;
       const name = resolveResourceFromHref(String(raw));
-      const validated = validateAndResolvePath(name, baseDir);
-      if (validated.error) return null;
-      return { name, filePath: validated.filePath };
+      try {
+        return { name, filePath: await resolveWriteTarget(paths, name) };
+      } catch {
+        return null;
+      }
     };
 
     app.get('/data-loss', async (req, res) => {
-      const resolved = resolveGuardFile(req);
+      const resolved = await resolveGuardFile(req);
       if (!resolved) return res.json({ event: null });
       let currentHtml = '';
       try { currentHtml = await fs.readFile(resolved.filePath, 'utf8'); } catch {}
@@ -594,22 +688,19 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     });
 
     app.post(/^\/data-loss(?:\/(.+))?$/, async (req, res) => {
-      const resolved = resolveGuardFile(req);
+      const resolved = await resolveGuardFile(req);
       if (!resolved) return res.status(400).json({ error: 'file required' });
       const id = req.params[0] || (req.body && req.body.id) || null;
       const choice = req.body && req.body.choice;
       if (!['dismiss', 'revert', 'restore'].includes(choice)) {
         return res.status(400).json({ error: 'choice must be dismiss | revert | restore' });
       }
-      let currentHtml = '';
-      try { currentHtml = await fs.readFile(resolved.filePath, 'utf8'); } catch {}
 
       const writeBack = async (html) => {
         const backupName = resolved.name.replace(/\.(html|htmlclay)$/, '');
         const formatted = formatHtml(scopeTailwindLink(resolved.name, html));
-        await fs.mkdir(path.dirname(resolved.filePath), { recursive: true });
         await createBackup(baseDir, backupName, formatted);
-        await fs.writeFile(resolved.filePath, formatted, 'utf8');
+        await atomicWriteFile(resolved.filePath, formatted);
         // Resolving the guard writes through this app, not an external editor.
         // Mark it so the file watcher doesn't treat the revert/restore as a fresh
         // change and re-run the guard (which would raise a spurious new event).
@@ -621,15 +712,21 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         if (tailwindName) {
           try {
             const css = await compileTailwind(formatted);
-            const cssPath = path.join(baseDir, 'tailwindcss', `${tailwindName}.css`);
-            await fs.mkdir(path.dirname(cssPath), { recursive: true });
-            await fs.writeFile(cssPath, css, 'utf8');
+            const cssPath = await resolveDerivedWrite(`tailwindcss/${tailwindName}.css`);
+            await atomicWriteFile(cssPath, css);
           } catch {}
         }
       };
 
-      const result = await dataGuard.resolveGuard({
-        baseDir, name: resolved.name, id, choice, currentHtml, writeBack,
+      // A1: the restore region is read-modify-write too — the current body is
+      // read, the guard decides against it, and writeBack publishes. All of it
+      // holds the same canonical-path queue slot a concurrent /save would need.
+      const result = await withFileLock(resolved.filePath, async () => {
+        let currentHtml = '';
+        try { currentHtml = await fs.readFile(resolved.filePath, 'utf8'); } catch {}
+        return await dataGuard.resolveGuard({
+          baseDir, name: resolved.name, id, choice, currentHtml, writeBack,
+        });
       });
       if (!result.ok) return res.status(result.statusCode || 400).json({ error: result.error });
       // rider 1: after a local Dismiss, nudge the platform (and thence the owner's
@@ -654,19 +751,18 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     // single path segment, which silently broke nested sites.
     app.get(/^\/tailwindcss\/(.+)\.css$/, async (req, res) => {
       res.setHeader('Content-Type', 'text/css');
-      const name = req.params[0]; // may contain slashes, e.g. "blog/post"
-
-      if (name.includes('..') || name.startsWith('/') || path.isAbsolute(name)) {
-        return res.status(400).send('');
-      }
-      const cssPath = path.join(baseDir, 'tailwindcss', `${name}.css`);
-      const htmlPath = path.join(baseDir, `${name}.html`);
-      const resolvedBase = path.resolve(baseDir);
-      const resolvedCss = path.resolve(cssPath);
-      const resolvedHtml = path.resolve(htmlPath);
-      if (!resolvedCss.startsWith(resolvedBase + path.sep) ||
-          !resolvedHtml.startsWith(resolvedBase + path.sep)) {
-        return res.status(403).send('');
+      // Same canonical pass as every other consumer: this route used to rebuild
+      // raw paths and follow symlinks on its own.
+      let cssPath;
+      let htmlPath;
+      try {
+        // Express already decodes regex-route captures (router/layer.js decode_param),
+        // so decoding here again would 400 on "50% off" and mis-resolve "a%20b".
+        const name = req.params[0]; // may contain slashes, e.g. "blog/post"
+        cssPath = await resolveDerivedWrite(`tailwindcss/${name}.css`);
+        htmlPath = await resolveDerivedWrite(`${name}.html`);
+      } catch (error) {
+        return res.status(error.status === 400 ? 400 : 403).send('');
       }
 
       try {
@@ -677,8 +773,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       try {
         const html = await fs.readFile(htmlPath, 'utf8');
         const css = await compileTailwind(html);
-        await fs.mkdir(path.dirname(cssPath), { recursive: true });
-        await fs.writeFile(cssPath, css, 'utf8');
+        await atomicWriteFile(cssPath, css);
         console.log(`Auto-generated Tailwind CSS: tailwindcss/${name}.css`);
         return res.send(css);
       } catch {
@@ -694,13 +789,17 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     // .htmlclay sites exist locally too.
     app.get(/^\/api\/(.+)\.(html|htmlclay)$/, async (req, res, next) => {
       if (!req.originalUrl.startsWith('/_/api/')) return next();
-      const name = `${req.params[0]}.${req.params[1]}`;
-      const validated = validateAndResolvePath(name, baseDir);
-      if (validated.error) {
-        return res.status(400).json({ error: validated.error });
+      let name;
+      let sourcePath;
+      try {
+        // Already decoded by Express; see the /tailwindcss route above.
+        name = `${req.params[0]}.${req.params[1]}`;
+        sourcePath = await resolveWriteTarget(paths, name);
+      } catch (error) {
+        return res.status(error.status || 400).json({ error: error.message });
       }
       try {
-        return sendApiResult(res, await serveSiteApiLocal(baseDir, name));
+        return sendApiResult(res, await serveSiteApiLocal(baseDir, name, { sourcePath }));
       } catch (error) {
         console.error('Site API endpoint error:', error);
         return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });
@@ -711,7 +810,8 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     app.get(/^\/api\/?$/, async (req, res, next) => {
       if (!req.originalUrl.startsWith('/_/api')) return next();
       try {
-        return sendApiResult(res, await serveSiteApiLocal(baseDir, 'index.html'));
+        const sourcePath = await resolveWriteTarget(paths, 'index.html');
+        return sendApiResult(res, await serveSiteApiLocal(baseDir, 'index.html', { sourcePath }));
       } catch (error) {
         console.error('Site API endpoint error:', error);
         return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });
@@ -725,14 +825,18 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       if (req.query.data === undefined) return next();
       const requestedPath = req.path.replace(/^\//, '');
       const htmlMatch = requestedPath.match(/^(.*?\.html(?:clay)?)(\/.*)?$/);
-      const name = htmlMatch ? htmlMatch[1] : (req.path === '/' ? 'index.html' : null);
-      if (!name) return next();
-      const validated = validateAndResolvePath(name, baseDir);
-      if (validated.error) {
-        return res.status(400).json({ error: validated.error });
+      const rawName = htmlMatch ? htmlMatch[1] : (req.path === '/' ? 'index.html' : null);
+      if (!rawName) return next();
+      let name;
+      let sourcePath;
+      try {
+        name = decodeOnce(rawName);
+        sourcePath = await resolveWriteTarget(paths, name);
+      } catch (error) {
+        return res.status(error.status || 400).json({ error: error.message });
       }
       try {
-        return sendApiResult(res, await extractSiteDataLocal(baseDir, name, req.query.data));
+        return sendApiResult(res, await extractSiteDataLocal(baseDir, name, req.query.data, { sourcePath }));
       } catch (error) {
         console.error('Data endpoint error:', error);
         return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });
@@ -766,58 +870,69 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     // URLs with .html/.htmlclay extension: everything after the extension is a SPA route
     // e.g. /blog/app.htmlclay/dashboard → serves blog/app.htmlclay, SPA route: /dashboard
     app.use(async (req, res, next) => {
-      const urlPath = req.path;
-      const resolvedBaseDir = path.resolve(baseDir);
-
-      // Root always shows directory listing
-      if (urlPath === '/') {
-        return serveDirListing(res, baseDir, baseDir);
-      }
-
-      const requestedPath = urlPath.substring(1);
-
-      // Check if URL contains an .html or .htmlclay segment (SPA-aware routing)
-      const htmlMatch = requestedPath.match(/^(.*?\.html(?:clay)?)(\/.*)?$/);
-      if (htmlMatch) {
-        const filePath = path.join(baseDir, htmlMatch[1]);
-        const resolvedPath = path.resolve(filePath);
-
-        if (!resolvedPath.startsWith(resolvedBaseDir + path.sep)) {
-          return res.status(403).send('Access denied');
-        }
-
-        try {
-          await fs.stat(resolvedPath);
-          return serveHtml(res, resolvedPath);
-        } catch {
-          return res.status(404).send('File not found');
-        }
-      }
-
-      // No HTML extension in URL — serve static files or directory listings
-      const filePath = path.join(baseDir, requestedPath);
-      const resolvedPath = path.resolve(filePath);
-
-      if (!resolvedPath.startsWith(resolvedBaseDir + path.sep) && resolvedPath !== resolvedBaseDir) {
-        return res.status(403).send('Access denied');
-      }
-
       try {
-        const stats = await fs.stat(resolvedPath);
-        if (stats.isDirectory()) {
-          return serveDirListing(res, resolvedPath, baseDir);
+        await paths.ready();
+
+        // Phase 1: decode exactly once. Express never decodes req.path, so
+        // before this a file with a space or any non-ASCII name was unreachable.
+        // A malformed `%` throws URIError, which decodeOnce turns into a 400.
+        const urlPath = decodeOnce(req.path);
+
+        // Root always shows directory listing
+        if (urlPath === '/') {
+          return await serveDirListing(res, paths.baseReal, paths.baseReal);
         }
-        return res.sendFile(resolvedPath);
-      } catch {
-        return res.status(404).send('File not found');
+
+        const requestedPath = urlPath.substring(1);
+
+        // Check if URL contains an .html or .htmlclay segment (SPA-aware routing)
+        const htmlMatch = requestedPath.match(/^(.*?\.html(?:clay)?)(\/.*)?$/);
+        if (htmlMatch) {
+          // Phases 2 + 3. A read error now reaches the error handler with its
+          // real status instead of being flattened into a 404 — and `await`
+          // matters: Express 4 does not consume a rejected async handler's
+          // promise, so an unawaited serveHtml rejection hangs the request.
+          validateSegments(htmlMatch[1]);
+          const realPath = await resolveReadPath(paths, htmlMatch[1]);
+          const stats = await fs.stat(realPath);
+          if (stats.isDirectory()) throw new PathError(404, 'File not found');
+          return await serveHtml(res, realPath);
+        }
+
+        // No HTML extension in URL — serve static files or directory listings.
+        // A bare `/` was handled above, so every path here has segments.
+        validateSegments(requestedPath);
+        const realPath = await resolveReadPath(paths, requestedPath);
+        const stats = await fs.stat(realPath);
+        if (stats.isDirectory()) {
+          return await serveDirListing(res, realPath, paths.baseReal);
+        }
+        return res.sendFile(realPath);
+      } catch (error) {
+        return next(error);
       }
     });
 
-    // Catch-all error handler for unhandled Express errors
+    // A4: honor err.status and res.headersSent. This used to force a 500 on
+    // every failure, including a client-aborted sendFile, where it then threw
+    // again setting headers on an already-sent response.
     app.use((err, req, res, next) => {
-      console.error('[Server] Unhandled error:', err);
-      errorLogger.error('Server', `Unhandled error: ${req.method} ${req.path}`, err);
-      res.status(500).send('Internal server error');
+      const status = err.status || err.statusCode ||
+        (err.code === 'ENOENT' || err.code === 'ENOTDIR' ? 404 : 500);
+
+      // Let Express's default handler destroy the socket; we cannot re-send.
+      if (res.headersSent) return next(err);
+
+      if (status >= 500) {
+        console.error('[Server] Unhandled error:', err);
+        errorLogger.error('Server', `Unhandled error: ${req.method} ${req.path}`, err);
+      }
+
+      const body = status === 404 ? 'File not found'
+        : status === 403 ? 'Access denied'
+        : status === 400 ? 'Bad request'
+        : 'Internal server error';
+      res.status(status).send(body);
     });
 
   return app;
@@ -848,6 +963,15 @@ function startServer(baseDir, devHooks = null, isKnownPath = null) {
       }
       console.log(`Hyperclay Local Server running on http://localhost:${PORT}`);
       console.log(`Serving files from: ${baseDir}`);
+
+      // A5: one retention sweep at startup, so a folder that has been accumulating
+      // versions for months gets trimmed even if nothing is saved this session.
+      pruneAllVersions(baseDir)
+        .then(({ sites, deleted }) => {
+          if (deleted) console.log(`[BACKUP] Startup prune: removed ${deleted} version(s) across ${sites} site(s)`);
+        })
+        .catch(err => console.error('[BACKUP] Startup prune failed (non-fatal):', err && err.message ? err.message : err));
+
       resolve();
     });
 
@@ -909,6 +1033,28 @@ function isServerRunning() {
   return server !== null;
 }
 
+// A0. The listing emits displayName through Eta's RAW tag (`<%~`) so the <wbr>
+// markup below survives, which means the filename must be escaped BEFORE the
+// breaks go in. Escaping first is safe for addWordBreaks: no entity produced
+// here contains `-`, `_`, `/`, `.`, a lowercase→uppercase pair, or a
+// letter-followed-by-digit pair, so no rule can ever split one apart.
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Eta escapes an href for HTML but never percent-encodes it, so `#`, `?` and `%`
+// in a name produced broken links — and once the catch-all decodes exactly once,
+// `50% off.html` would throw URIError on the way back in. Encode per segment so
+// the separating slashes survive.
+function encodePathSegments(relPath) {
+  return String(relPath).split('/').map(encodeURIComponent).join('/');
+}
+
 function addWordBreaks(name) {
   // Rule 1: After separators (-, _, /)
   let result = name.replace(/([-_/])/g, '$1<wbr>');
@@ -939,21 +1085,29 @@ async function serveDirListing(res, dirPath, baseDir) {
     const relPath = path.relative(baseDir, dirPath);
     const displayPath = relPath === '' ? '' : relPath;
 
-    // Sort entries: directories first, then files
+    // Sort entries: directories first, then files. `sites-versions` is an
+    // internal backup store, not user content — the listing must not advertise
+    // it any more than the catch-all will serve it.
+    const isVisible = (entry) =>
+      !entry.name.startsWith('.') &&
+      !(displayPath === '' && RESERVED_ROOT_SEGMENTS.has(entry.name));
+
     const dirs = entries
-      .filter(entry => entry.isDirectory() && !entry.name.startsWith('.'))
+      .filter(entry => entry.isDirectory() && isVisible(entry))
       .map(entry => ({
         name: entry.name,
-        displayName: addWordBreaks(entry.name),
-        path: displayPath ? `${displayPath}/${entry.name}` : entry.name
+        displayName: addWordBreaks(escapeHtml(entry.name)),
+        path: displayPath ? `${displayPath}/${entry.name}` : entry.name,
+        url: encodePathSegments(displayPath ? `${displayPath}/${entry.name}` : entry.name)
       }));
 
     const files = entries
-      .filter(entry => entry.isFile() && !entry.name.startsWith('.'))
+      .filter(entry => entry.isFile() && isVisible(entry))
       .map(entry => ({
         name: entry.name,
-        displayName: addWordBreaks(entry.name),
+        displayName: addWordBreaks(escapeHtml(entry.name)),
         path: displayPath ? `${displayPath}/${entry.name}` : entry.name,
+        url: encodePathSegments(displayPath ? `${displayPath}/${entry.name}` : entry.name),
         isHtml: entry.name.endsWith('.html') || entry.name.endsWith('.htmlclay')
       }));
 
@@ -966,7 +1120,8 @@ async function serveDirListing(res, dirPath, baseDir) {
         currentPath = currentPath ? `${currentPath}/${part}` : part;
         breadcrumbs.push({
           name: part,
-          path: '/' + currentPath
+          path: '/' + currentPath,
+          url: '/' + encodePathSegments(currentPath)
         });
       }
     }
@@ -998,5 +1153,10 @@ module.exports = {
   resolveResourceFromHref,
   validateAndResolvePath,
   stripSystemRouteMarker,
-  isLoopbackOrigin
+  isLoopbackOrigin,
+  isLoopbackHostHeader,
+  isLoopbackHostname,
+  escapeHtml,
+  encodePathSegments,
+  addWordBreaks
 };

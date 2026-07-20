@@ -33,6 +33,7 @@ jest.mock('../../src/sync-engine/file-operations');
 jest.mock('../../src/sync-engine/node-map');
 
 const path = require('path');
+const realFs = require('fs');
 const fileOps = require('../../src/sync-engine/file-operations');
 const apiClient = require('../../src/sync-engine/api-client');
 const nodeMapModule = require('../../src/sync-engine/node-map');
@@ -42,6 +43,10 @@ const EchoWindow = require('../../src/sync-engine/state/echo-window');
 
 let syncEngine;
 let liveSyncMock;
+
+// The sync folder as path-resolver canonicalizes it: the folder itself does not
+// exist, so resolution runs through its nearest existing ancestor.
+const canonicalSyncFolder = path.join(realFs.realpathSync('/tmp'), 'test-sync');
 
 beforeEach(() => {
   jest.useFakeTimers();
@@ -120,8 +125,11 @@ describe('handleNodeSaved', () => {
         modifiedAt: '2026-04-08T12:00:00Z'
       });
 
+      // The SSE apply resolves its write target canonically (path-resolver
+      // phase 4) before writing, so the path handed to writeFile is the real
+      // one — on macOS /tmp is itself a symlink to /private/tmp.
       expect(fileOps.writeFile).toHaveBeenCalledWith(
-        path.join('/tmp/test-sync', 'index.html'),
+        path.join(canonicalSyncFolder, 'index.html'),
         '<html>hi</html>',
         expect.any(Date)
       );

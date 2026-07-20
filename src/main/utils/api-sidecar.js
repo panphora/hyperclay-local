@@ -17,8 +17,27 @@
 const fs = require('fs').promises;
 const path = require('upath');
 const { extractViaTag } = require('./data-extractor');
+const { realpathNearestParent, isContained } = require('./path-resolver');
+const { atomicWriteFile } = require('./write-queue');
 
 const SIDECAR_DIR = '.hyperclay/api';
+
+// Phase-4 resolution for the sidecar itself: canonicalize the nearest existing
+// parent (the file usually does not exist yet), then recheck containment.
+async function resolveSidecarWritePath(baseDir, abs) {
+  const parentReal = await realpathNearestParent(path.dirname(abs));
+  const target = path.join(parentReal, path.basename(abs));
+  // Compare against the CANONICAL base, not the lexical one — on macOS the
+  // served folder commonly sits under the /var -> /private/var symlink.
+  let baseReal = path.resolve(baseDir);
+  try {
+    baseReal = path.resolve(await fs.realpath(baseDir));
+  } catch {}
+  if (!isContained(baseReal, target)) {
+    throw new Error('Sidecar path escapes base directory');
+  }
+  return target;
+}
 
 // "blog/post.html" -> ".hyperclay/api/blog/post.json" (strips .html / .htmlclay,
 // mirroring the platform's sidecarFileName).
@@ -47,8 +66,11 @@ async function writeApiSidecarData(baseDir, name, data) {
       await unlinkIfPresent(abs);
       return;
     }
-    await fs.mkdir(path.dirname(abs), { recursive: true });
-    await fs.writeFile(abs, JSON.stringify(data), 'utf8');
+    // Canonicalize the nearest existing parent before writing, so a symlink
+    // planted inside .hyperclay/api can't redirect the write out of the folder,
+    // and publish atomically like every other writer.
+    const target = await resolveSidecarWritePath(baseDir, abs);
+    await atomicWriteFile(target, JSON.stringify(data));
   } catch (e) {
     console.error('writeApiSidecarData failed (non-fatal):', e && e.message ? e.message : e);
   }
@@ -106,6 +128,7 @@ async function unlinkIfPresent(abs) {
 module.exports = {
   sidecarRelPath,
   resolveSidecarPath,
+  resolveSidecarWritePath,
   writeApiSidecarData,
   writeApiSidecar,
   deleteApiSidecar,

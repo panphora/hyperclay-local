@@ -28,6 +28,8 @@ const { validateFileName, validateFullPath, validateUploadPath } = require('./va
 const { ERROR_PRIORITY } = require('./constants');
 const nodeMap = require('./node-map');
 const dataGuard = require('../main/data-loss-guard');
+const { getConsentRegistry, resolveWritePath } = require('../main/utils/path-resolver');
+const { withFileLock } = require('../main/utils/write-queue');
 
 module.exports = {
   /**
@@ -46,32 +48,44 @@ module.exports = {
       );
 
       this.resolveContainedPath(relativePath);
-      const localPath = path.join(this.syncFolder, relativePath);
+      // A1/A3: canonical resolved path — the file to write AND the queue key.
+      // The route server resolves through the same registry, so a browser /save
+      // and this download contend for one slot instead of two.
+      const localPath = await resolveWritePath(getConsentRegistry(this.syncFolder), relativePath);
 
-      // Data-clobber guard: capture the last-good local body before overwriting,
-      // so a synced-down (external) write that destroys saved data is detectable.
-      // markBrowserSave() below suppresses the watcher, so this is the only place
-      // the guard can see a poll/initial-sync download.
       const isHtmlSite = /\.(html|htmlclay)$/i.test(relativePath);
-      let preDownloadContent = null;
-      if (isHtmlSite) {
-        try {
-          const existing = await readFile(localPath);
-          preDownloadContent = typeof existing === 'string' ? existing : existing.toString('utf8');
-        } catch {
-          // No local file yet — nothing to clobber.
+
+      // A1: the whole read-modify-write region is serialized. Reading the
+      // pre-download body outside the lock would let a concurrent /save land
+      // between the read and the write, so the guard would compare against a
+      // body that is no longer what we are about to overwrite.
+      const preDownloadContent = await withFileLock(localPath, async () => {
+        // Data-clobber guard: capture the last-good local body before overwriting,
+        // so a synced-down (external) write that destroys saved data is detectable.
+        // markBrowserSave() below suppresses the watcher, so this is the only place
+        // the guard can see a poll/initial-sync download.
+        let previous = null;
+        if (isHtmlSite) {
+          try {
+            const existing = await readFile(localPath);
+            previous = typeof existing === 'string' ? existing : existing.toString('utf8');
+          } catch {
+            // No local file yet — nothing to clobber.
+          }
         }
-      }
 
-      // ANCILLARY: siteName without extension → maps to sites-versions/{siteName}/.
-      const siteName = relativePath.replace(/\.(html|htmlclay)$/i, '');
-      await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
+        // ANCILLARY: siteName without extension → maps to sites-versions/{siteName}/.
+        const siteName = relativePath.replace(/\.(html|htmlclay)$/i, '');
+        await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
 
-      // liveSync channel key = full path with extension.
-      liveSync.markBrowserSave(relativePath);
+        // liveSync channel key = full path with extension.
+        liveSync.markBrowserSave(relativePath);
 
-      // Write file with server modification time (ensures directories exist)
-      await writeFile(localPath, content, modifiedAt);
+        // Write file with server modification time (ensures directories exist)
+        await writeFile(localPath, content, modifiedAt);
+
+        return previous;
+      });
 
       // A synced-down apply is an off-page (external) write from the local
       // perspective; preDownloadContent is the last-good local copy.

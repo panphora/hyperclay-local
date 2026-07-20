@@ -6,6 +6,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('upath'); // Use upath for cross-platform compatibility
 const crypto = require('crypto');
+const { atomicWriteFile } = require('../main/utils/write-queue');
 
 /**
  * Check if a directory entry should be skipped during scanning
@@ -76,12 +77,10 @@ async function readFile(filePath) {
  * Write file ensuring parent directories exist
  */
 async function writeFile(filePath, content, modifiedTime) {
-  // Ensure parent directory exists
-  const dir = path.dirname(filePath);
-  await fs.mkdir(dir, { recursive: true });
-
-  // Write the file
-  await fs.writeFile(filePath, content, 'utf8');
+  // Publish via temp + rename so a crash mid-download can never leave a
+  // half-written site on disk. Callers must already hold the write-queue slot
+  // for this path (see write-queue.js).
+  await atomicWriteFile(filePath, content, 'utf8');
 
   // Set modification time if provided
   if (modifiedTime) {
@@ -222,9 +221,7 @@ async function readFileBuffer(filePath) {
  * Write Buffer to file
  */
 async function writeFileBuffer(filePath, buffer, modifiedTime) {
-  const dir = path.dirname(filePath);
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(filePath, buffer);
+  await atomicWriteFile(filePath, buffer, null);
 
   if (modifiedTime) {
     const mtime = new Date(modifiedTime);

@@ -38,8 +38,11 @@ function mapApiTagError(error) {
 
 // GET /_/api/<name> — tag-driven extraction served from a sidecar.
 // Static-hit when the sidecar is fresh, regenerate-on-miss otherwise.
-async function serveSiteApiLocal(baseDir, name) {
-  const sourcePath = path.join(baseDir, name);
+// `sourcePath`, when given, is the caller's phase-4 canonical resolved path.
+// Rebuilding `path.join(baseDir, name)` here would follow symlinks independently
+// of the one canonical pass in path-resolver.js.
+async function serveSiteApiLocal(baseDir, name, { sourcePath } = {}) {
+  sourcePath = sourcePath || path.join(baseDir, name);
 
   let sourceStat;
   try {
@@ -85,7 +88,7 @@ async function serveSiteApiLocal(baseDir, name) {
 // GET <name>?data={...} — query-driven extraction with relaxed-JSON rules.
 // Note the error discriminators differ from serveSiteApiLocal: this path keys on
 // message.includes('JSON') and has no version-error case (matches the platform).
-async function extractSiteDataLocal(baseDir, name, dataParam) {
+async function extractSiteDataLocal(baseDir, name, dataParam, { sourcePath } = {}) {
   if (!dataParam) {
     return {
       status: 400,
@@ -99,7 +102,7 @@ async function extractSiteDataLocal(baseDir, name, dataParam) {
 
   let html;
   try {
-    html = await fs.readFile(path.join(baseDir, name), 'utf8');
+    html = await fs.readFile(sourcePath || path.join(baseDir, name), 'utf8');
   } catch {
     return {
       status: 404,
