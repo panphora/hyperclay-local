@@ -22,21 +22,56 @@ const { atomicWriteFile } = require('./write-queue');
 
 const SIDECAR_DIR = '.hyperclay/api';
 
+// The CANONICAL base, not the lexical one — on macOS the served folder commonly
+// sits under the /var -> /private/var symlink, so comparing a realpath'd target
+// against a lexical base rejects every legitimate path in the folder.
+async function canonicalBase(baseDir) {
+  try {
+    return path.resolve(await fs.realpath(baseDir));
+  } catch {
+    return path.resolve(baseDir);
+  }
+}
+
 // Phase-4 resolution for the sidecar itself: canonicalize the nearest existing
 // parent (the file usually does not exist yet), then recheck containment.
 async function resolveSidecarWritePath(baseDir, abs) {
   const parentReal = await realpathNearestParent(path.dirname(abs));
   const target = path.join(parentReal, path.basename(abs));
-  // Compare against the CANONICAL base, not the lexical one — on macOS the
-  // served folder commonly sits under the /var -> /private/var symlink.
-  let baseReal = path.resolve(baseDir);
-  try {
-    baseReal = path.resolve(await fs.realpath(baseDir));
-  } catch {}
-  if (!isContained(baseReal, target)) {
+  if (!isContained(await canonicalBase(baseDir), target)) {
     throw new Error('Sidecar path escapes base directory');
   }
   return target;
+}
+
+// The single resolver EVERY sidecar operation goes through — stat, read, write
+// and unlink alike. The lexical check runs first so a crafted name is rejected
+// before it touches the filesystem; canonicalizing the nearest existing parent
+// then stops a planted directory symlink from redirecting the operation out of
+// tree. That second half is what a lexical `path.resolve` cannot do: with
+// `.hyperclay/api/blog` linked to an external folder, `blog/post.json` resolves
+// lexically inside the tree while `fs.unlink` deletes the external file.
+async function resolveSidecarCanonical(baseDir, name) {
+  return await resolveSidecarWritePath(baseDir, resolveSidecarPath(baseDir, name));
+}
+
+// Reads must additionally follow the FINAL component. `.hyperclay/api/foo.json`
+// can itself be a symlink to an external file, and fs.stat/fs.readFile would
+// hand back that file's metadata and bytes verbatim. Writes need no equivalent:
+// atomicWriteFile publishes by rename, which REPLACES a symlink instead of
+// following it, and unlink removes the link rather than its target.
+async function resolveSidecarReadPath(baseDir, name) {
+  const target = await resolveSidecarCanonical(baseDir, name);
+  let real;
+  try {
+    real = path.resolve(await fs.realpath(target));
+  } catch {
+    return target;
+  }
+  if (!isContained(await canonicalBase(baseDir), real)) {
+    throw new Error('Sidecar path escapes base directory');
+  }
+  return real;
 }
 
 // "blog/post.html" -> ".hyperclay/api/blog/post.json" (strips .html / .htmlclay,
@@ -61,15 +96,11 @@ function resolveSidecarPath(baseDir, name) {
 // tag). Empty [] / {} are valid data and ARE written. Non-fatal.
 async function writeApiSidecarData(baseDir, name, data) {
   try {
-    const abs = resolveSidecarPath(baseDir, name);
+    const target = await resolveSidecarCanonical(baseDir, name);
     if (data === null) {
-      await unlinkIfPresent(abs);
+      await unlinkIfPresent(target);
       return;
     }
-    // Canonicalize the nearest existing parent before writing, so a symlink
-    // planted inside .hyperclay/api can't redirect the write out of the folder,
-    // and publish atomically like every other writer.
-    const target = await resolveSidecarWritePath(baseDir, abs);
     await atomicWriteFile(target, JSON.stringify(data));
   } catch (e) {
     console.error('writeApiSidecarData failed (non-fatal):', e && e.message ? e.message : e);
@@ -94,7 +125,7 @@ async function writeApiSidecar(baseDir, name, html) {
 // Remove the sidecar if present. Non-fatal.
 async function deleteApiSidecar(baseDir, name) {
   try {
-    await unlinkIfPresent(resolveSidecarPath(baseDir, name));
+    await unlinkIfPresent(await resolveSidecarCanonical(baseDir, name));
   } catch (e) {
     console.error('deleteApiSidecar failed (non-fatal):', e && e.message ? e.message : e);
   }
@@ -106,7 +137,7 @@ async function deleteApiSidecar(baseDir, name) {
 // change through lifecycle paths that rewrite the sidecar).
 async function readFreshSidecar(baseDir, name, sourceMtimeMs) {
   try {
-    const abs = resolveSidecarPath(baseDir, name);
+    const abs = await resolveSidecarReadPath(baseDir, name);
     const stat = await fs.stat(abs);
     if (stat.mtimeMs >= sourceMtimeMs) {
       return await fs.readFile(abs, 'utf8');
@@ -129,6 +160,8 @@ module.exports = {
   sidecarRelPath,
   resolveSidecarPath,
   resolveSidecarWritePath,
+  resolveSidecarCanonical,
+  resolveSidecarReadPath,
   writeApiSidecarData,
   writeApiSidecar,
   deleteApiSidecar,

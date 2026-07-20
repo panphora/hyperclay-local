@@ -2,6 +2,16 @@ jest.mock('electron', () => ({
   safeStorage: { isEncryptionAvailable: () => false, encryptString: (s) => s }
 }));
 
+// The remote writers refresh derived artifacts inside their critical section,
+// which reaches the extractor. The real one loads hyper-html-api through a
+// dynamic ESM import that needs --experimental-vm-modules, so stub it as the
+// other suites do; these tests are about sync bookkeeping, not extraction.
+jest.mock('../../src/main/utils/data-extractor', () => ({
+  extractData: jest.fn(),
+  extractViaTag: jest.fn().mockResolvedValue(null),
+  parseExtractionRules: jest.fn()
+}));
+
 jest.mock('eventsource', () => ({
   EventSource: jest.fn()
 }));

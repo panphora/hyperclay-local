@@ -13,6 +13,7 @@ const fs = require('fs').promises;
 const path = require('upath');
 const { extractData, extractViaTag, parseExtractionRules } = require('./data-extractor');
 const { writeApiSidecarData, deleteApiSidecar, readFreshSidecar } = require('./api-sidecar');
+const { withFileLock } = require('./write-queue');
 
 // Map an api-tag extraction failure to the platform's author-facing 400 bodies
 // (data-actions.js serveSiteApi). Returns null for an unmapped error → caller
@@ -43,7 +44,16 @@ function mapApiTagError(error) {
 // of the one canonical pass in path-resolver.js.
 async function serveSiteApiLocal(baseDir, name, { sourcePath } = {}) {
   sourcePath = sourcePath || path.join(baseDir, name);
+  // A1: the freshness stat, the source read, the extraction and the sidecar
+  // refresh are ONE critical section on the source file's queue slot — the same
+  // slot /save takes. Unqueued, a cache-miss GET can extract from H0 while a
+  // concurrent save publishes H1 and its H1 sidecar, then overwrite that newer
+  // sidecar with H0 data. The fresh mtime then makes the stale data read as
+  // current on every subsequent request.
+  return await withFileLock(sourcePath, () => serveSiteApiInLock(baseDir, name, sourcePath));
+}
 
+async function serveSiteApiInLock(baseDir, name, sourcePath) {
   let sourceStat;
   try {
     sourceStat = await fs.stat(sourcePath);

@@ -19,7 +19,7 @@ const cheerio = require('cheerio');
 const { liveSync } = require('livesync-hyperclay');
 const core = require('./data-loss-core.cjs');
 const { extractViaTag } = require('./utils/data-extractor');
-const { sortKey } = require('./utils/prune-versions');
+const { compareNewestFirst } = require('./utils/prune-versions');
 
 const {
   classifyDestruction,
@@ -152,12 +152,15 @@ async function newestVersionPath(baseDir, name) {
     for (const file of files) {
       const full = path.join(dir, file);
       try {
-        ranked.push({ full, key: sortKey({ name: file, mtimeMs: (await fs.stat(full)).mtimeMs }) });
+        ranked.push({ full, name: file, mtimeMs: (await fs.stat(full)).mtimeMs });
       } catch {}
     }
     if (!ranked.length) return null;
-    ranked.sort((a, b) => a.key - b.key);
-    return ranked[ranked.length - 1].full;
+    // Same comparator the pruner uses, so "newest" means one thing everywhere:
+    // instant first, then the collision suffix that orders a same-millisecond
+    // burst.
+    ranked.sort(compareNewestFirst);
+    return ranked[0].full;
   } catch {
     return null;
   }

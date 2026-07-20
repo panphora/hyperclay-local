@@ -29,6 +29,48 @@ function generateTimestamp() {
   return `${year}-${month}-${day}-${hours}-${minutes}-${seconds}-${milliseconds}Z`;
 }
 
+// The bare name plus suffixes `-001` through `-999`, so at most 1000 versions
+// can share one millisecond before we give up. Well past any real burst.
+const MAX_COLLISION_ATTEMPTS = 1000;
+
+/**
+ * Publish one version file under `timestamp`, resolving collisions.
+ *
+ * `wx` is the whole point: a plain fs.writeFile silently OVERWRITES a version
+ * that already carries this name, so two backups landing in the same
+ * millisecond used to leave one on disk. Exclusive creation turns that into an
+ * EEXIST we can answer by trying the next name.
+ *
+ * The suffix is ZERO-PADDED because these names are ordered, and `-10` sorts
+ * before `-2` unpadded. prune-versions.js parses the padded form (it is a
+ * delete path, so it must both recognise these names and rank them correctly).
+ */
+async function writeVersionExclusive(dir, timestamp, ext, content, encoding) {
+  for (let attempt = 0; attempt < MAX_COLLISION_ATTEMPTS; attempt++) {
+    const filename = attempt === 0
+      ? `${timestamp}${ext}`
+      : `${timestamp}-${String(attempt).padStart(3, '0')}${ext}`;
+    const full = path.join(dir, filename);
+
+    let handle;
+    try {
+      handle = await fs.open(full, 'wx', 0o644);
+    } catch (error) {
+      if (error.code === 'EEXIST') continue;
+      throw error;
+    }
+
+    try {
+      await handle.writeFile(content, encoding === null ? undefined : encoding);
+    } finally {
+      await handle.close();
+    }
+    return { filename, full };
+  }
+
+  throw new Error(`No free backup name for ${timestamp}${ext} after ${MAX_COLLISION_ATTEMPTS} attempts`);
+}
+
 // Opportunistic pruning: at most once an hour per site directory, never on the
 // caller's critical path, and never able to fail a save.
 const lastPruneAt = new Map();
@@ -69,13 +111,10 @@ async function createBackup(baseDir, siteName, content, emit, logger = null) {
     // Create site-specific directory if it doesn't exist
     await fs.mkdir(siteVersionsDir, { recursive: true });
 
-    // Generate timestamp filename
-    const timestamp = generateTimestamp();
-    const backupFilename = `${timestamp}.html`;
-    const backupPath = path.join(siteVersionsDir, backupFilename);
-
-    // Write backup file
-    await fs.writeFile(backupPath, content, 'utf8');
+    // Publish under an exclusively-created name, so a same-millisecond burst
+    // keeps every version instead of collapsing onto one.
+    const { filename: backupFilename, full: backupPath } =
+      await writeVersionExclusive(siteVersionsDir, generateTimestamp(), '.html', content, 'utf8');
     console.log(`[BACKUP] Created: sites-versions/${siteName}/${backupFilename}`);
 
     maybePrune(siteVersionsDir);
@@ -161,13 +200,10 @@ async function createBinaryBackup(baseDir, uploadPath, content, emit, logger = n
     // Create directory if it doesn't exist
     await fs.mkdir(uploadVersionsDir, { recursive: true });
 
-    // Generate timestamp filename with original extension
-    const timestamp = generateTimestamp();
-    const backupFilename = `${timestamp}${ext}`;
-    const backupPath = path.join(uploadVersionsDir, backupFilename);
-
-    // Write backup file as binary
-    await fs.writeFile(backupPath, content);
+    // Same exclusive-creation publication as the HTML path — a burst of upload
+    // syncs collides on the millisecond just as easily as a burst of saves.
+    const { filename: backupFilename, full: backupPath } =
+      await writeVersionExclusive(uploadVersionsDir, generateTimestamp(), ext, content, null);
     console.log(`[BACKUP] Created: sites-versions/${backupSubdir}/${backupFilename}`);
 
     maybePrune(uploadVersionsDir);

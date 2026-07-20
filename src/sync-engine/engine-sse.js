@@ -12,6 +12,7 @@ const { EventSource } = require('eventsource');
 const { liveSync } = require('livesync-hyperclay');
 const { createBackupIfExists, createBinaryBackupIfExists } = require('../main/utils/backup');
 const dataGuard = require('../main/data-loss-guard');
+const { refreshDerivedArtifacts } = require('../main/utils/derived-artifacts');
 const { classifyError, formatErrorForLog } = require('./error-handler');
 const { dispatchControlEnvelope } = require('./control-lane');
 const {
@@ -130,6 +131,12 @@ module.exports = {
       liveSync.markBrowserSave(localFilename);
 
       await writeFile(localPath, data.content, new Date(data.modifiedAt));
+
+      // A1: derived artifacts belong in the same critical section as the write
+      // that causes them. Skipping them here leaves an H0 sidecar and an H0
+      // stylesheet serving against H1 bytes — and because writeFile stamps the
+      // remote modifiedAt, an H0 sidecar can outrank H1 by mtime permanently.
+      await refreshDerivedArtifacts(this.syncFolder, localFilename, data.content);
 
       const inode = await nodeMap.getInode(localPath);
       const cs = await calculateChecksum(data.content);

@@ -755,26 +755,41 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       // raw paths and follow symlinks on its own.
       let cssPath;
       let htmlPath;
+      let name;
       try {
         // Express already decodes regex-route captures (router/layer.js decode_param),
         // so decoding here again would 400 on "50% off" and mis-resolve "a%20b".
-        const name = req.params[0]; // may contain slashes, e.g. "blog/post"
+        name = req.params[0]; // may contain slashes, e.g. "blog/post"
         cssPath = await resolveDerivedWrite(`tailwindcss/${name}.css`);
         htmlPath = await resolveDerivedWrite(`${name}.html`);
       } catch (error) {
         return res.status(error.status === 400 ? 400 : 403).send('');
       }
 
+      // Cache hit: a pure read, so it needs no queue slot.
       try {
         const css = await fs.readFile(cssPath, 'utf8');
         return res.send(css);
       } catch {}
 
+      // Cache miss: this is a read-modify-write of a derived artifact, so it
+      // belongs in the SOURCE file's critical section like every other derived
+      // write. Unqueued, a compile of H0 that started before a concurrent /save
+      // finishes after it and overwrites the H1 stylesheet the save published.
       try {
-        const html = await fs.readFile(htmlPath, 'utf8');
-        const css = await compileTailwind(html);
-        await atomicWriteFile(cssPath, css);
-        console.log(`Auto-generated Tailwind CSS: tailwindcss/${name}.css`);
+        const css = await withFileLock(htmlPath, async () => {
+          // Re-check inside the lock: we may have queued behind exactly the save
+          // that just published a fresher stylesheet, and recompiling from our
+          // own stale read would throw it away.
+          try {
+            return await fs.readFile(cssPath, 'utf8');
+          } catch {}
+          const html = await fs.readFile(htmlPath, 'utf8');
+          const compiled = await compileTailwind(html);
+          await atomicWriteFile(cssPath, compiled);
+          console.log(`Auto-generated Tailwind CSS: tailwindcss/${name}.css`);
+          return compiled;
+        });
         return res.send(css);
       } catch {
         return res.send('');

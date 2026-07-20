@@ -30,6 +30,7 @@ const nodeMap = require('./node-map');
 const dataGuard = require('../main/data-loss-guard');
 const { getConsentRegistry, resolveWritePath } = require('../main/utils/path-resolver');
 const { withFileLock } = require('../main/utils/write-queue');
+const { refreshDerivedArtifacts } = require('../main/utils/derived-artifacts');
 
 module.exports = {
   /**
@@ -83,6 +84,14 @@ module.exports = {
 
         // Write file with server modification time (ensures directories exist)
         await writeFile(localPath, content, modifiedAt);
+
+        // A1: derived artifacts belong in the same critical section as the write
+        // that causes them. Skipping them here leaves an H0 sidecar and an H0
+        // stylesheet serving against H1 bytes — and because writeFile stamps the
+        // remote modifiedAt, an H0 sidecar can outrank H1 by mtime permanently.
+        if (isHtmlSite && typeof content === 'string') {
+          await refreshDerivedArtifacts(this.syncFolder, relativePath, content);
+        }
 
         return previous;
       });

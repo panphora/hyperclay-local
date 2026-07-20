@@ -18,8 +18,12 @@ const path = require('upath');
 const MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000;
 const KEEP_NEWEST = 20;
 
-// `YYYY-MM-DD-HH-MM-SS-mmm` with an optional trailing `Z`.
-const VERSION_NAME = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{3})(Z)?\.[A-Za-z0-9]+$/;
+// `YYYY-MM-DD-HH-MM-SS-mmm`, an optional trailing `Z`, and an optional
+// zero-padded collision suffix (backup.writeVersionExclusive appends `-001`,
+// `-002`, ... when several versions land in one millisecond). The suffix MUST be
+// matched here: an unrecognised name is one this pruner refuses to touch, so
+// without it every collision-suffixed version would accumulate forever.
+const VERSION_NAME = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{3})(Z)?(?:-(\d{3}))?\.[A-Za-z0-9]+$/;
 
 /**
  * Epoch ms for a version filename, or null when the name is not a version name
@@ -40,6 +44,25 @@ function parseVersionTimestamp(filename) {
 function sortKey(entry) {
   const parsed = parseVersionTimestamp(entry.name);
   return parsed === null ? entry.mtimeMs : parsed;
+}
+
+/**
+ * Collision suffix as a number, 0 when absent. Two versions written in the same
+ * millisecond share an instant, so the suffix is the only thing that orders
+ * them — and it records the order they were actually written in.
+ */
+function collisionSuffix(filename) {
+  const match = VERSION_NAME.exec(filename);
+  return match && match[9] ? Number(match[9]) : 0;
+}
+
+/**
+ * Newest first. Instant, then collision suffix. Shared with data-loss-guard so
+ * the delete path and the recovery path can never disagree about which version
+ * is newest.
+ */
+function compareNewestFirst(a, b) {
+  return (sortKey(b) - sortKey(a)) || (collisionSuffix(b.name) - collisionSuffix(a.name));
 }
 
 /**
@@ -67,8 +90,8 @@ async function pruneSiteVersions(siteVersionsDir, now = Date.now()) {
 
   if (entries.length === 0) return { kept: 0, deleted: [] };
 
-  // Newest first, by instant.
-  entries.sort((a, b) => sortKey(b) - sortKey(a));
+  // Newest first, by instant then collision suffix.
+  entries.sort(compareNewestFirst);
 
   const keep = new Set();
   // Rule 1: always keep the newest 20, however old they are.
@@ -123,6 +146,8 @@ module.exports = {
   KEEP_NEWEST,
   parseVersionTimestamp,
   sortKey,
+  collisionSuffix,
+  compareNewestFirst,
   pruneSiteVersions,
   pruneAllVersions
 };
