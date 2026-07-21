@@ -264,7 +264,7 @@ describe('pruneSiteVersions', () => {
   test('keeps everything inside the 60-day window', async () => {
     for (let i = 0; i < 5; i++) await writeVersion(now - i * DAY);
 
-    const { deleted } = await pruneSiteVersions(dir, now);
+    const { deleted } = await pruneSiteVersions(dir, dir, now);
 
     expect(deleted).toEqual([]);
     expect((await fs.readdir(dir))).toHaveLength(5);
@@ -276,7 +276,7 @@ describe('pruneSiteVersions', () => {
     for (let i = 0; i < 25; i++) await writeVersion(now - i * 60 * 1000);
     const stale = await writeVersion(now - 61 * DAY);
 
-    const { deleted } = await pruneSiteVersions(dir, now);
+    const { deleted } = await pruneSiteVersions(dir, dir, now);
 
     expect(deleted).toEqual([stale]);
     expect(await fs.readdir(dir)).toHaveLength(25);
@@ -286,7 +286,7 @@ describe('pruneSiteVersions', () => {
     await writeVersion(now - 400 * DAY);
     await writeVersion(now - 401 * DAY);
 
-    const { deleted } = await pruneSiteVersions(dir, now);
+    const { deleted } = await pruneSiteVersions(dir, dir, now);
 
     expect(deleted).toEqual([]);
     expect(await fs.readdir(dir)).toHaveLength(2);
@@ -295,7 +295,7 @@ describe('pruneSiteVersions', () => {
   test('always keeps the newest 20 even when all are older than 60 days', async () => {
     for (let i = 0; i < 30; i++) await writeVersion(now - (100 + i) * DAY);
 
-    await pruneSiteVersions(dir, now);
+    await pruneSiteVersions(dir, dir, now);
 
     const left = await fs.readdir(dir);
     expect(left).toHaveLength(KEEP_NEWEST);
@@ -307,7 +307,7 @@ describe('pruneSiteVersions', () => {
     for (let i = 0; i < 25; i++) await writeVersion(now - i * DAY);
     for (let i = 0; i < 10; i++) await writeVersion(now - (200 + i) * DAY);
 
-    await pruneSiteVersions(dir, now);
+    await pruneSiteVersions(dir, dir, now);
 
     expect(await fs.readdir(dir)).toHaveLength(25);
   });
@@ -316,7 +316,7 @@ describe('pruneSiteVersions', () => {
     const names = [];
     for (let i = 0; i < 30; i++) names.push(await writeVersion(now - (100 + i) * DAY));
 
-    await pruneSiteVersions(dir, now);
+    await pruneSiteVersions(dir, dir, now);
 
     const left = new Set(await fs.readdir(dir));
     // names[0] is the newest, names[29] the oldest.
@@ -336,7 +336,7 @@ describe('pruneSiteVersions', () => {
     // Force the 20-floor out of the way so the age rule alone decides.
     for (let i = 0; i < 25; i++) await writeVersion(now - i * 60 * 1000);
 
-    await pruneSiteVersions(dir, now);
+    await pruneSiteVersions(dir, dir, now);
 
     const left = await fs.readdir(dir);
     expect(left).toContain(newName);
@@ -348,7 +348,7 @@ describe('pruneSiteVersions', () => {
     await fs.writeFile(path.join(dir, 'index.html'), 'not a version name');
     for (let i = 0; i < 30; i++) await writeVersion(now - (100 + i) * DAY);
 
-    await pruneSiteVersions(dir, now);
+    await pruneSiteVersions(dir, dir, now);
 
     const left = await fs.readdir(dir);
     expect(left).toContain('README.md');
@@ -356,7 +356,7 @@ describe('pruneSiteVersions', () => {
   });
 
   test('a missing directory is not an error', async () => {
-    await expect(pruneSiteVersions(path.join(dir, 'nope'), now))
+    await expect(pruneSiteVersions(dir, path.join(dir, 'nope'), now))
       .resolves.toEqual({ kept: 0, deleted: [] });
   });
 
@@ -414,5 +414,90 @@ describe('pruneAllVersions', () => {
 
   test('a missing sites-versions directory is not an error', async () => {
     await expect(pruneAllVersions(base, now)).resolves.toEqual({ sites: 0, deleted: 0 });
+  });
+});
+
+// C1: the pruner's containment used to be a lexical prefix check, then the
+// destructive readdir/unlink re-resolved the path through whatever symlinks
+// existed at use time. A directory symlink planted at sites-versions (or at a
+// site subdirectory) therefore redirected the delete out of tree. The chain
+// check lstat's every directory component immediately before the delete and
+// refuses a symlinked one.
+describe('C1: prune refuses a symlinked chain', () => {
+  const nodeFs = require('fs');
+  let symlinksOk = true;
+  try {
+    const probe = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'symprobe-'));
+    nodeFs.symlinkSync(probe, path.join(probe, 'lnk'));
+    nodeFs.rmSync(probe, { recursive: true, force: true });
+  } catch {
+    symlinksOk = false;
+  }
+  const symlinkTest = symlinksOk ? test : test.skip;
+
+  let base;
+  let outside;
+  const now = Date.UTC(2026, 6, 19, 12, 0, 0, 0);
+
+  beforeEach(async () => {
+    base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'prune-c1-')));
+    outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'prune-c1-out-')));
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    await fs.rm(base, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    await fs.rm(outside, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    jest.restoreAllMocks();
+  });
+
+  // `count` long-expired version-shaped files, so a WORKING prune would delete
+  // everything past the newest-20 floor (25 -> deletes 5).
+  async function seedOldVersions(dir, count) {
+    await fs.mkdir(dir, { recursive: true });
+    const names = [];
+    for (let i = 0; i < count; i++) {
+      const at = now - (400 + i) * DAY;
+      const d = new Date(at);
+      const p = (n, w = 2) => String(n).padStart(w, '0');
+      const name = `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}-` +
+        `${p(d.getUTCHours())}-${p(d.getUTCMinutes())}-${p(d.getUTCSeconds())}-${p(d.getUTCMilliseconds(), 3)}Z.html`;
+      await fs.writeFile(path.join(dir, name), `v${i}`);
+      await fs.utimes(path.join(dir, name), new Date(at), new Date(at));
+      names.push(name);
+    }
+    return names;
+  }
+
+  symlinkTest('pruneAllVersions leaves a symlinked sites-versions target exactly unchanged', async () => {
+    await seedOldVersions(outside, 25);
+    await fs.symlink(outside, path.join(base, 'sites-versions'));
+
+    const before = (await fs.readdir(outside)).sort();
+    expect(before).toHaveLength(25);
+
+    const result = await pruneAllVersions(base, now);
+
+    // Deletes 5 today; refused entirely with the chain check.
+    expect(result).toEqual({ sites: 0, deleted: 0 });
+    expect((await fs.readdir(outside)).sort()).toEqual(before);
+  });
+
+  symlinkTest('pruneSiteVersions refuses when the site subdirectory is the symlink (the maybePrune path)', async () => {
+    // A real sites-versions, but the per-site directory maybePrune targets is a
+    // symlink out of tree — exactly the argument backup.js:maybePrune forwards.
+    await fs.mkdir(path.join(base, 'sites-versions'), { recursive: true });
+    await seedOldVersions(outside, 25);
+    const siteVersionsDir = path.join(base, 'sites-versions', 'notes');
+    await fs.symlink(outside, siteVersionsDir);
+
+    const before = (await fs.readdir(outside)).sort();
+    expect(before).toHaveLength(25);
+
+    const { deleted } = await pruneSiteVersions(base, siteVersionsDir, now);
+
+    expect(deleted).toEqual([]);
+    expect((await fs.readdir(outside)).sort()).toEqual(before);
   });
 });

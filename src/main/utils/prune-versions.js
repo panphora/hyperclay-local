@@ -21,13 +21,14 @@
 
 const fs = require('fs').promises;
 const path = require('upath');
+const { canonicalizeBase, rebaseOntoCanonical, assertRealDirChain } = require('./real-dir-chain');
 
 const MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000;
 const KEEP_NEWEST = 20;
 
 // `YYYY-MM-DD-HH-MM-SS-mmm`, an optional zone (a signed four-digit UTC offset,
 // or the older bare `Z`), and an optional zero-padded collision suffix
-// (backup.writeVersionExclusive appends `-001`, `-002`, ... when several
+// (backup.publishVersion appends `-001`, `-002`, ... when several
 // versions land in one millisecond). The suffix MUST be matched here: an
 // unrecognised name is one this pruner refuses to touch, so without it every
 // collision-suffixed version would accumulate forever.
@@ -75,6 +76,18 @@ function collisionSuffix(filename) {
 }
 
 /**
+ * The timestamp portion of a version name, without the collision suffix or the
+ * extension — i.e. the exact string generateTimestamp() produced. Used by the
+ * monotonic publisher to reuse the newest committed instant when the wall clock
+ * has rolled backwards. Null for a non-version name.
+ */
+function versionStamp(filename) {
+  const m = VERSION_NAME.exec(filename);
+  if (!m) return null;
+  return `${m[1]}-${m[2]}-${m[3]}-${m[4]}-${m[5]}-${m[6]}-${m[7]}${m[8] || ''}`;
+}
+
+/**
  * Newest first. Instant, then collision suffix. Shared with data-loss-guard so
  * the delete path and the recovery path can never disagree about which version
  * is newest.
@@ -85,9 +98,27 @@ function compareNewestFirst(a, b) {
 
 /**
  * Prune one site's versions directory.
+ *
+ * `baseDir` is the served folder; `siteVersionsDir` is its
+ * sites-versions/<site> subtree. The chain from the served folder down to the
+ * site directory is verified symlink-free on entry AND again immediately before
+ * every unlink, so a directory symlink planted under sites-versions can never
+ * redirect a delete out of tree. A symlinked prefix refuses the prune (no-op
+ * with a log line) — the accepted break.
  * @returns {{kept: number, deleted: string[]}}
  */
-async function pruneSiteVersions(siteVersionsDir, now = Date.now()) {
+async function pruneSiteVersions(baseDir, siteVersionsDir, now = Date.now()) {
+  let canonicalBase;
+  let chainDir;
+  try {
+    canonicalBase = await canonicalizeBase(baseDir);
+    chainDir = rebaseOntoCanonical(canonicalBase, baseDir, siteVersionsDir);
+    await assertRealDirChain(canonicalBase, chainDir);
+  } catch (error) {
+    console.warn(`[BACKUP] Refusing to prune ${siteVersionsDir} (non-fatal): ${error && error.message ? error.message : error}`);
+    return { kept: 0, deleted: [] };
+  }
+
   let names;
   try {
     names = await fs.readdir(siteVersionsDir);
@@ -123,6 +154,10 @@ async function pruneSiteVersions(siteVersionsDir, now = Date.now()) {
   for (const entry of entries) {
     if (keep.has(entry.name)) continue;
     try {
+      // Re-check the directory chain immediately before the destructive op: a
+      // few lstats per rare deletion is cheap, and unlink never follows the
+      // final component, so only the directory chain matters here.
+      await assertRealDirChain(canonicalBase, chainDir);
       await fs.unlink(entry.full);
       deleted.push(entry.name);
     } catch {}
@@ -133,8 +168,21 @@ async function pruneSiteVersions(siteVersionsDir, now = Date.now()) {
 
 /** Walk sites-versions/ and prune every site directory beneath it. */
 async function pruneAllVersions(baseDir, now = Date.now()) {
-  const root = path.join(baseDir, 'sites-versions');
   const results = { sites: 0, deleted: 0 };
+
+  // Verify the sites-versions root is a real directory before walking. A
+  // symlinked sites-versions refuses the whole sweep (the accepted break); a
+  // merely-absent one is a silent no-op.
+  let canonicalBase;
+  try {
+    canonicalBase = await canonicalizeBase(baseDir);
+    await assertRealDirChain(canonicalBase, path.join(canonicalBase, 'sites-versions'));
+  } catch (error) {
+    console.warn(`[BACKUP] Refusing to prune sites-versions under ${baseDir} (non-fatal): ${error && error.message ? error.message : error}`);
+    return results;
+  }
+
+  const root = path.join(baseDir, 'sites-versions');
 
   async function walk(dir) {
     let entries;
@@ -146,7 +194,7 @@ async function pruneAllVersions(baseDir, now = Date.now()) {
     // A site directory holds version files; intermediate directories mirror the
     // site's own folder nesting, so recurse and prune wherever files appear.
     if (entries.some((entry) => entry.isFile() && VERSION_NAME.test(entry.name))) {
-      const { deleted } = await pruneSiteVersions(dir, now);
+      const { deleted } = await pruneSiteVersions(baseDir, dir, now);
       results.sites += 1;
       results.deleted += deleted.length;
     }
@@ -162,9 +210,11 @@ async function pruneAllVersions(baseDir, now = Date.now()) {
 module.exports = {
   MAX_AGE_MS,
   KEEP_NEWEST,
+  VERSION_NAME,
   parseVersionTimestamp,
   sortKey,
   collisionSuffix,
+  versionStamp,
   compareNewestFirst,
   pruneSiteVersions,
   pruneAllVersions

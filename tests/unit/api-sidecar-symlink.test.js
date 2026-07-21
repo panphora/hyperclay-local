@@ -11,8 +11,12 @@ const os = require('os');
 const {
   writeApiSidecarData,
   deleteApiSidecar,
-  readFreshSidecar
+  readFreshSidecar,
+  resolveSidecarCanonical,
+  guardedUnlink,
+  guardedOpenRead
 } = require('../../src/main/utils/api-sidecar');
+const { canonicalizeBase } = require('../../src/main/utils/real-dir-chain');
 
 describe('A3: sidecar operations do not follow symlinks out of the served root', () => {
   let base;
@@ -102,5 +106,39 @@ describe('A3: sidecar operations do not follow symlinks out of the served root',
 
     await deleteApiSidecar(base, 'blog/post.html');
     await expect(fs.access(written)).rejects.toThrow();
+  });
+
+  // C2: resolveSidecarCanonical canonicalizes at RESOLVE time. If an intermediate
+  // directory is swapped for an out-of-tree symlink between the resolve and the
+  // actual syscall, a bare fs.unlink/fs.open would follow it and hit the external
+  // file. The guarded primitives re-verify the directory chain at USE time.
+  describe('a directory swapped to a symlink between resolve and use (TOCTOU)', () => {
+    let cbase;
+    let target;
+    let outsidePost;
+
+    beforeEach(async () => {
+      // Phase 1: blog is a REAL directory holding a real sidecar.
+      await fs.mkdir(path.join(base, '.hyperclay/api/blog'), { recursive: true });
+      await fs.writeFile(path.join(base, '.hyperclay/api/blog/post.json'), '{"in":"tree"}');
+      cbase = await canonicalizeBase(base);
+      target = await resolveSidecarCanonical(base, 'blog/post.html');
+
+      // Phase 2: swap `blog` for a symlink to an outside dir with its own post.json.
+      outsidePost = path.join(outside, 'post.json');
+      await fs.writeFile(outsidePost, '{"external":true}');
+      await fs.rm(path.join(base, '.hyperclay/api/blog'), { recursive: true, force: true });
+      await fs.symlink(outside, path.join(base, '.hyperclay/api/blog'));
+    });
+
+    test('guardedUnlink refuses and the external file survives', async () => {
+      await expect(guardedUnlink(cbase, target)).rejects.toThrow();
+      expect(await fs.readFile(outsidePost, 'utf8')).toBe('{"external":true}');
+    });
+
+    test('guardedOpenRead refuses and the external file survives', async () => {
+      await expect(guardedOpenRead(cbase, target)).rejects.toThrow();
+      expect(await fs.readFile(outsidePost, 'utf8')).toBe('{"external":true}');
+    });
   });
 });

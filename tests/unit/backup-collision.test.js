@@ -157,7 +157,7 @@ describe('A7: the pruner handles collision-suffixed names', () => {
       await fs.writeFile(path.join(siteDir, `${stamp}-${String(i).padStart(3, '0')}.html`), `v${i}`);
     }
 
-    const { deleted } = await pruneSiteVersions(siteDir);
+    const { deleted } = await pruneSiteVersions(dir, siteDir);
 
     const left = await fs.readdir(siteDir);
     expect(left).toHaveLength(20);

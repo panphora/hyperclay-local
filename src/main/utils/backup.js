@@ -5,7 +5,17 @@
 
 const fs = require('fs').promises;
 const path = require('upath');
-const { pruneSiteVersions } = require('./prune-versions');
+const crypto = require('crypto');
+const {
+  pruneSiteVersions,
+  VERSION_NAME,
+  sortKey,
+  collisionSuffix,
+  versionStamp,
+  compareNewestFirst
+} = require('./prune-versions');
+const { withFileLock } = require('./write-queue');
+const { canonicalizeBase, rebaseOntoCanonical, assertRealDirChain } = require('./real-dir-chain');
 
 /**
  * Generate a backup timestamp: LOCAL wall time plus the signed UTC offset in
@@ -23,9 +33,11 @@ const { pruneSiteVersions } = require('./prune-versions');
  *
  * Older names stay readable: prune-versions.js still parses the all-UTC `Z`
  * form exactly, and still falls back to mtime for legacy names with no zone.
+ *
+ * `now` is injectable so the monotonic publisher can render a chosen instant
+ * (and tests can freeze one); it defaults to the real clock.
  */
-function generateTimestamp() {
-  const now = new Date();
+function generateTimestamp(now = new Date()) {
   const pad = (value, width = 2) => String(value).padStart(width, '0');
 
   const offsetMinutes = -now.getTimezoneOffset();
@@ -39,45 +51,152 @@ function generateTimestamp() {
 }
 
 // The bare name plus suffixes `-001` through `-999`, so at most 1000 versions
-// can share one millisecond before we give up. Well past any real burst.
+// can share one instant before we roll the instant forward. Well past any real
+// burst.
 const MAX_COLLISION_ATTEMPTS = 1000;
 
-/**
- * Publish one version file under `timestamp`, resolving collisions.
- *
- * `wx` is the whole point: a plain fs.writeFile silently OVERWRITES a version
- * that already carries this name, so two backups landing in the same
- * millisecond used to leave one on disk. Exclusive creation turns that into an
- * EEXIST we can answer by trying the next name.
- *
- * The suffix is ZERO-PADDED because these names are ordered, and `-10` sorts
- * before `-2` unpadded. prune-versions.js parses the padded form (it is a
- * delete path, so it must both recognise these names and rank them correctly).
- */
-async function writeVersionExclusive(dir, timestamp, ext, content, encoding) {
-  for (let attempt = 0; attempt < MAX_COLLISION_ATTEMPTS; attempt++) {
-    const filename = attempt === 0
-      ? `${timestamp}${ext}`
-      : `${timestamp}-${String(attempt).padStart(3, '0')}${ext}`;
-    const full = path.join(dir, filename);
+// fs.link fails with one of these on a filesystem that has no hard links (exFAT
+// USB sticks, some network shares). We fall back to a rename there so backups
+// keep working rather than failing closed.
+const LINK_UNSUPPORTED = new Set(['EPERM', 'ENOTSUP', 'ENOSYS']);
 
-    let handle;
-    try {
-      handle = await fs.open(full, 'wx', 0o644);
-    } catch (error) {
-      if (error.code === 'EEXIST') continue;
-      throw error;
-    }
+const pad3 = (n) => String(n).padStart(3, '0');
 
-    try {
-      await handle.writeFile(content, encoding === null ? undefined : encoding);
-    } finally {
-      await handle.close();
-    }
-    return { filename, full };
+// fsync a directory so a freshly linked/renamed entry survives a crash.
+// Best-effort: unsupported on some platforms, and never allowed to fail a save.
+async function fsyncDir(dir) {
+  let handle;
+  try {
+    handle = await fs.open(dir, 'r');
+    await handle.sync();
+  } catch {
+    // best-effort
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
+}
+
+// Choose a name that sorts strictly AFTER every committed version (H5). Normally
+// the fresh clock instant already does; but if the wall clock has rolled
+// backwards to at-or-before the newest committed instant, reuse that instant's
+// timestamp string and take the next collision suffix so the new file still
+// ranks first under compareNewestFirst. `compareNewestFirst` stays the ONE
+// ordering function shared with the pruner and the guard.
+async function planVersionName(dir, candidateDate) {
+  let stamp = generateTimestamp(candidateDate);
+  let suffix = 0;
+  let reuseInstant = null;
+
+  let names;
+  try {
+    names = await fs.readdir(dir);
+  } catch {
+    names = [];
   }
 
-  throw new Error(`No free backup name for ${timestamp}${ext} after ${MAX_COLLISION_ATTEMPTS} attempts`);
+  const committed = [];
+  for (const name of names) {
+    if (!VERSION_NAME.test(name)) continue; // ignore the dot-prefixed temp and foreign files
+    try {
+      committed.push({ name, mtimeMs: (await fs.stat(path.join(dir, name))).mtimeMs });
+    } catch {}
+  }
+
+  if (committed.length) {
+    committed.sort(compareNewestFirst);
+    const newest = committed[0];
+    const newestInstant = sortKey(newest);
+    if (candidateDate.getTime() <= newestInstant) {
+      stamp = versionStamp(newest.name);
+      suffix = collisionSuffix(newest.name) + 1;
+      reuseInstant = newestInstant;
+    }
+  }
+
+  return { stamp, suffix, reuseInstant };
+}
+
+/**
+ * Publish one version atomically and monotonically (H4 + H5), the whole thing
+ * under a per-history withFileLock(dir).
+ *
+ * H4 (never a partial file): the full content is written to a dot-prefixed temp
+ * in the same directory, fsynced, chmod'd and closed FIRST. The dot prefix can
+ * never match VERSION_NAME, so the pruner, the data-loss guard and the listing
+ * all ignore whatever a crash leaves behind. The final version name is then
+ * produced by fs.link (atomic, no-replace) — or, on a filesystem without hard
+ * links, by fs.rename, which is still safe because the temp is already whole and
+ * durable. On any failure after the temp exists it is unlinked in `finally`, so
+ * the final name never points at partial bytes.
+ *
+ * H5 (never mis-ranked): planVersionName picks a name that sorts strictly after
+ * every committed version even across a clock rollback.
+ */
+async function publishVersion(dir, ext, content, encoding) {
+  return await withFileLock(dir, async () => {
+    const tempPath = path.join(dir, `.hyperclay-ver-${crypto.randomBytes(8).toString('hex')}.tmp`);
+    try {
+      const handle = await fs.open(tempPath, 'wx', 0o644);
+      try {
+        await handle.writeFile(content, encoding === null ? undefined : encoding);
+        await handle.sync();
+        await handle.chmod(0o644);
+      } finally {
+        await handle.close();
+      }
+
+      const plan = await planVersionName(dir, new Date());
+      let { stamp, reuseInstant } = plan;
+      let suffix = plan.suffix;
+
+      for (;;) {
+        if (suffix >= MAX_COLLISION_ATTEMPTS) {
+          // Every suffix for this instant is taken. When reusing a committed
+          // instant (clock rollback), advance it by 1ms and reset the suffix so
+          // the name still sorts strictly after everything. In the ordinary
+          // forward-clock case this is a genuine 1000-in-one-instant wall, so
+          // surface it as before.
+          if (reuseInstant == null) {
+            throw new Error(`No free backup name for ${stamp}${ext} after ${MAX_COLLISION_ATTEMPTS} attempts`);
+          }
+          reuseInstant += 1;
+          stamp = generateTimestamp(new Date(reuseInstant));
+          suffix = 0;
+        }
+
+        const filename = suffix === 0 ? `${stamp}${ext}` : `${stamp}-${pad3(suffix)}${ext}`;
+        const full = path.join(dir, filename);
+        try {
+          await fs.link(tempPath, full);
+          return { filename, full };
+        } catch (error) {
+          if (error.code === 'EEXIST') { suffix += 1; continue; }
+          if (LINK_UNSUPPORTED.has(error.code)) {
+            // No hard links on this filesystem: publish by rename. The temp is
+            // already fully written and fsynced, so no partial file can appear;
+            // the only property lost vs link is no-replace exclusivity, which the
+            // per-history withFileLock(dir) already provides.
+            await fs.rename(tempPath, full);
+            return { filename, full };
+          }
+          throw error;
+        }
+      }
+    } finally {
+      await fs.unlink(tempPath).catch(() => {}); // gone already on the rename path
+      await fsyncDir(dir);
+    }
+  });
+}
+
+// The directory chain from the served folder down to the versions directory must
+// be symlink-free before a backup writes, or a planted directory symlink could
+// redirect the write out of tree (a recursive mkdir over an existing symlinked
+// dir succeeds silently). Throws on violation; the caller's non-fatal catch turns
+// that into a skipped backup.
+async function assertVersionsChain(baseDir, versionsDir) {
+  const canonicalBase = await canonicalizeBase(baseDir);
+  await assertRealDirChain(canonicalBase, rebaseOntoCanonical(canonicalBase, baseDir, versionsDir));
 }
 
 // Opportunistic pruning: at most once an hour per site directory, never on the
@@ -85,12 +204,12 @@ async function writeVersionExclusive(dir, timestamp, ext, content, encoding) {
 const lastPruneAt = new Map();
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 
-function maybePrune(siteVersionsDir) {
+function maybePrune(baseDir, siteVersionsDir) {
   const now = Date.now();
   const previous = lastPruneAt.get(siteVersionsDir) || 0;
   if (now - previous < PRUNE_INTERVAL_MS) return;
   lastPruneAt.set(siteVersionsDir, now);
-  pruneSiteVersions(siteVersionsDir)
+  pruneSiteVersions(baseDir, siteVersionsDir)
     .then(({ deleted }) => {
       if (deleted.length) {
         console.log(`[BACKUP] Pruned ${deleted.length} old version(s) from ${siteVersionsDir}`);
@@ -120,13 +239,18 @@ async function createBackup(baseDir, siteName, content, emit, logger = null) {
     // Create site-specific directory if it doesn't exist
     await fs.mkdir(siteVersionsDir, { recursive: true });
 
-    // Publish under an exclusively-created name, so a same-millisecond burst
-    // keeps every version instead of collapsing onto one.
+    // Refuse to write through a symlinked chain (the mkdir above can silently
+    // create a directory *through* an existing symlink).
+    await assertVersionsChain(baseDir, siteVersionsDir);
+
+    // Publish atomically and monotonically: a same-instant burst keeps every
+    // version, a crash mid-write never leaves a partial version, and a clock
+    // rollback never mis-ranks the newest.
     const { filename: backupFilename, full: backupPath } =
-      await writeVersionExclusive(siteVersionsDir, generateTimestamp(), '.html', content, 'utf8');
+      await publishVersion(siteVersionsDir, '.html', content, 'utf8');
     console.log(`[BACKUP] Created: sites-versions/${siteName}/${backupFilename}`);
 
-    maybePrune(siteVersionsDir);
+    maybePrune(baseDir, siteVersionsDir);
 
     // Log backup creation
     if (logger) {
@@ -209,13 +333,16 @@ async function createBinaryBackup(baseDir, uploadPath, content, emit, logger = n
     // Create directory if it doesn't exist
     await fs.mkdir(uploadVersionsDir, { recursive: true });
 
-    // Same exclusive-creation publication as the HTML path — a burst of upload
-    // syncs collides on the millisecond just as easily as a burst of saves.
+    // Refuse to write through a symlinked chain (see createBackup).
+    await assertVersionsChain(baseDir, uploadVersionsDir);
+
+    // Same atomic + monotonic publication as the HTML path — a burst of upload
+    // syncs collides on the instant just as easily as a burst of saves.
     const { filename: backupFilename, full: backupPath } =
-      await writeVersionExclusive(uploadVersionsDir, generateTimestamp(), ext, content, null);
+      await publishVersion(uploadVersionsDir, ext, content, null);
     console.log(`[BACKUP] Created: sites-versions/${backupSubdir}/${backupFilename}`);
 
-    maybePrune(uploadVersionsDir);
+    maybePrune(baseDir, uploadVersionsDir);
 
     // Log backup creation
     if (logger) {

@@ -20,6 +20,7 @@ const { liveSync } = require('livesync-hyperclay');
 const core = require('./data-loss-core.cjs');
 const { extractViaTag } = require('./utils/data-extractor');
 const { compareNewestFirst } = require('./utils/prune-versions');
+const { canonicalizeBase, rebaseOntoCanonical, assertRealDirChain } = require('./utils/real-dir-chain');
 
 const {
   classifyDestruction,
@@ -145,6 +146,10 @@ async function newestVersionPath(baseDir, name) {
   try {
     const base = name.replace(/\.(html|htmlclay)$/, '');
     const dir = path.join(baseDir, 'sites-versions', base);
+    // Refuse a symlinked chain: the path this returns feeds a Revert that
+    // overwrites the live file, so it must not resolve out of the served tree.
+    const canonicalBase = await canonicalizeBase(baseDir);
+    await assertRealDirChain(canonicalBase, rebaseOntoCanonical(canonicalBase, baseDir, dir));
     const files = (await fs.readdir(dir)).filter((f) => f.endsWith('.html'));
     if (!files.length) return null;
 

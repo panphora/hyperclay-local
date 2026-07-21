@@ -15,10 +15,12 @@
 // request. The file IS the data — it is served raw and regenerated on every save
 // and lazily on a request miss.
 const fs = require('fs').promises;
+const fsConstants = require('fs').constants;
 const path = require('upath');
 const { extractViaTag } = require('./data-extractor');
 const { realpathNearestParent, isContained } = require('./path-resolver');
 const { atomicWriteFile } = require('./write-queue');
+const { assertRealDirChain } = require('./real-dir-chain');
 
 const SIDECAR_DIR = '.hyperclay/api';
 
@@ -55,23 +57,37 @@ async function resolveSidecarCanonical(baseDir, name) {
   return await resolveSidecarWritePath(baseDir, resolveSidecarPath(baseDir, name));
 }
 
-// Reads must additionally follow the FINAL component. `.hyperclay/api/foo.json`
-// can itself be a symlink to an external file, and fs.stat/fs.readFile would
-// hand back that file's metadata and bytes verbatim. Writes need no equivalent:
-// atomicWriteFile publishes by rename, which REPLACES a symlink instead of
-// following it, and unlink removes the link rather than its target.
-async function resolveSidecarReadPath(baseDir, name) {
-  const target = await resolveSidecarCanonical(baseDir, name);
-  let real;
+// USE-TIME guarded primitives (C2). resolveSidecarCanonical does the naming +
+// containment, but it canonicalizes at resolve time; a directory symlink swapped
+// in before the actual syscall would still redirect it. These re-verify the
+// directory chain immediately before the op and bind the final component so a
+// symlink cannot be followed.
+
+// unlink never follows the final component, so only the directory chain matters.
+async function guardedUnlink(canonicalBase, target) {
+  await assertRealDirChain(canonicalBase, path.dirname(target));
   try {
-    real = path.resolve(await fs.realpath(target));
-  } catch {
-    return target;
+    await fs.unlink(target);
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
   }
-  if (!isContained(await canonicalBase(baseDir), real)) {
-    throw new Error('Sidecar path escapes base directory');
+}
+
+// Open with O_NOFOLLOW so a symlinked final component fails the open outright
+// (ELOOP), then take stat and bytes off the SAME handle so they describe one
+// inode with no reopen gap. O_NOFOLLOW is a no-op on Windows; the chain check
+// carries the load there.
+async function guardedOpenRead(canonicalBase, target) {
+  await assertRealDirChain(canonicalBase, path.dirname(target));
+  const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0);
+  const handle = await fs.open(target, flags);
+  try {
+    const stat = await handle.stat();
+    const text = await handle.readFile('utf8');
+    return { stat, text };
+  } finally {
+    await handle.close();
   }
-  return real;
 }
 
 // "blog/post.html" -> ".hyperclay/api/blog/post.json" (strips .html / .htmlclay,
@@ -96,11 +112,15 @@ function resolveSidecarPath(baseDir, name) {
 // tag). Empty [] / {} are valid data and ARE written. Non-fatal.
 async function writeApiSidecarData(baseDir, name, data) {
   try {
+    const cbase = await canonicalBase(baseDir);
     const target = await resolveSidecarCanonical(baseDir, name);
     if (data === null) {
-      await unlinkIfPresent(target);
+      await guardedUnlink(cbase, target);
       return;
     }
+    // Re-verify the directory chain immediately before publishing (atomicWriteFile
+    // renames a temp into place, replacing rather than following a final symlink).
+    await assertRealDirChain(cbase, path.dirname(target));
     await atomicWriteFile(target, JSON.stringify(data));
   } catch (e) {
     console.error('writeApiSidecarData failed (non-fatal):', e && e.message ? e.message : e);
@@ -125,7 +145,8 @@ async function writeApiSidecar(baseDir, name, html) {
 // Remove the sidecar if present. Non-fatal.
 async function deleteApiSidecar(baseDir, name) {
   try {
-    await unlinkIfPresent(await resolveSidecarCanonical(baseDir, name));
+    const cbase = await canonicalBase(baseDir);
+    await guardedUnlink(cbase, await resolveSidecarCanonical(baseDir, name));
   } catch (e) {
     console.error('deleteApiSidecar failed (non-fatal):', e && e.message ? e.message : e);
   }
@@ -137,22 +158,12 @@ async function deleteApiSidecar(baseDir, name) {
 // change through lifecycle paths that rewrite the sidecar).
 async function readFreshSidecar(baseDir, name, sourceMtimeMs) {
   try {
-    const abs = await resolveSidecarReadPath(baseDir, name);
-    const stat = await fs.stat(abs);
-    if (stat.mtimeMs >= sourceMtimeMs) {
-      return await fs.readFile(abs, 'utf8');
-    }
-    return null;
+    const cbase = await canonicalBase(baseDir);
+    const target = await resolveSidecarCanonical(baseDir, name);
+    const { stat, text } = await guardedOpenRead(cbase, target);
+    return stat.mtimeMs >= sourceMtimeMs ? text : null;
   } catch {
     return null;
-  }
-}
-
-async function unlinkIfPresent(abs) {
-  try {
-    await fs.unlink(abs);
-  } catch (e) {
-    if (e.code !== 'ENOENT') throw e;
   }
 }
 
@@ -161,9 +172,10 @@ module.exports = {
   resolveSidecarPath,
   resolveSidecarWritePath,
   resolveSidecarCanonical,
-  resolveSidecarReadPath,
   writeApiSidecarData,
   writeApiSidecar,
   deleteApiSidecar,
-  readFreshSidecar
+  readFreshSidecar,
+  guardedUnlink,
+  guardedOpenRead
 };
