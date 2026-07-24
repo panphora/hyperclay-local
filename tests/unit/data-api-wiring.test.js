@@ -56,6 +56,29 @@ describe('data API route wiring', () => {
     expect(extractViaTag).not.toHaveBeenCalled();
   });
 
+  test('/_/foo.html (unknown reserved path) 404s and never serves the document', async () => {
+    await writeSite('foo.html', '<html><body>SECRET DOC</body></html>');
+    const res = await request(app).get('/_/foo.html');
+    expect(res.status).toBe(404);
+    expect(res.text).not.toContain('SECRET DOC');
+    expect(extractViaTag).not.toHaveBeenCalled();
+  });
+
+  test('/_/save/foo.html (known lane, unmatched tail) 404s and never serves the document', async () => {
+    await writeSite('save/foo.html', '<html><body>SECRET DOC</body></html>');
+    const res = await request(app).get('/_/save/foo.html');
+    expect(res.status).toBe(404);
+    expect(res.text).not.toContain('SECRET DOC');
+  });
+
+  test('/_/save/foo.html?data=... (known lane tail) 404s and does not extract the file', async () => {
+    await writeSite('save/foo.html', '<html><body>SECRET DOC</body></html>');
+    const res = await request(app).get('/_/save/foo.html?data=' + encodeURIComponent(JSON.stringify({ title: 'h1' })));
+    expect(res.status).toBe(404);
+    expect(res.text).not.toContain('SECRET DOC');
+    expect(extractViaTag).not.toHaveBeenCalled();
+  });
+
   test('/_/api with no file → index.html data', async () => {
     await writeSite('index.html', '<html>x</html>');
     extractViaTag.mockResolvedValue({ root: true });

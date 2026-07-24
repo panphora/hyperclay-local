@@ -157,6 +157,11 @@ function stripSystemRouteMarker(url) {
   return url;
 }
 
+// Known `/_/` system routes on this host. Anything else under the marker is reserved
+// and 404s, so `/_/foo.html` can never reach the static catch-all and serve a document.
+// `meta` is deliberately absent until `GET /_/meta` actually exists.
+const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'bus', 'data-loss', 'api']);
+
 // True when a hostname (already parsed out of a URL or a Host header) names this
 // machine's loopback interface. The whole 127/8 block counts, as does every
 // spelling of IPv6 loopback — `new URL` normalizes `[0:0:0:0:0:0:0:1]` to `[::1]`,
@@ -235,9 +240,21 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     // `/_/live-sync/stream`) resolve to the same handlers. Mirrors the hyperclay
     // platform server (SYSTEM_ROUTE_MARKER = '_'). Bare routes stay working, so
     // apps embedding older hyperclayjs are unaffected. Runs before the
-    // path-scoped body parsers and routes below.
+    // path-scoped body parsers and routes below. The `/_/` prefix is reserved:
+    // an unknown marker path (e.g. `/_/foo.html`) now 404s here rather than
+    // falling through to the static catch-all and serving a document.
     app.use((req, res, next) => {
-      req.url = stripSystemRouteMarker(req.url);
+      if (typeof req.url !== 'string' || !req.url.startsWith('/_/')) return next();
+      const stripped = stripSystemRouteMarker(req.url);
+      const segment = stripped.split(/[/?#]/)[1] || '';
+      if (!SYSTEM_ROUTES.has(segment)) {
+        return res.status(404).send('File not found');
+      }
+      req.url = stripped;
+      // A known lane still needs an exact route match. Mark the request so that if it falls
+      // through every system route to the static catch-all (e.g. `/_/save/foo.html`, whose tail
+      // no route handles), the catch-all 404s instead of serving `save/foo.html` as a document.
+      req.fromSystemRoute = true;
       next();
     });
 
@@ -845,6 +862,10 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     // extractSiteData). Intercepts a GET that carries ?data= before the static
     // catch-all serves the raw HTML; a no-data GET passes straight through.
     app.get(/.*/, async (req, res, next) => {
+      // A marker-origin request that reached here (e.g. `/_/save/foo.html?data=`) matched no system
+      // route, so its stripped path is reserved: `?data=` must not extract the file, just as the
+      // static catch-all must not serve it.
+      if (req.fromSystemRoute) return res.status(404).send('File not found');
       if (req.query.data === undefined) return next();
       const requestedPath = req.path.replace(/^\//, '');
       const htmlMatch = requestedPath.match(/^(.*?\.html(?:clay)?)(\/.*)?$/);
@@ -894,6 +915,13 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     // e.g. /blog/app.htmlclay/dashboard → serves blog/app.htmlclay, SPA route: /dashboard
     app.use(async (req, res, next) => {
       try {
+        // A request that arrived under the reserved `/_/` marker and reached the static
+        // catch-all was not consumed by any system route, so its stripped path (e.g.
+        // `save/foo.html`) must not be served as a document. 404 it.
+        if (req.fromSystemRoute) {
+          return res.status(404).send('File not found');
+        }
+
         await paths.ready();
 
         // Phase 1: decode exactly once. Express never decodes req.path, so
@@ -1176,6 +1204,7 @@ module.exports = {
   resolveResourceFromHref,
   validateAndResolvePath,
   stripSystemRouteMarker,
+  SYSTEM_ROUTES,
   isLoopbackOrigin,
   isLoopbackHostHeader,
   isLoopbackHostname,
