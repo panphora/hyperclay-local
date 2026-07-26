@@ -50,7 +50,13 @@ function commentEnd(str, from) {
   return -1;
 }
 
-function formatOptIn(str) {
+// Scan the document prologue and the root start-tag once, and report what the root is. Returns
+// null when the bytes carry no complete root <html> start-tag: junk before the root, a root that
+// is not <html>, or a start-tag that never closes with '>'. That last case is a truncated
+// document — a real parser would synthesize an implied <html> root, but the bytes on the wire are
+// half a tag, so neither caller should trust it. Two callers ask two questions of this one scan,
+// so they can never disagree about what the document's root is.
+function scanRootHtmlTag(str) {
   const len = str.length;
   let i = str.charCodeAt(0) === 0xFEFF ? 1 : 0;
 
@@ -58,16 +64,16 @@ function formatOptIn(str) {
   while (i < len) {
     const c = str[i];
     if (isWs(c)) { i++; continue; }
-    if (c !== '<') return false;
+    if (c !== '<') return null;
     if (str[i + 1] === '!' && str[i + 2] === '-' && str[i + 3] === '-') {
       const end = commentEnd(str, i + 4);
-      if (end === -1) return false;
+      if (end === -1) return null;
       i = end;
       continue;
     }
     if (str[i + 1] === '!' || str[i + 1] === '?') {
       const end = str.indexOf('>', i);
-      if (end === -1) return false;
+      if (end === -1) return null;
       i = end + 1;
       continue;
     }
@@ -75,9 +81,9 @@ function formatOptIn(str) {
   }
 
   // Require the root <html> start-tag.
-  if (str.substr(i, 5).toLowerCase() !== '<html') return false;
+  if (str.substr(i, 5).toLowerCase() !== '<html') return null;
   const boundary = str[i + 5];
-  if (boundary === undefined || !(isWs(boundary) || boundary === '>' || boundary === '/')) return false;
+  if (boundary === undefined || !(isWs(boundary) || boundary === '>' || boundary === '/')) return null;
   i += 5;
 
   // Parse attributes, but only trust the result once the tag actually closes with '>'.
@@ -87,7 +93,7 @@ function formatOptIn(str) {
   let seen = false;
   while (i < len) {
     let c = str[i];
-    if (c === '>') return optIn;
+    if (c === '>') return { optIn };
     if (isWs(c) || c === '/') { i++; continue; }
 
     const nameStart = i;
@@ -114,7 +120,7 @@ function formatOptIn(str) {
       c = str[i];
       if (c === '"' || c === "'") {
         const close = str.indexOf(c, i + 1);
-        if (close === -1) return false;
+        if (close === -1) return null;
         value = str.slice(i + 1, close);
         i = close + 1;
       } else {
@@ -133,7 +139,19 @@ function formatOptIn(str) {
       optIn = value === 'true';
     }
   }
-  return false;
+  return null;
+}
+
+function formatOptIn(str) {
+  const root = scanRootHtmlTag(str);
+  return root !== null && root.optIn;
+}
+
+// Spec §4 obliges a host to refuse a save body that is not a complete HTML document with a
+// top-level <html> element. It reuses the scan above rather than adding a second tokenizer: that
+// one is fuzz-verified against a real parser, and a second one would drift from it.
+function hasHtmlRoot(str) {
+  return typeof str === 'string' && scanRootHtmlTag(str) !== null;
 }
 
 // Find the '>' that ends a start tag, skipping quoted attribute values, and count the
@@ -290,3 +308,4 @@ function formatHtml(str) {
 
 module.exports = formatHtml;
 module.exports.formatHtmlDetailed = formatHtmlDetailed;
+module.exports.hasHtmlRoot = hasHtmlRoot;

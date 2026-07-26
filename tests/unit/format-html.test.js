@@ -1,5 +1,5 @@
 const formatHtml = require('../../src/main/format-html');
-const { formatHtmlDetailed } = formatHtml;
+const { formatHtmlDetailed, hasHtmlRoot } = formatHtml;
 
 const doc = (root, body = '<div><p>hi</p></div>') =>
   `<!DOCTYPE html><html${root}><head><title>x</title></head><body>${body}</body></html>`;
@@ -142,5 +142,44 @@ describe('formatHtmlDetailed (decline reasons, attribute-aware size guard)', () 
     expect(Date.now() - start).toBeLessThan(1000);
     expect(declined).toBe('size');
     expect(output).toBe(src);
+  });
+});
+
+// Deliberately NOT jsdom-differential the way formatOptIn above is. A real parser always
+// synthesizes an implied <html> root, even for a truncated '<html', so jsdom would disagree on
+// exactly the truncation case that hasHtmlRoot exists to refuse.
+describe('hasHtmlRoot (spec §4 save-body gate)', () => {
+  const complete = [
+    ['a normal document', doc('')],
+    ['no doctype, bare <html>', '<html><head><title>x</title></head><body>hi</body></html>'],
+    ['a BOM before the doctype', '\uFEFF' + doc('')],
+    ['a comment before the root', '<!-- hello --><html><body>hi</body></html>'],
+    ['a processing instruction before the root', '<?xml version="1.0"?><html><body>hi</body></html>'],
+    ['uppercase <HTML>', '<!DOCTYPE html><HTML><BODY>hi</BODY></HTML>'],
+    ['a self-closed root', '<html/>'],
+    ['root attributes, including formathtml="false"', doc(' lang="en" formathtml="false"')]
+  ];
+
+  test.each(complete)('accepts: %s', (_name, src) => {
+    expect(hasHtmlRoot(src)).toBe(true);
+  });
+
+  const refused = [
+    ['an empty body', ''],
+    ['whitespace only', '   '],
+    ['a fragment', '<div>hi</div>'],
+    ['a JSON body', '{"content":"x"}'],
+    ['text before the root', 'hi<html><body>hi</body></html>'],
+    ['<htmlx> is a different element', '<htmlx><body>hi</body></htmlx>'],
+    ['an unterminated root tag', '<html'],
+    ['a root tag whose quoted attribute never closes', '<html lang="en><body>hi</body></html>'],
+    ['null', null],
+    ['undefined', undefined],
+    ['a number', 42],
+    ['an object', {}]
+  ];
+
+  test.each(refused)('refuses: %s', (_name, src) => {
+    expect(hasHtmlRoot(src)).toBe(false);
   });
 });
