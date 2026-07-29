@@ -659,7 +659,7 @@ const PopoverApp = () => {
         {/* Update banner */}
         {updateAvailable && currentView === 'home' && (
           <button
-            onClick={() => window.electronAPI?.openBrowser('https://hyperclay.com/hyperclay-local')}
+            onClick={() => window.electronAPI?.openBrowser('https://hyperclaylocal.com/')}
             className="flex items-center gap-2 w-full px-3.5 py-1.5 bg-[#1B1E2C] border-none border-b border-b-[#292F52] cursor-pointer text-left font-['Berkeley_Mono',monospace]"
             style={{ borderBottom: `1px solid ${C.border}` }}
           >

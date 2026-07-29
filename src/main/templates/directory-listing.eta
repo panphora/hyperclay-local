@@ -49,7 +49,7 @@
         <div class="settings-menu">
           <a href="https://docs.hyperclay.com/docs/hyperclay-local-desktop-app-documentation/#syncing-with-hyperclaycom" target="_blank" class="menu-item">Get sync key</a>
           <a href="https://github.com/panphora/hyperclay-platform" target="_blank" class="menu-item">Report issues</a>
-          <a href="https://hyperclay.com/hyperclay-local" target="_blank" class="menu-item">Hyperclay Local</a>
+          <a href="https://hyperclaylocal.com/" target="_blank" class="menu-item">Hyperclay Local</a>
         </div>
       </div>
     </header>
