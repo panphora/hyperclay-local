@@ -27,7 +27,11 @@ describe('data API route wiring', () => {
     app = createApp(dir);
   });
   afterEach(async () => {
-    await fs.rm(dir, { recursive: true, force: true });
+    // POST /_/save fires the data-loss guard without awaiting it, so the guard
+    // can still be writing into .hyperclay/guard while this runs. Node's fs.rm
+    // defaults maxRetries to 0, and `force` only suppresses ENOENT, so a single
+    // bad interleave throws ENOTEMPTY and fails the test.
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     jest.restoreAllMocks();
   });
 

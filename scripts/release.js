@@ -570,6 +570,18 @@ async function main() {
 
     logSection('Step 1: Pre-flight Checks');
 
+    // Node 24.5.0's V8 segfaults during the jest suite — the GC crashes in
+    // ClearStaleLeftTrimmedPointerVisitor while iterating stack roots. It hit
+    // ~13% of full-suite runs and killed the 1.19.1 release, and because a dead
+    // worker still prints a green-looking pass count it is easy to misread.
+    // Node 22 is clean over the same runs; see .nvmrc.
+    const nodeMajor = Number(process.versions.node.split('.')[0]);
+    if (nodeMajor >= 24) {
+      logError(`Node ${process.versions.node} segfaults during the test suite.`);
+      log('  Run `nvm use` (see .nvmrc) and start the release again.');
+      process.exit(1);
+    }
+
     // Check for uncommitted changes (other than the files we'll modify)
     const status = execSafe('git status --porcelain').trim();
     if (status) {
@@ -702,6 +714,15 @@ async function main() {
   } else {
     triggerWindowsBuild();
   }
+
+  // Run the suite once, here, rather than letting each platform script start
+  // with its own `npm test`. A mac+linux release used to run the whole suite
+  // twice concurrently, which doubled the machine load and with it the odds of
+  // losing a teardown race — on 2026-08-14 both runs lost the same one and the
+  // release died at its first command, having built nothing.
+  logInfo('Running tests once for all platforms...');
+  await runBuild('Test suite', 'test');
+  logSuccess('Tests passed');
 
   const buildPromises = [];
   if (PLATFORMS.includes('mac')) {
