@@ -8,7 +8,7 @@
   "author": "Hyperclay",
   "license": "MIT",
   "engines": {
-    "node": ">=20 <24"
+    "node": ">=20"
   },
   "scripts": {
     "test": "jest",

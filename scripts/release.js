@@ -296,6 +296,15 @@ function updateReadmeSizes(version) {
 // BUILD FUNCTIONS
 // ============================================
 
+// A jest worker killed by a signal does not reliably fail the run: jest can
+// exit 0 while printing a green-looking pass count for the suites that did
+// finish, so a release would build on a suite that never completed. V8 13.6
+// (every Node 24) segfaults workers during GC in
+// ClearStaleLeftTrimmedPointerVisitor, which is what this catches. Detecting
+// the crash beats refusing a Node version: it needs no maintenance and it still
+// works the next time a V8 regresses.
+const WORKER_CRASH = /was terminated by another process: signal=([A-Z]+)/;
+
 function runBuild(name, command) {
   return new Promise((resolve, reject) => {
     const proc = spawn('npm', ['run', command], {
@@ -317,11 +326,19 @@ function runBuild(name, command) {
     });
 
     proc.on('close', code => {
-      if (code === 0) {
-        resolve(output);
-      } else {
+      if (code !== 0) {
         reject(new Error(`${name} build failed with code ${code}`));
+        return;
       }
+      const crash = output.match(WORKER_CRASH);
+      if (crash) {
+        reject(new Error(
+          `${name} exited 0 but a worker was killed by ${crash[1]}, so the run ` +
+          `did not finish. Its pass count covers only the suites that survived.`
+        ));
+        return;
+      }
+      resolve(output);
     });
 
     proc.on('error', reject);
@@ -569,18 +586,6 @@ async function main() {
     // ==========================================
 
     logSection('Step 1: Pre-flight Checks');
-
-    // Node 24.5.0's V8 segfaults during the jest suite — the GC crashes in
-    // ClearStaleLeftTrimmedPointerVisitor while iterating stack roots. It hit
-    // ~13% of full-suite runs and killed the 1.19.1 release, and because a dead
-    // worker still prints a green-looking pass count it is easy to misread.
-    // Node 22 is clean over the same runs; see .nvmrc.
-    const nodeMajor = Number(process.versions.node.split('.')[0]);
-    if (nodeMajor >= 24) {
-      logError(`Node ${process.versions.node} segfaults during the test suite.`);
-      log('  Run `nvm use` (see .nvmrc) and start the release again.');
-      process.exit(1);
-    }
 
     // Check for uncommitted changes (other than the files we'll modify)
     const status = execSafe('git status --porcelain').trim();
