@@ -48,7 +48,8 @@ for (const arg of process.argv.slice(2)) {
       console.log('  --platforms=LIST     Comma-separated platforms to build: mac, linux');
       console.log('                       (default: mac,linux)');
       console.log('');
-      console.log('If no version option is provided, you\'ll be prompted to choose.');
+      console.log('If no version option is provided, the bump is chosen automatically');
+      console.log('from the commit messages since the last tag. Nothing prompts.');
       console.log('');
       console.log('Example: resume a release whose macOS build failed');
       console.log('  node scripts/release.js --resume --platforms=mac');
@@ -514,9 +515,33 @@ function updateExternalDocs(version) {
 // MAIN
 // ============================================
 
+// The Clay License promises each version converts to plain MIT by deleting a
+// labelled clause list. CI checks that on push, but this app is released from a
+// laptop, so CI is not in the path of an actual publish. Runs first, before the
+// version bump, because a release that has already tagged and pushed is a much
+// worse place to discover it.
+function verifyLicenseAblation() {
+  logSection('License');
+  try {
+    execSync('python3 scripts/ablation-check.py LICENSE', {
+      encoding: 'utf8',
+      cwd: ROOT_DIR,
+      stdio: 'pipe',
+    });
+    logSuccess('LICENSE still ablates to plain MIT');
+  } catch (error) {
+    logError('LICENSE does not ablate to plain MIT. Release stopped.');
+    logError('The conversion clause printed in LICENSE is not true of this file.');
+    const detail = `${error.stdout || ''}${error.stderr || ''}`.trim();
+    if (detail) console.log(detail);
+    process.exit(1);
+  }
+}
+
 async function main() {
   process.chdir(ROOT_DIR);
   initLog();
+  verifyLicenseAblation();
 
   console.log('');
   console.log(`${colors.cyan}╔════════════════════════════════════════════════════╗${colors.reset}`);
@@ -658,12 +683,16 @@ async function main() {
           bumpType = match[0];
           logSuccess(`Claude recommends: ${bumpType}`);
         } else {
-          logError(`Unexpected response from Claude: "${recommendation}"`);
-          process.exit(1);
+          bumpType = 'patch';
+          logError(`Unexpected response from Claude: "${recommendation}" — defaulting to patch.`);
         }
       } catch (error) {
-        logError('Claude Code failed');
-        process.exit(1);
+        // A release is not the place to fail on an advisory call. The bump is a
+        // recommendation, and patch is the conservative one: shipping 1.20.2
+        // where 1.21.0 was meant is a wrong label on a real release, while
+        // exiting here strands a train that has already published its libraries.
+        bumpType = 'patch';
+        logError('Claude Code failed — defaulting to patch. Re-run with --minor if wrong.');
       }
     }
 
