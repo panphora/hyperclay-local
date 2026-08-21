@@ -13,6 +13,8 @@ const {
   resolveWritePath
 } = require('./utils/path-resolver.js');
 const { withFileLock, atomicWriteFile } = require('./utils/write-queue.js');
+const crypto = require('crypto');
+const busboy = require('busboy');
 const { pruneAllVersions } = require('./utils/prune-versions.js');
 const { scopeTailwindLink } = require('./utils/tailwind-scoping.js');
 const {
@@ -23,6 +25,7 @@ const { liveSync } = require('livesync-hyperclay');
 const { messageBus, isValidChannel } = require('@panphora/hyper-wire');
 const errorLogger = require('./error-logger');
 const formatHtml = require('./format-html');
+const { hasHtmlRoot } = formatHtml;
 const { serveSiteApiLocal, extractSiteDataLocal } = require('./utils/data-api');
 const { writeApiSidecar } = require('./utils/api-sidecar');
 const dataGuard = require('./data-loss-guard');
@@ -35,22 +38,39 @@ const eta = new Eta({
   cache: true
 });
 
-// Store snapshot HTML for platform sync (keyed by filename)
-// When browser saves with snapshotHtml, we cache it for the sync engine to use
+// Spec §3: `/_/save` takes the document as text, so a JSON body is refused
+// rather than guessed at. Compares the media type only, ignoring parameters like
+// `; charset=utf-8`, and covers the `+json` structured suffix.
+function isJsonContentType(contentType) {
+  const mediaType = String(contentType || '').split(';')[0].trim().toLowerCase();
+  return mediaType === 'application/json' || mediaType.endsWith('+json');
+}
+
+// What each open file owes the platform on its next sync upload, keyed by
+// filename. Two lanes fill it: /live-sync/save contributes the unstripped
+// snapshot, /save contributes the provenance bit. Either half can arrive without
+// the other, so both are optional and neither lane clears the other's.
 const pendingSnapshots = new Map();
 let snapshotCleanupTimer = null;
 
 /**
- * Get and clear the cached snapshot for a file.
- * Called by the sync engine before uploading to the platform.
+ * Get and clear what a file owes the platform: the live-sync snapshot, the save's
+ * provenance bit, or either one alone. Called by the sync engine before uploading.
+ *
+ * Returning null when there is no snapshot used to throw the provenance bit away
+ * with it, which mattered as soon as the snapshot stopped riding along on the save
+ * lane: a document on a preset without live-sync produces no snapshot at all, and
+ * its saves would have reached the platform guard as ui-unknown.
+ *
  * @param {string} filename - Filename including extension
- * @returns {{html: string, userDriven: (boolean|undefined)}|null}
+ * @returns {{html: (string|null), userDriven: (boolean|undefined)}|null}
  */
 function getAndClearSnapshot(filename) {
   const entry = pendingSnapshots.get(filename);
   pendingSnapshots.delete(filename);
-  if (!entry?.html) return null;
-  return { html: entry.html, userDriven: entry.userDriven };
+  if (!entry) return null;
+  if (!entry.html && entry.userDriven === undefined) return null;
+  return { html: entry.html || null, userDriven: entry.userDriven };
 }
 
 let server = null;
@@ -146,6 +166,108 @@ function resolveResourceFromHref(href) {
   return path.normalize(pathname);
 }
 
+// ---------------------------------------------------------------- uploads (spec §9)
+
+const SAVE_MAX_BYTES = 20 * 1024 * 1024;
+const UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
+
+// Refused by extension. A document or a script stored beside a document and
+// served from the same origin is stored XSS: the file the person "just uploaded"
+// executes with the document's own authority. SVG is deliberately NOT in this
+// list — it is accepted and served inert instead, see the Content-Disposition on
+// the static lane below, because refusing it would break a legitimate and common
+// kind of image.
+const UPLOAD_REFUSED = /\.(html?|xhtml|htmlclay|js|mjs|cjs|xml|xht|xsl|xslt)$/i;
+
+// Split a client-supplied filename into the parts the stored name is built from.
+// A leading dot is stripped rather than preserved: validateSegments 404s any
+// dot-prefixed segment, so `.avatar.png` would otherwise be refused with a
+// message about a missing file.
+function splitUploadName(fileName) {
+  const base = path.basename(String(fileName || 'file')).replace(/\0/g, '').replace(/^\.+/, '');
+  const dot = base.lastIndexOf('.');
+  if (dot <= 0) return { stem: base || 'file', ext: '' };
+  return { stem: base.slice(0, dot) || 'file', ext: base.slice(dot) };
+}
+
+// `blog/app.html` -> `blog/assets-app`. Beside the document, named after it, so a
+// folder of documents does not turn into one shared pile of files, and so the URL
+// the client writes into the page resolves relative to the document itself.
+function assetsDirFor(docRelPath) {
+  const dir = path.dirname(docRelPath);
+  const stem = path.basename(docRelPath).replace(/\.(html?|htmlclay|xhtml)$/i, '');
+  const folder = `assets-${stem}`;
+  return dir === '.' || dir === '' ? folder : `${dir}/${folder}`;
+}
+
+// Content-hash naming, which is what removes the race rather than a lock. Two
+// uploads of DIFFERENT bytes get different names and never contend; two uploads
+// of the SAME bytes converge on one file, and whichever loses the exclusive
+// create reads back what the winner wrote and agrees with it. The tail lengthens
+// only on a genuine hash prefix collision between different content.
+async function storeUpload(paths, dirRel, fileName, content) {
+  const { stem, ext } = splitUploadName(fileName);
+  const digest = crypto.createHash('sha256').update(content).digest('hex');
+  for (let len = 6; len <= 32; len += 2) {
+    const name = `${stem}-${digest.slice(0, len)}${ext}`;
+    const rel = `${dirRel}/${name}`;
+    validateSegments(rel);
+    const abs = await resolveWritePath(paths, rel);
+    let handle = null;
+    try {
+      // 'wx' is O_EXCL: it creates or it fails, it never truncates. A plain write
+      // here would let a second upload silently overwrite the first.
+      handle = await fs.open(abs, 'wx', 0o644);
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const existing = await fs.readFile(abs);
+      if (existing.equals(content)) return { name, bytes: content.length };
+      continue;
+    }
+    try {
+      await handle.writeFile(content);
+    } finally {
+      await handle.close();
+    }
+    return { name, bytes: content.length };
+  }
+  throw new PathError(409, 'Could not find a free name for that file.');
+}
+
+// One file part named `file` (spec §9). Anything else in the body is drained and
+// ignored rather than refused, so a client that also sends fields still works.
+function readUploadPart(req, limit) {
+  return new Promise((resolve, reject) => {
+    let parser;
+    try {
+      parser = busboy({ headers: req.headers, limits: { fileSize: limit, files: 1 } });
+    } catch {
+      return reject(new PathError(400, 'Expected a multipart form upload.'));
+    }
+    let part = null;
+    let failed = null;
+    parser.on('file', (field, stream, info) => {
+      if (field !== 'file' || part) { stream.resume(); return; }
+      const chunks = [];
+      stream.on('data', (chunk) => chunks.push(chunk));
+      // busboy TRUNCATES at the limit rather than erroring, so without this a file
+      // over the cap is stored silently short and reported as a success.
+      stream.on('limit', () => {
+        failed = new PathError(413, `Files are limited to ${limit} bytes.`);
+        stream.resume();
+      });
+      stream.on('end', () => { if (!failed) part = { filename: info.filename, content: Buffer.concat(chunks) }; });
+    });
+    parser.on('error', () => reject(new PathError(400, 'Could not read the upload.')));
+    parser.on('close', () => (failed ? reject(failed) : resolve(part)));
+    req.pipe(parser);
+  });
+}
+
+// The spec's §3 code for a status, so a client branches on the reason instead of
+// pattern-matching the message.
+const UPLOAD_CODES = { 400: 'bad-request', 403: 'forbidden', 404: 'not-found', 409: 'conflict', 413: 'too-large', 415: 'unsupported-type' };
+
 // `/_/<action>` system-route marker (mirrors hyperclay's SYSTEM_ROUTE_MARKER = '_').
 // Strips a leading `/_/` so `/_/save` → `/save`, `/_/live-sync/stream?x` →
 // `/live-sync/stream?x`. Non-marker URLs pass through unchanged. Pure + exported
@@ -159,8 +281,7 @@ function stripSystemRouteMarker(url) {
 
 // Known `/_/` system routes on this host. Anything else under the marker is reserved
 // and 404s, so `/_/foo.html` can never reach the static catch-all and serve a document.
-// `meta` is deliberately absent until `GET /_/meta` actually exists.
-const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'bus', 'data-loss', 'api']);
+const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'bus', 'data-loss', 'api', 'meta', 'upload']);
 
 // True when a hostname (already parsed out of a URL or a Host header) names this
 // machine's loopback interface. The whole 127/8 block counts, as does every
@@ -207,6 +328,15 @@ function isLoopbackHostHeader(hostHeader) {
 // startServer so tests can drive the real route wiring (ordering + the marker gate)
 // via supertest against an ephemeral port instead of the hardcoded 4321.
 function createApp(baseDir, devHooks = null, isKnownPath = null) {
+  // The map describes what the CURRENTLY served folder owes the platform, but it is
+  // module state keyed by a path relative to that folder's root, so it would
+  // otherwise outlive a folder switch. Two folders each holding an index.html then
+  // share one entry: folder A's snapshot gets uploaded as folder B's, and the
+  // platform broadcasts it verbatim into B's edit-mode tabs, where hyper-morph
+  // merges A's document into B's page. The five-minute sweep in startServer is not
+  // a substitute, since it is not even running while the server is stopped.
+  pendingSnapshots.clear();
+
     const app = express();
 
     // Canonical path resolution + symlink consent for every route below. The
@@ -233,6 +363,47 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         return res.status(403).send('Invalid Host header');
       }
       next();
+    });
+
+    // Origin validation for the WHOLE mutating surface, not per route. A loopback
+    // bind does not help and neither does the Host check above: a page on
+    // evil.com can POST to http://localhost:4321, and the browser sends the real
+    // Host, so only Origin distinguishes it from the user's own page.
+    //
+    // /save survives today by accident. It requires the Page-URL header, and a
+    // custom header forces a CORS preflight that this server never answers. That
+    // protection evaporates the moment a route accepts a request that needs no
+    // custom header: a cross-origin multipart form POST is a CORS "simple
+    // request" and goes straight through. An upload route is exactly that shape,
+    // which is why this lands before one exists rather than beside it.
+    //
+    // The rules, in order:
+    //
+    //   - Safe methods pass untouched.
+    //   - No Origin at all passes: curl, the sync engine and a shell script send
+    //     none, and none of them carry ambient browser authority. Browsers always
+    //     send Origin on POST, including form submissions.
+    //   - `Origin: null` is refused. It means a sandboxed document, a data: URL
+    //     or a redirect chain, it is forgeable, and this host mints no tokens, so
+    //     nothing here can carry authority in place of an origin. Local serves no
+    //     document sandboxed (it sets no CSP), so no legitimate save is null.
+    //   - Any other Origin must be loopback. Any port: the served port varies,
+    //     and code on another loopback port is already running on this machine.
+    //   - Sec-Fetch-Site is checked when present, as a second signal that costs
+    //     nothing and does not depend on Origin being sent.
+    const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+    app.use((req, res, next) => {
+      if (!UNSAFE_METHODS.has(req.method)) return next();
+
+      const site = req.headers['sec-fetch-site'];
+      if (site === 'cross-site') {
+        return res.status(403).json({ msg: 'Cross-origin requests are not allowed.', msgType: 'error' });
+      }
+
+      const origin = req.headers.origin;
+      if (origin === undefined) return next();
+      if (origin !== 'null' && isLoopbackOrigin(origin)) return next();
+      return res.status(403).json({ msg: 'Cross-origin requests are not allowed.', msgType: 'error' });
     });
 
     // `/_/<action>` system-route marker: forward `/_/`-prefixed requests to the
@@ -499,12 +670,15 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     // Disk sync is handled by polling + /sync/download (stripped content).
     console.log(`[LiveSync] Ready for browser-to-browser sync (no file watcher broadcast)`);
 
-    // Middleware to parse both JSON and plain text for the /save route
-    // JSON is used by Hyperclay Local browser (includes snapshotHtml for platform sync)
-    // Plain text is used as fallback for backwards compatibility
-    // 20MB limit to accommodate both stripped content and full snapshotHtml
-    app.use('/save', express.json({ limit: '20mb' }));
-    app.use('/save', express.text({ type: 'text/plain', limit: '20mb' }));
+    // Spec §3: /_/save takes the document as text, and this route has exactly one
+    // body shape. Everything else about the save travels in a header: the
+    // provenance bit is `Save-Trigger`, and an unstripped snapshot goes to
+    // /live-sync/save, which is the only route allowed to carry one.
+    //
+    // Every content type is read as text so a JSON body arrives as a string and
+    // can be refused with a real message, rather than reaching the handler as an
+    // unparsed blank and reporting "invalid request body".
+    app.use('/save', express.text({ type: () => true, limit: SAVE_MAX_BYTES }));
 
     // POST route to save/overwrite HTML files (supports subfolders)
     app.post('/save', async (req, res) => {
@@ -517,17 +691,34 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       }
       const name = resolveResourceFromHref(pageUrl);
 
-      // Handle both JSON and plain text requests
-      let content, snapshotHtml, userDriven;
-      if (req.body && typeof req.body === 'object' && Object.hasOwn(req.body, 'content')) {
-        // JSON request from Hyperclay Local browser
-        content = req.body.content;
-        snapshotHtml = req.body.snapshotHtml;
-        userDriven = req.body.userDriven;
-      } else {
-        // Plain text request (backwards compatibility)
-        content = req.body;
+      if (isJsonContentType(req.headers['content-type'])) {
+        return res.status(415).json({
+          msg: '/_/save takes the document as text, not JSON.',
+          msgType: 'error',
+          code: 'unsupported-media-type'
+        });
       }
+
+      // Reassigned below by scopeTailwindLink and formatHtml.
+      let content = req.body;
+
+      // A save is always a whole document: the browser serializes
+      // documentElement.outerHTML. Checking the shape is not belt-and-braces here,
+      // it is the only check there is. The route reads EVERY content type as text
+      // so a JSON body can be refused with a real message, which means the type
+      // matcher no longer rejects anything on the way in, and without this a
+      // form-encoded post answered 200 and left `a=%3Chtml%3E...` in the file.
+      // hasHtmlRoot scans for a real top-level <html> element rather than the
+      // substring '<html', so junk that merely mentions one does not pass.
+      if (!hasHtmlRoot(content)) {
+        return res.status(422).json({
+          msg: 'Not a complete HTML document with a top-level <html> element.',
+          msgType: 'error',
+          code: 'invalid-document'
+        });
+      }
+
+      const userDriven = dataGuard.userDrivenFromHeader(req);
 
       // Phase-4 canonical resolution. `filePath` is the real path on disk (an
       // in-tree symlink is followed only when it was consented at open time),
@@ -660,12 +851,18 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
           }
         }
 
-        // Store snapshot HTML (+ the userDriven provenance bit) for platform
-        // sync. The sync engine retrieves this when uploading to the platform so
-        // the platform guard can split a UI save from a background-script save.
-        if (snapshotHtml) {
-          pendingSnapshots.set(name, { html: snapshotHtml, userDriven, timestamp: Date.now() });
-          console.log(`[Platform Sync] Cached snapshot for ${name}`);
+        // Record the provenance bit for platform sync. The sync engine reads it
+        // when uploading, so the platform guard can split a UI save from a
+        // background-script save. The snapshot beside it comes from
+        // /live-sync/save, which is why this merges rather than replaces: the two
+        // lanes contribute different halves of the same entry.
+        {
+          const prev = pendingSnapshots.get(name);
+          pendingSnapshots.set(name, {
+            html: prev ? prev.html : null,
+            userDriven,
+            timestamp: Date.now()
+          });
         }
         });
 
@@ -702,6 +899,88 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         return null;
       }
     };
+
+    // GET /_/meta — discovery (spec §5). Both lanes require the `/_/` prefix, the
+    // same way /bus/send does, so a user folder actually named `meta` or `upload`
+    // keeps being served as a folder.
+    app.get('/meta', async (req, res, next) => {
+      if (!req.originalUrl.startsWith('/_/meta')) return next();
+      // `spec` and `extensions` describe the HOST and are the same for every
+      // document it serves. `document` describes the one named by Document-URL,
+      // and is withheld by OMISSION, so the answer for a document that is not
+      // there is byte-identical to the answer for one a caller may not see.
+      const body = { spec: 1, extensions: ['upload'] };
+      const href = req.headers['document-url'] || req.headers['page-url'];
+      if (href) {
+        try {
+          const filePath = await resolveWriteTarget(paths, resolveResourceFromHref(href));
+          const stats = await fs.stat(filePath);
+          if (stats.isFile()) {
+            // Everything under the served folder belongs to the person running
+            // this app, so there is no permission to consult: writable is what
+            // this host IS.
+            body.document = {
+              writable: true,
+              maxBytes: SAVE_MAX_BYTES,
+              upload: { allowed: true, maxBytes: UPLOAD_MAX_BYTES }
+            };
+          }
+        } catch { /* omission, never a different answer */ }
+      }
+      return res.json(body);
+    });
+
+    // POST /_/upload — store a file beside the document instead of embedding it
+    // (spec §9). No body parser runs on this path: express.json/text are scoped
+    // to '/save', so the multipart body arrives intact.
+    app.post('/upload', async (req, res, next) => {
+      if (!req.originalUrl.startsWith('/_/upload')) return next();
+      const href = req.headers['document-url'] || req.headers['page-url'];
+      if (!href) {
+        return res.status(400).json({ msg: 'Document-URL header required.', msgType: 'error', code: 'bad-request' });
+      }
+      const docName = resolveResourceFromHref(href);
+      try {
+        // The upload is authorized by the document existing and being writable,
+        // exactly as a save is. A file that is not there cannot be uploaded to.
+        const docPath = await resolveWriteTarget(paths, docName);
+        const docStats = await fs.stat(docPath).catch(() => null);
+        if (!docStats || !docStats.isFile()) {
+          return res.status(404).json({ msg: 'That document does not exist.', msgType: 'error', code: 'not-found' });
+        }
+
+        const part = await readUploadPart(req, UPLOAD_MAX_BYTES);
+        if (!part) {
+          return res.status(400).json({ msg: 'No file to upload.', msgType: 'error', code: 'bad-request' });
+        }
+        if (UPLOAD_REFUSED.test(part.filename || '')) {
+          return res.status(415).json({ msg: 'That kind of file cannot be uploaded.', msgType: 'error', code: 'unsupported-type' });
+        }
+
+        const dirRel = assetsDirFor(docName);
+        const dirAbs = await resolveWritePath(paths, dirRel);
+        await fs.mkdir(dirAbs, { recursive: true });
+        const stored = await storeUpload(paths, dirRel, part.filename, part.content);
+
+        // Percent-encoded per segment, while the stored name keeps its own
+        // characters. A raw space renders through img src, because the browser
+        // repairs it, and breaks in srcset, where a space separates candidates.
+        const url = `${encodeURIComponent(path.basename(dirRel))}/${encodeURIComponent(stored.name)}`;
+        return res.json({
+          msg: 'Uploaded',
+          msgType: 'success',
+          uploads: [{ name: stored.name, url, bytes: stored.bytes }]
+        });
+      } catch (error) {
+        const status = error.status || error.statusCode;
+        if (!status) return next(error);
+        return res.status(status).json({
+          msg: error.message,
+          msgType: 'error',
+          code: UPLOAD_CODES[status] || 'error'
+        });
+      }
+    });
 
     app.get('/data-loss', async (req, res) => {
       const resolved = await resolveGuardFile(req);
@@ -957,6 +1236,17 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         const stats = await fs.stat(realPath);
         if (stats.isDirectory()) {
           return await serveDirListing(res, realPath, paths.baseReal);
+        }
+        // An SVG is a document: it can carry <script>, and served inline from
+        // this origin it runs with the same authority as the page beside it.
+        // Uploads accept SVG precisely BECAUSE serving it inert is possible, so
+        // this header is what makes that decision safe. Unconditional, because a
+        // file's provenance is not knowable at serve time — one uploaded through
+        // /_/upload and one the person dropped in the folder look identical here.
+        // `nosniff` stops a browser from second-guessing the type.
+        if (/\.svgz?$/i.test(realPath)) {
+          res.setHeader('Content-Disposition', 'attachment');
+          res.setHeader('X-Content-Type-Options', 'nosniff');
         }
         return res.sendFile(realPath);
       } catch (error) {

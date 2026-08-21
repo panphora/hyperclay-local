@@ -43,6 +43,41 @@ test('provenanceForLocalSave maps the userDriven bit (missing reads ui-unknown)'
   assert.strictEqual(guard.provenanceForLocalSave(undefined), 'ui-unknown');
 });
 
+// A text save carries its provenance in a header, so the bit has to be read from
+// one. It used to be read only out of the JSON envelope's `userDriven` field,
+// which meant a spec-shaped save reported ui-unknown and the guard lost the
+// human-gesture signal entirely.
+function fakeReq(headers) {
+  const lower = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
+  return { get: (name) => lower[String(name).toLowerCase()] };
+}
+
+test('userDrivenFromHeader reads Save-Trigger, falling back to the pre-spec header', () => {
+  assert.strictEqual(guard.userDrivenFromHeader(fakeReq({ 'Save-Trigger': 'user' })), true);
+  assert.strictEqual(guard.userDrivenFromHeader(fakeReq({ 'Save-Trigger': 'auto' })), false);
+  // §9: a host treats any unknown trigger as `auto`, so document code cannot
+  // invent a value that buys it a stronger claim than autosave.
+  assert.strictEqual(guard.userDrivenFromHeader(fakeReq({ 'Save-Trigger': 'whatever' })), false);
+  // Save-Trigger wins over the older spelling when both are present.
+  assert.strictEqual(
+    guard.userDrivenFromHeader(fakeReq({ 'Save-Trigger': 'auto', 'X-Hyperclay-User-Driven': '1' })),
+    false,
+  );
+  assert.strictEqual(guard.userDrivenFromHeader(fakeReq({ 'X-Hyperclay-User-Driven': '1' })), true);
+  assert.strictEqual(guard.userDrivenFromHeader(fakeReq({ 'X-Hyperclay-User-Driven': '0' })), false);
+  // Neither header is an old client, which is not the same answer as `auto`.
+  assert.strictEqual(guard.userDrivenFromHeader(fakeReq({})), undefined);
+});
+
+test('a header-driven save resolves to the same provenance the envelope used to give', () => {
+  const fromHeader = guard.userDrivenFromHeader(fakeReq({ 'Save-Trigger': 'user' }));
+  assert.strictEqual(guard.provenanceForLocalSave(fromHeader), 'ui-gestured');
+  assert.strictEqual(
+    guard.provenanceForLocalSave(guard.userDrivenFromHeader(fakeReq({ 'Save-Trigger': 'auto' }))),
+    'ui-background',
+  );
+});
+
 test('first sight blind-seeds and does not fire (no prev to compare)', async () => {
   const baseDir = await freshBaseDir();
   const ev = await guard.runDataLossGuard({ baseDir, name: NAME, newHtml: page(), prevContent: null, prov: 'external' });

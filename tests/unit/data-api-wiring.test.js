@@ -131,8 +131,8 @@ describe('data API route wiring', () => {
     const res = await request(app)
       .post('/_/save')
       .set('page-url', 'http://localhost:4321/index.html')
-      .set('Content-Type', 'application/json')
-      .send({ content: '<html><body>hi</body></html>' });
+      .set('Content-Type', 'text/plain')
+      .send('<html><body>hi</body></html>');
     expect(res.status).toBe(200);
     expect(await fs.readFile(path.join(dir, '.hyperclay/api/index.json'), 'utf8')).toBe('{"saved":true}');
   });

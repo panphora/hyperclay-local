@@ -106,6 +106,77 @@ describe('A2: Host header validation', () => {
   });
 });
 
+describe('Origin validation on the mutating surface', () => {
+  let dir;
+  let app;
+
+  const save = (extraHeaders) => request(app)
+    .post('/save')
+    .set('Host', 'localhost')
+    .set('Page-URL', 'http://localhost/index.html')
+    .set('Content-Type', 'text/plain')
+    .set(extraHeaders)
+    .send('<html>written</html>');
+
+  const body = () => fs.readFile(path.join(dir, 'index.html'), 'utf8');
+
+  beforeEach(async () => {
+    dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'origin-')));
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    app = createApp(dir);
+    await fs.writeFile(path.join(dir, 'index.html'), '<html>original</html>');
+  });
+
+  afterEach(async () => {
+    await cleanup(dir);
+    jest.restoreAllMocks();
+  });
+
+  test('a cross-origin POST is refused and the file is untouched', async () => {
+    const res = await save({ Origin: 'https://evil.example' });
+    expect(res.status).toBe(403);
+    expect(await body()).toBe('<html>original</html>');
+  });
+
+  test('Origin: null is refused — this host mints no token to carry authority instead', async () => {
+    const res = await save({ Origin: 'null' });
+    expect(res.status).toBe(403);
+    expect(await body()).toBe('<html>original</html>');
+  });
+
+  test('Sec-Fetch-Site: cross-site is refused even with no Origin header', async () => {
+    const res = await save({ 'Sec-Fetch-Site': 'cross-site' });
+    expect(res.status).toBe(403);
+    expect(await body()).toBe('<html>original</html>');
+  });
+
+  test("the user's own page saves: a loopback Origin passes", async () => {
+    const res = await save({ Origin: 'http://localhost:4321', 'Sec-Fetch-Site': 'same-origin' });
+    expect(res.status).toBe(200);
+    expect(await body()).toBe('<html>written</html>');
+  });
+
+  test('a loopback origin on another port passes — that is code already on this machine', async () => {
+    const res = await save({ Origin: 'http://127.0.0.1:9999' });
+    expect(res.status).toBe(200);
+    expect(await body()).toBe('<html>written</html>');
+  });
+
+  test('a non-browser client with no Origin passes: curl, the sync engine, a script', async () => {
+    const res = await save({});
+    expect(res.status).toBe(200);
+    expect(await body()).toBe('<html>written</html>');
+  });
+
+  test('GET is never blocked by the guard', async () => {
+    const res = await request(app)
+      .get('/index.html')
+      .set('Host', 'localhost')
+      .set('Origin', 'https://evil.example');
+    expect(res.status).toBe(200);
+  });
+});
+
 describe('A0: directory listing escaping and href encoding', () => {
   let dir;
   let app;

@@ -1,21 +1,221 @@
-MIT License
+Clay License
+Version 1.0
 
-Copyright (c) 2025 David Miranda
+Copyright (c) 2026 Hyperspace Systems LLC
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+----------------------------------------------------------------------
+LICENSE DETAILS FOR THIS RELEASE
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+  Software:             Hyperclay Local 1.21.0
+  Released:             2026-08-20
+  MIT Conversion Date:  2028-02-20  (18 months after release)
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  Licensor:             Hyperspace Systems LLC, and its successors
+                        and assigns
+  Payment, program, plain answers:  https://hyperclay.com/host-program
+  Questions, notices, Coverage Certificates:  license@hyperclay.com
+  SPDX identifier:      LicenseRef-Clay-1.0 (MIT after the
+                        Conversion Date)
+  Where to start:       Section 1.
+----------------------------------------------------------------------
+
+
+1. THE CONDITION, AND WHO IT NEVER REACHES
+
+This license gives You every right the MIT License gives You,
+granted in Section 2, on one condition beyond MIT's: if products
+and services that contain the Software, derive from it, or provide
+its functionality to others by running it bring You, together with
+every entity under common control with You, more than
+US $1,000,000 in a calendar year, You pay Licensor 3% of the
+amount above US $1,000,000. Almost nobody owes it. Where the
+Software is one component of something larger, only the share
+fairly attributable to it counts.
+
+Under that line You owe nothing and condition (b) of Section 2 is
+satisfied for the year with no act on Your part: nothing to pay,
+report, register, or notify. Keep the copyright notice in copies,
+as condition (a) requires, and You are finished with this license.
+The line is tested year by year, so look again once a year. If You
+are not sure whether something You sell is covered, Section 5
+makes the answer free and binding within 30 days.
+
+Crossing the line never makes the first US $1,000,000 payable,
+never reaches back into an earlier year, and never ends this
+license. Sections 4 through 6 say how Covered Revenue is counted
+and the fee is paid. This section describes the condition; Section
+2 states it and Sections 4 through 6 measure it. Where this
+section and those differ, those govern, and nothing in this
+section creates an obligation they do not.
+
+
+2. GRANT AND CONDITIONS
+
+Permission is hereby granted, free of charge except as condition (b)
+below provides, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the
+Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or
+sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+  (a) The above copyright notice and this permission notice shall be
+      included in all copies or substantial portions of the Software.
+
+  (b) If in a calendar year the Covered Revenue of You and every
+      entity under common control with You exceeds US $1,000,000,
+      You shall pay Licensor 3% of the amount above US $1,000,000,
+      as Section 6 provides. "Covered Revenue" is receipts from
+      products and services You supply that themselves contain the
+      Software, are derived from it, or provide its functionality
+      to others by running it, less refunds, chargebacks, and
+      transaction taxes, attributed as Section 4 provides.
+      Otherwise this condition is satisfied for the year with no
+      act on Your part.
+
+Both (a) and (b) are conditions of this grant, not independent
+covenants. Exercising the rights granted here without satisfying
+them, subject to the cure and good-faith provisions of Section 6, is
+outside the scope of this license.
+
+In this license, the "Software" is the version of the work identified
+in the License Details above, in source or binary form, including
+modifications of it and works derived from it; a work is derived
+from the Software only if it would infringe copyright in the
+Software without this license; the "Package" is the software line of
+which this Software is one version; and "You" means the person or
+legal entity exercising these rights.
+
+
+3. CONVERSION TO THE MIT LICENSE
+
+On the MIT Conversion Date stated above, this version of the
+Software becomes licensed to everyone under the MIT License,
+automatically and without notice or any further act. That happens by
+operation of this text. On that date:
+
+  (a) in Section 2, the words "free of charge except as condition
+      (b) below provides" read simply "free of charge";
+
+  (b) in Section 2, condition (b), the label "(a)", the paragraph
+      beginning "Both (a) and (b)", and the paragraph beginning "In
+      this license" are deleted;
+
+  (c) Section 1 and Sections 4 through 6 cease to have effect;
+
+  (d) this Section 3 ceases to have effect, the conversion it makes
+      having already taken effect irrevocably; and
+
+  (e) the License Details block, the section headings, and the
+      section numbering become a record of this release and have no
+      operative effect.
+
+What then remains, Section 2 as amended and the disclaimer in
+Section 7, under the copyright notice above, is the MIT License
+(SPDX identifier: MIT), word for word. From that date copies of this
+version may also carry the standard MIT License text in place of
+this document.
+
+This conversion is automatic, unconditional, and irrevocable, and
+binds Licensor and its successors and assigns. It takes effect
+whether or not Licensor republishes this version under a separate
+MIT license file.
+
+The same conversion happens immediately, without notice or any
+further act, if for any period of 12 consecutive months Licensor
+neither makes a public release of the Package nor provides any
+security response to a responsibly reported vulnerability in it, or
+if Licensor ceases business operations without a successor that
+assumes this license.
+
+The terms of this license, including the MIT Conversion Date, are
+fixed for this version of the Software at its release and will never
+change. Later versions of the Package may ship under revised terms;
+revised terms apply only to those later versions, never
+retroactively.
+
+
+4. COUNTING COVERED REVENUE
+
+"Control" means (i) the power, direct or indirect, to cause the
+direction or management of an entity, whether by contract or
+otherwise, (ii) ownership of fifty percent (50%) or more of an
+entity's outstanding shares, or (iii) beneficial ownership of an
+entity. Aggregation across common control exists solely to prevent
+splitting one business across entities to multiply the
+US $1,000,000 exemption; there is no other affiliate test in this
+license. Aggregated Covered Revenue is counted once, and one
+self-certification and payment by any of the aggregated entities
+discharges condition (b) and Section 6 for all of them.
+
+The fee is charged at most once for a product or service. It never
+stacks across Licensor's other Clay-licensed packages used together
+in one offering, across versions of the Software, or across copies
+and instances, and revenue counted once under this or any other
+Clay License is never counted again.
+
+If the Software, a work derived from it, or a product or service
+that contains it is one component of a larger product, service,
+bundle, or subscription, whether or not that component is
+separately priced or sold, its Covered Revenue is the portion of
+the receipts fairly attributable to that component: its actual
+standalone price if You also sell it on a standalone basis;
+otherwise, any reasonable allocation method You apply consistently
+in Your own financial statements or management accounts. An
+allocation that complies with this paragraph binds Licensor for the
+calendar year it covers, and allocated Covered Revenue never
+exceeds the actual receipts of the whole.
+
+Where the customer holds its own copy of the Software under this
+license, Your receipts for installing, configuring, or maintaining
+that copy are not Covered Revenue.
+
+
+5. COVERAGE CERTIFICATES
+
+At any time and at no charge, You may send Licensor, at the address
+above, a complete and accurate written description of an offering
+and, if applicable, a proposed allocation. Licensor shall respond
+within 30 days with a written determination of whether, and to what
+extent, receipts from the offering are Covered Revenue and whether
+the allocation complies with Section 4. Silence for 30 days accepts
+the request as submitted, except as to facts the request omitted or
+misstated.
+
+A determination, including a deemed acceptance, binds Licensor and
+its successors for the versions of the Package it names, for as long
+as the material facts described in the request remain accurate.
+
+
+6. REPORTING, PAYMENT, AUDIT, AND CURE
+
+If a fee is due under condition (b) for a calendar year, You shall,
+within 90 days after the end of that year, send Licensor a
+self-certification stating the Covered Revenue and the fee due, and
+pay the fee through the address or URL in the License Details
+above.
+
+Licensor may audit the calculation at most once per calendar year,
+at Licensor's expense, through an independent accountant under
+confidentiality, on 30 days' written notice. If an audit finds
+underpayment exceeding 5% of the amount due, You shall also
+reimburse the reasonable cost of that audit.
+
+A good-faith underpayment, late report, or late payment does not
+terminate this license and is not copyright infringement; any
+unpaid amount remains a debt owed to Licensor. If You fail to pay
+or report as this section requires, Licensor shall give You written
+notice, and You have 30 days from that notice to cure. Only a
+failure to cure within those 30 days is a failure of condition (b).
+
+
+7. DISCLAIMER
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.

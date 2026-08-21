@@ -332,6 +332,24 @@ async function captureRecoverPath(baseDir, name, prevContent) {
 // ---------------------------------------------------------------------------
 // Provenance for the local /save path (always a UI save, split by userDriven).
 // ---------------------------------------------------------------------------
+
+// What caused this save. Spec §9 defines `Save-Trigger: user` (a human gesture)
+// and `auto` (autosave or script), and obliges a host to treat any unknown value
+// as `auto`, so document code cannot widen its own privileges by inventing one.
+// The pre-spec X-Hyperclay-User-Driven header is read when Save-Trigger is
+// absent, since hyperclayjs 1.x still sends that spelling. Neither header ->
+// undefined (old client; tie-break silent), which is deliberately not the same
+// answer as `auto`. Same three states as the platform's reader.
+function userDrivenFromHeader(req) {
+  const header = (name) => (req && typeof req.get === 'function' && req.get(name)) || '';
+  const trigger = header('save-trigger').trim().toLowerCase();
+  if (trigger) return trigger === 'user';
+  const h = header('x-hyperclay-user-driven');
+  if (h === '1' || h === 'true') return true;
+  if (h === '0' || h === 'false') return false;
+  return undefined;
+}
+
 function provenanceForLocalSave(userDriven) {
   return uiProvenance(userDriven);
 }
@@ -626,6 +644,7 @@ module.exports = {
   extractIsland,
   runDataLossGuard,
   provenanceForLocalSave,
+  userDrivenFromHeader,
   getGuardEvent,
   resolveGuard,
   applyRemoteResolution,
