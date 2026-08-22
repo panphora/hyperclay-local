@@ -515,7 +515,7 @@ function updateExternalDocs(version) {
 // MAIN
 // ============================================
 
-// The Clay License promises each version converts to plain MIT by deleting a
+// The First Million Stays Yours License promises each version converts to plain MIT by deleting a
 // labelled clause list. CI checks that on push, but this app is released from a
 // laptop, so CI is not in the path of an actual publish. Runs first, before the
 // version bump, because a release that has already tagged and pushed is a much
