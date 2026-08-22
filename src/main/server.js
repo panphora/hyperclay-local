@@ -281,7 +281,7 @@ function stripSystemRouteMarker(url) {
 
 // Known `/_/` system routes on this host. Anything else under the marker is reserved
 // and 404s, so `/_/foo.html` can never reach the static catch-all and serve a document.
-const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'bus', 'data-loss', 'api', 'meta', 'upload']);
+const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'sync', 'bus', 'data-loss', 'api', 'meta', 'upload']);
 
 // True when a hostname (already parsed out of a URL or a Host header) names this
 // machine's loopback interface. The whole 127/8 block counts, as does every
@@ -473,18 +473,23 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       }
     });
 
-    // Middleware to parse JSON body for live-sync endpoint
-    app.use('/live-sync', express.json({ limit: '10mb' }));
+    // Middleware to parse JSON body for live-sync endpoint, under both the legacy
+    // path and the spec §10 address.
+    app.use(['/live-sync', '/sync'], express.json({ limit: '10mb' }));
 
-    // Live-sync SSE stream endpoint
-    app.get('/live-sync/stream', (req, res) => {
-      const pageUrl = req.query['page-url'];
+    // Live-sync SSE stream endpoint. Spec §10 puts both halves on `/_/sync`; the
+    // legacy `/live-sync/stream` stays forever because hyperclayjs hardcodes it, and
+    // so does the inline script in every Collection dashboard ever minted, neither of
+    // which any library update can reach.
+    app.get(['/live-sync/stream', '/sync'], (req, res) => {
+      // `document-url` is the spec spelling and wins; `page-url` is the pre-spec one.
+      const pageUrl = req.query['document-url'] || req.query['page-url'];
       if (!pageUrl) {
-        return res.status(400).send('page-url parameter required');
+        return res.status(400).send('document-url parameter required');
       }
       const file = resolveResourceFromHref(pageUrl);
       if (!file) {
-        return res.status(400).send('could not resolve file from page-url');
+        return res.status(400).send('could not resolve file from document-url');
       }
 
       // Lane: edit-mode tabs ride 'live' (default) and get pre-strip peer
@@ -524,17 +529,20 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       res.write(': connected\n\n');
     });
 
-    // Live-sync save endpoint
-    app.post('/live-sync/save', async (req, res) => {
-      const { html, sender } = req.body;
-      const pageUrl = req.headers['page-url'];
+    // Live-sync relay endpoint. Same two addresses as the stream above, and the same
+    // reason for keeping the legacy one. §10 names the artifact `snapshot`; `html` is
+    // the pre-spec spelling of the same thing.
+    app.post(['/live-sync/save', '/sync'], async (req, res) => {
+      const { snapshot, html: legacyHtml, sender } = req.body;
+      const html = typeof snapshot === 'string' ? snapshot : legacyHtml;
+      const pageUrl = req.headers['document-url'] || req.headers['page-url'];
       if (!pageUrl) {
-        return res.status(400).json({ error: 'Page-URL header is required' });
+        return res.status(400).json({ error: 'Document-URL header is required' });
       }
       const file = resolveResourceFromHref(pageUrl);
 
       if (!file || typeof html !== 'string') {
-        return res.status(400).json({ error: 'file and html are required' });
+        return res.status(400).json({ error: 'file and snapshot are required' });
       }
 
       const validated = validateAndResolvePath(file, baseDir);
@@ -909,7 +917,8 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       // document it serves. `document` describes the one named by Document-URL,
       // and is withheld by OMISSION, so the answer for a document that is not
       // there is byte-identical to the answer for one a caller may not see.
-      const body = { spec: 1, extensions: ['upload'] };
+      // `sync` is announced because this host serves both halves of the §10 address.
+      const body = { spec: 1, extensions: ['sync', 'upload'] };
       const href = req.headers['document-url'] || req.headers['page-url'];
       if (href) {
         try {
