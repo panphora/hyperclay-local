@@ -12,6 +12,7 @@ const readline = require('readline');
 let VERSION_TYPE = '';
 let RESUME = false;
 let PLATFORMS = ['mac', 'linux'];
+let IGNORE_WINDOW = false;
 
 for (const arg of process.argv.slice(2)) {
   if (arg.startsWith('--platforms=')) {
@@ -34,9 +35,10 @@ for (const arg of process.argv.slice(2)) {
     case '--minor': VERSION_TYPE = 'minor'; break;
     case '--patch': VERSION_TYPE = 'patch'; break;
     case '--resume': RESUME = true; break;
+    case '--ignore-window': IGNORE_WINDOW = true; break;
     case '--help':
     case '-h':
-      console.log('Usage: node scripts/release.js [--major|--minor|--patch] [--resume] [--platforms=mac,linux]');
+      console.log('Usage: node scripts/release.js [--major|--minor|--patch] [--resume] [--platforms=mac,linux] [--ignore-window]');
       console.log('');
       console.log('Options:');
       console.log('  --major              Major version bump (breaking changes)');
@@ -47,6 +49,8 @@ for (const arg of process.argv.slice(2)) {
       console.log('                       the Windows CI trigger. Use after a failed build.');
       console.log('  --platforms=LIST     Comma-separated platforms to build: mac, linux');
       console.log('                       (default: mac,linux)');
+      console.log('  --ignore-window      Release inside the Tue-Fri 09:00-18:00 ET window.');
+      console.log('                       Deliberate override; a release publishes publicly.');
       console.log('');
       console.log('If no version option is provided, the bump is chosen automatically');
       console.log('from the commit messages since the last tag. Nothing prompts.');
@@ -85,12 +89,9 @@ require('dotenv').config({ path: path.join(ROOT_DIR, '.env') });
 const LOG_FILE = path.join(ROOT_DIR, 'release.log');
 const NOTARIZATION_FILE = path.join(ROOT_DIR, '.notarization-submissions-mac.json');
 
-const FILES_TO_UPDATE = [
-  { path: 'package.json', type: 'json' },
-  { path: 'README.md', type: 'readme' },
-  { path: 'src/main/main.js', type: 'main-js' },
-  { path: 'website/index.html', type: 'website' }
-];
+// src/main/main.js used to carry a literal version; it reads app.getVersion() now,
+// so it is not in this list any more.
+const FILES_TO_UPDATE = ['package.json', 'README.md', 'website/index.html'];
 
 const NOTARIZATION_POLL_INTERVAL = 30000; // 30 seconds
 
@@ -206,51 +207,28 @@ function bumpVersion(current, type) {
   }
 }
 
-function updateVersionInFile(filePath, oldVersion, newVersion) {
+// Written to a known version rather than searched for the previous one. A version
+// bumped in the tree without a release (1.21.0, for the license fence) left this
+// hunting for a string these files never contained, so the 1.22.0 release rewrote
+// nothing and hyperclaylocal.com kept advertising 1.20.1 downloads for four days.
+//
+// Anchored on the filename prefix, never on a bare version pattern: website/index.html
+// is full of SVG path data that reads as version numbers (1.02.08, 2.33.66).
+const ANY_VERSION = '\\d+\\.\\d+\\.\\d+';
+
+function updateVersionInFile(filePath, newVersion) {
   const fullPath = path.join(ROOT_DIR, filePath);
   let content = fs.readFileSync(fullPath, 'utf8');
 
   if (filePath === 'package.json') {
-    // Update version field in JSON
     const pkg = JSON.parse(content);
     pkg.version = newVersion;
     content = JSON.stringify(pkg, null, 2) + '\n';
-  } else if (filePath === 'README.md') {
-    // Update download URLs: HyperclayLocal-X.X.X patterns
-    content = content.replace(
-      new RegExp(`HyperclayLocal-${oldVersion.replace(/\./g, '\\.')}`, 'g'),
-      `HyperclayLocal-${newVersion}`
-    );
-    // Update Setup URLs: HyperclayLocal-Setup-X.X.X patterns
-    content = content.replace(
-      new RegExp(`HyperclayLocal-Setup-${oldVersion.replace(/\./g, '\\.')}`, 'g'),
-      `HyperclayLocal-Setup-${newVersion}`
-    );
-  } else if (filePath === 'src/main/main.js') {
-    // Update applicationVersion and version strings
-    content = content.replace(
-      new RegExp(`applicationVersion: '${oldVersion.replace(/\./g, '\\.')}'`, 'g'),
-      `applicationVersion: '${newVersion}'`
-    );
-    content = content.replace(
-      new RegExp(`version: '${oldVersion.replace(/\./g, '\\.')}'`, 'g'),
-      `version: '${newVersion}'`
-    );
-  } else if (filePath === 'website/index.html') {
-    // Download links plus the data-version marker on the downloads section.
-    const escaped = oldVersion.replace(/\./g, '\\.');
-    content = content.replace(
-      new RegExp(`HyperclayLocal-${escaped}`, 'g'),
-      `HyperclayLocal-${newVersion}`
-    );
-    content = content.replace(
-      new RegExp(`HyperclayLocal-Setup-${escaped}`, 'g'),
-      `HyperclayLocal-Setup-${newVersion}`
-    );
-    content = content.replace(
-      new RegExp(`data-version="${escaped}"`, 'g'),
-      `data-version="${newVersion}"`
-    );
+  } else {
+    content = content
+      .replace(new RegExp(`HyperclayLocal-Setup-${ANY_VERSION}`, 'g'), `HyperclayLocal-Setup-${newVersion}`)
+      .replace(new RegExp(`HyperclayLocal-${ANY_VERSION}`, 'g'), `HyperclayLocal-${newVersion}`)
+      .replace(new RegExp(`data-version="${ANY_VERSION}"`, 'g'), `data-version="${newVersion}"`);
   }
 
   fs.writeFileSync(fullPath, content);
@@ -520,6 +498,43 @@ function updateExternalDocs(version) {
 // laptop, so CI is not in the path of an actual publish. Runs first, before the
 // version bump, because a release that has already tagged and pushed is a much
 // worse place to discover it.
+// A release uploads installers to public R2 and redeploys hyperclaylocal.com, so it
+// is a public publish. Nothing publishes Tue-Fri 09:00-18:00 America/New_York.
+//
+// Checked here, at the moment the command is run, rather than inside the workflow:
+// this command is the only thing that dispatches a build or deploys the site, so one
+// check covers both public actions.
+function verifyPublishWindow() {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(new Date())
+      .map(part => [part.type, part.value])
+  );
+
+  const blocked = ['Tue', 'Wed', 'Thu', 'Fri'].includes(parts.weekday) &&
+    Number(parts.hour) >= 9 && Number(parts.hour) < 18;
+
+  if (!blocked) return;
+
+  if (IGNORE_WINDOW) {
+    logWarn(`Releasing inside the publish window (${parts.weekday} ${parts.hour}:${parts.minute} ET) because --ignore-window was passed.`);
+    return;
+  }
+
+  logSection('Publish window');
+  logError(`It is ${parts.weekday} ${parts.hour}:${parts.minute} in New York.`);
+  logError('A release publishes installers to R2 and redeploys hyperclaylocal.com,');
+  logError('and nothing publishes publicly Tue-Fri 09:00-18:00. Run it after 18:00,');
+  logError('or Sat-Mon. Pass --ignore-window to override deliberately.');
+  process.exit(1);
+}
+
 function verifyLicenseAblation() {
   logSection('License');
   try {
@@ -541,6 +556,7 @@ function verifyLicenseAblation() {
 async function main() {
   process.chdir(ROOT_DIR);
   initLog();
+  verifyPublishWindow();
   verifyLicenseAblation();
 
   console.log('');
@@ -616,7 +632,7 @@ async function main() {
     const status = execSafe('git status --porcelain').trim();
     if (status) {
       const lines = status.split('\n');
-      const allowedFiles = FILES_TO_UPDATE.map(f => f.path);
+      const allowedFiles = FILES_TO_UPDATE;
       const unexpectedChanges = lines.filter(line => {
         const file = line.slice(3); // Remove status prefix like " M " or "?? "
         return !allowedFiles.some(allowed => file.endsWith(allowed));
@@ -707,8 +723,8 @@ async function main() {
     logSection('Step 3: Update Files');
 
     for (const file of FILES_TO_UPDATE) {
-      updateVersionInFile(file.path, currentVersion, newVersion);
-      logSuccess(`Updated ${file.path}`);
+      updateVersionInFile(file, newVersion);
+      logSuccess(`Updated ${file}`);
     }
 
     // ==========================================

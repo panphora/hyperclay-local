@@ -64,11 +64,15 @@ async function uploadReleaseInfo(uploadedFiles, publicUrl) {
     throw new Error('Could not get git commit hash, so release-info.json cannot be written.');
   }
 
+  // Sizes ride along because this is the only place every artifact exists at once.
+  // The release script reads them back to write the README download sizes, which is
+  // what lets the builds run on a runner without giving it commit access to the repo.
   const releaseInfo = {
     version: version,
     commit: commit,
     date: new Date().toISOString(),
-    files: uploadedFiles.map(f => f.filename)
+    files: uploadedFiles.map(f => f.filename),
+    sizes: Object.fromEntries(uploadedFiles.map(f => [f.filename, f.bytes]))
   };
 
   const client = new S3Client({
@@ -197,10 +201,12 @@ async function main() {
       await uploadToR2(path.join(executablesDir, file), normalizedFilename);
 
       // Store file info with URL
+      const bytes = fs.statSync(path.join(executablesDir, file)).size;
       uploadedFiles.push({
         filename: normalizedFilename,
         url: `${R2_PUBLIC_URL}/${normalizedFilename}`,
-        size: (fs.statSync(path.join(executablesDir, file)).size / (1024 * 1024)).toFixed(1) + 'MB'
+        bytes,
+        size: (bytes / (1024 * 1024)).toFixed(1) + 'MB'
       });
     } catch (error) {
       console.error(`❌ Failed to upload ${file}:`, error.message);

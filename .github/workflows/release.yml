@@ -1,0 +1,263 @@
+name: Release
+
+# Builds, signs, notarizes and publishes every platform. Dispatched by
+# `npm run release` after it has bumped the version and pushed the commit.
+#
+# Every job carries timeout-minutes. A job killed at GitHub's six hour ceiling
+# reports as "cancelled", which reads like someone pressed the button rather than
+# a broken build, and that hid fifteen dead runs for a week in August 2026.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version being released (must match package.json at this commit)"
+        required: true
+        type: string
+      dry_run:
+        description: "Build, sign and notarize everything, but publish nothing"
+        required: false
+        default: false
+        type: boolean
+
+env:
+  NODE_VERSION: "26"
+
+jobs:
+  # ── The dispatch and the commit must agree ──
+  # A dispatch runs against a branch, not a commit, so it can pick up something
+  # newer or older than the release that asked for it. Fails in seconds, before
+  # any runner spends time building the wrong thing.
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: package.json matches the dispatched version
+        run: |
+          ACTUAL=$(node -p "require('./package.json').version")
+          if [ "$ACTUAL" != "${{ inputs.version }}" ]; then
+            echo "Dispatched ${{ inputs.version }}, but this commit is $ACTUAL."
+            echo "This run is building a different version than the one that asked for it."
+            exit 1
+          fi
+          echo "Releasing $ACTUAL"
+
+  # ── Test gate ──
+  # macOS and Windows, which is exactly the coverage a release has today: the suite
+  # runs on David's Mac and inside the Windows build job. Ubuntu is deliberately not
+  # here yet; it is a platform this suite has never run on, and finding out during a
+  # release is the wrong time.
+  test:
+    needs: verify
+    strategy:
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  # ── License gate ──
+  # The First Million Stays Yours License promises each version converts to plain
+  # MIT by deleting a labelled clause list. A release whose residue is no longer
+  # MIT would ship a promise it cannot keep.
+  license:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/ablation-check.py LICENSE
+
+  # ── macOS: build both architectures, sign, notarize, staple ──
+  build-macos:
+    needs: [test, license]
+    runs-on: macos-14
+    # Two architectures, each waiting on Apple's notarization queue. The long pole.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KPW="$(openssl rand -base64 24)"
+          security create-keychain -p "$KPW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KPW" "$KEYCHAIN"
+          echo "$APPLE_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KPW" "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      # NOTARIZE_WAIT makes the afterSign hook wait for Apple's verdict and staple
+      # before the DMG is packaged, instead of handing back a submission id for a
+      # local script to poll. It also makes a rejection fail this job.
+      - name: Build, sign & notarize
+        env:
+          NOTARIZE_WAIT: "true"
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: npm run mac-build:run
+
+      - run: node build-scripts/move-executables.js mac
+
+      - name: Verify the DMGs carry a stapled ticket
+        run: |
+          for dmg in executables/*.dmg; do
+            echo "── $dmg"
+            hdiutil attach "$dmg" -nobrowse -quiet -mountpoint /tmp/dmgcheck
+            codesign -dv --verbose=4 /tmp/dmgcheck/*.app 2>&1 | grep -E "Authority|TeamIdentifier"
+            xcrun stapler validate /tmp/dmgcheck/*.app
+            spctl -a -vvv -t install /tmp/dmgcheck/*.app
+            hdiutil detach /tmp/dmgcheck -quiet
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: executables/
+          if-no-files-found: error
+
+  # ── Linux: AppImage ──
+  build-linux:
+    needs: [test, license]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run linux-build:run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: executables/
+          if-no-files-found: error
+
+  # ── Windows: build, sign with Azure Trusted Signing ──
+  build-windows:
+    needs: [test, license]
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+
+      - name: Build CSS
+        run: npm run build-css
+
+      - name: Build React (production)
+        run: npm run build-react-prod
+
+      - name: Build unsigned installer
+        run: npm run clean-windows && npx electron-builder --win
+        env:
+          NODE_ENV: production
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install TrustedSigning module
+        run: Install-Module -Name TrustedSigning -Force -Scope CurrentUser -AcceptLicense
+        shell: pwsh
+
+      - name: Sign with Azure Trusted Signing
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          $installerPath = Resolve-Path "dist\HyperclayLocal-Setup-*.exe"
+          Write-Host "Signing: $installerPath"
+          Invoke-TrustedSigning `
+            -Endpoint "https://eus.codesigning.azure.net" `
+            -CodeSigningAccountName "Hyperclay" `
+            -CertificateProfileName "HyperclayLocalPublicCertProfile" `
+            -Files "$installerPath" `
+            -FileDigest SHA256 `
+            -Verbose
+        shell: pwsh
+
+      - name: Verify signature
+        run: |
+          $installer = Resolve-Path "dist\HyperclayLocal-Setup-*.exe"
+          $sig = Get-AuthenticodeSignature $installer
+          Write-Host "Signature status: $($sig.Status)"
+          Write-Host "Signer: $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne "Valid") {
+            Write-Error "Signature verification failed!"
+            exit 1
+          }
+        shell: pwsh
+
+      - run: node build-scripts/move-executables.js windows
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: executables/
+          if-no-files-found: error
+
+  # ── Publish ──
+  # Every artifact lands in one directory here, which is why release-info.json can
+  # finally list all four platforms and their real sizes. Before this, Windows
+  # uploaded itself from its own job and never appeared in that file.
+  upload:
+    needs: [build-macos, build-linux, build-windows]
+    # A dry run still builds, signs, notarizes and verifies every platform, and the
+    # installers are downloadable from the run's artifacts. It just never touches R2,
+    # which is what makes it safe to prove this pipeline against a version that has
+    # already shipped.
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: executables
+          merge-multiple: true
+
+      - name: What is about to be published
+        run: ls -lh executables/
+
+      - name: Upload to R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY }}
+          R2_SECRET_KEY: ${{ secrets.R2_SECRET_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+        run: node build-scripts/post-build.js
