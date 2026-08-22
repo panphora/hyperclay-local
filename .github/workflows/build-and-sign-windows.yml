@@ -20,6 +20,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # This job uploads a signed installer straight to public R2, so it gates itself
+      # rather than trusting whoever dispatched it. It is workflow_dispatch only, so a
+      # manual run would otherwise ship an untested build to users.
+      - name: Tests
+        run: npm test
+
       - name: Build CSS
         run: npm run build-css
 

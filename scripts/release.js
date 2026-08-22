@@ -741,14 +741,6 @@ async function main() {
     fs.unlinkSync(NOTARIZATION_FILE);
   }
 
-  // Trigger Windows build (runs independently on GitHub Actions). On resume the
-  // push already triggered it; use `npm run win-build:run` to retrigger by hand.
-  if (RESUME) {
-    logInfo('Skipping Windows trigger (already triggered by the original push)');
-  } else {
-    triggerWindowsBuild();
-  }
-
   // Run the suite once, here, rather than letting each platform script start
   // with its own `npm test`. A mac+linux release used to run the whole suite
   // twice concurrently, which doubled the machine load and with it the odds of
@@ -757,6 +749,18 @@ async function main() {
   logInfo('Running tests once for all platforms...');
   await runBuild('Test suite', 'test');
   logSuccess('Tests passed');
+
+  // Trigger Windows build (runs independently on GitHub Actions). On resume the
+  // push already triggered it; use `npm run win-build:run` to retrigger by hand.
+  //
+  // This dispatch must come AFTER the tests. It used to run before them, and the
+  // Windows workflow signs its installer and uploads it straight to public R2, so a
+  // failing suite aborted mac and linux while Windows carried on and shipped.
+  if (RESUME) {
+    logInfo('Skipping Windows trigger (already triggered by the original push)');
+  } else {
+    triggerWindowsBuild();
+  }
 
   const buildPromises = [];
   if (PLATFORMS.includes('mac')) {
