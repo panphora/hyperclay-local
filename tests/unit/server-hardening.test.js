@@ -12,7 +12,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
 const request = require('supertest');
-const { testPosix } = require('../helpers/posix-only');
+const { testPosix } = require('../helpers/platform');
 
 const {
   createApp,

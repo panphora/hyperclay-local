@@ -38,6 +38,42 @@ function withFileLock(key, fn) {
 
 let tmpCounter = 0;
 
+// Windows refuses to rename over a file another handle holds open, and Node exposes
+// no way to ask for the share mode that would allow it, so the publish step of an
+// otherwise complete write fails with EPERM. The usual cause is transient and not the
+// user's doing: an editor with the file open, a search indexer, or antivirus opening
+// it for a moment as it appears. Without a retry that surfaces as a save that failed
+// for no reason the user can see.
+//
+// POSIX renames over open files without complaint, so this is Windows-only rather
+// than a general retry: there an EPERM from rename is a real permission problem and
+// should be reported at once, not five times over half a second.
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+const RENAME_ATTEMPTS = 6;
+
+async function renameWithRetry(tmpPath, filePath) {
+  if (process.platform !== 'win32') {
+    await fs.rename(tmpPath, filePath);
+    return;
+  }
+
+  // 10ms doubling to 160ms, ~310ms across six attempts. Long enough to outlast a
+  // scanner holding the file, short enough that a genuine lock still reports quickly.
+  let delay = 10;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await fs.rename(tmpPath, filePath);
+      return;
+    } catch (error) {
+      if (attempt === RENAME_ATTEMPTS || !RENAME_RETRY_CODES.has(error.code)) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      delay *= 2;
+    }
+  }
+}
+
 /**
  * Write via a same-directory temp file + rename, so a crash, a full disk, or a
  * killed process can never leave partial bytes at `filePath`. The rename also
@@ -71,7 +107,7 @@ async function atomicWriteFile(filePath, content, encoding = 'utf8') {
     await handle.chmod(mode);
     await handle.close();
     handle = null;
-    await fs.rename(tmpPath, filePath);
+    await renameWithRetry(tmpPath, filePath);
   } catch (error) {
     if (handle) {
       try { await handle.close(); } catch {}

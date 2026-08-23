@@ -4,7 +4,7 @@ const path = require('path');
 const os = require('os');
 
 const { withFileLock, atomicWriteFile } = require('../../src/main/utils/write-queue');
-const { testPosix } = require('../helpers/posix-only');
+const { testPosix } = require('../helpers/platform');
 
 describe('withFileLock', () => {
   test('serializes the whole read-modify-write region, not just the write', async () => {
@@ -163,5 +163,82 @@ describe('atomicWriteFile', () => {
     await atomicWriteFile(target, bytes, null);
 
     expect(Buffer.compare(await fs.readFile(target), bytes)).toBe(0);
+  });
+});
+
+// The retry only engages on win32, so process.platform is stubbed rather than
+// leaving these to run on the Windows runner alone. The logic is the point, and it
+// should be verified wherever the suite runs.
+describe('atomicWriteFile on Windows, where rename can fail transiently', () => {
+  const realPlatform = process.platform;
+  let dir;
+
+  beforeEach(async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'atomic-win-'));
+  });
+
+  afterEach(async () => {
+    Object.defineProperty(process, 'platform', { value: realPlatform });
+    jest.restoreAllMocks();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  const failRenameTimes = (count, code) => {
+    const realRename = fs.rename.bind(fs);
+    let calls = 0;
+    jest.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      calls += 1;
+      if (calls <= count) {
+        const error = new Error(`${code}: injected`);
+        error.code = code;
+        throw error;
+      }
+      return realRename(from, to);
+    });
+    return () => calls;
+  };
+
+  test('a transient EPERM is retried and the save completes', async () => {
+    const target = path.join(dir, 'page.html');
+    await fs.writeFile(target, 'old', 'utf8');
+    const calls = failRenameTimes(2, 'EPERM');
+
+    await atomicWriteFile(target, 'new');
+
+    expect(calls()).toBe(3);
+    expect(await fs.readFile(target, 'utf8')).toBe('new');
+  });
+
+  test('EBUSY is retried too, since a scanner produces either', async () => {
+    const target = path.join(dir, 'page.html');
+    await fs.writeFile(target, 'old', 'utf8');
+    failRenameTimes(1, 'EBUSY');
+
+    await atomicWriteFile(target, 'new');
+
+    expect(await fs.readFile(target, 'utf8')).toBe('new');
+  });
+
+  test('a lock that never clears still fails, and leaves no temp behind', async () => {
+    const target = path.join(dir, 'page.html');
+    await fs.writeFile(target, 'old', 'utf8');
+    const calls = failRenameTimes(Infinity, 'EPERM');
+
+    await expect(atomicWriteFile(target, 'new')).rejects.toThrow('EPERM');
+
+    expect(calls()).toBe(6);
+    expect(await fs.readFile(target, 'utf8')).toBe('old');
+    expect((await fs.readdir(dir)).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+  });
+
+  test('an error that is not a lock is reported at once, not retried', async () => {
+    const target = path.join(dir, 'page.html');
+    await fs.writeFile(target, 'old', 'utf8');
+    const calls = failRenameTimes(Infinity, 'ENOSPC');
+
+    await expect(atomicWriteFile(target, 'new')).rejects.toThrow('ENOSPC');
+
+    expect(calls()).toBe(1);
   });
 });

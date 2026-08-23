@@ -75,10 +75,24 @@ async function guardedUnlink(canonicalBase, target) {
 
 // Open with O_NOFOLLOW so a symlinked final component fails the open outright
 // (ELOOP), then take stat and bytes off the SAME handle so they describe one
-// inode with no reopen gap. O_NOFOLLOW is a no-op on Windows; the chain check
-// carries the load there.
+// inode with no reopen gap.
+//
+// O_NOFOLLOW is a no-op on Windows, and assertRealDirChain only walks DIRECTORIES,
+// so neither covers a symlinked sidecar file there: `.hyperclay/api/foo.json`
+// pointing at an external file was followed and its bytes served verbatim. An
+// explicit lstat closes that, which is why the refusal test runs on every platform
+// rather than being skipped on Windows.
+//
+// The lstat is not atomic with the open, so it carries the same residual this file
+// already accepts for the directory chain: a same-user process that swaps the file
+// for a symlink in between already holds the user's full filesystem authority and
+// gains nothing from winning that race. On POSIX the O_NOFOLLOW open is atomic and
+// this check is not needed, so it is not paid for there.
 async function guardedOpenRead(canonicalBase, target) {
   await assertRealDirChain(canonicalBase, path.dirname(target));
+  if (process.platform === 'win32' && (await fs.lstat(target)).isSymbolicLink()) {
+    throw new Error(`Refusing to read '${target}': the sidecar is a symlink`);
+  }
   const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0);
   const handle = await fs.open(target, flags);
   try {
