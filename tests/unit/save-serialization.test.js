@@ -24,7 +24,9 @@ jest.mock('../../src/main/utils/backup', () => {
 });
 
 const fs = require('fs').promises;
-const path = require('path');
+// upath, not path: the code under test builds paths with upath, so an expectation
+// built with Node's path asserts backslashes on Windows against forward slashes.
+const path = require('upath');
 const os = require('os');
 const request = require('supertest');
 

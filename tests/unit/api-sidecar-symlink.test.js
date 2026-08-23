@@ -17,6 +17,7 @@ const {
   guardedOpenRead
 } = require('../../src/main/utils/api-sidecar');
 const { canonicalizeBase } = require('../../src/main/utils/real-dir-chain');
+const { testPosix } = require('../helpers/posix-only');
 
 describe('A3: sidecar operations do not follow symlinks out of the served root', () => {
   let base;
@@ -48,7 +49,11 @@ describe('A3: sidecar operations do not follow symlinks out of the served root',
       await fs.symlink(secret, path.join(base, '.hyperclay/api/foo.json'));
     });
 
-    test('readFreshSidecar refuses it instead of returning the external bytes', async () => {
+    // POSIX-only, and it marks a real gap rather than a test artifact. The refusal
+    // comes from O_NOFOLLOW, which is a no-op on Windows; guardedOpenRead's comment
+    // says the directory-chain check carries the load there, but that check only
+    // covers directories, so a symlinked sidecar FILE is still followed on Windows.
+    testPosix('readFreshSidecar refuses it instead of returning the external bytes', async () => {
       // mtime 0 means "any sidecar counts as fresh", so only the containment
       // check can stop this.
       expect(await readFreshSidecar(base, 'foo.html', 0)).toBeNull();

@@ -12,7 +12,12 @@
 // write still sorts first under the ONE shared comparator and survives a prune.
 
 const fs = require('fs').promises;
-const path = require('path');
+// upath, not path: the code under test builds paths with upath (forward slashes on
+// every platform). An expectation built with Node's path asserts backslashes on
+// Windows, which on this suite did not merely fail loudly: the ENOSPC injection is
+// keyed on a path substring, so the mismatch silently disabled the fault it injects
+// and the test exercised the success path instead.
+const path = require('upath');
 const os = require('os');
 
 const { createBackup } = require('../../src/main/utils/backup');

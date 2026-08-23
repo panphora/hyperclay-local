@@ -32,7 +32,10 @@ jest.mock('../../src/sync-engine/api-client');
 jest.mock('../../src/sync-engine/file-operations');
 jest.mock('../../src/sync-engine/node-map');
 
-const path = require('path');
+// upath, not path: every src/sync-engine module builds paths with upath, so an
+// expectation built with Node's path asserts backslashes on Windows against the
+// forward slashes the code actually produces.
+const path = require('upath');
 const fileOps = require('../../src/sync-engine/file-operations');
 const nodeMapModule = require('../../src/sync-engine/node-map');
 const Outbox = require('../../src/sync-engine/state/outbox');

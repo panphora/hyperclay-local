@@ -4,6 +4,7 @@ const path = require('path');
 const os = require('os');
 
 const { withFileLock, atomicWriteFile } = require('../../src/main/utils/write-queue');
+const { testPosix } = require('../helpers/posix-only');
 
 describe('withFileLock', () => {
   test('serializes the whole read-modify-write region, not just the write', async () => {
@@ -120,7 +121,10 @@ describe('atomicWriteFile', () => {
     expect(await fs.readdir(dir)).toEqual([]);
   });
 
-  test('a concurrent reader never observes partial content', async () => {
+  // POSIX-only: this replaces a file while 40 concurrent reads hold it open, and
+  // Windows fails that rename with EPERM. Opening with FILE_SHARE_DELETE would buy
+  // deletion, not replacement, and Node exposes no way to ask for it.
+  testPosix('a concurrent reader never observes partial content', async () => {
     const target = path.join(dir, 'page.html');
     const original = '<html>' + 'A'.repeat(200000) + '</html>';
     const replacement = '<html>' + 'B'.repeat(200000) + '</html>';
@@ -140,7 +144,9 @@ describe('atomicWriteFile', () => {
     }
   });
 
-  test('preserves the existing file mode rather than re-moding to 0600', async () => {
+  // POSIX-only: Windows has no permission bits to preserve, so chmod(0o644) reads
+  // back as 0o666 and the assertion would be about nothing.
+  testPosix('preserves the existing file mode rather than re-moding to 0600', async () => {
     const target = path.join(dir, 'page.html');
     await fs.writeFile(target, 'old', 'utf8');
     await fs.chmod(target, 0o644);

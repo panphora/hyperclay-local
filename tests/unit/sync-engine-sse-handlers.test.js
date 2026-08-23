@@ -42,7 +42,11 @@ jest.mock('../../src/sync-engine/api-client');
 jest.mock('../../src/sync-engine/file-operations');
 jest.mock('../../src/sync-engine/node-map');
 
-const path = require('path');
+// upath, not path: every src/sync-engine module builds paths with upath, so an
+// expectation built with Node's path asserts backslashes on Windows against the
+// forward slashes the code actually produces.
+const path = require('upath');
+const os = require('os');
 const realFs = require('fs');
 const fileOps = require('../../src/sync-engine/file-operations');
 const apiClient = require('../../src/sync-engine/api-client');
@@ -55,8 +59,15 @@ let syncEngine;
 let liveSyncMock;
 
 // The sync folder as path-resolver canonicalizes it: the folder itself does not
-// exist, so resolution runs through its nearest existing ancestor.
-const canonicalSyncFolder = path.join(realFs.realpathSync('/tmp'), 'test-sync');
+// exist, so resolution runs through its nearest existing ancestor. The ancestor has
+// to be a directory that really exists, so it is os.tmpdir() rather than a literal
+// '/tmp' — on Windows that resolves to a nonexistent D:\tmp and realpathSync threw
+// at module load, taking the whole suite down before a single test ran. os.tmpdir()
+// still differs from its own realpath on macOS, which is the case this pins.
+const TMP_BASE = os.tmpdir();
+const SYNC_ROOT = path.join(TMP_BASE, 'test-sync');
+const META_ROOT = path.join(TMP_BASE, 'test-meta');
+const canonicalSyncFolder = path.join(realFs.realpathSync(TMP_BASE), 'test-sync');
 
 beforeEach(() => {
   jest.useFakeTimers();
@@ -69,8 +80,8 @@ beforeEach(() => {
     liveSyncMock = require('livesync-hyperclay').liveSync;
   });
 
-  syncEngine.syncFolder = '/tmp/test-sync';
-  syncEngine.metaDir = '/tmp/test-meta';
+  syncEngine.syncFolder = SYNC_ROOT;
+  syncEngine.metaDir = META_ROOT;
   syncEngine.serverUrl = 'http://test';
   syncEngine.apiKey = 'test-key';
   syncEngine.deviceId = 'test-device';
@@ -234,7 +245,7 @@ describe('handleNodeSaved', () => {
         parentId: 0
       });
 
-      expect(fileOps.ensureDirectory).toHaveBeenCalledWith(path.join('/tmp/test-sync', 'projects'));
+      expect(fileOps.ensureDirectory).toHaveBeenCalledWith(path.join(SYNC_ROOT, 'projects'));
       expect(syncEngine.repo.get('60')).toEqual(expect.objectContaining({
         type: 'folder',
         path: 'projects',
@@ -299,8 +310,8 @@ describe('handleNodeRenamed', () => {
     });
 
     expect(fileOps.moveFile).toHaveBeenCalledWith(
-      path.join('/tmp/test-sync', 'old.html'),
-      path.join('/tmp/test-sync', 'new.html')
+      path.join(SYNC_ROOT, 'old.html'),
+      path.join(SYNC_ROOT, 'new.html')
     );
     expect(syncEngine.repo.get('42').path).toBe('new.html');
   });

@@ -12,6 +12,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
 const request = require('supertest');
+const { testPosix } = require('../helpers/posix-only');
 
 const {
   createApp,
@@ -200,7 +201,10 @@ describe('A0: directory listing escaping and href encoding', () => {
     expect(out).toContain('&#39;');
   });
 
-  test('a filename carrying a script payload is escaped, not rendered', async () => {
+  // POSIX-only: the payload filename contains < > and ", all reserved on NTFS, so
+  // the fixture cannot be created on Windows and the attack it models is not
+  // expressible there.
+  testPosix('a filename carrying a script payload is escaped, not rendered', async () => {
     const hostile = 'note<img src=x onerror="alert(1)">.html';
     await fs.writeFile(path.join(dir, hostile), '<html>x</html>');
 

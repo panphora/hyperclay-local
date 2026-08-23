@@ -58,6 +58,11 @@ function entry(p, cs, ino) {
 
 let syncEngine;
 
+// A POSIX-absolute literal is not a portable fake root: upath.resolve('/test/sync')
+// yields '/test/sync' on POSIX but 'D:/test/sync' on Windows, and the engine resolves
+// before it calls fileOps. Derive every expectation from the same resolved value.
+const SYNC_ROOT = require('upath').resolve('/test/sync');
+
 beforeEach(() => {
   jest.useFakeTimers();
   jest.clearAllMocks();
@@ -68,7 +73,7 @@ beforeEach(() => {
   });
 
   // Set up minimal state so performInitialSync can run
-  syncEngine.syncFolder = '/test/sync';
+  syncEngine.syncFolder = SYNC_ROOT;
   syncEngine.serverUrl = 'http://localhyperclay.com';
   syncEngine.apiKey = 'hcsk_test';
   syncEngine.username = 'testuser';
@@ -132,7 +137,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
-      ['my-site.html', { path: '/test/sync/my-site.html', relativePath: 'my-site.html', mtime: new Date('2024-05-01'), size: 100 }]
+      ['my-site.html', { path: `${SYNC_ROOT}/my-site.html`, relativePath: 'my-site.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
     syncEngine.repo.seed([['1', entry('my-site.html')]]);
@@ -143,8 +148,8 @@ describe('performInitialSync — nodeId-based move detection', () => {
     await syncEngine.performInitialSync();
 
     expect(fileOps.moveFile).toHaveBeenCalledWith(
-      '/test/sync/my-site.html',
-      '/test/sync/blog/my-site.html'
+      `${SYNC_ROOT}/my-site.html`,
+      `${SYNC_ROOT}/blog/my-site.html`
     );
     expect(liveSync.markBrowserSave).toHaveBeenCalledWith('blog/my-site.html');
 
@@ -178,7 +183,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
     apiClient.listNodes.mockResolvedValue([]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
-      ['local-only.html', { path: '/test/sync/local-only.html', relativePath: 'local-only.html', mtime: new Date('2024-05-01'), size: 100 }]
+      ['local-only.html', { path: `${SYNC_ROOT}/local-only.html`, relativePath: 'local-only.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
     fileOps.readFile.mockResolvedValue(content);
@@ -198,7 +203,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
-      ['my-site.html', { path: '/test/sync/my-site.html', relativePath: 'my-site.html', mtime: new Date('2024-05-01'), size: 100 }]
+      ['my-site.html', { path: `${SYNC_ROOT}/my-site.html`, relativePath: 'my-site.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
     syncEngine.repo.seed([['1', entry('my-site.html')]]);
@@ -225,7 +230,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
-      ['my-site.html', { path: '/test/sync/my-site.html', relativePath: 'my-site.html', mtime: new Date('2024-06-01'), size: 100 }]
+      ['my-site.html', { path: `${SYNC_ROOT}/my-site.html`, relativePath: 'my-site.html', mtime: new Date('2024-06-01'), size: 100 }]
     ]));
 
     syncEngine.repo.seed([['1', entry('my-site.html')]]);
@@ -250,7 +255,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
-      ['my-site.html', { path: '/test/sync/my-site.html', relativePath: 'my-site.html', mtime: new Date('2024-05-01'), size: 100 }]
+      ['my-site.html', { path: `${SYNC_ROOT}/my-site.html`, relativePath: 'my-site.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
     syncEngine.repo.seed([['1', entry('my-site.html')]]);
@@ -274,7 +279,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
 
     // Local has a DIFFERENT site — nodeMap has no entry for nodeId 1
     fileOps.getLocalFiles.mockResolvedValue(new Map([
-      ['other-site.html', { path: '/test/sync/other-site.html', relativePath: 'other-site.html', mtime: new Date('2024-05-01'), size: 100 }]
+      ['other-site.html', { path: `${SYNC_ROOT}/other-site.html`, relativePath: 'other-site.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
     await syncEngine.performInitialSync();
@@ -297,8 +302,8 @@ describe('performInitialSync — duplicate filename handling', () => {
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
-      ['drafts/blog.html', { path: '/test/sync/drafts/blog.html', relativePath: 'drafts/blog.html', mtime: new Date('2024-05-01'), size: 100 }],
-      ['archive/blog.html', { path: '/test/sync/archive/blog.html', relativePath: 'archive/blog.html', mtime: new Date('2024-05-01'), size: 100 }]
+      ['drafts/blog.html', { path: `${SYNC_ROOT}/drafts/blog.html`, relativePath: 'drafts/blog.html', mtime: new Date('2024-05-01'), size: 100 }],
+      ['archive/blog.html', { path: `${SYNC_ROOT}/archive/blog.html`, relativePath: 'archive/blog.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
     syncEngine.repo.seed([['1', entry('archive/blog.html')]]);
@@ -309,8 +314,8 @@ describe('performInitialSync — duplicate filename handling', () => {
     await syncEngine.performInitialSync();
 
     expect(fileOps.moveFile).toHaveBeenCalledWith(
-      '/test/sync/archive/blog.html',
-      '/test/sync/projects/blog.html'
+      `${SYNC_ROOT}/archive/blog.html`,
+      `${SYNC_ROOT}/projects/blog.html`
     );
     expect(apiClient.getNodeContent).not.toHaveBeenCalled();
   });
@@ -325,8 +330,8 @@ describe('performInitialSync — duplicate filename handling', () => {
 
     // projects/blog.html matches server (same checksum); drafts/blog.html is a separate local file
     fileOps.getLocalFiles.mockResolvedValue(new Map([
-      ['projects/blog.html', { path: '/test/sync/projects/blog.html', relativePath: 'projects/blog.html', mtime: new Date('2024-05-01'), size: 100 }],
-      ['drafts/blog.html', { path: '/test/sync/drafts/blog.html', relativePath: 'drafts/blog.html', mtime: new Date('2024-05-01'), size: 100 }]
+      ['projects/blog.html', { path: `${SYNC_ROOT}/projects/blog.html`, relativePath: 'projects/blog.html', mtime: new Date('2024-05-01'), size: 100 }],
+      ['drafts/blog.html', { path: `${SYNC_ROOT}/drafts/blog.html`, relativePath: 'drafts/blog.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
     fileOps.readFile.mockResolvedValue(content);
@@ -355,8 +360,8 @@ describe('performInitialSync — duplicate filename handling', () => {
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
-      ['drafts/blog.html', { path: '/test/sync/drafts/blog.html', relativePath: 'drafts/blog.html', mtime: new Date('2024-05-01'), size: 100 }],
-      ['archive/blog.html', { path: '/test/sync/archive/blog.html', relativePath: 'archive/blog.html', mtime: new Date('2024-05-01'), size: 100 }]
+      ['drafts/blog.html', { path: `${SYNC_ROOT}/drafts/blog.html`, relativePath: 'drafts/blog.html', mtime: new Date('2024-05-01'), size: 100 }],
+      ['archive/blog.html', { path: `${SYNC_ROOT}/archive/blog.html`, relativePath: 'archive/blog.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
     fileOps.readFile.mockResolvedValue(content);
@@ -377,8 +382,8 @@ describe('performInitialSync — duplicate filename handling', () => {
     apiClient.listNodes.mockResolvedValue([]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
-      ['drafts/blog.html', { path: '/test/sync/drafts/blog.html', relativePath: 'drafts/blog.html', mtime: new Date('2024-05-01'), size: 100 }],
-      ['archive/about.html', { path: '/test/sync/archive/about.html', relativePath: 'archive/about.html', mtime: new Date('2024-05-01'), size: 100 }]
+      ['drafts/blog.html', { path: `${SYNC_ROOT}/drafts/blog.html`, relativePath: 'drafts/blog.html', mtime: new Date('2024-05-01'), size: 100 }],
+      ['archive/about.html', { path: `${SYNC_ROOT}/archive/about.html`, relativePath: 'archive/about.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
     fileOps.readFile.mockResolvedValue('<html>content</html>');
@@ -401,7 +406,7 @@ describe('performInitialSync — duplicate filename handling', () => {
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
-      ['drafts/blog.html', { path: '/test/sync/drafts/blog.html', relativePath: 'drafts/blog.html', mtime: new Date('2024-05-01'), size: 100 }]
+      ['drafts/blog.html', { path: `${SYNC_ROOT}/drafts/blog.html`, relativePath: 'drafts/blog.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
     syncEngine.repo.seed([['1', entry('drafts/blog.html')]]);
@@ -412,8 +417,8 @@ describe('performInitialSync — duplicate filename handling', () => {
 
     // Move was attempted for the nodeId-mapped file
     expect(fileOps.moveFile).toHaveBeenCalledWith(
-      '/test/sync/drafts/blog.html',
-      '/test/sync/projects/blog.html'
+      `${SYNC_ROOT}/drafts/blog.html`,
+      `${SYNC_ROOT}/projects/blog.html`
     );
     // Move failed, should fall back to downloading
     expect(apiClient.getNodeContent).toHaveBeenCalledWith(
@@ -435,10 +440,10 @@ describe('performInitialSync — duplicate filename handling', () => {
     ]);
 
     fileOps.getLocalFiles.mockResolvedValue(new Map([
-      ['drafts/blog.html', { path: '/test/sync/drafts/blog.html', relativePath: 'drafts/blog.html', mtime: new Date('2024-05-01'), size: 100 }],
-      ['old/blog.html', { path: '/test/sync/old/blog.html', relativePath: 'old/blog.html', mtime: new Date('2024-05-01'), size: 100 }],
-      ['misc/about.html', { path: '/test/sync/misc/about.html', relativePath: 'misc/about.html', mtime: new Date('2024-05-01'), size: 100 }],
-      ['archive/about.html', { path: '/test/sync/archive/about.html', relativePath: 'archive/about.html', mtime: new Date('2024-05-01'), size: 100 }]
+      ['drafts/blog.html', { path: `${SYNC_ROOT}/drafts/blog.html`, relativePath: 'drafts/blog.html', mtime: new Date('2024-05-01'), size: 100 }],
+      ['old/blog.html', { path: `${SYNC_ROOT}/old/blog.html`, relativePath: 'old/blog.html', mtime: new Date('2024-05-01'), size: 100 }],
+      ['misc/about.html', { path: `${SYNC_ROOT}/misc/about.html`, relativePath: 'misc/about.html', mtime: new Date('2024-05-01'), size: 100 }],
+      ['archive/about.html', { path: `${SYNC_ROOT}/archive/about.html`, relativePath: 'archive/about.html', mtime: new Date('2024-05-01'), size: 100 }]
     ]));
 
     syncEngine.repo.seed([
@@ -457,13 +462,13 @@ describe('performInitialSync — duplicate filename handling', () => {
 
     // blog: drafts/blog.html mapped by nodeId → moved to projects/blog.html
     expect(fileOps.moveFile).toHaveBeenCalledWith(
-      '/test/sync/drafts/blog.html',
-      '/test/sync/projects/blog.html'
+      `${SYNC_ROOT}/drafts/blog.html`,
+      `${SYNC_ROOT}/projects/blog.html`
     );
     // about: archive/about.html mapped by nodeId → moved to work/about.html
     expect(fileOps.moveFile).toHaveBeenCalledWith(
-      '/test/sync/archive/about.html',
-      '/test/sync/work/about.html'
+      `${SYNC_ROOT}/archive/about.html`,
+      `${SYNC_ROOT}/work/about.html`
     );
     expect(fileOps.moveFile).toHaveBeenCalledTimes(2);
 
@@ -499,7 +504,7 @@ describe('handleNodeSaved — SSE with duplicate on disk', () => {
     fileOps.writeFile.mockResolvedValue();
     fileOps.ensureDirectory.mockResolvedValue();
 
-    syncEngine.syncFolder = '/test/sync';
+    syncEngine.syncFolder = SYNC_ROOT;
     syncEngine.isRunning = true;
 
     await syncEngine.handleNodeSaved({
@@ -509,7 +514,7 @@ describe('handleNodeSaved — SSE with duplicate on disk', () => {
     });
 
     expect(fileOps.writeFile).toHaveBeenCalledWith(
-      '/test/sync/projects/blog.html',
+      `${SYNC_ROOT}/projects/blog.html`,
       content,
       new Date('2024-06-01T00:00:00Z')
     );
@@ -522,7 +527,7 @@ describe('handleNodeSaved — SSE folder path preservation', () => {
     fileOps.readFile.mockRejectedValue(new Error('ENOENT'));
     fileOps.writeFile.mockResolvedValue();
     fileOps.ensureDirectory.mockResolvedValue();
-    syncEngine.syncFolder = '/test/sync';
+    syncEngine.syncFolder = SYNC_ROOT;
     syncEngine.isRunning = true;
   });
 
@@ -536,9 +541,9 @@ describe('handleNodeSaved — SSE folder path preservation', () => {
       content, checksum: cs, modifiedAt: '2024-06-01T00:00:00Z'
     });
 
-    expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/blog');
+    expect(fileOps.ensureDirectory).toHaveBeenCalledWith(`${SYNC_ROOT}/blog`);
     expect(fileOps.writeFile).toHaveBeenCalledWith(
-      '/test/sync/blog/hyperclay-is-ready.html',
+      `${SYNC_ROOT}/blog/hyperclay-is-ready.html`,
       content,
       new Date('2024-06-01T00:00:00Z')
     );
@@ -555,7 +560,7 @@ describe('handleNodeSaved — SSE folder path preservation', () => {
     });
 
     expect(fileOps.writeFile).toHaveBeenCalledWith(
-      '/test/sync/my-site.html',
+      `${SYNC_ROOT}/my-site.html`,
       content,
       new Date('2024-06-01T00:00:00Z')
     );
@@ -571,9 +576,9 @@ describe('handleNodeSaved — SSE folder path preservation', () => {
       content, checksum: cs, modifiedAt: '2024-06-01T00:00:00Z'
     });
 
-    expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/projects/2026/launch');
+    expect(fileOps.ensureDirectory).toHaveBeenCalledWith(`${SYNC_ROOT}/projects/2026/launch`);
     expect(fileOps.writeFile).toHaveBeenCalledWith(
-      '/test/sync/projects/2026/launch/deep-site.html',
+      `${SYNC_ROOT}/projects/2026/launch/deep-site.html`,
       content,
       new Date('2024-06-01T00:00:00Z')
     );
@@ -590,7 +595,7 @@ describe('handleNodeSaved — SSE folder path preservation', () => {
     });
 
     expect(fileOps.writeFile).toHaveBeenCalledWith(
-      '/test/sync/blog/my-post.html',
+      `${SYNC_ROOT}/blog/my-post.html`,
       content,
       new Date('2024-06-01T00:00:00Z')
     );
