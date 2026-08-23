@@ -1,0 +1,47 @@
+name: CI
+
+# Tests on every push. Until now this repo ran its suite only on the release
+# machine and inside the release itself, so a broken main was found at release
+# time. That is the worst moment to find it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  # Node 24, matching the release workflow. electron's install.js extracts with
+  # extract-zip 2.0.1, which on Node 26 exits without extracting and leaves a tree
+  # where require('electron') throws. See the note in release.yml.
+  NODE_VERSION: "24"
+  NPM_VERSION: "11"
+
+jobs:
+  test:
+    strategy:
+      # Every platform reports. A Linux-only failure is the whole reason Linux is here.
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    # A hung step must fail fast and visibly: a job killed at GitHub's six hour
+    # ceiling reports as "cancelled", which reads like someone stopped it.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          npm-version: ${{ env.NPM_VERSION }}
+
+      # Serial: no jest workers for V8 to segfault during GC, and no parallel
+      # contention, which is what made this suite fail intermittently and then pass
+      # in isolation.
+      - run: npm test -- --runInBand
+
+  license:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/ablation-check.py LICENSE
