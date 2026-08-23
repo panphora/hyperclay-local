@@ -33,7 +33,11 @@ describe('generateTimestamp', () => {
 
     // getTimezoneOffset() is POSITIVE for zones BEHIND UTC, so the rendered
     // offset is its negation: New York in summer reports 240 and writes -0400.
-    expect(offset).toBe(-new Date(before).getTimezoneOffset());
+    // In UTC that negation is -0, while parsing "+0000" yields 0, and toBe compares
+    // with Object.is, which separates them. Adding zero settles the sign so the
+    // assertion is about the offset rather than about which zero it is.
+    const expectedOffset = -new Date(before).getTimezoneOffset() + 0;
+    expect(offset).toBe(expectedOffset);
 
     // Reading the wall clock as local time must land back on the instant the
     // name was generated at — that is what makes it an orderable instant.

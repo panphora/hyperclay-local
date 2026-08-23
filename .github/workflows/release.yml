@@ -66,6 +66,10 @@ jobs:
   test:
     needs: verify
     strategy:
+      # Let both platforms finish. Fail-fast cancelled the Windows leg on every one of
+      # the first six dry runs, so a platform-specific failure there would still be
+      # undiscovered after all of them.
+      fail-fast: false
       matrix:
         os: [macos-14, windows-latest]
     runs-on: ${{ matrix.os }}
