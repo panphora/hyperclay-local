@@ -22,6 +22,15 @@ on:
 
 env:
   NODE_VERSION: "26"
+  # Node 26 ships npm 12, which blocks dependency install scripts by default.
+  # Electron's postinstall is what downloads the Electron binary, so under npm 12
+  # `npm ci` yields a tree where require('electron') throws and eleven suites cannot
+  # load. package.json carries an allowScripts approval for all seven such packages
+  # and npm 12 stops warning, but the scripts still do not run; two dry runs died on
+  # it. Pinning to the npm this app is actually released with makes the runner install
+  # exactly the way the release machine does, which is what this pipeline wants
+  # regardless. Revisit when npm 12's approval mechanism is pinned down.
+  NPM_VERSION: "11"
 
 jobs:
   # ── The dispatch and the commit must agree ──
@@ -61,6 +70,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Pin npm (Node 26 ships npm 12; see NPM_VERSION note at top)
+        run: npm i -g npm@${{ env.NPM_VERSION }}
       - run: npm ci
       - run: npm test
 
@@ -88,6 +99,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Pin npm (Node 26 ships npm 12; see NPM_VERSION note at top)
+        run: npm i -g npm@${{ env.NPM_VERSION }}
       - run: npm ci
 
       - name: Import Developer ID certificate
@@ -150,6 +163,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Pin npm (Node 26 ships npm 12; see NPM_VERSION note at top)
+        run: npm i -g npm@${{ env.NPM_VERSION }}
       - run: npm ci
       - run: npm run linux-build:run
       - uses: actions/upload-artifact@v4
@@ -169,6 +184,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Pin npm (Node 26 ships npm 12; see NPM_VERSION note at top)
+        run: npm i -g npm@${{ env.NPM_VERSION }}
       - run: npm ci
 
       - name: Build CSS
@@ -243,6 +260,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Pin npm (Node 26 ships npm 12; see NPM_VERSION note at top)
+        run: npm i -g npm@${{ env.NPM_VERSION }}
       - run: npm ci
 
       - uses: actions/download-artifact@v4
