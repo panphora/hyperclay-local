@@ -181,6 +181,10 @@ jobs:
         run: |
           for dmg in executables/*.dmg; do
             echo "── $dmg"
+            # The disk image's own ticket, which is what Gatekeeper checks on the
+            # download. Without it that check is an online one even though the app
+            # inside is stapled.
+            xcrun stapler validate "$dmg"
             hdiutil attach "$dmg" -nobrowse -quiet -mountpoint /tmp/dmgcheck
             codesign -dv --verbose=4 /tmp/dmgcheck/*.app 2>&1 | grep -E "Authority|TeamIdentifier"
             xcrun stapler validate /tmp/dmgcheck/*.app
