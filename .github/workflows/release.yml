@@ -77,21 +77,27 @@ jobs:
       # a tree where require('electron') throws with nothing in the install log.
       - run: npm ci --foreground-scripts
 
-      # TEMPORARY diagnostic. Three dry runs produced a tree where require('electron')
-      # throws, with nothing in the install log explaining it. Remove once understood.
-      - name: What did the electron install actually leave behind?
+      # TEMPORARY. electron's install.js downloads to a cache, extracts, then writes
+      # path.txt last. On failure it exits 1, which would fail npm ci. On Node 26 it
+      # exits 0 having left a 244KB dist and no path.txt, so the extraction stops
+      # without throwing. Re-running it here either completes the install or prints
+      # the error npm swallowed. Remove once understood.
+      - name: Ensure the Electron binary actually installed
         run: |
-          echo "npm: $(npm -v)   node: $(node -v)"
-          echo "--- node_modules/electron ---"
-          ls -la node_modules/electron/ || echo "(no electron dir)"
-          echo "--- path.txt ---"
-          cat node_modules/electron/path.txt 2>/dev/null || echo "(no path.txt: install.js never completed)"
-          echo "--- dist ---"
-          du -sh node_modules/electron/dist 2>/dev/null || echo "(no dist: binary never downloaded)"
-          echo "--- electron cache ---"
-          du -sh ~/Library/Caches/electron ~/.cache/electron 2>/dev/null || echo "(no electron cache)"
-          echo "--- relevant env ---"
-          env | grep -iE "electron|npm_config|ignore.script" | sort || echo "(none)"
+          echo "node $(node -v)  npm $(npm -v)"
+          if node -e "require('electron')" 2>/dev/null; then
+            echo "electron OK on the first install"
+          else
+            echo "electron incomplete; dist before retry:"
+            ls -la node_modules/electron/dist || true
+            echo "--- re-running install.js in the foreground ---"
+            node node_modules/electron/install.js; echo "install.js exit=$?"
+            echo "--- dist after retry ---"
+            ls -la node_modules/electron/dist || true
+            du -sh node_modules/electron/dist || true
+            cat node_modules/electron/path.txt || echo "(still no path.txt)"
+            node -e "console.log('electron resolves to', require('electron'))"
+          fi
 
       - run: npm test
 
