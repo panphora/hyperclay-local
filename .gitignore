@@ -6,7 +6,18 @@ yarn-error.log*
 
 # Build outputs
 dist/
-build/
+build/*
+# ...but build/ is electron-builder's buildResources, so it holds real inputs next to
+# generated output. Ignoring the whole directory meant no runner could ever build:
+# build-icons hard-fails without icon-1024.png, and electron-builder --win reads
+# icon.ico without regenerating it. The platform icons are tracked as a fallback,
+# not a source of truth: every build job runs build-icons first and overwrites them
+# wherever sips/iconutil/ImageMagick exist.
+!build/icon-1024.png
+!build/dmg-background.png
+!build/icon.icns
+!build/icon.ico
+!build/icon.png
 executables/
 
 # OS generated files
