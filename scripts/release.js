@@ -3,7 +3,7 @@
 const { execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const readline = require('readline');
+const os = require('os');
 
 // ============================================
 // CLI ARGUMENT PARSING
@@ -11,25 +11,9 @@ const readline = require('readline');
 
 let VERSION_TYPE = '';
 let RESUME = false;
-let PLATFORMS = ['mac', 'linux'];
 let IGNORE_WINDOW = false;
 
 for (const arg of process.argv.slice(2)) {
-  if (arg.startsWith('--platforms=')) {
-    PLATFORMS = arg.slice('--platforms='.length).split(',').map(p => p.trim()).filter(Boolean);
-    const invalid = PLATFORMS.filter(p => p !== 'mac' && p !== 'linux');
-    if (invalid.length > 0) {
-      console.error(`Unknown platform(s): ${invalid.join(', ')}`);
-      console.error('Valid platforms: mac, linux');
-      process.exit(1);
-    }
-    if (PLATFORMS.length === 0) {
-      console.error('--platforms needs at least one of: mac, linux');
-      process.exit(1);
-    }
-    continue;
-  }
-
   switch (arg) {
     case '--major': VERSION_TYPE = 'major'; break;
     case '--minor': VERSION_TYPE = 'minor'; break;
@@ -38,25 +22,23 @@ for (const arg of process.argv.slice(2)) {
     case '--ignore-window': IGNORE_WINDOW = true; break;
     case '--help':
     case '-h':
-      console.log('Usage: node scripts/release.js [--major|--minor|--patch] [--resume] [--platforms=mac,linux] [--ignore-window]');
+      console.log('Usage: node scripts/release.js [--major|--minor|--patch] [--resume] [--ignore-window]');
+      console.log('');
+      console.log('Bumps the version, pushes it, and hands the build to GitHub Actions.');
+      console.log('Nothing is compiled, signed or uploaded on this machine any more.');
       console.log('');
       console.log('Options:');
       console.log('  --major              Major version bump (breaking changes)');
       console.log('  --minor              Minor version bump (new features)');
       console.log('  --patch              Patch version bump (bug fixes)');
-      console.log('  --resume             Rebuild and redistribute the version already in');
-      console.log('                       package.json. Skips version bump, commit, push, and');
-      console.log('                       the Windows CI trigger. Use after a failed build.');
-      console.log('  --platforms=LIST     Comma-separated platforms to build: mac, linux');
-      console.log('                       (default: mac,linux)');
+      console.log('  --resume             Re-dispatch the version already in package.json,');
+      console.log('                       skipping the bump, commit and push. Use when the');
+      console.log('                       workflow failed but the version commit landed.');
       console.log('  --ignore-window      Release inside the Tue-Fri 09:00-18:00 ET window.');
       console.log('                       Deliberate override; a release publishes publicly.');
       console.log('');
       console.log('If no version option is provided, the bump is chosen automatically');
       console.log('from the commit messages since the last tag. Nothing prompts.');
-      console.log('');
-      console.log('Example: resume a release whose macOS build failed');
-      console.log('  node scripts/release.js --resume --platforms=mac');
       process.exit(0);
     default:
       console.error(`Unknown argument: ${arg}`);
@@ -71,13 +53,6 @@ if (RESUME && VERSION_TYPE) {
   process.exit(1);
 }
 
-if (!RESUME && process.argv.slice(2).some(arg => arg.startsWith('--platforms='))) {
-  console.error('--platforms requires --resume');
-  console.error('A fresh release must build every platform. Skipping one would publish');
-  console.error('download links for an artifact that was never built.');
-  process.exit(1);
-}
-
 // ============================================
 // CONFIGURATION
 // ============================================
@@ -87,13 +62,11 @@ const ROOT_DIR = path.join(__dirname, '..');
 // Load .env file for Apple credentials
 require('dotenv').config({ path: path.join(ROOT_DIR, '.env') });
 const LOG_FILE = path.join(ROOT_DIR, 'release.log');
-const NOTARIZATION_FILE = path.join(ROOT_DIR, '.notarization-submissions-mac.json');
 
 // src/main/main.js used to carry a literal version; it reads app.getVersion() now,
 // so it is not in this list any more.
 const FILES_TO_UPDATE = ['package.json', 'README.md', 'website/index.html'];
 
-const NOTARIZATION_POLL_INTERVAL = 30000; // 30 seconds
 
 // ============================================
 // COLORS
@@ -165,20 +138,6 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function prompt(question) {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-  });
-
-  return new Promise(resolve => {
-    rl.question(question, answer => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
-}
-
 function execSafe(command, options = {}) {
   try {
     return execSync(command, { encoding: 'utf8', cwd: ROOT_DIR, ...options });
@@ -232,230 +191,6 @@ function updateVersionInFile(filePath, newVersion) {
   }
 
   fs.writeFileSync(fullPath, content);
-}
-
-function formatFileSize(bytes) {
-  const mb = bytes / (1024 * 1024);
-  return `${mb.toFixed(1)}MB`;
-}
-
-function updateReadmeSizes(version) {
-  const readmePath = path.join(ROOT_DIR, 'README.md');
-  const executablesDir = path.join(ROOT_DIR, 'executables');
-
-  if (!fs.existsSync(executablesDir)) {
-    logWarn('No executables/ directory; skipping README size update');
-    return;
-  }
-
-  let content = fs.readFileSync(readmePath, 'utf8');
-
-  const files = fs.readdirSync(executablesDir);
-
-  for (const file of files) {
-    if (!file.endsWith('.dmg') && !file.endsWith('.AppImage')) continue;
-
-    const size = formatFileSize(fs.statSync(path.join(executablesDir, file)).size);
-    const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    content = content.replace(new RegExp(`(${escaped}\\)) \\([^)]+\\)`, 'g'), `$1 (${size})`);
-
-    // Estimate Windows as ~75% of macOS Intel
-    if (file.endsWith('.dmg') && !file.includes('arm64')) {
-      const winSize = formatFileSize(fs.statSync(path.join(executablesDir, file)).size * 0.75);
-      const winFile = file.replace('.dmg', '.exe').replace('HyperclayLocal-', 'HyperclayLocal-Setup-');
-      const winEscaped = winFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      content = content.replace(new RegExp(`(${winEscaped}\\)) \\([^)]+\\)`, 'g'), `$1 (~${winSize})`);
-    }
-  }
-
-  fs.writeFileSync(readmePath, content);
-}
-
-// ============================================
-// BUILD FUNCTIONS
-// ============================================
-
-// A jest worker killed by a signal does not reliably fail the run: jest can
-// exit 0 while printing a green-looking pass count for the suites that did
-// finish, so a release would build on a suite that never completed. V8 13.6
-// (every Node 24) segfaults workers during GC in
-// ClearStaleLeftTrimmedPointerVisitor, which is what this catches. Detecting
-// the crash beats refusing a Node version: it needs no maintenance and it still
-// works the next time a V8 regresses.
-const WORKER_CRASH = /was terminated by another process: signal=([A-Z]+)/;
-
-function runBuild(name, command) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn('npm', ['run', command], {
-      cwd: ROOT_DIR,
-      shell: true,
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
-
-    let output = '';
-
-    proc.stdout.on('data', data => {
-      output += data.toString();
-      fs.appendFileSync(LOG_FILE, data.toString());
-    });
-
-    proc.stderr.on('data', data => {
-      output += data.toString();
-      fs.appendFileSync(LOG_FILE, data.toString());
-    });
-
-    proc.on('close', code => {
-      if (code !== 0) {
-        reject(new Error(`${name} build failed with code ${code}`));
-        return;
-      }
-      const crash = output.match(WORKER_CRASH);
-      if (crash) {
-        reject(new Error(
-          `${name} exited 0 but a worker was killed by ${crash[1]}, so the run ` +
-          `did not finish. Its pass count covers only the suites that survived.`
-        ));
-        return;
-      }
-      resolve(output);
-    });
-
-    proc.on('error', reject);
-  });
-}
-
-function triggerWindowsBuild() {
-  logInfo('Triggering Windows build on GitHub Actions...');
-
-  try {
-    execSafe('gh workflow run build-and-sign-windows.yml');
-  } catch (error) {
-    throw new Error(`Failed to trigger Windows workflow: ${error.message}`);
-  }
-
-  // Wait for the run to be created
-  logInfo('Waiting for workflow to initialize...');
-  execSync('sleep 5');
-
-  // Get the run ID
-  const output = execSafe('gh run list --workflow=build-and-sign-windows.yml --limit 1 --json databaseId -q ".[0].databaseId"');
-  const runId = output.trim();
-
-  if (!runId) {
-    throw new Error('Could not get Windows workflow run ID');
-  }
-
-  logSuccess(`Windows build triggered (run ID: ${runId})`);
-  return runId;
-}
-
-
-// ============================================
-// NOTARIZATION
-// ============================================
-
-function getNotarizationSubmissions() {
-  if (!fs.existsSync(NOTARIZATION_FILE)) {
-    return [];
-  }
-  try {
-    return JSON.parse(fs.readFileSync(NOTARIZATION_FILE, 'utf8'));
-  } catch {
-    return [];
-  }
-}
-
-function checkNotarizationStatus(submissionId) {
-  const appleId = process.env.APPLE_ID;
-  const teamId = process.env.APPLE_TEAM_ID;
-  const password = process.env.APPLE_APP_SPECIFIC_PASSWORD;
-
-  if (!appleId || !teamId || !password) {
-    return { status: 'Error', message: 'Missing Apple credentials in environment' };
-  }
-
-  try {
-    const cmd = `xcrun notarytool info "${submissionId}" \
-      --apple-id "${appleId}" \
-      --team-id "${teamId}" \
-      --password "${password}" \
-      --output-format json`;
-
-    const output = execSafe(cmd, { stdio: 'pipe' });
-    return JSON.parse(output);
-  } catch (error) {
-    return { status: 'Error', message: error.message };
-  }
-}
-
-async function pollNotarizationUntilComplete() {
-  logInfo('Waiting for notarization to complete...');
-
-  while (true) {
-    const submissions = getNotarizationSubmissions();
-    const pending = submissions.filter(s => s.status === 'submitted');
-
-    if (pending.length === 0) {
-      logSuccess('All notarization submissions processed');
-      return;
-    }
-
-    let allAccepted = true;
-
-    for (const submission of pending) {
-      const info = checkNotarizationStatus(submission.id);
-
-      if (info.status === 'Accepted') {
-        log(`  Notarization ${submission.arch}: Accepted`, colors.green);
-        submission.status = 'accepted';
-      } else if (info.status === 'Invalid') {
-        logError(`Notarization ${submission.arch}: Invalid - ${info.statusSummary || 'Unknown error'}`);
-        submission.status = 'invalid';
-        throw new Error('Notarization was rejected by Apple');
-      } else if (info.status === 'In Progress') {
-        log(`  Notarization ${submission.arch}: In Progress...`, colors.dim);
-        allAccepted = false;
-      } else {
-        log(`  Notarization ${submission.arch}: ${info.status}`, colors.yellow);
-        allAccepted = false;
-      }
-    }
-
-    // Save updated statuses
-    fs.writeFileSync(NOTARIZATION_FILE, JSON.stringify(submissions, null, 2));
-
-    if (allAccepted) {
-      return;
-    }
-
-    await sleep(NOTARIZATION_POLL_INTERVAL);
-  }
-}
-
-function stapleAndMoveExecutables() {
-  logInfo('Stapling notarization tickets and moving executables...');
-
-  try {
-    execSafe('node build-scripts/check-notarization.js', { stdio: 'inherit' });
-    logSuccess('macOS executables stapled and moved');
-  } catch (error) {
-    throw new Error(`Failed to staple/move executables: ${error.message}`);
-  }
-}
-
-// ============================================
-// UPLOAD
-// ============================================
-
-function uploadToR2() {
-  logInfo('Uploading macOS and Linux to R2...');
-
-  try {
-    execSafe('node build-scripts/post-build.js', { stdio: 'inherit' });
-    logSuccess('Upload complete');
-  } catch (error) {
-    throw new Error(`Failed to upload to R2: ${error.message}`);
-  }
 }
 
 function deployWebsite() {
@@ -553,6 +288,83 @@ function verifyLicenseAblation() {
   }
 }
 
+// The build moved to GitHub Actions, so this dispatches release.yml and waits on it
+// instead of compiling, signing, notarizing and uploading here. The workflow is the
+// gate: it runs the suite on all three platforms and refuses to upload unless every
+// one of them is green.
+async function dispatchRelease(version) {
+  const sha = execSafe('git rev-parse HEAD').trim();
+
+  logInfo(`Dispatching release.yml for v${version}...`);
+  execSafe(`gh workflow run release.yml -f version=${version} -f dry_run=false --ref main`);
+
+  // `gh workflow run` returns before the run exists, and `gh run watch` needs an id.
+  // Matched on this commit's sha rather than "the newest run", so a run someone else
+  // started in the same minute is never mistaken for ours.
+  let runId = null;
+  for (let attempt = 0; attempt < 30 && !runId; attempt++) {
+    await sleep(2000);
+    const rows = JSON.parse(execSafe(
+      'gh run list --workflow release.yml --limit 15 --json databaseId,headSha,event'
+    ));
+    const match = rows.find(row => row.headSha === sha && row.event === 'workflow_dispatch');
+    if (match) runId = match.databaseId;
+  }
+
+  if (!runId) {
+    throw new Error(
+      `Dispatched, but no run appeared for ${sha.slice(0, 7)} within a minute. ` +
+      'Check the Actions tab; the version commit is already pushed.'
+    );
+  }
+
+  const url = `https://github.com/panphora/hyperclay-local/actions/runs/${runId}`;
+  logInfo(`Watching ${url}`);
+  log('This takes a while: four Apple notarization round-trips, plus Windows signing.');
+
+  try {
+    execSafe(`gh run watch ${runId} --exit-status`, { stdio: 'inherit' });
+  } catch {
+    throw new Error(
+      `The release run failed: ${url}\n` +
+      '  Nothing reached R2 unless the upload job itself is the one that failed.\n' +
+      '  Fix, push, then re-run with --resume to dispatch the same version again.'
+    );
+  }
+
+  logSuccess('Built, signed, notarized, stapled and uploaded on all three platforms');
+}
+
+// Kept, per the decision to keep auto-install: the DMG no longer exists locally, so
+// it comes back down from R2. Best-effort. A release is already published by this
+// point, and failing to install it on one machine is not a failed release.
+async function installLocally(version) {
+  const name = `HyperclayLocal-${version}-arm64.dmg`;
+  const dmgPath = path.join(os.tmpdir(), name);
+  const volume = `/Volumes/HyperclayLocal ${version}-arm64`;
+
+  try {
+    logInfo(`Downloading ${name}...`);
+    execSafe(`curl -fsSL -o "${dmgPath}" "https://local.hyperclay.com/${name}"`);
+
+    try { execSafe('pkill -f "HyperclayLocal.app"'); } catch {}
+    await sleep(1000);
+
+    execSafe(`hdiutil attach "${dmgPath}" -nobrowse -quiet`);
+    execSafe('rm -rf "/Applications/HyperclayLocal.app"');
+    execSafe(`cp -R "${volume}/HyperclayLocal.app" "/Applications/HyperclayLocal.app"`);
+    execSafe(`hdiutil detach "${volume}" -quiet`);
+    fs.unlinkSync(dmgPath);
+
+    logSuccess('Installed to /Applications');
+    spawn('open', ['/Applications/HyperclayLocal.app'], { detached: true, stdio: 'ignore' }).unref();
+    logSuccess('Launched HyperclayLocal');
+  } catch (error) {
+    try { execSafe(`hdiutil detach "${volume}" -quiet`); } catch {}
+    logWarn(`Could not install locally: ${error.message}`);
+  }
+}
+
 async function main() {
   process.chdir(ROOT_DIR);
   initLog();
@@ -571,22 +383,11 @@ async function main() {
     logSection('Resume');
 
     newVersion = getCurrentVersion();
-    log(`Resuming release of v${newVersion}`);
-    log(`Platforms: ${PLATFORMS.join(', ')}`);
-    logInfo('Skipping version bump, commit, push, and Windows trigger');
+    log(`Re-dispatching v${newVersion}`);
 
-    // Resume assumes steps 1-4 completed. Two things must hold, and neither is
-    // implied by the other.
-    //
-    // 1. The version being resumed must be the COMMITTED one. If step 3 wrote a
-    //    new version into package.json but the commit failed, the working tree
-    //    version was never released, and resuming it would skip the commit,
-    //    push and Windows trigger for a version nothing knows about.
-    // 2. That commit must have reached origin, because the push is what
-    //    triggers the Windows build. Checked against origin/<branch> rather
-    //    than @{upstream}: the release pushes with `git push origin HEAD`,
-    //    which updates the remote-tracking ref without configuring tracking,
-    //    so @{upstream} would spuriously fail on a branch that pushed fine.
+    // The version being resumed must be the COMMITTED one, and that commit must be
+    // on origin: the workflow builds a ref, so anything still sitting in the working
+    // tree would not be in the build.
     let committedVersion = null;
     try {
       committedVersion = JSON.parse(execSafe('git show HEAD:package.json')).version;
@@ -595,8 +396,8 @@ async function main() {
     }
     if (committedVersion !== newVersion) {
       logError(`package.json says ${newVersion}, but HEAD has ${committedVersion || 'no readable version'}.`);
-      logError('That version was never committed, so it was never pushed and never');
-      logError('triggered a Windows build. Commit it, or run a fresh release.');
+      logError('That version was never committed, so the workflow cannot build it.');
+      logError('Commit it, or run a fresh release.');
       process.exit(1);
     }
 
@@ -610,32 +411,24 @@ async function main() {
     }
     if (!pushed) {
       logError(`HEAD is not present on origin/${branch}.`);
-      logError('Resume expects the release commit to already be pushed, because that');
-      logError('push is what triggers the Windows build. Push first, or run a fresh release.');
+      logError('The workflow builds what is on the remote. Push first.');
       process.exit(1);
     }
 
     const dirty = execSafe('git status --porcelain').trim();
     if (dirty) {
-      logWarn('Working tree has uncommitted changes; this build will include them:');
+      logWarn('Working tree has uncommitted changes; they will NOT be in this build:');
       dirty.split('\n').forEach(line => log(`  ${line}`));
     }
   } else {
-
-    // ==========================================
-    // STEP 1: Version bump selection
-    // ==========================================
-
     logSection('Step 1: Pre-flight Checks');
 
-    // Check for uncommitted changes (other than the files we'll modify)
     const status = execSafe('git status --porcelain').trim();
     if (status) {
       const lines = status.split('\n');
-      const allowedFiles = FILES_TO_UPDATE;
       const unexpectedChanges = lines.filter(line => {
-        const file = line.slice(3); // Remove status prefix like " M " or "?? "
-        return !allowedFiles.some(allowed => file.endsWith(allowed));
+        const file = line.slice(3);
+        return !FILES_TO_UPDATE.some(allowed => file.endsWith(allowed));
       });
 
       if (unexpectedChanges.length > 0) {
@@ -646,20 +439,18 @@ async function main() {
         process.exit(1);
       }
     }
-
     logSuccess('Working directory clean');
 
-    // Clear executables folder
-    const executablesDir = path.join(ROOT_DIR, 'executables');
-    if (fs.existsSync(executablesDir)) {
-      fs.rmSync(executablesDir, { recursive: true });
+    // The build is remote now, so a missing or unauthenticated gh is a hard stop
+    // rather than a nuisance. Better here than after the version commit is pushed.
+    try {
+      execSafe('gh auth status', { stdio: 'pipe' });
+      logSuccess('GitHub CLI authenticated');
+    } catch {
+      logError('gh is not authenticated, and the build runs on GitHub Actions now.');
+      logError('Run: gh auth login');
+      process.exit(1);
     }
-    fs.mkdirSync(executablesDir, { recursive: true });
-    logSuccess('Cleared executables folder');
-
-    // ==========================================
-    // STEP 2: Version bump selection
-    // ==========================================
 
     logSection('Step 2: Version');
 
@@ -716,10 +507,6 @@ async function main() {
     log('');
     logSuccess(`Version: ${currentVersion} → ${newVersion}`);
 
-    // ==========================================
-    // STEP 3: Update version in files
-    // ==========================================
-
     logSection('Step 3: Update Files');
 
     for (const file of FILES_TO_UPDATE) {
@@ -727,161 +514,53 @@ async function main() {
       logSuccess(`Updated ${file}`);
     }
 
-    // ==========================================
-    // STEP 4: Commit and push version bump
-    // ==========================================
-
     logSection('Step 4: Commit & Push');
 
-    // Stage only the files we modified
     for (const file of FILES_TO_UPDATE) {
-      execSafe(`git add "${file.path}"`);
+      execSafe(`git add "${file}"`);
     }
     execSafe(`git commit -m "chore: release v${newVersion}"`);
     logSuccess('Committed version bump');
 
-    // Push to remote so GitHub Actions builds the new version
     logInfo('Pushing to remote...');
     execSafe('git push origin HEAD');
     logSuccess('Pushed to remote');
   }
 
-  // ==========================================
-  // STEP 5: Build all platforms
-  // ==========================================
+  logSection('Step 5: Build, Sign and Upload on GitHub');
 
-  logSection('Step 5: Build');
+  await dispatchRelease(newVersion);
 
-  // Clear old notarization submissions (only when rebuilding macOS)
-  if (PLATFORMS.includes('mac') && fs.existsSync(NOTARIZATION_FILE)) {
-    fs.unlinkSync(NOTARIZATION_FILE);
-  }
+  logSection('Step 6: Download Sizes');
 
-  // Run the suite once, here, rather than letting each platform script start
-  // with its own `npm test`. A mac+linux release used to run the whole suite
-  // twice concurrently, which doubled the machine load and with it the odds of
-  // losing a teardown race — on 2026-08-14 both runs lost the same one and the
-  // release died at its first command, having built nothing.
-  logInfo('Running tests once for all platforms...');
-  await runBuild('Test suite', 'test');
-  logSuccess('Tests passed');
+  // The installers were measured on the runner and the byte counts published in
+  // release-info.json, since they no longer exist on this machine to stat.
+  execSafe('node scripts/write-download-sizes.js', { stdio: 'inherit' });
 
-  // Trigger Windows build (runs independently on GitHub Actions). On resume the
-  // push already triggered it; use `npm run win-build:run` to retrigger by hand.
-  //
-  // This dispatch must come AFTER the tests. It used to run before them, and the
-  // Windows workflow signs its installer and uploads it straight to public R2, so a
-  // failing suite aborted mac and linux while Windows carried on and shipped.
-  if (RESUME) {
-    logInfo('Skipping Windows trigger (already triggered by the original push)');
-  } else {
-    triggerWindowsBuild();
-  }
-
-  const buildPromises = [];
-  if (PLATFORMS.includes('mac')) {
-    buildPromises.push(runBuild('macOS', 'mac-build:run').then(() => logSuccess('macOS build complete')));
-  }
-  if (PLATFORMS.includes('linux')) {
-    buildPromises.push(runBuild('Linux', 'linux-build:run').then(() => logSuccess('Linux build complete')));
-  }
-
-  logInfo(`Starting ${PLATFORMS.join(' and ')} build(s)...`);
-
-  await Promise.all(buildPromises);
-
-  // ==========================================
-  // STEP 6: Wait for notarization
-  // ==========================================
-
-  logSection('Step 6: Wait for Notarization');
-
-  if (PLATFORMS.includes('mac')) {
-    logInfo('Waiting for macOS notarization...');
-    logInfo('(Windows build runs independently on GitHub Actions)');
-
-    await pollNotarizationUntilComplete();
-  } else {
-    logInfo('Skipping notarization (macOS not in --platforms)');
-  }
-
-  // ==========================================
-  // STEP 7: Finalize macOS
-  // ==========================================
-
-  logSection('Step 7: Finalize');
-
-  if (PLATFORMS.includes('mac')) {
-    stapleAndMoveExecutables();
-  }
-
-  if (PLATFORMS.includes('linux')) {
-    logInfo('Moving Linux executable...');
-    execSafe('node build-scripts/move-executables.js linux');
-  }
-
-  // Update README with actual file sizes
-  logInfo('Updating README with file sizes...');
-  updateReadmeSizes(newVersion);
-  logSuccess('README sizes updated');
-
-  if (PLATFORMS.includes('mac')) {
-    // Install to local Applications folder
-    logInfo('Installing to /Applications...');
-    const dmgPath = path.join(ROOT_DIR, 'executables', `HyperclayLocal-${newVersion}-arm64.dmg`);
-    const volumeName = `HyperclayLocal ${newVersion}-arm64`;
-    try {
-      try { execSafe('pkill -f "HyperclayLocal.app"'); } catch {}
-      await sleep(1000);
-      execSafe(`hdiutil attach "${dmgPath}" -nobrowse -quiet`);
-      execSafe('rm -rf "/Applications/HyperclayLocal.app"');
-      execSafe(`cp -R "/Volumes/${volumeName}/HyperclayLocal.app" "/Applications/HyperclayLocal.app"`);
-      execSafe(`hdiutil detach "/Volumes/${volumeName}" -quiet`);
-      logSuccess('Installed to /Applications');
-      spawn('open', ['/Applications/HyperclayLocal.app'], { detached: true, stdio: 'ignore' }).unref();
-      logSuccess('Launched HyperclayLocal');
-    } catch (error) {
-      try { execSafe(`hdiutil detach "/Volumes/${volumeName}" -quiet`); } catch {}
-      logWarn(`Could not install locally: ${error.message}`);
-    }
-  }
-
-  // Commit README size updates so release-info.json points to final state
-  logInfo('Committing README size updates...');
-  execSafe('git add README.md');
-  const stagedChanges = execSafe('git diff --cached --name-only -- README.md').trim();
+  execSafe('git add README.md website/index.html');
+  const stagedChanges = execSafe('git diff --cached --name-only').trim();
   if (stagedChanges) {
-    execSafe(`git commit -m "chore: update download sizes for v${newVersion}" -- README.md`);
+    execSafe(`git commit -m "chore: update download sizes for v${newVersion}"`);
     execSafe('git push origin HEAD');
-    logSuccess('README sizes committed and pushed');
+    logSuccess('Download sizes committed and pushed');
   } else {
-    logInfo('No README size changes to commit, skipping');
+    logInfo('Sizes unchanged, nothing to commit');
   }
 
-  // ==========================================
-  // STEP 8: Upload to R2
-  // ==========================================
-
-  logSection('Step 8: Upload');
-
-  uploadToR2();
+  logSection('Step 7: Deploy Website');
 
   deployWebsite();
 
   fs.writeFileSync(path.join(ROOT_DIR, '.deploy'), execSafe('git rev-parse HEAD').trim() + '\n');
   logSuccess('Wrote .deploy tracking file');
 
-  // ==========================================
-  // STEP 9: Update external docs
-  // ==========================================
-
-  logSection('Step 9: Update External Docs');
+  logSection('Step 8: Update External Docs');
 
   updateExternalDocs(newVersion);
 
-  // ==========================================
-  // DONE
-  // ==========================================
+  logSection('Step 9: Install Locally');
+
+  await installLocally(newVersion);
 
   const duration = Math.round((Date.now() - startTime) / 1000);
   const minutes = Math.floor(duration / 60);
@@ -898,7 +577,7 @@ async function main() {
   log(`  Windows:       https://local.hyperclay.com/HyperclayLocal-Setup-${newVersion}.exe`);
   log(`  Linux:         https://local.hyperclay.com/HyperclayLocal-${newVersion}.AppImage`);
   log('');
-  logSuccess('All platforms built, signed, and uploaded!');
+  logSuccess('Released.');
   log('');
   log(`Full log: ${LOG_FILE}`);
 }
