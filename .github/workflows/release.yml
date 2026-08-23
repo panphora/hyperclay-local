@@ -21,7 +21,13 @@ on:
         type: boolean
 
 env:
-  NODE_VERSION: "26"
+  # Node 24, not 26. electron's install.js extracts its binary with extract-zip 2.0.1,
+  # which on Node 26 resolves in 0.2s without extracting and lets the process exit
+  # before path.txt is written. install.js still exits 0, so `npm ci` reports success
+  # over a tree where require('electron') throws and eleven suites cannot load. Four
+  # dry runs died on it. Node 24 is what this app is released with today and installs
+  # electron correctly.
+  NODE_VERSION: "24"
   # Node 26 ships npm 12, which blocks dependency install scripts by default.
   # Electron's postinstall is what downloads the Electron binary, so under npm 12
   # `npm ci` yields a tree where require('electron') throws and eleven suites cannot
@@ -77,29 +83,21 @@ jobs:
       # a tree where require('electron') throws with nothing in the install log.
       - run: npm ci --foreground-scripts
 
-      # TEMPORARY. electron's install.js downloads to a cache, extracts, then writes
-      # path.txt last. On failure it exits 1, which would fail npm ci. On Node 26 it
-      # exits 0 having left a 244KB dist and no path.txt, so the extraction stops
-      # without throwing. Re-running it here either completes the install or prints
-      # the error npm swallowed. Remove once understood.
-      - name: Ensure the Electron binary actually installed
+      # A broken electron install surfaces as eleven unrelated suites failing to load,
+      # which reads like a code problem rather than an install one. Say so directly.
+      - name: Assert the Electron binary installed
         run: |
-          echo "node $(node -v)  npm $(npm -v)"
-          if node -e "require('electron')" 2>/dev/null; then
-            echo "electron OK on the first install"
-          else
-            echo "electron incomplete; dist before retry:"
-            ls -la node_modules/electron/dist || true
-            echo "--- re-running install.js in the foreground ---"
-            node node_modules/electron/install.js; echo "install.js exit=$?"
-            echo "--- dist after retry ---"
-            ls -la node_modules/electron/dist || true
-            du -sh node_modules/electron/dist || true
-            cat node_modules/electron/path.txt || echo "(still no path.txt)"
-            node -e "console.log('electron resolves to', require('electron'))"
-          fi
+          node -e "require('electron')" || {
+            echo "node_modules/electron has no usable binary: install.js did not finish."
+            echo "Check the Node version against extract-zip; see NODE_VERSION at the top."
+            exit 1
+          }
 
-      - run: npm test
+      # --runInBand: one process, no jest workers. V8 in Node 24 segfaults workers
+      # during GC, and jest can exit 0 after a worker dies, reporting green for the
+      # suites that did finish. Serial also removes the parallel-load contention that
+      # made this suite fail three times locally and pass every time in isolation.
+      - run: npm test -- --runInBand
 
   # ── License gate ──
   # The First Million Stays Yours License promises each version converts to plain
