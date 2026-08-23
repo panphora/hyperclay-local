@@ -169,6 +169,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          # Not for publishing: build.publish is null and no job passes --publish.
+          # electron-builder infers a GitHub provider from the remote and wants a token
+          # to read release info while writing update metadata.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run mac-build:run
 
       - run: node build-scripts/move-executables.js mac
@@ -202,6 +206,12 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           npm-version: ${{ env.NPM_VERSION }}
       - run: npm run linux-build:run
+        env:
+          # Not for publishing. build.publish is null and no job passes --publish;
+          # electron-builder infers a GitHub provider from the remote and wants a
+          # token to read release info while writing update metadata. The old
+          # Windows workflow passed one for the same reason and never published.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/upload-artifact@v4
         with:
           name: linux

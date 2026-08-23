@@ -67,7 +67,11 @@ let liveSyncMock;
 const TMP_BASE = os.tmpdir();
 const SYNC_ROOT = path.join(TMP_BASE, 'test-sync');
 const META_ROOT = path.join(TMP_BASE, 'test-meta');
-const canonicalSyncFolder = path.join(realFs.realpathSync(TMP_BASE), 'test-sync');
+// realpathSync.native, not realpathSync: on Windows the plain version keeps the 8.3
+// short name TEMP hands out (C:/Users/RUNNER~1/...), while the engine resolves through
+// fs.promises.realpath, which is libuv-backed and expands it (C:/Users/runneradmin/...).
+// The native call matches what the code under test actually produces.
+const canonicalSyncFolder = path.join(realFs.realpathSync.native(TMP_BASE), 'test-sync');
 
 beforeEach(() => {
   jest.useFakeTimers();
