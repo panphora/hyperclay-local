@@ -72,7 +72,27 @@ jobs:
           cache: npm
       - name: Pin npm (Node 26 ships npm 12; see NPM_VERSION note at top)
         run: npm i -g npm@${{ env.NPM_VERSION }}
-      - run: npm ci
+      # --foreground-scripts because npm hides install-script output by default, and
+      # a silently skipped or failing postinstall is exactly how three dry runs got
+      # a tree where require('electron') throws with nothing in the install log.
+      - run: npm ci --foreground-scripts
+
+      # TEMPORARY diagnostic. Three dry runs produced a tree where require('electron')
+      # throws, with nothing in the install log explaining it. Remove once understood.
+      - name: What did the electron install actually leave behind?
+        run: |
+          echo "npm: $(npm -v)   node: $(node -v)"
+          echo "--- node_modules/electron ---"
+          ls -la node_modules/electron/ || echo "(no electron dir)"
+          echo "--- path.txt ---"
+          cat node_modules/electron/path.txt 2>/dev/null || echo "(no path.txt: install.js never completed)"
+          echo "--- dist ---"
+          du -sh node_modules/electron/dist 2>/dev/null || echo "(no dist: binary never downloaded)"
+          echo "--- electron cache ---"
+          du -sh ~/Library/Caches/electron ~/.cache/electron 2>/dev/null || echo "(no electron cache)"
+          echo "--- relevant env ---"
+          env | grep -iE "electron|npm_config|ignore.script" | sort || echo "(none)"
+
       - run: npm test
 
   # ── License gate ──
@@ -101,7 +121,10 @@ jobs:
           cache: npm
       - name: Pin npm (Node 26 ships npm 12; see NPM_VERSION note at top)
         run: npm i -g npm@${{ env.NPM_VERSION }}
-      - run: npm ci
+      # --foreground-scripts because npm hides install-script output by default, and
+      # a silently skipped or failing postinstall is exactly how three dry runs got
+      # a tree where require('electron') throws with nothing in the install log.
+      - run: npm ci --foreground-scripts
 
       - name: Import Developer ID certificate
         env:
@@ -165,7 +188,10 @@ jobs:
           cache: npm
       - name: Pin npm (Node 26 ships npm 12; see NPM_VERSION note at top)
         run: npm i -g npm@${{ env.NPM_VERSION }}
-      - run: npm ci
+      # --foreground-scripts because npm hides install-script output by default, and
+      # a silently skipped or failing postinstall is exactly how three dry runs got
+      # a tree where require('electron') throws with nothing in the install log.
+      - run: npm ci --foreground-scripts
       - run: npm run linux-build:run
       - uses: actions/upload-artifact@v4
         with:
@@ -186,7 +212,10 @@ jobs:
           cache: npm
       - name: Pin npm (Node 26 ships npm 12; see NPM_VERSION note at top)
         run: npm i -g npm@${{ env.NPM_VERSION }}
-      - run: npm ci
+      # --foreground-scripts because npm hides install-script output by default, and
+      # a silently skipped or failing postinstall is exactly how three dry runs got
+      # a tree where require('electron') throws with nothing in the install log.
+      - run: npm ci --foreground-scripts
 
       - name: Build CSS
         run: npm run build-css
@@ -262,7 +291,10 @@ jobs:
           cache: npm
       - name: Pin npm (Node 26 ships npm 12; see NPM_VERSION note at top)
         run: npm i -g npm@${{ env.NPM_VERSION }}
-      - run: npm ci
+      # --foreground-scripts because npm hides install-script output by default, and
+      # a silently skipped or failing postinstall is exactly how three dry runs got
+      # a tree where require('electron') throws with nothing in the install log.
+      - run: npm ci --foreground-scripts
 
       - uses: actions/download-artifact@v4
         with:
