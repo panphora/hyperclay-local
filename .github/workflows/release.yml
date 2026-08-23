@@ -58,50 +58,63 @@ jobs:
           fi
           echo "Releasing $ACTUAL"
 
-  # ── Test gate ──
-  # macOS and Windows, which is exactly the coverage a release has today: the suite
-  # runs on David's Mac and inside the Windows build job. Ubuntu is deliberately not
-  # here yet; it is a platform this suite has never run on, and finding out during a
-  # release is the wrong time.
-  test:
+  # ── Test gate, one job per shipped platform ──
+  # Deliberately three jobs rather than one matrix. Each build below waits only on its
+  # OWN platform's tests, so a Windows failure no longer hides whether macOS signing
+  # works; `upload` still waits for all of them, so nothing reaches users unless every
+  # platform is green. As a matrix this cost one unknown per run: six dry runs cancelled
+  # the Windows leg before it reported, and the seventh found 14 failures nobody had
+  # ever seen, because the Windows suite had in fact never run to completion here.
+  test-macos:
     needs: verify
-    strategy:
-      # Let both platforms finish. Fail-fast cancelled the Windows leg on every one of
-      # the first six dry runs, so a platform-specific failure there would still be
-      # undiscovered after all of them.
-      fail-fast: false
-      matrix:
-        os: [macos-14, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-14
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/install
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - name: Pin npm (Node 26 ships npm 12; see NPM_VERSION note at top)
-        run: npm i -g npm@${{ env.NPM_VERSION }}
-      # --foreground-scripts because npm hides install-script output by default, and
-      # a silently skipped or failing postinstall is exactly how three dry runs got
-      # a tree where require('electron') throws with nothing in the install log.
-      - run: npm ci --foreground-scripts
-
-      # A broken electron install surfaces as eleven unrelated suites failing to load,
-      # which reads like a code problem rather than an install one. Say so directly.
-      - name: Assert the Electron binary installed
-        run: |
-          node -e "require('electron')" || {
-            echo "node_modules/electron has no usable binary: install.js did not finish."
-            echo "Check the Node version against extract-zip; see NODE_VERSION at the top."
-            exit 1
-          }
-
-      # --runInBand: one process, no jest workers. V8 in Node 24 segfaults workers
-      # during GC, and jest can exit 0 after a worker dies, reporting green for the
-      # suites that did finish. Serial also removes the parallel-load contention that
-      # made this suite fail three times locally and pass every time in isolation.
+          npm-version: ${{ env.NPM_VERSION }}
+      # --runInBand: one process, no jest workers. V8 segfaults workers during GC and
+      # jest can exit 0 after a worker dies, reporting green for the suites that did
+      # finish. Serial also removes the parallel-load contention that made this suite
+      # fail three times locally and pass every time in isolation.
       - run: npm test -- --runInBand
+
+
+  test-windows:
+    needs: verify
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          npm-version: ${{ env.NPM_VERSION }}
+      # --runInBand: one process, no jest workers. V8 segfaults workers during GC and
+      # jest can exit 0 after a worker dies, reporting green for the suites that did
+      # finish. Serial also removes the parallel-load contention that made this suite
+      # fail three times locally and pass every time in isolation.
+      - run: npm test -- --runInBand
+
+
+  test-linux:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          npm-version: ${{ env.NPM_VERSION }}
+      # --runInBand: one process, no jest workers. V8 segfaults workers during GC and
+      # jest can exit 0 after a worker dies, reporting green for the suites that did
+      # finish. Serial also removes the parallel-load contention that made this suite
+      # fail three times locally and pass every time in isolation.
+      - run: npm test -- --runInBand
+
 
   # ── License gate ──
   # The First Million Stays Yours License promises each version converts to plain
@@ -117,22 +130,16 @@ jobs:
 
   # ── macOS: build both architectures, sign, notarize, staple ──
   build-macos:
-    needs: [test, license]
+    needs: [test-macos, license]
     runs-on: macos-14
     # Two architectures, each waiting on Apple's notarization queue. The long pole.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/install
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - name: Pin npm (Node 26 ships npm 12; see NPM_VERSION note at top)
-        run: npm i -g npm@${{ env.NPM_VERSION }}
-      # --foreground-scripts because npm hides install-script output by default, and
-      # a silently skipped or failing postinstall is exactly how three dry runs got
-      # a tree where require('electron') throws with nothing in the install log.
-      - run: npm ci --foreground-scripts
+          npm-version: ${{ env.NPM_VERSION }}
 
       - name: Import Developer ID certificate
         env:
@@ -185,21 +192,15 @@ jobs:
 
   # ── Linux: AppImage ──
   build-linux:
-    needs: [test, license]
+    needs: [test-linux, license]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/install
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - name: Pin npm (Node 26 ships npm 12; see NPM_VERSION note at top)
-        run: npm i -g npm@${{ env.NPM_VERSION }}
-      # --foreground-scripts because npm hides install-script output by default, and
-      # a silently skipped or failing postinstall is exactly how three dry runs got
-      # a tree where require('electron') throws with nothing in the install log.
-      - run: npm ci --foreground-scripts
+          npm-version: ${{ env.NPM_VERSION }}
       - run: npm run linux-build:run
       - uses: actions/upload-artifact@v4
         with:
@@ -209,21 +210,15 @@ jobs:
 
   # ── Windows: build, sign with Azure Trusted Signing ──
   build-windows:
-    needs: [test, license]
+    needs: [test-windows, license]
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/install
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - name: Pin npm (Node 26 ships npm 12; see NPM_VERSION note at top)
-        run: npm i -g npm@${{ env.NPM_VERSION }}
-      # --foreground-scripts because npm hides install-script output by default, and
-      # a silently skipped or failing postinstall is exactly how three dry runs got
-      # a tree where require('electron') throws with nothing in the install log.
-      - run: npm ci --foreground-scripts
+          npm-version: ${{ env.NPM_VERSION }}
 
       - name: Build CSS
         run: npm run build-css
@@ -283,7 +278,8 @@ jobs:
   # finally list all four platforms and their real sizes. Before this, Windows
   # uploaded itself from its own job and never appeared in that file.
   upload:
-    needs: [build-macos, build-linux, build-windows]
+    needs: [test-macos, test-windows, test-linux, license,
+            build-macos, build-linux, build-windows]
     # A dry run still builds, signs, notarizes and verifies every platform, and the
     # installers are downloadable from the run's artifacts. It just never touches R2,
     # which is what makes it safe to prove this pipeline against a version that has
@@ -293,16 +289,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/install
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - name: Pin npm (Node 26 ships npm 12; see NPM_VERSION note at top)
-        run: npm i -g npm@${{ env.NPM_VERSION }}
-      # --foreground-scripts because npm hides install-script output by default, and
-      # a silently skipped or failing postinstall is exactly how three dry runs got
-      # a tree where require('electron') throws with nothing in the install log.
-      - run: npm ci --foreground-scripts
+          npm-version: ${{ env.NPM_VERSION }}
 
       - uses: actions/download-artifact@v4
         with:

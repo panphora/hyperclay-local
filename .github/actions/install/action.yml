@@ -1,0 +1,40 @@
+name: Install dependencies
+description: Node + npm setup, install, and a real check that Electron actually landed.
+
+inputs:
+  node-version:
+    description: Node major to install.
+    required: true
+  npm-version:
+    description: npm major to pin, since the Node image's bundled npm moves under us.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+
+    - name: Pin npm
+      shell: bash
+      run: npm i -g npm@${{ inputs.npm-version }}
+
+    # --foreground-scripts because npm hides install-script output by default, and a
+    # silently skipped or failing postinstall is exactly how three dry runs produced
+    # a tree where require('electron') throws with nothing in the install log.
+    - name: Install
+      shell: bash
+      run: npm ci --foreground-scripts
+
+    # A broken electron install surfaces as eleven unrelated suites failing to load,
+    # which reads like a code problem rather than an install one. Say so directly.
+    - name: Assert the Electron binary installed
+      shell: bash
+      run: |
+        node -e "require('electron')" || {
+          echo "node_modules/electron has no usable binary: install.js did not finish."
+          echo "Check the Node version against extract-zip; see NODE_VERSION in the caller."
+          exit 1
+        }
