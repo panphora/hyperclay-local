@@ -17,13 +17,12 @@ require('dotenv').config();
 // The DMG must be signed for Apple to accept it, which is why build.dmg.sign is true.
 // Signing a DMG clears the internet-enabled flag, which we do not use.
 //
-// KNOWN INCONSISTENCY: stapling writes the ticket into the .dmg, which changes its
-// size and hash after electron-builder has already recorded both in latest-mac.yml
-// and the .dmg.blockmap. Those two files are therefore stale from here on. Nothing
-// reads them today: the app has no electron-updater dependency and no autoUpdater
-// call anywhere in src/, and its own update check goes through release-info.json and
-// downloads the DMG from R2. They are still uploaded, so anyone turning on
-// electron-updater later must regenerate them after this hook or stop shipping them.
+// Stapling writes the ticket into the .dmg, so its size and hash no longer match what
+// electron-builder recorded in latest-mac.yml and the .dmg.blockmap just before this
+// runs. That costs nothing today: post-build.js uploads only .dmg, .exe and .AppImage,
+// so neither file is published, and the app has no electron-updater dependency and no
+// autoUpdater call in src/ anyway, updating instead through release-info.json. Whoever
+// turns electron-updater on has to regenerate both after this hook.
 exports.default = async function stapleDmg(context) {
   const artifacts = (context.artifactPaths || []).filter((p) => p.endsWith('.dmg'));
   if (!artifacts.length) return;
