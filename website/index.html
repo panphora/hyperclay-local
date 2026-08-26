@@ -28,7 +28,7 @@
   </script>
 
   <title>Hyperclay Local: HTML files that save themselves to disk</title>
-  <meta name="description" content="Free, open-source desktop app that lets plain HTML files save their own changes back to disk. One file is the whole app. No backend, no build, works offline.">
+  <meta name="description" content="Free, source-available desktop app that lets plain HTML files save their own changes back to disk. One file is the whole app. No backend, no build, works offline.">
   <link rel="canonical" href="https://hyperclaylocal.com/">
 
   <meta property="og:url" content="https://hyperclaylocal.com/">
@@ -428,6 +428,7 @@
     .closer .closer-lead { margin-bottom: 24px; }
     footer { padding: 40px 0 64px; text-align: center; color: var(--mirk-placeholder-color); font-size: 14px; }
     footer p { margin: 0 0 8px; }
+    footer[data-hyper-footer] { padding: 48px 22px 8px; text-align: left; --hyper-footer-heading-color: var(--mirk-fg); }
     footer a { text-decoration: underline; text-decoration-color: currentColor; text-underline-offset: 2px; }
 
     /* ---------------- Responsive ---------------- */
@@ -474,7 +475,7 @@
     <section class="hero">
       <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Local-first HTML apps</p>
       <h1 class="hero-h1">An HTML file that saves itself</h1>
-      <p class="lede">Hyperclay Local is a free, open-source desktop app that runs a tiny server on your machine.</p>
+      <p class="lede">Hyperclay Local is a free, source-available desktop app that runs a tiny server on your machine.</p>
       <p class="lede lede-tagline">No database. No build step. No backend.</p>
 
       <div class="hero-shot">
@@ -490,7 +491,7 @@
 
     <!-- 1b. Download CTA -->
     <div class="download-cta">
-      <p class="trust">Free and open source. No account required. Works offline.</p>
+      <p class="trust">Free to use, source available. No account required. Works offline.</p>
       <a id="download-btn" class="mirk-button mirk-button--large" href="#downloads" download>
         <span class="mirk-button__label" id="download-btn-text">Download</span>
       </a>
@@ -852,7 +853,7 @@
     <section class="section" id="downloads" data-version="1.22.2">
       <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Download</p>
       <h2 class="section-h">Download <span class="version-tag" id="version-tag"></span></h2>
-      <p class="dl-intro">Desktop app for macOS, Windows, and Linux. Free and open source, no account required. It is an Electron app, so each download is around 100 MB.</p>
+      <p class="dl-intro">Desktop app for macOS, Windows, and Linux. Free to use, source available, no account required. It is an Electron app, so each download is around 100 MB.</p>
       <ul class="dl-list">
         <li class="dl-row" data-os="mac-arm">
           <span class="dl-os">macOS <span class="dl-arch">Apple Silicon</span></span>
@@ -901,7 +902,7 @@
             <li><b>Filename sanitization.</b> Saved filenames allow only letters, numbers, hyphens, and underscores.</li>
             <li><b>Versioned backups.</b> The server keeps the previous version of a file before it overwrites.</li>
           </ul>
-          <p>The app is open source. You can audit the full codebase at <a href="https://github.com/panphora/hyperclay-local" target="_blank" rel="noopener">github.com/panphora/hyperclay-local</a>.</p>
+          <p>The app's source is public. You can audit the full codebase at <a href="https://github.com/panphora/hyperclay-local" target="_blank" rel="noopener">github.com/panphora/hyperclay-local</a>.</p>
         </div>
       </details>
 
@@ -971,8 +972,10 @@ npm install</pre></div>
 
   </main>
 
+  <footer data-hyper-footer="hyperclay-local" class="container"></footer>
+
   <footer>
-    <p>Open source: <a href="https://github.com/panphora/hyperclay-local" target="_blank" rel="noopener">github.com/panphora/hyperclay-local</a></p>
+    <p>Source: <a href="https://github.com/panphora/hyperclay-local" target="_blank" rel="noopener">github.com/panphora/hyperclay-local</a></p>
     <p>Part of <a href="https://hyperclay.com" target="_blank" rel="noopener">Hyperclay</a></p>
   </footer>
 
@@ -1216,6 +1219,7 @@ npm install</pre></div>
   </script>
 
   <!-- mirk kit runtime (delegated listeners for its interactive components). -->
+  <script src="https://hyperclay.com/public/js/hyper-footer.js" defer></script>
   <script src="mirk.js"></script>
 </body>
 </html>

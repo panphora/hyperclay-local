@@ -1,10 +1,10 @@
-# The Clay License converts to plain MIT by DELETING a labelled list of clauses,
+# The First Million Stays Yours License converts to plain MIT by DELETING a labelled list of clauses,
 # not by swapping in a different file. This job applies that deletion list and
 # diffs what is left against the canonical MIT text. If it fails, the conversion
 # promise printed in LICENSE is not true and no release may ship.
 #
 # scripts/ablation-check.py is a byte-identical copy of the canonical script in
-# the private plans repo (plans/shared/first-million-stays-yours-license/ablation-check.py). Change it
+# the private hyper workspace (meta/license/ablation-check.py). Change it
 # there first, then re-copy to every fenced repo; `diff` is the drift check.
 
 name: License
