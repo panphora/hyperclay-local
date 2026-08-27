@@ -31,9 +31,10 @@ for (const arg of process.argv.slice(2)) {
       console.log('  --major              Major version bump (breaking changes)');
       console.log('  --minor              Minor version bump (new features)');
       console.log('  --patch              Patch version bump (bug fixes)');
-      console.log('  --resume             Re-dispatch the version already in package.json,');
-      console.log('                       skipping the bump, commit and push. Use when the');
-      console.log('                       workflow failed but the version commit landed.');
+      console.log('  --resume             Finish the version already in package.json, skipping');
+      console.log('                       the bump, commit and push. Dispatches a fresh build,');
+      console.log('                       or picks up after the build if that commit already');
+      console.log('                       has a green run.');
       console.log('  --ignore-window      Release inside the Tue-Fri 09:00-18:00 ET window.');
       console.log('                       Deliberate override; a release publishes publicly.');
       console.log('');
@@ -136,6 +137,11 @@ function logWarn(message) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function elapsed(since) {
+  const seconds = Math.round((Date.now() - since) / 1000);
+  return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`;
 }
 
 function execSafe(command, options = {}) {
@@ -288,6 +294,91 @@ function verifyLicenseAblation() {
   }
 }
 
+// Polled here rather than handed to `gh run watch --exit-status`, which exits nonzero
+// both when the run failed and when watching it failed, with no way to tell the two
+// apart. On 2026-08-26 it exited nonzero 68 seconds AFTER v1.22.3 had gone green and
+// all four installers were on R2, so the release was declared failed and steps 6-9
+// never ran: signed installers published, and hyperclaylocal.com left handing out
+// 1.22.2 links. The run's own status and conclusion are the verdict now, so a failed
+// read is nothing more than a failed read.
+//
+// Watching also cost about ten times the API calls this does. Measured against a nine
+// job run, `gh run watch` makes 27 requests every 20 seconds, most of them per-job
+// annotation fetches, so a ten minute wait ran to roughly 800 chances to come back
+// bad. This makes two every fifteen seconds.
+//
+// Every line goes through log(), so release.log finally records the wait. gh's output
+// was inherited straight to the terminal, which is why nothing on disk can say what
+// the 2026-08-26 failure actually printed.
+async function awaitRunVerdict(runId, url) {
+  const started = Date.now();
+  const seen = new Map();
+  let quietSince = Date.now();
+  let blindPolls = 0;
+
+  // Three hours. The longest path release.yml can take is about 150 minutes of job
+  // timeouts (verify 5, test-macos 25, build-macos 90, upload 30), so a run still
+  // unresolved here is stuck rather than slow.
+  while (Date.now() - started < 3 * 60 * 60 * 1000) {
+    await sleep(15000);
+
+    let run;
+    try {
+      run = JSON.parse(execSafe(
+        `gh run view ${runId} --json status,conclusion,jobs`,
+        { stdio: 'pipe', timeout: 30000 }
+      ));
+      if (blindPolls) logInfo(`Reading the run again after ${blindPolls} failed polls`);
+      blindPolls = 0;
+    } catch (error) {
+      // A poll that fails says something about the network and nothing about the run.
+      // Logged rather than swallowed, since not knowing what gh printed is what made
+      // the 2026-08-26 failure impossible to explain afterwards.
+      if (!blindPolls) logWarn(`Cannot read the run: ${error.message.trim().split('\n').pop()}`);
+      if (++blindPolls >= 40) {
+        throw new Error(
+          `Ten minutes without a readable answer from ${url}\n` +
+          '  Nothing here says the run failed. Open that page: if it went green the\n' +
+          '  release is published, and `npm run release -- --resume` picks up the rest.'
+        );
+      }
+      continue;
+    }
+
+    const changed = run.jobs.filter(job => seen.get(job.name) !== (job.conclusion || job.status));
+    for (const job of changed) {
+      seen.set(job.name, job.conclusion || job.status);
+      log(`  ${elapsed(started)}  ${job.name}: ${job.conclusion || job.status}`);
+    }
+
+    // build-macos can sit on Apple's notarization queue for most of an hour without a
+    // single transition, and silence that long reads as a hang.
+    if (changed.length) {
+      quietSince = Date.now();
+    } else if (Date.now() - quietSince > 5 * 60 * 1000) {
+      const running = run.jobs.filter(job => job.status !== 'completed').map(job => job.name);
+      log(`  ${elapsed(started)}  still going: ${running.join(', ')}`);
+      quietSince = Date.now();
+    }
+
+    // conclusion is "" until the run ends, so status is what says it is over.
+    if (run.status !== 'completed') continue;
+
+    if (run.conclusion === 'success') return;
+
+    throw new Error(
+      `The release run ${run.conclusion}: ${url}\n` +
+      '  Nothing reached R2 unless the upload job itself is the one that failed.\n' +
+      '  Fix, push, then re-run with --resume to dispatch the same version again.'
+    );
+  }
+
+  throw new Error(
+    `Still running after three hours: ${url}\n` +
+    '  Nothing has failed. Watch that page rather than dispatching another build.'
+  );
+}
+
 // The build moved to GitHub Actions, so this dispatches release.yml and waits on it
 // instead of compiling, signing, notarizing and uploading here. The workflow is the
 // gate: it runs the suite on all three platforms and refuses to upload unless every
@@ -295,20 +386,47 @@ function verifyLicenseAblation() {
 async function dispatchRelease(version) {
   const sha = execSafe('git rev-parse HEAD').trim();
 
+  // A resume whose run already went green needs no second build: this exact commit is
+  // already compiled, signed, notarized and on R2, and dispatching again would spend
+  // ten more minutes producing the same bytes. Reads before the dispatch are allowed
+  // to fail loudly, because nothing is in flight yet; reads after it never decide
+  // anything, because a build is running.
+  if (RESUME) {
+    const rows = JSON.parse(execSafe(
+      'gh run list --workflow release.yml --limit 15 --json databaseId,headSha,event,status,conclusion'
+    ));
+    const done = rows.find(row =>
+      row.headSha === sha &&
+      row.event === 'workflow_dispatch' &&
+      row.status === 'completed' &&
+      row.conclusion === 'success'
+    );
+    if (done) {
+      logSuccess(`Run ${done.databaseId} already built and uploaded v${version}. Not rebuilding.`);
+      return;
+    }
+  }
+
   logInfo(`Dispatching release.yml for v${version}...`);
   execSafe(`gh workflow run release.yml -f version=${version} -f dry_run=false --ref main`);
 
-  // `gh workflow run` returns before the run exists, and `gh run watch` needs an id.
+  // `gh workflow run` returns before the run exists, and the wait below needs an id.
   // Matched on this commit's sha rather than "the newest run", so a run someone else
   // started in the same minute is never mistaken for ours.
   let runId = null;
   for (let attempt = 0; attempt < 30 && !runId; attempt++) {
     await sleep(2000);
-    const rows = JSON.parse(execSafe(
-      'gh run list --workflow release.yml --limit 15 --json databaseId,headSha,event'
-    ));
-    const match = rows.find(row => row.headSha === sha && row.event === 'workflow_dispatch');
-    if (match) runId = match.databaseId;
+    try {
+      const rows = JSON.parse(execSafe(
+        'gh run list --workflow release.yml --limit 15 --json databaseId,headSha,event',
+        { stdio: 'pipe', timeout: 30000 }
+      ));
+      const match = rows.find(row => row.headSha === sha && row.event === 'workflow_dispatch');
+      if (match) runId = match.databaseId;
+    } catch {
+      // The build is already running by this point, so a failed read here is worth
+      // one of the 29 remaining attempts, never an abort.
+    }
   }
 
   if (!runId) {
@@ -322,15 +440,7 @@ async function dispatchRelease(version) {
   logInfo(`Watching ${url}`);
   log('This takes a while: four Apple notarization round-trips, plus Windows signing.');
 
-  try {
-    execSafe(`gh run watch ${runId} --exit-status`, { stdio: 'inherit' });
-  } catch {
-    throw new Error(
-      `The release run failed: ${url}\n` +
-      '  Nothing reached R2 unless the upload job itself is the one that failed.\n' +
-      '  Fix, push, then re-run with --resume to dispatch the same version again.'
-    );
-  }
+  await awaitRunVerdict(runId, url);
 
   logSuccess('Built, signed, notarized, stapled and uploaded on all three platforms');
 }
@@ -383,7 +493,7 @@ async function main() {
     logSection('Resume');
 
     newVersion = getCurrentVersion();
-    log(`Re-dispatching v${newVersion}`);
+    log(`Resuming v${newVersion}`);
 
     // The version being resumed must be the COMMITTED one, and that commit must be
     // on origin: the workflow builds a ref, so anything still sitting in the working
