@@ -345,7 +345,12 @@ async function awaitRunVerdict(runId, url) {
       continue;
     }
 
-    const changed = run.jobs.filter(job => seen.get(job.name) !== (job.conclusion || job.status));
+    // gh marshals an empty job list as null, and a dispatched run is briefly real with
+    // no jobs on it yet. Progress rendering must never be able to decide the verdict,
+    // which is the whole point of this loop.
+    const jobs = run.jobs || [];
+
+    const changed = jobs.filter(job => seen.get(job.name) !== (job.conclusion || job.status));
     for (const job of changed) {
       seen.set(job.name, job.conclusion || job.status);
       log(`  ${elapsed(started)}  ${job.name}: ${job.conclusion || job.status}`);
@@ -356,7 +361,7 @@ async function awaitRunVerdict(runId, url) {
     if (changed.length) {
       quietSince = Date.now();
     } else if (Date.now() - quietSince > 5 * 60 * 1000) {
-      const running = run.jobs.filter(job => job.status !== 'completed').map(job => job.name);
+      const running = jobs.filter(job => job.status !== 'completed').map(job => job.name);
       log(`  ${elapsed(started)}  still going: ${running.join(', ')}`);
       quietSince = Date.now();
     }
