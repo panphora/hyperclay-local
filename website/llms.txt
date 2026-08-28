@@ -1,0 +1,683 @@
+# hyperclay-local
+
+> Hyperclay Local is a cross-platform Electron desktop app that makes every HTML file in
+> a folder you choose save itself. It runs a small Express server on
+> http://localhost:4321, serves that folder, and accepts `POST /_/save` from the page
+> itself: the page serializes its own DOM and the server writes it back to the real file
+> on disk, keeping the previous version as a backup. It needs no account, no build step
+> and no internet connection. Optional two-way sync with a hyperclay.com account exists
+> and stays off until you turn it on.
+
+This file is the complete reference for agents. The human-readable versions live at
+https://hyperclaylocal.com and https://docs.hyperclay.com/docs/hyperclay-local-app. The
+source is at https://github.com/panphora/hyperclay-local, product name `HyperclayLocal`,
+npm package name `hyperclay-local-electron` (not published to npm), current version
+1.22.4.
+
+Licensed under the First Million Stays Yours License 1.0, SPDX identifier
+`LicenseRef-First-Million-Stays-Yours-1.0`. Free to use for anything; a fee applies only
+if products built on it earn you more than US $1,000,000 in a calendar year. Each release
+carries a printed MIT Conversion Date in its own LICENSE file, after which that version is
+plain MIT. Plain answers: https://hyperclay.com/host-program. Contributions are accepted
+inbound MIT with a DCO sign-off.
+
+## Install
+
+Download an installer for your platform. These are the 1.22.4 filenames; the URL pattern
+is stable across releases:
+
+```
+https://local.hyperclay.com/HyperclayLocal-1.22.4-arm64.dmg      macOS, Apple Silicon
+https://local.hyperclay.com/HyperclayLocal-1.22.4.dmg            macOS, Intel
+https://local.hyperclay.com/HyperclayLocal-Setup-1.22.4.exe      Windows, x64, NSIS
+https://local.hyperclay.com/HyperclayLocal-1.22.4.AppImage       Linux, x64, AppImage
+```
+
+To find the current version without scraping a page, read the release manifest:
+
+```bash
+curl -s https://local.hyperclay.com/release-info.json
+```
+
+It returns `{ "version", "commit", "date", "files": [...], "sizes": { filename: bytes } }`.
+Each build is roughly 100 MB, because it is an Electron app. macOS builds are signed by
+Hyperspace Systems LLC and notarized. The Windows build is an interactive NSIS installer and
+lets you change the install directory; it is not code signed, so SmartScreen warns: click
+"More info" then "Run anyway".
+
+Post-install fixes for the two known platform complaints:
+
+```bash
+# macOS, if Gatekeeper reports "App is damaged"
+xattr -cr "/Applications/HyperclayLocal.app"
+
+# Linux, the AppImage arrives without the executable bit
+chmod +x HyperclayLocal-*.AppImage
+```
+
+## Running the server
+
+The app has no main window. It lives in the system tray, and on macOS it hides the dock
+icon entirely (`app.dock.hide()`).
+
+1. Click the tray icon to open the popover panel (300x460 px).
+2. Click "Choose Folder..." and pick a folder in the native directory picker. The dialog
+   title is "Select folder containing your malleable HTML files".
+3. **On a first run that is all you do: choosing the folder also starts the server**, so one
+   click takes a fresh install to a served folder. After that the SERVER rocker, or "Start
+   Server" in the tray menu, turns it on and off.
+4. The popover then shows a `localhost:4321` link. Click it, or use "Open Browser" in the
+   tray menu, to open the folder in your default browser. Nothing opens on its own.
+
+Click the mounted folder in the popover to open it in your file manager. Click "change" to
+pick a different one: the server stops and restarts on the new folder, and **sync pauses
+rather than silently following you**, so re-enable it deliberately if the new folder should
+sync too.
+
+The port is **4321**, hardcoded as `const PORT = 4321` in `src/main/server.js`, and the
+server binds to `localhost` only (`app.listen(PORT, 'localhost')`). There is no setting,
+flag or environment variable to change it, and only one folder can be served at a time. If
+another process holds 4321, the app shows an error dialog; free the port and start again.
+
+The selected folder and the server state are written to `settings.json`, so a folder that
+was being served when you quit is served again on the next launch (`settings.serverEnabled`
+plus `settings.serverFolder`). Quitting stops the sync engine first, then the server.
+
+## The URL space
+
+With the server running and a folder selected:
+
+| URL | Serves |
+|---|---|
+| `http://localhost:4321/` | Directory listing of the folder root |
+| `http://localhost:4321/notes.html` | The file `notes.html` |
+| `http://localhost:4321/blog/` | Directory listing of `blog/` |
+| `http://localhost:4321/blog/post.html` | The file `blog/post.html` |
+| `http://localhost:4321/blog/post.html/any/route` | Also `blog/post.html`; everything after the extension is a client-side route |
+| `http://localhost:4321/logo.png` | Any static file, sent as-is |
+
+Documents are `.html` and `.htmlclay`. Every other file type is served as a static asset.
+`.svg` and `.svgz` are served with `Content-Disposition: attachment` and
+`X-Content-Type-Options: nosniff`, so an SVG can never execute inline with the authority of
+the page beside it.
+
+Paths are rejected before they touch the filesystem: no `\`, no `\0`, no absolute paths, no
+`.` or `..` segments, no segment longer than 255 characters, and any segment beginning with
+`.` returns 404. `sites-versions` is a reserved first segment and is never served.
+
+All system routes live under the `/_/` marker: `save`, `sync`, `live-sync`, `bus`,
+`data-loss`, `api`, `meta`, `upload`. Anything else under `/_/` returns 404, so `/_/foo.html`
+can never fall through and be served as a document.
+
+## Making an HTML file save itself
+
+The shortest version, using HyperclayJS from a CDN:
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Notes</title>
+  <script src="https://cdn.jsdelivr.net/npm/hyperclayjs@latest/src/hyperclay.js?preset=minimal&features=autosave" type="module"></script>
+</head>
+<body>
+  <h1 editmode:contenteditable>Notes</h1>
+  <p editmode:contenteditable>Start typing here. Everything saves to disk automatically.</p>
+</body>
+</html>
+```
+
+That gets autosave, a save keyboard shortcut, a warning before leaving with unsaved work, a
+toast on save, and edit mode. For a file that must work with no network, vendor the script
+next to the HTML instead of loading it from the CDN.
+
+No library is required. Any page that posts its own HTML to `/_/save` with a `Page-URL`
+header saves. This is a complete, working file:
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Notes</title>
+</head>
+<body>
+  <h1 contenteditable>Notes</h1>
+  <p contenteditable>Start typing here. Everything saves to disk automatically.</p>
+  <script>
+    const save = () => fetch('/_/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/html; charset=utf-8', 'Page-URL': location.href },
+      body: '<!DOCTYPE html>\n' + document.documentElement.outerHTML
+    })
+    document.addEventListener('input', save)
+    new MutationObserver(save).observe(document, {
+      childList: true, subtree: true, attributes: true, characterData: true
+    })
+  </script>
+</body>
+</html>
+```
+
+## POST /_/save
+
+Writes a whole document to disk. The bare path `POST /save` is the older spelling and still
+works.
+
+```
+POST /_/save
+Content-Type: text/html; charset=utf-8
+Page-URL: http://localhost:4321/blog/post.html
+Save-Trigger: user
+
+<!DOCTYPE html><html>...</html>
+```
+
+- The body is the entire serialized document, as text. It must contain a top-level `<html>`
+  element; anything else returns 422 `{"msg":"Not a complete HTML document with a top-level
+  <html> element.","msgType":"error","code":"invalid-document"}`.
+- **`Page-URL` is required and `Document-URL` is not accepted on this route.** Sending only
+  `Document-URL` returns 400 `{"msg":"Page-URL header required.","msgType":"error"}`. The
+  other routes accept either header; this one does not.
+- The target file is the pathname of `Page-URL`, percent-decoded exactly once. `Page-URL`
+  pointing at `/` resolves to `index.html`.
+- A JSON content type is refused with 415
+  `{"msg":"/_/save takes the document as text, not JSON.","msgType":"error","code":"unsupported-media-type"}`.
+- `Save-Trigger: user` marks a human gesture, `auto` marks autosave or a script, and any
+  unknown value is treated as `auto`. The pre-spec header `X-Hyperclay-User-Driven: 1` is
+  read only when `Save-Trigger` is absent. The value feeds the data-clobber guard.
+- Success is 200 `{"msg":"Saved","msgType":"success"}`.
+- Maximum body size is 20971520 bytes (20 MB).
+- Saving to a path that does not exist yet creates the file, including parent directories.
+
+Every save, in order: reads the previous bytes, writes a version backup, rewrites any
+Tailwind link to a folder-scoped URL, reformats the HTML to match hyperclay.com's output so
+checksums agree, writes a second backup of the new content, writes the file via a temp file
+plus rename, broadcasts the new HTML to view-mode tabs on the live-sync `saved` lane,
+refreshes the `/_/api` data sidecar, runs the data-clobber guard, and compiles Tailwind CSS
+if the page links it. Sidecar, guard and Tailwind failures are logged and never fail the
+save.
+
+## GET /_/meta
+
+Discovery. Returns what this host can do, and, when a `Document-URL` (or `Page-URL`) header
+names a file that exists, what that document allows:
+
+```
+GET /_/meta
+Document-URL: http://localhost:4321/index.html
+```
+
+```json
+{
+  "spec": 1,
+  "extensions": ["sync", "upload"],
+  "document": {
+    "writable": true,
+    "maxBytes": 20971520,
+    "upload": { "allowed": true, "maxBytes": 26214400 }
+  }
+}
+```
+
+With no header, or naming a file that does not exist, the `document` key is omitted rather
+than answered differently.
+
+## POST /_/upload
+
+Stores a file beside a document instead of embedding it as a data URL. Multipart form,
+one part named `file`.
+
+```bash
+curl -X POST http://localhost:4321/_/upload \
+  -H 'Document-URL: http://localhost:4321/index.html' \
+  -F 'file=@note.txt'
+```
+
+```json
+{"msg":"Uploaded","msgType":"success",
+ "uploads":[{"name":"note-2cf24d.txt","url":"assets-index/note-2cf24d.txt","bytes":5}]}
+```
+
+- The file lands in `assets-<document stem>/` beside the document. `blog/app.html` uploads
+  into `blog/assets-app/`.
+- The stored name is `<stem>-<first 6 hex of the sha256 of the bytes><ext>`. Identical bytes
+  converge on one file; different bytes never collide, and the hash prefix lengthens if they
+  would.
+- `url` is percent-encoded per segment and is relative to the document, so it can be written
+  straight into `src` or `href`.
+- Maximum 26214400 bytes (25 MB). Over that returns 413 with `"code":"too-large"`.
+- Refused by extension: `.html`, `.htm`, `.xhtml`, `.htmlclay`, `.js`, `.mjs`, `.cjs`,
+  `.xml`, `.xht`, `.xsl`, `.xslt`, returning 415
+  `{"msg":"That kind of file cannot be uploaded.","msgType":"error","code":"unsupported-type"}`.
+  SVG is deliberately allowed, because the static lane serves it inert.
+- The document named by `Document-URL` must already exist; otherwise 404 with
+  `"code":"not-found"`.
+- `code` values: `bad-request`, `forbidden`, `not-found`, `conflict`, `too-large`,
+  `unsupported-type`.
+
+## Live sync between local browser tabs
+
+Two tabs open on the same file stay in step over Server-Sent Events. This is
+browser-to-browser only. There is no file watcher broadcasting local disk edits, so if you
+change a file in a text editor, reload the browser.
+
+Subscribe:
+
+```
+GET /_/sync?document-url=http://localhost:4321/index.html
+GET /_/sync?document-url=http://localhost:4321/index.html&lane=saved
+```
+
+Publish:
+
+```
+POST /_/sync
+Content-Type: application/json
+Document-URL: http://localhost:4321/index.html
+
+{"snapshot": "<!DOCTYPE html>...", "sender": "tab-1"}
+```
+
+- Two lanes. The default `live` lane carries pre-strip snapshots between edit-mode tabs. The
+  `saved` lane carries only post-strip on-disk HTML, broadcast by the server after a write,
+  and is what view-mode tabs subscribe to.
+- `sender` is echoed to peers so a tab can ignore its own broadcast.
+- A keep-alive comment is written every 30 seconds; the stream opens with `: connected`.
+- The legacy addresses `GET /_/live-sync/stream` and `POST /_/live-sync/save` are the same
+  handlers and stay forever, because HyperclayJS hardcodes them. `html` is the older
+  spelling of `snapshot`, and `page-url` the older spelling of `document-url`; both are
+  still read.
+- Body limit on the POST is 10 MB.
+
+## The per-site data API
+
+Any document can publish structured JSON extracted from its own DOM. Put a rules tag in the
+page:
+
+```html
+<script type="application/json" data-rules-name="api" data-rules-version="1">
+{ "title": "h1", "items": ".item[]" }
+</script>
+```
+
+Then read it:
+
+```bash
+curl http://localhost:4321/_/api/index.html
+# {"title":"Notes","items":["a","b"]}
+
+curl http://localhost:4321/_/api            # same as /_/api/index.html
+curl http://localhost:4321/_/api/blog/post.html
+```
+
+`data-rules-name` is a space-separated token list, so `data-rules-name="api cms collection"`
+matches the `api` token. `data-rules-version` must be `"1"`; any other value returns 400
+`{"error":"Unsupported rules version",...}`. A page with no matching tag returns 400
+`{"error":"No api rules tag",...}`.
+
+Results are cached in a hidden sidecar at `.hyperclay/api/<name minus extension>.json`
+inside the served folder, rewritten on every save and regenerated on a request when its
+mtime is older than the source file. A regenerated response carries
+`X-Served-By: app-generated`; a cache hit does not.
+
+For one-off extraction with no tag in the page, pass relaxed-JSON rules on the query string
+of the document itself:
+
+```bash
+curl 'http://localhost:4321/index.html?data={title:"h1",xs:".item[]"}'
+# {"title":"Notes","xs":["a","b"]}
+```
+
+`?data=` intercepts a GET before the file is served. Without it, the same URL returns the
+raw HTML. Both endpoints are the local port of hyperclay.com's `serveSiteApi` and
+`extractSiteData`, and are built on the `hyper-html-api` engine.
+
+## Tailwind CSS
+
+A page that links a `/tailwindcss/<name>.css` stylesheet gets that file compiled on save
+from the classes in the document, using Tailwind v4 with `@tailwindcss/typography` and
+`@tailwindcss/forms` (forms in `class` strategy). Both the relative form and a fully
+qualified `https://any.host/tailwindcss/<name>.css` are recognized, and the domain prefix is
+preserved when the link is rewritten.
+
+```html
+<link rel="stylesheet" href="/tailwindcss/post.css">
+```
+
+On save the link is rescoped to the document's own folder, so a nested `blog/post.html`
+rewrites to `/tailwindcss/blog/post.css` and compiles to `tailwindcss/blog/post.css` on
+disk. Two documents with the same basename in different folders therefore cannot collide. A
+request for a stylesheet that is not on disk compiles it on the spot. Compilation failures
+are logged and never fail the save.
+
+## Version history
+
+Every save writes a copy into `sites-versions/` inside the served folder, before and after
+the write on the very first save of an existing file:
+
+```
+sites-versions/index/2026-08-27-22-09-56-277-0400.html
+sites-versions/blog/post/2026-08-27-22-11-12-709-0400.html
+```
+
+The name is local wall time to the millisecond plus the signed UTC offset in force at that
+moment, so two versions written during a daylight-saving fallback still rank correctly.
+Same-millisecond bursts get a `-001` through `-999` suffix.
+
+Retention keeps the union of two rules: everything newer than 60 days, and the newest 20 per
+site. A pruning pass runs once at server startup and at most once an hour after that. The
+tray's "Backups" item opens this folder. `sites-versions` is a reserved path: it is never
+served over HTTP and never synced.
+
+## The data-clobber guard
+
+The app watches for saves that destroy data, keyed off the same `api` rules tag the data
+API uses, and stores per-file state at `.hyperclay/guard/<name>.json` with a whole-file
+recovery copy beside it as `<name>.recover.html`.
+
+```bash
+curl 'http://localhost:4321/_/data-loss?file=index.html'
+# {"event":null}
+
+curl -X POST http://localhost:4321/_/data-loss \
+  -H 'Content-Type: application/json' \
+  -d '{"file":"index.html","choice":"dismiss"}'
+```
+
+`choice` must be `dismiss`, `revert` or `restore`; anything else returns 400. `revert` and
+`restore` write through the same path a save does: backup, format, atomic write, broadcast
+to view-mode tabs, sidecar refresh, Tailwind recompile. Dismissing an incident also posts a
+control message to hyperclay.com when sync is running, so the same incident clears on your
+other devices.
+
+## Cloud sync with hyperclay.com
+
+Off by default. Enabling it is the only time a file leaves the machine. The app makes no
+other network requests except an update check against
+`https://cdn.jsdelivr.net/gh/panphora/hyperclay-local@main/package.json`.
+
+**Setup.** Get an API key from https://hyperclay.com/dashboard, open the popover, enter your
+hyperclay.com username and the key. Keys start with `hcsk_`; the prefix is the only format
+check. The key is validated with `GET https://hyperclay.com/_/sync/status` carrying an
+`X-API-Key` header, then stored in `settings.json` encrypted with Electron's `safeStorage`
+and base64 encoded. If `safeStorage.isEncryptionAvailable()` is false on the platform, the
+key is written in plaintext.
+
+**The remote host** is `https://hyperclay.com`, or `https://localhyperclay.com` when the app
+runs with `NODE_ENV=development` or `--dev`. It is not user-configurable.
+
+**Endpoints the engine calls**, all with `X-API-Key`:
+
+```
+GET    https://hyperclay.com/_/sync/status
+GET    https://hyperclay.com/_/sync/nodes
+POST   https://hyperclay.com/_/sync/nodes
+GET    https://hyperclay.com/_/sync/nodes/{nodeId}/content
+PUT    https://hyperclay.com/_/sync/nodes/{nodeId}/content
+PATCH  https://hyperclay.com/_/sync/nodes/{nodeId}/rename
+PATCH  https://hyperclay.com/_/sync/nodes/{nodeId}/move
+DELETE https://hyperclay.com/_/sync/nodes/{nodeId}[?cascade=true]
+POST   https://hyperclay.com/_/sync/control
+GET    https://hyperclay.com/_/sync/stream            (Server-Sent Events)
+```
+
+**Which direction moves what.**
+
+Local to remote is driven by a chokidar watcher on the synced folder. `add`, `change`,
+`unlink`, `addDir` and `unlinkDir` are debounced 500 ms into a queue and pushed as content
+writes, folder creations, renames, moves and deletes. A local delete waits 3000 ms before it
+is committed to the server, so a matching `add` can be recognized as a rename or a move
+rather than a delete followed by a create. Failed pushes retry at 5 s, 15 s and 60 s, three
+attempts, and only for network-shaped errors: an authentication failure, a name conflict or
+an invalid name is never retried.
+
+Remote to local is driven by the SSE stream. Frames are typed in their JSON body, not by SSE
+event name: `live-sync`, `node-saved`, `node-renamed`, `node-moved`, `node-deleted` and
+`control`. The connection reconnects after 5000 ms with no backoff. A watchdog ticks every
+60 seconds and, after 5 minutes of silence, runs a reconciling check that can move files in
+either direction.
+
+Echoes are suppressed two ways. A `live-sync` frame whose sender matches this machine's
+device id (a `crypto.randomUUID()` persisted as `settings.deviceId`) is dropped. Node
+mutations are recorded in an in-flight outbox keyed `<op>:<nodeId>` with a 30 second TTL, so
+the server's broadcast of your own change is ignored.
+
+**Reconciliation on start** runs three passes, folders then sites then uploads. For a file
+present on both sides, in this order:
+
+1. A local mtime more than 60 seconds in the future is treated as intentional: local wins and
+   nothing is uploaded.
+2. Local is newer than the server by more than 10 seconds: local wins and uploads.
+3. Truncated SHA-256 checksums match: nothing happens.
+4. Otherwise the server wins and the file downloads.
+
+Ties inside the 10 second buffer go to the server. Clock skew is corrected with an offset
+measured against `/_/sync/status`. A path change on the server always wins over a local move
+or rename. The first ever sync never deletes anything on either side. A file deleted on the
+server while you were offline is moved to `.trash/` inside the synced folder rather than
+removed, unless the local copy is newer, in which case it is kept and simply dropped from
+the map.
+
+**Never synced**, regardless of what else is true:
+
+```
+**/node_modules/**   **/sites-versions/**   **/tailwindcss/**
+**/.*                **/.*/**               **/.trash/**
+**/.DS_Store         **/Thumbs.db
+```
+
+Which means `.hyperclay/api/`, `.hyperclay/guard/` and every other dotfile stay local by
+construction.
+
+**Names that will not sync.** This is the most common surprise, because the local server is
+far more permissive than the sync engine:
+
+- A document must match `^[a-z0-9_-]+\.(html|htmlclay)$`. `My Notes.html`, `Post.HTML` and
+  `café.html` all serve perfectly on localhost and never reach hyperclay.com.
+- No leading or trailing hyphen, no `--`, no Windows reserved basename (`CON`, `PRN`, `AUX`,
+  `NUL`, `COM1`, `LPT1` and so on).
+- A folder must match `^[a-z0-9_-]+$`.
+- Maximum folder depth is 5.
+- Non-document files sync as uploads: name at most 255 bytes of UTF-8, no leading or
+  trailing dot, and none of the control characters or the characters
+  `/ \ < > : " | ? *` and their full-width equivalents.
+- An upload larger than 10 MB is refused with "File exceeds 10MB limit". Documents have no
+  sync size limit; the 20 MB cap on `/_/save` still applies locally.
+
+A name that fails these rules is not silently skipped. It is rejected when the change is
+queued, raises a `sync-error` marked not retryable, and shows in the popover's notices with
+the reason, for example `Invalid site name: "My Notes.html". Must be lowercase letters,
+numbers, hyphens, underscores, ending with .html or .htmlclay`.
+
+**Sync state on disk.** No database. Three JSON files per synced folder, in a directory
+named for the first 12 hex characters of the SHA-256 of the folder's absolute path:
+
+```
+<userData>/sync-meta/<12 hex>/node-map.json
+<userData>/sync-meta/<12 hex>/sync-state.json
+<userData>/sync-meta/<12 hex>/tombstones.json
+```
+
+Tombstones expire after 7 days. All three are written temp file plus rename.
+
+## The local message bus
+
+An in-process publish and subscribe bus, provided by `@panphora/hyper-wire`, that lets a page
+talk to a handler process running on the same machine. It stores nothing and executes
+nothing itself.
+
+```
+GET  /_/bus/subscribe?channel=ai-edit         (Server-Sent Events)
+POST /_/bus/send                              {"channel","type","v","payload","sender"}
+```
+
+`POST /_/bus/send` answers `{"delivered": <subscriber count>}`. A missing or invalid channel
+name returns 400. The body limit is 10 MB. Both lanes require the `/_/` prefix, so a real
+user folder named `bus` is still served as a folder, and both refuse a non-loopback `Host`
+header.
+
+The app ships one built-in bus handler, `ai-edit`, served on the channel `ai-edit` with at
+most 2 concurrent requests. It takes an element's HTML and a comment and streams back a
+revised element. The leading `@word` of the comment picks the agent: `@claude` (the
+default), `@fable`, `@codex`, `@agy`, or any engine you define under `settings.aiEdit.engines`
+as a command. `@page` is a context token, not an engine, and an unknown leading `@word` is an
+error rather than a silent fallback. An agent command comes only from settings; a bus payload
+can never name one. Toggle the whole plugin from the tray ("Disable AI Editing") or with
+`settings.aiEdit.enabled`.
+
+## Files the app writes
+
+Inside the folder you selected:
+
+```
+sites-versions/<name>/<timestamp>.html   version history, never served, never synced
+tailwindcss/<name>.css                   compiled stylesheets
+assets-<name>/                           files stored by POST /_/upload
+.hyperclay/api/<name>.json               data API sidecar
+.hyperclay/guard/<name>.json             data-clobber guard state
+.hyperclay/guard/<name>.recover.html     whole-file recovery copy
+.trash/                                  files deleted on the server while offline
+```
+
+Outside it, under Electron's `userData` directory, which is Electron's `appData`
+directory plus the app name `Hyperclay Local`: `~/Library/Application Support/Hyperclay Local`
+on macOS, `%APPDATA%\Hyperclay Local` on Windows, and `$XDG_CONFIG_HOME/Hyperclay Local`
+(defaulting to `~/.config/Hyperclay Local`) on Linux:
+
+```
+settings.json                            selectedFolder, serverEnabled, serverFolder,
+                                         syncEnabled, syncFolder, syncUsername, serverUrl,
+                                         apiKey (encrypted), hasApiKey, deviceId,
+                                         autoStartEnabled, aiEdit
+sync-meta/<12 hex>/                      node-map.json, sync-state.json, tombstones.json
+```
+
+Logs go to `app.getPath('logs')`, which is `~/Library/Logs/Hyperclay Local` on macOS and a
+`logs` directory inside `userData` on Windows and Linux. One file per day, kept 30 days:
+
+```
+sync/2026-08-27.log      [timestamp] [LEVEL] [context] message | {json}
+errors/2026-08-27.log
+```
+
+Both are one click away in the tray under "View Sync Logs" and "View Error Logs". Paths in
+the sync log have the sync folder prefix stripped.
+
+A development build appends `-dev` to the userData directory, so
+`~/Library/Application Support/Hyperclay Local-dev` never collides with the installed app's
+state.
+
+## The tray menu
+
+Right-click the tray icon, or use the popover's Options button:
+
+- Three read-only status lines: `Server: On|Off`, `Sync: On|Off`, `AI Editing: On|Off`
+- Start Server / Stop Server
+- Enable Sync / Disable Sync, greyed out until an API key and a sync folder both exist
+- Enable / Disable AI Editing
+- Open Folder, Backups (opens `sites-versions/`), Open Browser
+- View Sync Logs, View Error Logs
+- Select Folder, Enter API Key for Sync, Autostart on Login (popover Options menu only)
+- About Hyperclay Local, Quit
+
+## Offline behavior
+
+Everything except cloud sync works with no network at all: serving, saving, version
+backups, uploads, the data API, the data-clobber guard, the message bus, live sync between
+local tabs, and Tailwind compilation, which runs from bundled dependencies and never fetches
+anything.
+
+Two things do reach the internet on their own. The update check hits jsDelivr on launch and,
+if a newer version exists, shows a notice in the popover; it never installs anything. Sync,
+when you have turned it on, connects to hyperclay.com. Both fail quietly when offline.
+
+A page that loads HyperclayJS or ClayJS from a CDN is the one thing that will break offline,
+because the script tag itself is a network request. Vendor the library beside the HTML file
+for a genuinely offline document.
+
+The directory listing page links one webfont from
+`https://hyperclay.com/public/fonts/BerkeleyMonoVariable-Regular.woff2`. It has a full
+fallback stack and `font-display: swap`, so offline the listing renders in a system
+monospace font and nothing else changes. The tray popover uses a copy of the same font
+bundled in the app.
+
+Sync resumes by itself: if `syncEnabled`, `hasApiKey` and `syncFolder` are all set,
+the app restarts the engine on the next launch, and reconciles whatever changed on both
+sides while it was down.
+
+## Requests the server will reject
+
+These rules apply to the whole origin, not per route, and are the usual reason a request
+that looks correct returns 403.
+
+- The `Host` header must name loopback: `localhost`, any `127.x.x.x`, or `::1` in any
+  spelling. Anything else returns 403 `Invalid Host header`. This is what stops DNS
+  rebinding, which a loopback bind alone does not.
+- On `POST`, `PUT`, `PATCH` and `DELETE`: `Sec-Fetch-Site: cross-site` is refused;
+  `Origin: null` is refused; any other `Origin` must be loopback on any port. A request
+  with no `Origin` at all passes, which is why `curl`, shell scripts and the sync engine
+  work. Refusals return 403
+  `{"msg":"Cross-origin requests are not allowed.","msgType":"error"}`.
+- Every request sets `isAdminOfCurrentResource=true` and `isLoggedIn=true` cookies. The
+  local server is single user by design: whoever can reach port 4321 owns every file in the
+  folder. There is no authentication on any local route.
+- Symlinks pointing out of the served folder are consented at open time only. A link created
+  while the server is running is refused on both reads and writes.
+
+## Limits and non-goals
+
+- One folder and one port. No multiple simultaneous servers, no configurable port.
+- No HTTPS. The server is plain HTTP on loopback.
+- No auto-update. The app detects a new version and tells you; you download and install it.
+- No file watcher pushing local disk edits to the browser. Edit a file in a text editor and
+  the open tab will not know until you reload.
+- No user accounts, no permissions, no multi-tenant behavior. That is what hyperclay.com is
+  for.
+- Memory use of 100 to 200 MB is normal, because it is an Electron app.
+
+## Development
+
+```bash
+git clone https://github.com/panphora/hyperclay-local.git
+cd hyperclay-local
+npm install
+npm run dev          # Tailwind watch + webpack watch + electronmon, hot reload
+npm test             # jest
+npm run test:node    # node --test, for the pure-ESM engine paths
+npm run build        # distributable for the current platform
+```
+
+Node 20 or newer. Building signed installers is documented in `BUILD.md`. The marketing page
+in `website/` is a static, no-build directory; `npm test -- tests/website` checks it.
+
+Two debugging affordances exist only when `!app.isPackaged`:
+
+```bash
+# Chrome DevTools Protocol on port 9229, for driving the popover's React UI
+agent-browser connect 9229
+
+# Pin the popover open across reloads, so it does not vanish on blur
+curl -X POST http://localhost:4321/__dev/popover/show
+curl -X POST http://localhost:4321/__dev/popover/hide
+```
+
+Neither route is registered in a production build.
+
+## Related projects
+
+- HyperclayJS, the client library that handles saving, edit mode and autosave for you:
+  https://github.com/panphora/hyperclayjs
+- ClayJS, the newer client library: https://clayjs.com
+- hyperclay.com, the hosted platform this app syncs with: https://hyperclay.com
+
+## Links
+
+- Site: https://hyperclaylocal.com
+- Docs: https://docs.hyperclay.com/docs/hyperclay-local-app
+- Repo: https://github.com/panphora/hyperclay-local
+- Downloads: https://local.hyperclay.com/release-info.json
+- License questions: license@hyperclay.com, https://hyperclay.com/host-program
