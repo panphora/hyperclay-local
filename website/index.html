@@ -532,7 +532,7 @@
       <div class="prose">
         <p>Browsers can open an HTML file, but the sandbox stops them from writing back to disk. Hyperclay Local closes that gap. It runs a small local Express server with a single endpoint:</p>
         <div class="code-block"><pre>POST /_/save</pre></div>
-        <p>When a page saves, it posts its own HTML to that endpoint with a <code class="inline">Page-URL</code> header naming the page, and the server maps it to the right file inside the folder you chose. It writes the file and keeps the previous version as a backup. That is the whole system. You can read the server in an afternoon.</p>
+        <p>When a page saves, it posts its own HTML to that endpoint with a <code class="inline">Document-URL</code> header naming the page, and the server maps it to the right file inside the folder you chose. It writes the file and keeps the previous version as a backup. That is the whole system. You can read the server in an afternoon.</p>
       </div>
     </section>
 
@@ -795,11 +795,21 @@
   &lt;p contenteditable&gt;Start typing here. Everything saves to disk automatically.&lt;/p&gt;
   &lt;script&gt;
     // This code handles saving the file whenever it changes
-    const save = () =&gt; fetch('/_/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/html; charset=utf-8', 'Page-URL': location.href },
-      body: '&lt;!DOCTYPE html&gt;\n' + document.documentElement.outerHTML
-    })
+    let saving = false, again = false
+    async function save() {
+      if (saving) { again = true; return }
+      saving = true
+      try {
+        do {
+          again = false
+          await fetch('/_/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/html; charset=utf-8', 'Document-URL': location.href },
+            body: '&lt;!DOCTYPE html&gt;\n' + document.documentElement.outerHTML
+          })
+        } while (again)
+      } finally { saving = false }
+    }
     document.addEventListener('input', save)
     new MutationObserver(save).observe(document, {
       childList: true, subtree: true, attributes: true, characterData: true
@@ -887,7 +897,7 @@
       <details>
         <summary>How does the saving actually work?</summary>
         <div class="faq__body">
-          <p>Your HTML file includes a small script that serializes the page's DOM and posts it to the local server at <code class="inline">POST /_/save</code>, with a <code class="inline">Page-URL</code> header naming the page. The server maps that to the right file, writes it to disk, and keeps a backup of the previous version in a <code class="inline">sites-versions/</code> folder. <a href="https://github.com/panphora/hyperclayjs" target="_blank" rel="noopener">HyperclayJS</a> handles this for you. The minimal preset includes saving, snapshots, and edit mode out of the box.</p>
+          <p>Your HTML file includes a small script that serializes a prepared clone of the page and posts it to the local server at <code class="inline">POST /_/save</code>, with a <code class="inline">Document-URL</code> header naming the page. The server maps that to the right file, writes it to disk, and keeps a backup of the previous version in a <code class="inline">sites-versions/</code> folder. <a href="https://github.com/panphora/hyperclayjs" target="_blank" rel="noopener">HyperclayJS</a> handles this for you. The minimal preset includes saving, snapshots, and edit mode out of the box.</p>
         </div>
       </details>
 
@@ -916,7 +926,7 @@
       <details>
         <summary>Do I have to use HyperclayJS?</summary>
         <div class="faq__body">
-          <p>No. HyperclayJS is a convenience. Any file that posts its own HTML to <code class="inline">/_/save</code> with a <code class="inline">Page-URL</code> header will save. The Plain JavaScript tab above is a complete, working example in about a dozen lines.</p>
+          <p>No. HyperclayJS is a convenience. Any file that posts a prepared document to <code class="inline">/_/save</code> with a <code class="inline">Document-URL</code> header will save. The Plain JavaScript tab above is a complete, working example in under twenty lines.</p>
         </div>
       </details>
 

@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Host conformance test · Malleable HTML File</title>
+<style>
+  :root {
+    --paper: #F1EFEA; --sheet: #FBFAF7; --ink: #2B2723; --ink-soft: #6E675E;
+    --ink-faint: #9B948A; --line: #DDD8CE; --line-soft: #E7E3DA;
+    --glaze: #3E6B52; --glaze-deep: #2F5440; --glaze-tint: #E4EBE2;
+    --pass: #3E6B52; --fail: #A23B32; --skip: #9B948A; --run: #B07A2E;
+    --char: #2E2B27; --char-ink: #EDE7DB;
+    --serif: Charter, "Bitstream Charter", Georgia, Cambria, "Times New Roman", serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: var(--serif); background: var(--paper); color: var(--ink); line-height: 1.6; font-size: 17px; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 34px 24px 90px; }
+  h1 { font-size: clamp(26px, 5vw, 38px); line-height: 1.1; letter-spacing: -0.015em; margin-bottom: 10px; }
+  .lede { color: var(--ink-soft); margin-bottom: 22px; }
+  h2 { font-size: 20px; margin: 34px 0 10px; padding-top: 22px; border-top: 1px solid var(--line-soft); }
+  p { margin-bottom: 12px; }
+  code, .mono { font-family: var(--mono); font-size: 0.86em; background: #E7E4DC; border-radius: 4px; padding: 1px 5px; }
+  a { color: var(--glaze); }
+  .config { background: var(--sheet); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; margin-bottom: 20px; }
+  .config label { display: block; font-family: var(--mono); font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--glaze-deep); margin: 12px 0 5px; }
+  .config label:first-child { margin-top: 0; }
+  .config input { width: 100%; font-family: var(--mono); font-size: 14px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); }
+  .config .hint { font-size: 13px; color: var(--ink-faint); margin: 5px 0 0; }
+  button { font-family: var(--mono); font-size: 14px; font-weight: 600; color: #fff; background: var(--glaze); border: none; border-radius: 8px; padding: 11px 20px; margin-top: 16px; cursor: pointer; }
+  button:hover { background: var(--glaze-deep); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .summary { font-family: var(--mono); font-size: 14px; margin: 22px 0 6px; display: flex; gap: 16px; flex-wrap: wrap; }
+  .summary .n-pass { color: var(--pass); }
+  .summary .n-fail { color: var(--fail); }
+  .summary .n-skip { color: var(--skip); }
+  .results { list-style: none; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--sheet); }
+  .results li { padding: 13px 16px; border-bottom: 1px solid var(--line-soft); display: grid; grid-template-columns: 74px 1fr; gap: 12px; align-items: start; }
+  .results li:last-child { border-bottom: none; }
+  .chip { font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 3px 0; text-align: center; border-radius: 6px; }
+  .chip.pass { color: var(--pass); background: var(--glaze-tint); }
+  .chip.fail { color: #fff; background: var(--fail); }
+  .chip.skip { color: var(--skip); background: #ECE9E1; }
+  .chip.na { color: var(--ink-soft); background: #E7E4DC; }
+  .chip.run { color: var(--run); background: #F3E9D6; }
+  .r-name { font-family: var(--mono); font-size: 13.5px; color: var(--ink); font-weight: 600; }
+  .r-reason { font-size: 15px; color: var(--ink-soft); margin-top: 2px; }
+  .note { font-size: 13.5px; color: var(--ink-faint); margin-top: 20px; }
+  .warn { background: #F3E9D6; border: 1px solid #E4D2A8; border-radius: 10px; padding: 12px 15px; font-size: 14.5px; color: #6b551f; margin-bottom: 20px; }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <h1>Host conformance test</h1>
+  <p class="lede">Point this page at a Malleable HTML File host to check that it obeys the wire
+  contract in <a href="/specification.txt">the specification</a> (sections 3-10). It exercises the
+  protocol, not the snapshot algorithm; the fixtures cover that.</p>
+
+  <div class="warn">
+    <strong>Serve this file from the host you want to test, and treat it as disposable.</strong> The
+    spec requires exact origin validation on every save, so a successful save can only be tested from
+    the host's own origin. Drop this file into the host's document root and open it there. On a plain
+    or cookie host it writes to a scratch document beside itself (below), overwriting it if it exists.
+    On a <strong>token host</strong> the save token binds to <em>this</em> file, so the test targets
+    and overwrites the page itself: deploy a throwaway copy there and reload from a fresh copy to
+    re-run.
+  </div>
+
+  <div class="config">
+    <label for="target">Disposable document URL to write (same origin)</label>
+    <input id="target" type="text" spellcheck="false">
+    <p class="hint">A throwaway document on this host's origin that the test may overwrite. Defaults to a scratch path next to this page (or, with a token, this page itself). Delete it when done.</p>
+    <label for="token">Save token (optional)</label>
+    <input id="token" type="text" spellcheck="false" placeholder="auto-detected from a served savetoken attribute">
+    <p class="hint">Token hosts save to <code>/_/save/{token}</code>. Auto-filled if this page was served with a <code>savetoken</code>.</p>
+    <button id="run">Run host test</button>
+  </div>
+
+  <div class="summary" id="summary" hidden>
+    <span class="n-pass">0 passed</span>
+    <span class="n-fail">0 failed</span>
+    <span class="n-skip">0 skipped</span>
+  </div>
+  <ul class="results" id="results" hidden></ul>
+
+  <p class="note" id="foot" hidden></p>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const results = $('results');
+  const summary = $('summary');
+
+  // Every document this page writes carries the run id, so no check ever sends bytes a
+  // previous run already left on the target. A host is entitled to notice that a save
+  // changes nothing and take a shortcut — skip the write, skip the version, answer
+  // without a `msg` — and a fixed body turned that into a gate that passed against a
+  // fresh target and failed the second time, reporting a host defect that was really
+  // this page reusing its own leftovers.
+  const runId = Math.random().toString(36).slice(2, 8);
+
+  // A complete, minimal document the checks write and read back. htmlAttrs lets a
+  // check set attributes on the root (e.g. formathtml="false").
+  const doc = (marker, htmlAttrs = '') =>
+    `<!DOCTYPE html><html${htmlAttrs ? ' ' + htmlAttrs : ''}><head><meta charset="utf-8"><title>scratch</title></head>` +
+    `<body><p id="marker">${marker} ${runId}</p></body></html>`;
+
+  // ---- default config ---------------------------------------------------
+  // §9 names the attribute `savetoken`. HTML Clay spelled it `htmlclaytoken` before
+  // the rename and now injects BOTH with one value, because a document saved under
+  // the old name goes on running for years with no way for a library update to reach
+  // its inline script. A conformance page that only knew the current spelling would
+  // report every pre-rename host as tokenless and then test the wrong lane entirely.
+  const servedToken = document.documentElement.getAttribute('savetoken')
+    || document.documentElement.getAttribute('htmlclaytoken')
+    || '';
+  $('token').value = servedToken;
+  // Scratch target next to this page. On a token host the token binds to THIS file,
+  // so there the test targets the served page itself (deploy a throwaway copy).
+  const scratchUrl = servedToken
+    ? location.href
+    : new URL('./_mhf-host-test-scratch.html', location.href).href;
+  $('target').value = scratchUrl;
+
+  // ---- result plumbing --------------------------------------------------
+  const rows = [];
+  function row(name) {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="chip run">run</span><span><span class="r-name"></span><div class="r-reason"></div></span>`;
+    li.querySelector('.r-name').textContent = name;
+    results.appendChild(li);
+    return {
+      set(status, reason) {
+        const chip = li.querySelector('.chip');
+        chip.className = 'chip ' + status;
+        chip.textContent = status;
+        li.querySelector('.r-reason').textContent = reason;
+        rows.push({ name, status, reason });
+        renderSummary();
+      }
+    };
+  }
+  function renderSummary() {
+    const c = (s) => rows.filter((r) => r.status === s).length;
+    summary.querySelector('.n-pass').textContent = c('pass') + ' passed';
+    summary.querySelector('.n-fail').textContent = c('fail') + ' failed';
+    summary.querySelector('.n-skip').textContent = c('skip') + ' skipped';
+  }
+
+  // ---- wire helpers -----------------------------------------------------
+
+  // A fetch that THROWS was stopped by the browser; it never reached the host. A host
+  // that serves its documents sandboxed gives this page an OPAQUE origin, so every
+  // route that sends no CORS headers is unreachable from here no matter how correct
+  // the host is. Calling that a failure slanders a conforming host, and calling it a
+  // pass (as the unannounced-upload check once did) hides the exact defect the check
+  // exists to catch. It is neither: it is not observable from this page.
+  class Blocked extends Error {}
+  const originName = () => (opaqueOrigin ? 'opaque (the host serves this document sandboxed)' : window.origin);
+  async function guard(fn) {
+    try { return await fn(); } catch (e) {
+      if (e instanceof TypeError) {
+        throw new Blocked(`Not observable from this page: the browser blocked the request before the host saw it (${e.message}). This page's origin is ${originName()}, so a route that sends no CORS headers is unreachable from here. Check this one against the host's own server-side tests.`);
+      }
+      throw e;
+    }
+  }
+  function blockedOr(r, e) {
+    if (e instanceof Blocked) r.set('skip', e.message);
+    else r.set('fail', 'Request failed: ' + e.message);
+  }
+
+  // Asking for credentials from an opaque origin cannot help and always hurts. No
+  // cookie is sent from one anyway, while `credentials: 'include'` fails the CORS
+  // check against both answers a host can correctly give a sandboxed document:
+  // `Access-Control-Allow-Origin: *`, which open discovery all but requires, and
+  // `null`, which a token lane gives precisely so a sandboxed document can read it
+  // (and where the token, not a cookie, is the credential, so a host is right to
+  // refuse ambient ones). Same-origin requests are not CORS-checked at all, so
+  // that is exactly the set where credentials can still do something.
+  const opaqueOrigin = !window.origin || window.origin === 'null';
+  const creds = () => (opaqueOrigin ? 'omit' : 'include');
+
+  const saveRoute = (token) => (token ? `/_/save/${encodeURIComponent(token)}` : '/_/save');
+  const metaRoute = (token) => (token ? `/_/meta/${encodeURIComponent(token)}` : '/_/meta');
+
+  // A conforming host may inject savetoken/documentid on the root <html> at serve time
+  // WITHOUT writing them to disk (spec §4/§9). So served bytes (what GET returns) can
+  // legitimately differ from stored bytes by exactly those attributes. Strip them from
+  // the opening <html> tag before comparing served vs. sent/preimage bytes, or every
+  // injecting host would fail the round-trip.
+  //
+  // The two pre-rename spellings are stripped as well. HTML Clay injects the token
+  // under `savetoken` AND `htmlclaytoken` with one value, so a host that is behaving
+  // exactly as it should would otherwise fail this comparison on the attribute the
+  // page did not know to remove.
+  const stripInjected = (s) =>
+    s == null ? s : s.replace(/(<html\b[^>]*?)>/i, (m, open) =>
+      open.replace(/\s+(?:savetoken|htmlclaytoken|documentid|htmlclayid)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '') + '>');
+
+  async function save(body, { target, token, ifMatch } = {}) {
+    const headers = { 'Content-Type': 'text/html', 'Document-URL': target };
+    if (ifMatch != null) headers['If-Match'] = ifMatch;
+    const res = await guard(() => fetch(saveRoute(token), { method: 'POST', headers, body, credentials: creds() }));
+    let json = null;
+    try { json = await res.clone().json(); } catch (_) {}
+    return { res, json };
+  }
+
+  const uploadRoute = (token) => (token ? `/_/upload/${encodeURIComponent(token)}` : '/_/upload');
+
+  // One file, in a part named `file` (spec §9). The browser sets the multipart
+  // Content-Type and boundary; setting it by hand is the classic way to break this.
+  async function upload(name, bytes, { target, token } = {}) {
+    const form = new FormData();
+    form.append('file', new File([bytes], name, { type: 'application/octet-stream' }));
+    const res = await guard(() => fetch(uploadRoute(token), {
+      method: 'POST', headers: { 'Document-URL': target }, body: form, credentials: creds()
+    }));
+    let json = null;
+    try { json = await res.clone().json(); } catch (_) {}
+    const entry = json && Array.isArray(json.uploads) ? json.uploads[0] : null;
+    return { res, json, entry };
+  }
+
+  // The returned url is resolved against the DOCUMENT's URL, never the page's, because
+  // that is exactly the contract §9 states and the only reason the form is the host's
+  // choice: relative, root-relative and absolute must all land in the same place.
+  //
+  // Reading the file back is the part a sandboxed document cannot do with `fetch`:
+  // the upload lane can answer an opaque origin, but the stored file is served off
+  // the plain document lane, which has no reason to send CORS headers to anyone. An
+  // <img> load is not CORS-subject, and it is also how a document actually consumes
+  // an upload. So the payloads here are PNGs with a size unique to each upload, and
+  // where bytes cannot be read the image's own dimensions say which file is at a url,
+  // which is all these checks need in order to catch an overwrite.
+  function pngOf(w, h) {
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#3E6B52';
+    ctx.fillRect(0, 0, w, h);
+    return new Promise((resolve) => canvas.toBlob(
+      (blob) => blob.arrayBuffer().then((buf) => resolve(Object.assign(new Uint8Array(buf), { w, h }))),
+      'image/png'));
+  }
+
+  const imageSize = (href) => new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+    img.onerror = () => resolve(null);
+    img.src = href;
+  });
+
+  async function readBack(url, target, sent) {
+    const href = new URL(url, target).href;
+    try {
+      const res = await fetch(href, { credentials: creds(), cache: 'no-store' });
+      if (!res.ok) return { ok: false, why: `does not resolve from the document's own URL (status ${res.status})` };
+      const got = new Uint8Array(await res.arrayBuffer());
+      if (sameBytes(got, sent)) return { ok: true, how: 'byte for byte' };
+      return { ok: false, why: `resolves, but returns different bytes (${got.length} back, ${sent.length} sent)` };
+    } catch (e) {
+      const size = await imageSize(href);
+      if (!size) return { ok: false, why: `does not load from the document's own URL, and fetch is blocked at this ${originName()} origin, so the bytes could not be compared either` };
+      if (size.w === sent.w && size.h === sent.h) return { ok: true, how: `by image size ${size.w}x${size.h}, because fetch is CORS-blocked at this ${originName()} origin` };
+      return { ok: false, why: `resolves to a ${size.w}x${size.h} image, but ${sent.w}x${sent.h} was sent` };
+    }
+  }
+
+  const bytesOf = (seed, len = 64) =>
+    new Uint8Array(Array.from({ length: len }, (_, i) => (seed * 31 + i * 7) & 0xff));
+  const sameBytes = (a, b) => !!a && !!b && a.length === b.length && a.every((v, i) => v === b[i]);
+
+  async function fetchDoc(target) {
+    const res = await guard(() => fetch(target, { credentials: creds(), cache: 'no-store' }));
+    const text = res.ok ? await res.text() : null;
+    return { res, text, stored: stripInjected(text) };
+  }
+
+  // ---- the checks -------------------------------------------------------
+  async function run(target, token) {
+    let caps = new Set();
+    let metaDoc = null;
+
+    // Refuse a cross-origin target: the page only ever touches its own host (the safety
+    // contract), and a successful save can't be tested cross-origin anyway.
+    let abs;
+    try { abs = new URL(target, location.href); } catch (_) { abs = null; }
+    if (!abs || abs.origin !== location.origin) {
+      row('Target must be on this host’s origin').set('fail', `Target ${JSON.stringify(target)} is not same-origin as ${location.origin}.`);
+      return;
+    }
+    target = abs.href;
+
+    // 1. /_/meta shape: a conformance suite fails anything but a valid capability
+    //    document (2xx JSON with numeric spec) or a clean 404 (spec §5). A redirect,
+    //    HTML, or unparseable body fails — redirects included (redirect:'manual').
+    {
+      const r = row('GET /_/meta returns a capability document or a clean 404');
+      try {
+        const res = await guard(() => fetch(metaRoute(token), { headers: { 'Document-URL': target }, credentials: creds(), cache: 'no-store', redirect: 'manual' }));
+        if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+          r.set('fail', 'Answered with a redirect; §5 requires a direct capability document or 404.');
+        } else if (res.status === 404) {
+          // A 404 is a legitimate answer, but only as a statement about the HOST. §5
+          // makes the distinction normative: "a host must not answer 404 for a
+          // per-document reason", because a client reads it as "bare core host" and
+          // silently drops every capability the host actually has. Withholding belongs
+          // in the `document` block, never in the status code.
+          //
+          // The two cases are indistinguishable from one request, so ask a second time
+          // naming a document that certainly exists: this page. A host that answers
+          // THAT while 404ing the first was gating discovery per document.
+          let perDocument = null;
+          try {
+            const again = await guard(() => fetch(metaRoute(token), {
+              headers: { 'Document-URL': location.href },
+              credentials: creds(), cache: 'no-store', redirect: 'manual',
+            }));
+            if (again.ok) {
+              let body = null;
+              try { body = await again.json(); } catch (_) {}
+              if (body && typeof body.spec === 'number') perDocument = body;
+            }
+          } catch (_) { /* a failed second probe proves nothing; fall through */ }
+
+          if (perDocument) {
+            const exts = Array.isArray(perDocument.extensions) ? perDocument.extensions.join(', ') : 'none';
+            r.set('fail',
+              '404 for a per-document reason: discovery answered for this page (spec ' +
+              perDocument.spec + '; extensions: ' + (exts || 'none') + ') but 404ed for ' +
+              'another document on the same host. §5 forbids that, because a client reads ' +
+              'the 404 as a bare core host and loses every capability above. Withhold the ' +
+              '`document` block instead, and keep answering.');
+          } else {
+            r.set('pass', 'Clean 404: a bare core host. Fully conforming.');
+          }
+        } else if (res.ok) {
+          let body = null;
+          try { body = await res.json(); } catch (_) {}
+          if (body && typeof body.spec === 'number') {
+            caps = new Set(Array.isArray(body.extensions) ? body.extensions : []);
+            metaDoc = body.document && typeof body.document === 'object' ? body.document : null;
+            r.set('pass', `spec ${body.spec}; extensions: ${[...caps].join(', ') || 'none'}${metaDoc ? '; document block present' : '; no document block'} (via ${metaRoute(token)}).`);
+          } else {
+            r.set('fail', `2xx but not a JSON object with a numeric "spec" (got: ${JSON.stringify(body)}).`);
+          }
+        } else {
+          r.set('fail', `Neither a 2xx capability document nor a 404 (status ${res.status}).`);
+        }
+      } catch (e) { blockedOr(r, e); }
+    }
+
+    // 2. Save round-trip: POST /_/save returns a 2xx JSON {msg} (§3) and writes the
+    //    bytes; a reload returns them exactly (modulo host-injected root attributes).
+    let roundTripped = false;
+    {
+      const r = row('POST /_/save writes the document, reload returns the same bytes');
+      const body = doc('roundtrip');
+      try {
+        const { res, json } = await save(body, { target, token });
+        if (!res.ok) {
+          r.set('fail', `Save refused (status ${res.status}${json && json.msg ? ': ' + json.msg : ''}).`);
+        } else if (!json || typeof json.msg !== 'string') {
+          r.set('fail', 'Saved with a 2xx, but not a JSON {"msg": ...} response (§3).');
+        } else {
+          const { text, stored } = await fetchDoc(target);
+          if (text == null) r.set('fail', 'Saved, but the document could not be read back.');
+          else if (stored === stripInjected(body)) { roundTripped = true; r.set('pass', `Saved (msg: ${JSON.stringify(json.msg)}) and read back byte-identical.`); }
+          else r.set('fail', 'Read-back bytes differ from what was sent (host altered stored bytes).');
+        }
+      } catch (e) { blockedOr(r, e); }
+    }
+
+    // Discovery, once more, now that the target document exists. §5 says the
+    // `document` block is withheld by OMISSION for a document that is not there, so
+    // on a host that starts from a scratch path the FIRST call above legitimately
+    // returned host facts only, and every later check reading `document.upload
+    // .maxBytes` or `document.writable` from it would fail a perfectly conforming
+    // host for a fact it was right not to state yet.
+    if (roundTripped) {
+      try {
+        const res = await guard(() => fetch(metaRoute(token), {
+          headers: { 'Document-URL': target }, credentials: creds()
+        }));
+        if (res.ok) {
+          const body = await res.json();
+          if (body && typeof body.document === 'object' && body.document) metaDoc = body.document;
+        }
+      } catch (_) { /* the first answer stands; the checks that need it say so */ }
+    }
+
+    // 3. A body that is not a complete HTML document is refused, and does not clobber.
+    {
+      const r = row('A non-HTML body is refused');
+      try {
+        const before = roundTripped ? (await fetchDoc(target)).stored : null;
+        const { res, json } = await save('this is not an html document', { target, token });
+        if (res.ok) {
+          r.set('fail', 'Host accepted a body with no <html> document.');
+        } else if (roundTripped && (await fetchDoc(target)).stored !== before) {
+          r.set('fail', `Refused (status ${res.status}), but the stored document still changed.`);
+        } else {
+          r.set('pass', `Refused (status ${res.status}${json && json.code ? ', code ' + json.code : ''})` + (roundTripped ? '; document unchanged.' : '.'));
+        }
+      } catch (e) { blockedOr(r, e); }
+    }
+
+    // 4. Path traversal / per-target authorization (spec §8) is host-internal and NOT
+    //    observable from a browser: the host collapses `..` in Document-URL via new URL()
+    //    before it ever path-joins, and an out-of-root write is not fetchable same-origin,
+    //    so a vulnerable host and a safe one return the same 2xx here. It is verified by
+    //    each host's own server-side negative tests, not by this page.
+    {
+      const r = row('Path traversal is refused (server-side)');
+      r.set('na', 'Not browser-observable; covered by the host’s own server-side negative tests.');
+    }
+
+    // 5. A cross-origin save cannot write to the document (spec §8). Verified by side
+    //    effect: a sandboxed iframe has an opaque origin, so its credentialed POST
+    //    carries Origin: null, and its response is CORS-unreadable — so we check the only
+    //    observable thing: did the stored bytes change? The probe uses the CORE /_/save
+    //    route with NO token, modelling an attacker who lacks the per-file token.
+    {
+      const r = row('A cross-origin save cannot write to the document');
+      if (!roundTripped) { r.set('skip', 'Needs a working save round-trip first.'); }
+      else {
+        try {
+          const before = (await fetchDoc(target)).stored;
+          const probe = doc('origin-null-probe');
+          const { timedOut } = await sandboxedSave('/_/save', target, probe);
+          const after = (await fetchDoc(target)).stored;
+          if (after !== before) r.set('fail', 'A null-origin (cross-origin) save changed the stored document.');
+          else if (timedOut) r.set('na', 'Inconclusive: the cross-origin probe did not resolve in time; re-run.');
+          else r.set('pass', 'A null-origin save did not change the document.');
+        } catch (e) { r.set('fail', 'Probe failed: ' + e.message); }
+      }
+    }
+
+    // 6. The /_/ namespace never serves a document (spec §5).
+    {
+      const r = row('An unknown /_/*.html path does not serve a document');
+      try {
+        const res = await guard(() => fetch('/_/_mhf-nonexistent-' + Date.now() + '.html', { credentials: creds(), cache: 'no-store' }));
+        const body = res.ok ? await res.text() : '';
+        if (res.ok && /<html[\s>]/i.test(body)) r.set('fail', `Served an HTML document from a /_/ path (status ${res.status}).`);
+        else r.set('pass', `Not served (status ${res.status}).`);
+      } catch (e) { blockedOr(r, e); }
+    }
+
+    // 7. format (capability): a document is stored verbatim UNLESS it opts in with
+    //    formathtml="true". Read by value, not presence — formathtml="false" must be
+    //    stored verbatim too (the boolean-attribute trap). Neither case here has "true".
+    {
+      const r = row('format: only formathtml="true" opts in; other values stored verbatim');
+      if (!caps.has('format')) r.set('skip', 'Host does not declare `format`.');
+      else if (!roundTripped) r.set('skip', 'Needs a working save round-trip first.');
+      else {
+        try {
+          const cases = [
+            { label: 'no formathtml', body: doc('format-none') },
+            { label: 'formathtml="false"', body: doc('format-false', 'formathtml="false"') },
+          ];
+          let bad = null;
+          for (const c of cases) {
+            const { res } = await save(c.body, { target, token });
+            const { stored } = await fetchDoc(target);
+            if (!res.ok || stored !== stripInjected(c.body)) { bad = c.label; break; }
+          }
+          if (bad) r.set('fail', `A document (${bad}) was reformatted; only formathtml="true" may opt in.`);
+          else r.set('pass', 'Both non-opt-in documents stored verbatim (read by value).');
+        } catch (e) { blockedOr(r, e); }
+      }
+    }
+
+    // 8. sync (capability): POST /_/sync relays but NEVER writes to disk (decision 10),
+    //    for EITHER payload shape. Verify the baseline landed, snapshot a readable
+    //    preimage, then send {document} and {snapshot} and assert the stored bytes never
+    //    move — comparing full bytes, not just "not equal to the relayed payload".
+    {
+      const r = row('sync: POST /_/sync relays without writing to disk');
+      if (!caps.has('sync')) r.set('skip', 'Host does not declare `sync`.');
+      else if (!roundTripped) r.set('skip', 'Needs a working save round-trip first.');
+      else {
+        try {
+          const baseline = doc('sync-baseline');
+          const saved = await save(baseline, { target, token });
+          const before = (await fetchDoc(target)).stored;
+          if (!saved.res.ok || before !== stripInjected(baseline)) {
+            r.set('fail', 'Could not establish a baseline save to test sync against.');
+          } else {
+            // Delivery is OBSERVED, not inferred from a 2xx. A host that answers 200
+            // and drops both artifacts satisfies "the disk did not change" perfectly,
+            // and so does a host that fans a snapshot out to the viewers. The lane a
+            // frame arrives on IS the check: it is what keeps an editor's toolbar off
+            // a reader's screen, and both desktop hosts had it wrong in one direction
+            // or the other before this page was pointed at them.
+            //
+            // §10 puts both directions on one address, so the stream is opened at the
+            // same route the POST goes to. A host announcing `sync` without serving
+            // that stream is not wrong (§10 is informative in v1), so it is reported
+            // as a skip naming what could not be observed, never as a pass.
+            const streamUrl = (lane) =>
+              `/_/sync?document-url=${encodeURIComponent(target)}&lane=${lane}` +
+              (token ? `&token=${encodeURIComponent(token)}` : '');
+
+            const openLane = (lane) => new Promise((resolve) => {
+              let es;
+              try { es = new EventSource(streamUrl(lane)); } catch (_) { return resolve(null); }
+              const frames = [];
+              es.onmessage = (ev) => {
+                try { frames.push(JSON.parse(ev.data)); } catch (_) {}
+              };
+              const settle = (ok) => { clearTimeout(t); resolve(ok ? { es, frames } : (es.close(), null)); };
+              const t = setTimeout(() => settle(false), 2000);
+              es.onopen = () => settle(true);
+              es.onerror = () => { if (es.readyState === EventSource.CLOSED) settle(false); };
+            });
+
+            const [live, saved] = await Promise.all([openLane('live'), openLane('saved')]);
+            if (!live || !saved) {
+              if (live) live.es.close();
+              if (saved) saved.es.close();
+              r.set('skip', 'Host declares `sync` but does not serve the §10 stream at /_/sync, so delivery could not be observed.');
+            } else {
+              const sender = 'mhf-host-test';
+              const sent = {};
+              const relay = async (field) => {
+                sent[field] = doc('sync-relay-' + field);
+                const res = await fetch('/_/sync', {
+                  method: 'POST', credentials: 'include',
+                  headers: { 'Content-Type': 'application/json', 'Document-URL': target },
+                  body: JSON.stringify({ [field]: sent[field], sender }),
+                });
+                const after = (await fetchDoc(target)).stored;
+                return { field, ok: res.ok, changed: after !== before };
+              };
+              const relays = [await relay('snapshot'), await relay('document')];
+
+              // The frames are already in flight; give them a moment to land before
+              // asking what arrived.
+              await new Promise((res) => setTimeout(res, 500));
+              live.es.close();
+              saved.es.close();
+
+              const carries = (frames, field) =>
+                frames.some((f) => typeof f.html === 'string' && f.html.includes('sync-relay-' + field));
+
+              const wrote = relays.find((x) => x.changed);
+              const refused = relays.find((x) => !x.ok);
+              if (wrote) r.set('fail', `A /_/sync {${wrote.field}} message changed the stored document. Only /_/save may write.`);
+              else if (refused) r.set('fail', `Host declares sync but refused /_/sync {${refused.field}} (non-2xx).`);
+              else if (!carries(live.frames, 'snapshot')) r.set('fail', 'A {snapshot} was accepted but never reached the editor lane (§10: editors follow the snapshot).');
+              else if (!carries(saved.frames, 'document')) r.set('fail', 'A {document} was accepted but never reached the viewer lane (§10: viewers follow the document).');
+              else if (carries(saved.frames, 'snapshot')) r.set('fail', "A {snapshot} reached the VIEWER lane. That is how an editor's toolbar ends up on a reader's screen (§10).");
+              else if (carries(live.frames, 'document')) r.set('fail', 'A {document} reached the EDITOR lane, which is the wrong audience (§10).');
+              else r.set('pass', 'A {snapshot} reached the editors and a {document} the viewers, each on its own lane; the document on disk never changed.');
+            }
+          }
+        } catch (e) { blockedOr(r, e); }
+      }
+    }
+
+    // 9. conditional (capability): the save response carries an etag; a stale If-Match
+    //    returns 412 with code "conflict" and writes nothing; a matching If-Match saves
+    //    (spec §6). A host that returns no etag can't be used for conditional saves.
+    {
+      const r = row('conditional: etag + stale If-Match 412 (no write) + matching If-Match saves');
+      if (!caps.has('conditional')) r.set('skip', 'Host does not declare `conditional`.');
+      else if (!roundTripped) r.set('skip', 'Needs a working save round-trip first.');
+      else {
+        try {
+          const saved = await save(doc('conditional-baseline'), { target, token });
+          const etag = saved.json && saved.json.etag;
+          const before = (await fetchDoc(target)).stored;
+          if (!saved.res.ok || typeof etag !== 'string' || !etag) {
+            r.set('fail', 'A conditional host must return an "etag" on every save response (§6).');
+          } else {
+            const stale = await save(doc('conditional-should-not-write'), { target, token, ifMatch: 'stale-' + etag + '-x' });
+            const afterStale = (await fetchDoc(target)).stored;
+            if (stale.res.status !== 412) r.set('fail', `Stale If-Match did not return 412 (status ${stale.res.status}).`);
+            else if (!(stale.json && stale.json.code === 'conflict')) r.set('fail', '412 returned without {"code":"conflict"} (§6).');
+            else if (afterStale !== before) r.set('fail', 'Returned 412 but the stored document was still modified.');
+            else {
+              const matched = doc('conditional-match');
+              const fresh = await save(matched, { target, token, ifMatch: etag });
+              const afterFresh = (await fetchDoc(target)).stored;
+              const staleEtag = stale.json && stale.json.etag;
+              const freshEtag = fresh.json && fresh.json.etag;
+              if (!fresh.res.ok) r.set('fail', `A matching If-Match (${etag}) was rejected (status ${fresh.res.status}); conditional saves are unusable.`);
+              // Answering 200 is not saving. A host that validates the stamp and then
+              // no-ops passes every other assertion in this row.
+              else if (!afterFresh || !afterFresh.includes('conditional-match')) r.set('fail', 'A matching If-Match returned 2xx but the stored document did not change.');
+              // §6: the stamp comes back on EVERY save response, not only the first.
+              // A client that clears its held stamp after a response without one is
+              // unprotected from that point on, which is the failure this catches.
+              else if (typeof staleEtag !== 'string' || !staleEtag) r.set('fail', 'The 412 carried no "etag", so a client cannot recover without refetching (§6).');
+              else if (typeof freshEtag !== 'string' || !freshEtag) r.set('fail', 'A successful conditional save returned no "etag", so the client has nothing to send next (§6).');
+              else if (freshEtag === etag) r.set('fail', 'The stamp did not change after a save that changed the document, so the next If-Match would be stale.');
+              else r.set('pass', 'etag on every response; stale If-Match → 412 conflict, no write; matching If-Match saved and re-stamped.');
+            }
+          }
+        } catch (e) { blockedOr(r, e); }
+      }
+    }
+
+    // 10. upload (capability): the route exists only where it is announced, the host
+    //     names every file so nothing is ever overwritten, and nothing that would run
+    //     on the host's own origin can be stored (spec §9). A host that does NOT
+    //     announce it is checked for the opposite: the route must not quietly work,
+    //     because a client that skipped its fallback on the announcement would be
+    //     wrong either way.
+    const stored = [];
+    let hello = null;
+    {
+      const r = row('upload: announced and working, or not announced and not there');
+      if (!caps.has('upload')) {
+        try {
+          const { res } = await upload('mhf-probe.bin', bytesOf(1), { target, token });
+          if (res.ok) r.set('fail', 'POST /_/upload works but `upload` is not in extensions; a client can only find it by probing, which §5 forbids.');
+          else r.set('pass', `Not announced, and the route refuses (status ${res.status}). A bare core host is fully conforming.`);
+        } catch (e) { blockedOr(r, e); }
+      } else {
+        try {
+          hello = await pngOf(41, 23);
+          const { res, json, entry } = await upload('mhf-hello.png', hello, { target, token });
+          if (!res.ok) r.set('fail', `Announced \`upload\` but refused an ordinary file (status ${res.status}${json && json.msg ? ': ' + json.msg : ''}).`);
+          else if (!entry || typeof entry.url !== 'string' || typeof entry.name !== 'string') r.set('fail', 'Accepted, but the answer is not {"uploads":[{"name","url",...}]} (§9).');
+          else { stored.push(entry); r.set('pass', `Stored as ${JSON.stringify(entry.name)} at ${JSON.stringify(entry.url)}.`); }
+        } catch (e) { blockedOr(r, e); }
+      }
+    }
+
+    {
+      const r = row('upload: the returned url resolves, from the document, to the bytes sent');
+      if (!caps.has('upload')) r.set('skip', 'Host does not declare `upload`.');
+      else if (!stored.length) r.set('skip', 'Needs a working upload first.');
+      else {
+        try {
+          const got = await readBack(stored[0].url, target, hello);
+          if (!got.ok) r.set('fail', `Stored at ${JSON.stringify(stored[0].url)}, but it ${got.why}.`);
+          else r.set('pass', `Round-tripped through the returned url, ${got.how}.`);
+        } catch (e) { blockedOr(r, e); }
+      }
+    }
+
+    {
+      const r = row('upload: the same filename twice never overwrites and never errors');
+      if (!caps.has('upload')) r.set('skip', 'Host does not declare `upload`.');
+      else {
+        try {
+          const [pa, pb] = [await pngOf(43, 29), await pngOf(47, 31)];
+          const a = await upload('mhf-same.png', pa, { target, token });
+          const b = await upload('mhf-same.png', pb, { target, token });
+          if (!a.res.ok || !b.res.ok) {
+            r.set('fail', `A repeated filename was refused (statuses ${a.res.status}, ${b.res.status}); §9 says a taken name is never an error.`);
+          } else if (!a.entry || !b.entry || a.entry.url === b.entry.url) {
+            r.set('fail', 'Both uploads answered with the same url, so the second overwrote the first.');
+          } else {
+            const [ga, gb] = await Promise.all([readBack(a.entry.url, target, pa), readBack(b.entry.url, target, pb)]);
+            if (!ga.ok) r.set('fail', `The first file ${ga.why}.`);
+            else if (!gb.ok) r.set('fail', `The second file ${gb.why}.`);
+            else { stored.push(a.entry, b.entry); r.set('pass', `Two names (${a.entry.name}, ${b.entry.name}), both intact, checked ${ga.how}.`); }
+          }
+        } catch (e) { blockedOr(r, e); }
+      }
+    }
+
+    {
+      // The one a sequential test cannot catch: pick-a-free-name and write-it must be
+      // one operation. Check-then-write loses this race and silently drops a file.
+      const r = row('upload: concurrent uploads of one filename all survive');
+      if (!caps.has('upload')) r.set('skip', 'Host does not declare `upload`.');
+      else {
+        try {
+          const n = 4;
+          const sent = await Promise.all(Array.from({ length: n }, (_, i) => pngOf(53 + i * 2, 37 + i * 3)));
+          const rs = await Promise.all(sent.map((b) => upload('mhf-race.png', b, { target, token })));
+          const bad = rs.find((x) => !x.res.ok || !x.entry);
+          if (bad) {
+            r.set('fail', `A concurrent upload was refused (status ${bad.res.status}).`);
+          } else {
+            const urls = rs.map((x) => x.entry.url);
+            if (new Set(urls).size !== n) {
+              r.set('fail', `${n} concurrent uploads produced ${new Set(urls).size} distinct urls; at least one file was replaced.`);
+            } else {
+              const got = await Promise.all(urls.map((u, i) => readBack(u, target, sent[i])));
+              const lost = got.findIndex((g) => !g.ok);
+              if (lost !== -1) r.set('fail', `Upload ${lost + 1} of ${n} ${got[lost].why}; the name race was lost.`);
+              else {
+                stored.push(...rs.map((x) => x.entry));
+                // How the host picks names decides what this check was worth. Ask it,
+                // rather than report a pass that may have been unearnable to fail: send
+                // the SAME bytes twice and see whether one file comes back.
+                const twin = await pngOf(61, 41);
+                const [t1, t2] = [await upload('mhf-twin.png', twin, { target, token }),
+                                  await upload('mhf-twin.png', twin, { target, token })];
+                const byContent = t1.entry && t2.entry && t1.entry.url === t2.entry.url;
+                if (t1.entry) stored.push(t1.entry);
+                if (t2.entry && !byContent) stored.push(t2.entry);
+                r.set('pass', byContent
+                  ? `${n} concurrent uploads, ${n} distinct files, all intact, checked ${got[0].how}. This host names by content, so different bytes can never contend for one name and this race is structurally impossible rather than won. The case that still has a decision in it, a name already held by DIFFERENT bytes, cannot be set up from a browser and belongs in this host's own tests.`
+                  : `${n} concurrent uploads, ${n} distinct files, all intact, checked ${got[0].how}. This host names by counter, so that was a real race, won.`);
+              }
+            }
+          }
+        } catch (e) { blockedOr(r, e); }
+      }
+    }
+
+    {
+      const r = row('upload: a document is refused, and nothing is stored');
+      if (!caps.has('upload')) r.set('skip', 'Host does not declare `upload`.');
+      else {
+        try {
+          const html = new TextEncoder().encode('<!DOCTYPE html><html><body>mhf</body></html>');
+          const { res, json, entry } = await upload('mhf-probe.html', html, { target, token });
+          if (res.ok) {
+            r.set('fail', `Stored an HTML upload${entry ? ' at ' + JSON.stringify(entry.url) : ''}. Documents go through /_/save; an upload lane that writes one bypasses authorization and version history.`);
+          } else if (json && json.code && json.code !== 'unsupported-type') {
+            r.set('fail', `Refused (status ${res.status}) but with code ${JSON.stringify(json.code)}; §9 says 415 unsupported-type.`);
+          } else {
+            r.set('pass', `Refused (status ${res.status}${json && json.code ? ', code ' + json.code : ''}).`);
+          }
+        } catch (e) { blockedOr(r, e); }
+      }
+    }
+
+    {
+      const r = row('upload: a traversing filename cannot land outside the document’s scope');
+      if (!caps.has('upload')) r.set('skip', 'Host does not declare `upload`.');
+      else {
+        try {
+          const { res, entry } = await upload('../../mhf-escape.bin', bytesOf(5), { target, token });
+          if (!res.ok) {
+            r.set('pass', `Refused outright (status ${res.status}).`);
+          } else if (!entry) {
+            r.set('fail', 'Accepted but answered with no uploads entry.');
+          } else if (/(^|\/)\.\.(\/|$)/.test(entry.url) || /[\/\\]/.test(entry.name)) {
+            r.set('fail', `Stored as name ${JSON.stringify(entry.name)}, url ${JSON.stringify(entry.url)}; the client's path survived.`);
+          } else {
+            const resolved = new URL(entry.url, target);
+            const base = new URL('./', target);
+            stored.push(entry);
+            if (resolved.origin !== base.origin) r.set('fail', `Stored on a different origin (${resolved.origin}) from the document.`);
+            else r.set('pass', `Path stripped; stored as ${JSON.stringify(entry.name)}.`);
+          }
+        } catch (e) { blockedOr(r, e); }
+      }
+    }
+
+    {
+      const r = row('upload: the announced size cap is real');
+      const cap = metaDoc && metaDoc.upload && metaDoc.upload.maxBytes;
+      if (!caps.has('upload')) r.set('skip', 'Host does not declare `upload`.');
+      else if (typeof cap !== 'number' || !(cap > 0)) r.set('fail', 'A host announcing `upload` must report document.upload.maxBytes, or a client has no way to refuse a file before sending it (§9).');
+      else if (cap > 64 * 1024 * 1024) r.set('skip', `Announced cap is ${cap} bytes; too large to probe from a browser.`);
+      else {
+        try {
+          const { res, json } = await upload('mhf-oversize.bin', new Uint8Array(cap + 1), { target, token });
+          if (res.ok) r.set('fail', `Accepted a file one byte over the announced cap of ${cap}.`);
+          else if (res.status !== 413) r.set('fail', `Refused with status ${res.status}; §9 says 413.`);
+          else if (json && json.code && json.code !== 'too-large') r.set('fail', `413 with code ${JSON.stringify(json.code)}; §9 says too-large.`);
+          else r.set('pass', `One byte over ${cap} refused with 413.`);
+        } catch (e) { blockedOr(r, e); }
+      }
+    }
+
+    $('foot').hidden = false;
+    $('foot').innerHTML = 'Done. Delete the scratch document (<span class="mono">' + target.replace(/</g, '&lt;') + '</span>) when finished' + (stored.length ? ', along with the ' + stored.length + ' file(s) the upload checks stored beside it: <span class="mono">' + stored.map((u) => String(u.name).replace(/</g, '&lt;')).join(', ') + '</span>' : '') + '.';
+  }
+
+  // Cross-origin (opaque) save via a sandboxed iframe. Resolves once the attempt has
+  // definitely completed (or timed out), so the caller can inspect the file's state.
+  // Reports whether it timed out, so a slow write is scored inconclusive, not "safe".
+  function sandboxedSave(route, target, body) {
+    return new Promise((resolve) => {
+      const iframe = document.createElement('iframe');
+      iframe.setAttribute('sandbox', 'allow-scripts');
+      iframe.style.display = 'none';
+      // text/plain keeps this a CORS "simple request" body type; the credentialed fetch
+      // carries the opaque Origin: null a real cross-origin attacker would send.
+      const inner =
+        '(async()=>{try{await fetch(' + JSON.stringify(new URL(route, location.origin).href) +
+        ',{method:"POST",credentials:"include",headers:{"Content-Type":"text/plain","Document-URL":' + JSON.stringify(target) +
+        '},body:' + JSON.stringify(body) + '});}catch(e){}parent.postMessage("mhf-origin-done","*");})();';
+      iframe.srcdoc = '<!DOCTYPE html><html><body><scr' + 'ipt>' + inner + '</scr' + 'ipt></body></html>';
+      let done = false;
+      const finish = (timedOut) => {
+        if (done) return;
+        done = true;
+        window.removeEventListener('message', onMsg);
+        iframe.remove();
+        resolve({ timedOut });
+      };
+      const onMsg = (e) => { if (e.data === 'mhf-origin-done') finish(false); };
+      window.addEventListener('message', onMsg);
+      document.body.appendChild(iframe);
+      setTimeout(() => finish(true), 5000);
+    });
+  }
+
+  async function start(target, token) {
+    results.innerHTML = '';
+    rows.length = 0;
+    summary.hidden = false;
+    results.hidden = false;
+    $('run').disabled = true;
+    try {
+      await run(target, token);
+    } finally {
+      $('run').disabled = false;
+    }
+    return rows.slice();
+  }
+
+  $('run').addEventListener('click', () => start($('target').value.trim(), $('token').value.trim()));
+
+  // The same run a person gets from the button, callable from a driver so this page
+  // can be a CI gate rather than something somebody remembers to open. It returns the
+  // rows rather than a verdict on purpose: `skip` is a legitimate outcome for a
+  // capability the host never announced, so what counts as failure belongs to the
+  // caller, not here. The defaults are the ones filled into the form above.
+  window.__hostTest = {
+    defaults: { target: $('target').value, token: $('token').value },
+    run: (opts = {}) => start(
+      (opts.target ?? $('target').value).trim(),
+      (opts.token ?? $('token').value).trim()
+    )
+  };
+})();
+</script>
+</body>
+</html>

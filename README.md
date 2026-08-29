@@ -119,7 +119,7 @@ The app lives in your system tray. Click the tray icon to open a popover panel w
 ### Server Integration
 The app runs an embedded Express.js server (same as the Node.js version) with:
 - Static file serving with extensionless HTML support
-- POST `/_/save/:name` endpoint for app self-saving
+- POST `/_/save` endpoint for app self-saving, with `Document-URL` identifying the file
 - Beautiful directory listings
 - Security protections (path traversal, filename validation)
 

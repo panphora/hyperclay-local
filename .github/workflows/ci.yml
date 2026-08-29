@@ -39,6 +39,33 @@ jobs:
       # in isolation.
       - run: npm test -- --runInBand
 
+  # The conformance gate drives the Malleable HTML File host-test page against a real
+  # listener, in a browser, from the host's own origin. That origin is the point: the
+  # spec requires exact origin validation on every save, so a save can only be proven
+  # from the origin that will be allowed to make it, and the cross-origin refusal needs
+  # a real sandboxed iframe. `npm test` skips this unless HOST_GATE=1, because it wants
+  # a downloaded browser and no developer should pay that on every run.
+  #
+  # Linux only. The gate tests the protocol this host speaks, which is the same on every
+  # platform, and the matrix above already proves the suite runs everywhere.
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          npm-version: ${{ env.NPM_VERSION }}
+
+      # playwright is already a devDependency; this downloads the browser it drives.
+      - run: npx playwright install --with-deps chromium
+
+      - run: npm test -- --runInBand tests/integration/host-gate.test.js
+        env:
+          HOST_GATE: "1"
+          HOST_GATE_RUNNER: ${{ github.workspace }}/tests/conformance/host-test.mjs
+
   license:
     runs-on: ubuntu-latest
     timeout-minutes: 5

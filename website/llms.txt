@@ -133,8 +133,8 @@ That gets autosave, a save keyboard shortcut, a warning before leaving with unsa
 toast on save, and edit mode. For a file that must work with no network, vendor the script
 next to the HTML instead of loading it from the CDN.
 
-No library is required. Any page that posts its own HTML to `/_/save` with a `Page-URL`
-header saves. This is a complete, working file:
+No library is required. Any page that posts a prepared document to `/_/save` with a
+`Document-URL` header saves. This is a complete, working file:
 
 ```html
 <!DOCTYPE html>
@@ -148,15 +148,133 @@ header saves. This is a complete, working file:
   <h1 contenteditable>Notes</h1>
   <p contenteditable>Start typing here. Everything saves to disk automatically.</p>
   <script>
-    const save = () => fetch('/_/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/html; charset=utf-8', 'Page-URL': location.href },
-      body: '<!DOCTYPE html>\n' + document.documentElement.outerHTML
-    })
-    document.addEventListener('input', save)
-    new MutationObserver(save).observe(document, {
-      childList: true, subtree: true, attributes: true, characterData: true
-    })
+    const injectedElements = [
+      '[src^="chrome-extension://"]', '[href^="chrome-extension://"]',
+      '[src^="moz-extension://"]', '[href^="moz-extension://"]',
+      '[src^="safari-web-extension://"]', '[href^="safari-web-extension://"]',
+      '[id="1p-menu-live-region"]', 'com-1password-button', 'com-1password-menu',
+      'com-1password-notification', 'grammarly-extension',
+      'grammarly-desktop-integration', 'lt-div', 'lt-card', 'lt-toolbar',
+      'lt-highlighter', '[data-lastpass-root]', '[data-lastpass-icon-root]',
+      '[data-dashlane-shadowhost]', '[data-klarna-extension]',
+      '[class*="klarna-extension"]', '.skiptranslate', '#goog-gt-tt',
+      '.goog-te-banner-frame', '.goog-te-balloon-frame', 'style.darkreader',
+      'style[data-darkreader-mode]', 'style[data-darkreader-scheme]',
+      '#loom-companion-mv3', 'loom-container', '[ext-id]'
+    ].join(',')
+    const injectedAttributes = /^(?:data-grammarly|data-lt|data-1p|data-com-onepassword|data-lastpass|data-lp|data-kwimpala|data-bitwarden|data-bw|data-dashlane|data-np|data-protonpass|data-proton-pass|data-keeper|data-rf|data-roboform|data-honey|data-rakuten|data-capital-one|data-wikibuy|data-klarna|data-darkreader|data-evernote|data-pocket|data-pin)(?:-|$)/
+
+    const matching = (root, selector) => [
+      ...(root.matches(selector) ? [root] : []),
+      ...root.querySelectorAll(selector)
+    ]
+
+    function runHooks(root, name) {
+      for (const element of matching(root, `[${name}]`)) {
+        try {
+          Function(element.getAttribute(name)).call(element)
+        } catch (error) {
+          console.error(`[${name}] failed`, error)
+        }
+      }
+    }
+
+    function syncFormState(clone) {
+      const live = document.querySelectorAll('input, select, textarea')
+      const saved = clone.querySelectorAll('input, select, textarea')
+      if (live.length !== saved.length) throw new Error('Form controls changed during capture')
+      live.forEach((control, index) => {
+        const copy = saved[index]
+        if (control.matches('input[type="password"], input[type="file"]')) {
+          copy.removeAttribute('value')
+        } else if (control instanceof HTMLInputElement) {
+          if (control.type === 'checkbox' || control.type === 'radio') {
+            copy.toggleAttribute('checked', control.checked)
+          } else {
+            copy.setAttribute('value', control.value)
+          }
+        } else if (control instanceof HTMLTextAreaElement) {
+          copy.textContent = control.value
+        } else {
+          ;[...control.options].forEach((option, optionIndex) => {
+            copy.options[optionIndex].toggleAttribute('selected', option.selected)
+          })
+        }
+      })
+    }
+
+    function captureDocument() {
+      const clone = document.documentElement.cloneNode(true)
+      syncFormState(clone)
+      runHooks(clone, 'onbeforesnapshot')
+      matching(clone, '[no-snapshot]').forEach(element => element.remove())
+      clone.querySelectorAll(injectedElements).forEach(element => element.remove())
+      for (const element of [clone, ...clone.querySelectorAll('*')]) {
+        for (const attribute of [...element.attributes]) {
+          if (injectedAttributes.test(attribute.name.toLowerCase())) {
+            element.removeAttribute(attribute.name)
+          }
+        }
+      }
+      runHooks(clone, 'onbeforesave')
+      matching(clone, '[no-save]').forEach(element => element.remove())
+      return '<!DOCTYPE html>' + clone.outerHTML
+    }
+
+    let saveInFlight = false
+    let savePending = false
+
+    async function save() {
+      if (saveInFlight) {
+        savePending = true
+        return
+      }
+      saveInFlight = true
+      try {
+        do {
+          savePending = false
+          const response = await fetch('/_/save', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+              'Content-Type': 'text/html; charset=utf-8',
+              'Document-URL': location.href,
+              'Save-Trigger': 'auto'
+            },
+            body: captureDocument()
+          })
+          if (!response.ok) {
+            let message = `HTTP ${response.status}`
+            try { message = JSON.parse(await response.text()).msg || message } catch {}
+            throw new Error(message)
+          }
+        } while (savePending)
+      } catch (error) {
+        console.error('Save failed', error)
+      } finally {
+        saveInFlight = false
+        if (savePending) save()
+      }
+    }
+
+    let saveTimer
+    function queueSave() {
+      clearTimeout(saveTimer)
+      saveTimer = setTimeout(save, 250)
+    }
+
+    function startAutosave() {
+      document.addEventListener('input', queueSave)
+      new MutationObserver(queueSave).observe(document, {
+        childList: true, subtree: true, attributes: true, characterData: true
+      })
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', startAutosave, { once: true })
+    } else {
+      startAutosave()
+    }
   </script>
 </body>
 </html>
@@ -170,7 +288,7 @@ works.
 ```
 POST /_/save
 Content-Type: text/html; charset=utf-8
-Page-URL: http://localhost:4321/blog/post.html
+Document-URL: http://localhost:4321/blog/post.html
 Save-Trigger: user
 
 <!DOCTYPE html><html>...</html>
@@ -179,27 +297,27 @@ Save-Trigger: user
 - The body is the entire serialized document, as text. It must contain a top-level `<html>`
   element; anything else returns 422 `{"msg":"Not a complete HTML document with a top-level
   <html> element.","msgType":"error","code":"invalid-document"}`.
-- **`Page-URL` is required and `Document-URL` is not accepted on this route.** Sending only
-  `Document-URL` returns 400 `{"msg":"Page-URL header required.","msgType":"error"}`. The
-  other routes accept either header; this one does not.
-- The target file is the pathname of `Page-URL`, percent-decoded exactly once. `Page-URL`
+- **`Document-URL` is the canonical header.** The pre-spec `Page-URL` spelling is still
+  accepted when `Document-URL` is absent, and `Document-URL` wins when both are present.
+- The target file is the pathname of `Document-URL`, percent-decoded exactly once. A URL
   pointing at `/` resolves to `index.html`.
 - A JSON content type is refused with 415
   `{"msg":"/_/save takes the document as text, not JSON.","msgType":"error","code":"unsupported-media-type"}`.
 - `Save-Trigger: user` marks a human gesture, `auto` marks autosave or a script, and any
   unknown value is treated as `auto`. The pre-spec header `X-Hyperclay-User-Driven: 1` is
   read only when `Save-Trigger` is absent. The value feeds the data-clobber guard.
-- Success is 200 `{"msg":"Saved","msgType":"success"}`.
+- Success is 200 `{"msg":"Saved","msgType":"success","etag":"…"}`.
 - Maximum body size is 20971520 bytes (20 MB).
 - Saving to a path that does not exist yet creates the file, including parent directories.
 
-Every save, in order: reads the previous bytes, writes a version backup, rewrites any
-Tailwind link to a folder-scoped URL, reformats the HTML to match hyperclay.com's output so
-checksums agree, writes a second backup of the new content, writes the file via a temp file
-plus rename, broadcasts the new HTML to view-mode tabs on the live-sync `saved` lane,
-refreshes the `/_/api` data sidecar, runs the data-clobber guard, and compiles Tailwind CSS
-if the page links it. Sidecar, guard and Tailwind failures are logged and never fail the
-save.
+Every save runs inside a per-file queue. It reads the previous bytes, writes the first backup
+of an existing file when its history is empty, and rewrites any Tailwind link to a
+folder-scoped URL. It reformats only when the root carries literal `formathtml="true"`;
+otherwise the remaining document bytes are preserved. It then backs up the new content,
+writes the file via a temp file plus rename, broadcasts the stored HTML to view-mode tabs on
+the live-sync `saved` lane, refreshes the `/_/api` data sidecar, runs the data-clobber guard,
+and compiles Tailwind CSS if the page links it. Sidecar, guard and Tailwind failures are
+logged and never fail the save.
 
 ## GET /_/meta
 
@@ -214,8 +332,9 @@ Document-URL: http://localhost:4321/index.html
 ```json
 {
   "spec": 1,
-  "extensions": ["sync", "upload"],
+  "extensions": ["conditional", "format", "sync", "upload"],
   "document": {
+    "etag": "…",
     "writable": true,
     "maxBytes": 20971520,
     "upload": { "allowed": true, "maxBytes": 26214400 }

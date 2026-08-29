@@ -637,8 +637,28 @@ async function main() {
     execSafe(`git commit -m "chore: release v${newVersion}"`);
     logSuccess('Committed version bump');
 
+    // Tag the release commit. This step was missing until 2026-08-29, and the gap was invisible
+    // because everything else about a release worked: 1.21.0 through 1.22.6 all shipped publicly
+    // while the newest tag stayed at v1.20.1. Two things depend on it. Step 3 above reads
+    // `git log <lasttag>..HEAD` to choose the next bump, so with stale tags it was judging a span
+    // covering three already-released versions. And a released version with no tag cannot be
+    // checked out, diffed, or bisected later.
+    //
+    // Tolerating an existing tag matters because this script is re-run after a failed release: the
+    // version is already committed by then, so a hard failure here would block the retry over a
+    // tag that already says the right thing.
+    const tag = `v${newVersion}`;
+    const tagExists = execSafe(`git tag --list "${tag}"`).trim() !== '';
+    if (tagExists) {
+      logInfo(`Tag ${tag} already exists, leaving it alone`);
+    } else {
+      execSafe(`git tag -a "${tag}" -m "${tag}"`);
+      logSuccess(`Tagged ${tag}`);
+    }
+
     logInfo('Pushing to remote...');
     execSafe('git push origin HEAD');
+    execSafe(`git push origin "${tag}"`);
     logSuccess('Pushed to remote');
   }
 
