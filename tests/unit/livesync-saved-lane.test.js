@@ -67,13 +67,14 @@ describe('local saved-lane livesync', () => {
       .send({ html: '<html><body>pre-strip</body></html>', sender: 'tab-1' });
 
     expect(res.status).toBe(200);
+    // The lane is stated rather than left to the library default. Same behaviour,
+    // but the audience is now visible at the call site, beside the document branch
+    // that sends to the other one.
     expect(liveSync.broadcast).toHaveBeenCalledWith(
       'index.html',
-      { html: '<html><body>pre-strip</body></html>', sender: 'tab-1' }
+      { html: '<html><body>pre-strip</body></html>', sender: 'tab-1' },
+      { lane: 'live' }
     );
-    // No lane option — the lib defaults to 'live', keeping saved tabs clean.
-    const call = liveSync.broadcast.mock.calls[0];
-    expect(call[2]).toBeUndefined();
   });
 
   test('/live-sync/stream?lane=saved subscribes on the saved lane', async () => {

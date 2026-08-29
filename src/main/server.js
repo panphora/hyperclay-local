@@ -29,6 +29,7 @@ const { hasHtmlRoot } = formatHtml;
 const { serveSiteApiLocal, extractSiteDataLocal } = require('./utils/data-api');
 const { writeApiSidecar } = require('./utils/api-sidecar');
 const dataGuard = require('./data-loss-guard');
+const { documentEtag, ifMatchSatisfied } = require('./spec-wire');
 const syncEngine = require('../sync-engine');
 const { buildEnvelope } = require('../sync-engine/control-lane-core.cjs');
 
@@ -46,12 +47,40 @@ function isJsonContentType(contentType) {
   return mediaType === 'application/json' || mediaType.endsWith('+json');
 }
 
+// Spec §3: a request names the document it targets with `Document-URL`. `Page-URL` is
+// the pre-spec spelling and is read when the new one is absent, because stored
+// documents hardcode it in inline fetch() calls that no library update can reach.
+// `Document-URL` wins when both are present.
+//
+// One function, six call sites. /_/meta, /_/upload and the sync relay each grew this
+// pair separately, and /_/save never did: it read `Page-URL` alone, so a spec-following
+// client got a 400 on the one route the whole protocol is about. Reading the pair in
+// one place is what stops a seventh route from drifting the same way.
+function documentUrlHeader(req) {
+  return (req && req.headers && (req.headers['document-url'] || req.headers['page-url'])) || null;
+}
+
 // What each open file owes the platform on its next sync upload, keyed by
 // filename. Two lanes fill it: /live-sync/save contributes the unstripped
 // snapshot, /save contributes the provenance bit. Either half can arrive without
 // the other, so both are optional and neither lane clears the other's.
 const pendingSnapshots = new Map();
 let snapshotCleanupTimer = null;
+
+// The etag of the last document a browser save wrote through this process, keyed by
+// filename. Its only reader is the `changedBy` on a conflict refusal (spec §6), and
+// its only job is to keep that attribution honest.
+//
+// Everything in this folder belongs to the one person running the app, so
+// `another-person` is not a state this host can reach. What it CAN distinguish is a
+// second tab of their own from anything else that writes the file: a text editor, a
+// git checkout, the sync engine pulling a newer copy down from the platform. If the
+// bytes now on disk are bytes this process put there from a browser, the other writer
+// was another tab. Otherwise the honest answer is to say nothing, which §6 explicitly
+// calls the common and fully conforming case. Inferring "another tab" from the file
+// merely having changed would name the person's own tab for an edit made in vim while
+// the app was closed, and a confident wrong attribution is worse than none.
+const lastBrowserSaveEtags = new Map();
 
 /**
  * Get and clear what a file owes the platform: the live-sync snapshot, the save's
@@ -336,6 +365,10 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
   // merges A's document into B's page. The five-minute sweep in startServer is not
   // a substitute, since it is not even running while the server is stopped.
   pendingSnapshots.clear();
+  // Cleared for the same reason and with more force: this map answers "was that my
+  // own other tab?", and folder B's index.html sharing folder A's entry would answer
+  // yes about a tab that was never open on it.
+  lastBrowserSaveEtags.clear();
 
     const app = express();
 
@@ -533,17 +566,89 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     // reason for keeping the legacy one. §10 names the artifact `snapshot`; `html` is
     // the pre-spec spelling of the same thing.
     app.post(['/live-sync/save', '/sync'], async (req, res) => {
-      const { snapshot, html: legacyHtml, sender } = req.body;
-      const html = typeof snapshot === 'string' ? snapshot : legacyHtml;
-      const pageUrl = req.headers['document-url'] || req.headers['page-url'];
+      const body = req.body || {};
+      const { sender, identityMap } = body;
+
+      // §10 names two artifacts and the field says which audience each is for. A
+      // snapshot is the sending tab's working state, edit controls and all, and
+      // goes to the other EDITORS. A document is the durable, stripped one and
+      // goes to the VIEWERS. Sending them to the wrong lane is what puts one
+      // person's toolbar on a reader's screen, or shows a reader a state the
+      // author never chose to keep, so the audience is stated at each call rather
+      // than left to the library's default.
+      //
+      // `html` is the pre-spec spelling of `snapshot` and stays forever: every
+      // published hyperclayjs and the inline script in every Collection dashboard
+      // send it, and no library update can reach them.
+      //
+      // PRESENCE is the test, not string-ness, which is the rule hyperclay's relay
+      // holds and the reason is the same: a real snapshot paired with a broken
+      // document is a confused client, and guessing which half it meant would
+      // silently send editor content to viewers or the reverse. An explicit null
+      // reads as "not this one", because a client building { snapshot, document }
+      // in JS naturally nulls the half it is not using.
+      // `html` is read ON THE PRE-SPEC ADDRESS ONLY. Nothing frozen posts it to the
+      // spec address, because that address is new: both clients pair the key with the
+      // address in one wire profile chosen once for the life of the page, so a client
+      // on `/sync` sends `snapshot`. Reading it there anyway would buy nothing and cost
+      // the thing this train is for, since hyperclay's spec route recognises only
+      // `snapshot` and `document`, and one address answering differently on three hosts
+      // is the whole class of bug.
+      const legacyAddress = req.path !== '/sync';
+      const present = (k) => body[k] !== undefined && body[k] !== null;
+      const laneOf = (k) => (k === 'html' ? 'snapshot' : k);
+
+      // One list, one decision. The artifact names this address reads, and the lane
+      // each names, are read off `names` and nothing else, so the address rule cannot
+      // be enforced in one place and quietly contradicted in another.
+      const names = legacyAddress ? ['snapshot', 'html', 'document'] : ['snapshot', 'document'];
+      const named = names.filter(present);
+      const lanes = new Set(named.map(laneOf));
+
+      const pageUrl = documentUrlHeader(req);
       if (!pageUrl) {
         return res.status(400).json({ error: 'Document-URL header is required' });
       }
       const file = resolveResourceFromHref(pageUrl);
 
-      if (!file || typeof html !== 'string') {
-        return res.status(400).json({ error: 'file and snapshot are required' });
+      if (!file) {
+        return res.status(400).json({ error: 'could not resolve file from Document-URL' });
       }
+      if (lanes.size !== 1) {
+        return res.status(400).json({ error: 'Send exactly one of snapshot or document.' });
+      }
+      const lane = [...lanes][0];
+      const html = body[named.find(k => laneOf(k) === lane)];
+
+      if (typeof html !== 'string') {
+        return res.status(400).json({ error: 'a snapshot or a document must be a string' });
+      }
+
+      // The same bar the save lane holds bytes to: a fragment or a JSON blob would
+      // morph every open tab into something that is not a document, and this content
+      // reaches the same pages a save does.
+      //
+      // ON THE SPEC ROUTE ONLY. `/live-sync/save` is the pre-spec address and it has
+      // always taken any string, including the body innerHTML that hyperclayjs's
+      // exported captureBodyForSync() returns. A document saved against that API goes
+      // on running for years and no library update can reach its inline script, so
+      // adding a rule here would break it permanently and silently. A new client
+      // posting to the spec address is a client that can be told.
+      if (!legacyAddress && !hasHtmlRoot(html)) {
+        return res.status(422).json({ error: 'Not a complete HTML document.' });
+      }
+
+      // Shape-checked, then treated as opaque: this host never parses keys or
+      // interprets ids, it only forwards. Same check hyperclay's relay makes, because
+      // a client sending an array or a string is confused about the field and a
+      // receiver would have no way to say so.
+      if (identityMap !== undefined &&
+          (typeof identityMap !== 'object' || identityMap === null || Array.isArray(identityMap))) {
+        return res.status(400).json({ error: 'identityMap must be a plain object.' });
+      }
+
+      const snapshotHtml = lane === 'snapshot' ? html : null;
+      const documentHtml = lane === 'document' ? html : null;
 
       const validated = validateAndResolvePath(file, baseDir);
       if (validated.error) {
@@ -551,15 +656,32 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       }
 
       try {
+        if (documentHtml !== null) {
+          // Viewers only, and nothing else happens: this artifact is not a
+          // snapshot, so it must not reach the platform-sync cache below, which
+          // exists to upload the unstripped working state. §10: /_/sync never
+          // writes to disk, whichever field it carries.
+          liveSync.broadcast(file, { html: documentHtml, sender }, { lane: 'saved' });
+          console.log(`[LiveSync] Relayed a document to viewers: ${file} (from: ${sender})`);
+          return res.json({ success: true });
+        }
+
         // Cache snapshot for platform sync (consumed by uploadFile via getAndClearSnapshot).
         // Preserve any userDriven bit a prior /save cached for this file: the peer
         // live-sync body doesn't carry it, so overwriting blindly would drop the
         // human-gesture provenance and make a clean save read as ui-unknown.
         const prevSnap = pendingSnapshots.get(file);
-        pendingSnapshots.set(file, { html, userDriven: prevSnap ? prevSnap.userDriven : undefined, timestamp: Date.now() });
+        pendingSnapshots.set(file, { html: snapshotHtml, userDriven: prevSnap ? prevSnap.userDriven : undefined, timestamp: Date.now() });
 
-        // Broadcast to other local browsers on the same channel as /live-sync/stream
-        liveSync.broadcast(file, { html, sender });
+        // Broadcast to other local browsers on the same channel as /live-sync/stream.
+        //
+        // identityMap rides along on this lane and only this one. Receivers use it to
+        // pair elements across a morph by stable id instead of by content scoring,
+        // which is what keeps focus, scroll position and half-typed input where they
+        // were. This host had never forwarded it while hyperclay always has, so live
+        // sync in the desktop app lost that state on every frame. A viewer has no
+        // working state to preserve, so the document lane above does not carry it.
+        liveSync.broadcast(file, { html: snapshotHtml, sender, identityMap }, { lane: 'live' });
 
         console.log(`[LiveSync] Broadcast: ${file} (from: ${sender})`);
 
@@ -666,7 +788,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       }
       // `origin` is advisory transport metadata (a local page could forge the
       // header): handlers treat channel + type + payload shape as the contract.
-      const pageUrl = req.headers['page-url'];
+      const pageUrl = documentUrlHeader(req);
       const origin = pageUrl ? resolveResourceFromHref(String(pageUrl)) : 'process';
       const delivered = messageBus.send({ channel, type, v, payload, sender, origin });
       res.json({ delivered });
@@ -690,10 +812,10 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
 
     // POST route to save/overwrite HTML files (supports subfolders)
     app.post('/save', async (req, res) => {
-      const pageUrl = req.headers['page-url'];
+      const pageUrl = documentUrlHeader(req);
       if (!pageUrl) {
         return res.status(400).json({
-          msg: 'Page-URL header required.',
+          msg: 'Document-URL header required.',
           msgType: 'error'
         });
       }
@@ -756,6 +878,11 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         });
       }
 
+      // Set by the conditional check below to carry the refusal out of the lock, so
+      // the response is written after the lock is released like every other answer
+      // this route gives.
+      let conflict = null;
+
       try {
         // A1: the queue wraps the ENTIRE read-modify-write region — the pre-write
         // read, the first-save check, the backup, the write, and the derived
@@ -773,8 +900,67 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
 
         // Capture the pre-write body for the data-clobber guard (cold-start seed
         // + whole-file Revert). Read once, before the overwrite below.
-        let dataLossPrev = null;
-        try { dataLossPrev = await fs.readFile(filePath, 'utf8'); } catch {}
+        // Read as BYTES, not as decoded text, because §6 stamps the bytes on disk
+        // and an etag is a promise made BETWEEN hosts: the same document synced from
+        // hyperclay.com has to stamp the same here. Decoding first replaces anything
+        // that is not valid UTF-8 with U+FFFD, so a file holding one stray byte hashes
+        // to a value no other host computes, and a client carrying a perfectly good
+        // stamp is refused a save for a document that never changed.
+        //
+        // ENOENT is a first save and reads as empty. Any OTHER failure means this host
+        // cannot say what the stored bytes are, which is tracked separately rather than
+        // flattened into "empty"; see the conditional check below.
+        let storedBytes = null;
+        let unreadable = null;
+        try {
+          storedBytes = await fs.readFile(filePath);
+        } catch (e) {
+          if (e.code !== 'ENOENT') unreadable = e;
+        }
+        const dataLossPrev = storedBytes === null ? null : storedBytes.toString('utf8');
+
+        // Spec §6, and the reason the whole check sits INSIDE the lock: a stamp
+        // compared against bytes read outside it is a stamp compared against bytes
+        // another save may already have replaced, which is the exact race the
+        // conditional save exists to close. An absent header is a plain
+        // last-write-wins save, which stays the core behaviour; an empty one is a
+        // client that computed its stamp wrong and is refused rather than quietly
+        // dropped back to overwriting.
+        const ifMatch = req.headers['if-match'];
+        if (ifMatch !== undefined) {
+          // A read that failed for a reason other than "there is no file yet" leaves
+          // this host unable to compare anything. Judging the stamp against the empty
+          // bytes the failure left behind would turn the failure into an answer: the
+          // refusal hands back the empty-content etag as though it described the file,
+          // and a client doing the obvious thing, retrying with the stamp it was just
+          // given, is let through to replace bytes nobody could read. Nothing backs
+          // them up either, because the first-save backup reads the same file. A
+          // conditional save is a promise to compare, so a host that cannot read says
+          // so instead.
+          if (unreadable) {
+            conflict = { status: 500, msg: `Could not read ${name} to check it against your copy.` };
+            return;
+          }
+          if (!ifMatchSatisfied(ifMatch, storedBytes)) {
+            // §6: name a writer only when this host can honestly say. Both halves have
+            // to agree — the bytes on disk are the ones this process last wrote, AND
+            // nothing has rewritten the file since — or the field is omitted, because
+            // the wrong answer available here is the reassuring one.
+            const ours = lastBrowserSaveEtags.get(filePath);
+            const now = await fs.stat(filePath, { bigint: true }).catch(() => null);
+            const untouchedSinceOurWrite =
+              !!ours && ours.mtimeNs !== null && !!now && now.mtimeNs === ours.mtimeNs;
+
+            conflict = {
+              status: 412,
+              etag: documentEtag(storedBytes),
+              changedBy: ours && ours.etag === documentEtag(storedBytes) && untouchedSinceOurWrite
+                ? 'another-tab'
+                : null
+            };
+            return;
+          }
+        }
 
         // Check if this is the first save (no versions exist yet)
         const siteVersionsDir = path.join(baseDir, 'sites-versions', backupName);
@@ -813,6 +999,24 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         // Mark as browser save so file watcher doesn't send redundant notification.
         // Key is full path with extension so it matches engine-watcher's wasBrowserSave check.
         liveSync.markBrowserSave(name);
+
+        // Recorded from the bytes actually written, so a later conflict can tell a
+        // second tab of this person's from a text editor. Set after the write, since
+        // before it this would claim authorship of a save that then failed.
+        // Keyed on the canonical filePath, the same key the write queue uses, so two
+        // spellings of one file (an in-tree symlink, or a case-insensitive volume) can
+        // never keep two separate records of who last wrote it.
+        //
+        // The mtime rides along with the stamp because the stamp alone cannot answer
+        // the question. A file can go B -> C -> B, and once it is back at B the digest
+        // matches this host's last write again, so an external editor's undo reads
+        // exactly like another of this person's tabs. The mtime moved for both of those
+        // writes and does not come back.
+        const wroteAt = await fs.stat(filePath, { bigint: true }).catch(() => null);
+        lastBrowserSaveEtags.set(filePath, {
+          etag: documentEtag(content),
+          mtimeNs: wroteAt ? wroteAt.mtimeNs : null
+        });
 
         // Morph view-mode tabs with the persisted on-disk HTML. Edit-mode tabs
         // are untouched — they sync via /live-sync/save on the live lane.
@@ -874,9 +1078,37 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         }
         });
 
+        if (conflict && conflict.status === 500) {
+          console.error(`Could not judge a conditional save of ${name}: the stored bytes are unreadable`);
+          return res.status(500).json({ msg: conflict.msg, msgType: 'error' });
+        }
+
+        if (conflict) {
+          // 412 and nothing written, which is the half of §6 that matters: a host
+          // advertising `conditional` and then overwriting anyway would tell every
+          // client it protects them while it does not. The current stamp rides
+          // along so a client can recover in one round trip instead of refetching
+          // to learn what it should have sent. `changedBy` is omitted rather than
+          // guessed when this host cannot honestly say.
+          const body = {
+            msg: `${name} changed since you last loaded it. Your version was not saved.`,
+            msgType: 'error',
+            code: 'conflict',
+            etag: conflict.etag
+          };
+          if (conflict.changedBy) body.changedBy = conflict.changedBy;
+          console.log(`Refused a conditional save of ${name}: the stored bytes have moved on`);
+          return res.status(412).json(body);
+        }
+
         res.status(200).json({
           msg: 'Saved',
-          msgType: 'success'
+          msgType: 'success',
+          // Spec §6: a host advertising `conditional` returns the stamp with EVERY
+          // save response, not only the refusals, or a client has nothing to send
+          // as its next If-Match. Taken from `content`, which the closure above
+          // reassigned to the formatted bytes that reached disk.
+          etag: documentEtag(content)
         });
         console.log(`Saved: ${name}`);
       } catch (error) {
@@ -898,7 +1130,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     const resolveGuardFile = async (req) => {
       const raw = (req.query && req.query.file) ||
         (req.body && typeof req.body === 'object' && req.body.file) ||
-        (req.headers && req.headers['page-url']) || '';
+        documentUrlHeader(req) || '';
       if (!raw) return null;
       const name = resolveResourceFromHref(String(raw));
       try {
@@ -918,20 +1150,41 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       // and is withheld by OMISSION, so the answer for a document that is not
       // there is byte-identical to the answer for one a caller may not see.
       // `sync` is announced because this host serves both halves of the §10 address.
-      const body = { spec: 1, extensions: ['sync', 'upload'] };
-      const href = req.headers['document-url'] || req.headers['page-url'];
+      // `conditional` because /_/save honours If-Match and returns a stamp with every
+      // save; §6 forbids announcing it and then not honouring it, since a client that
+      // reads the name stops guarding itself.
+      // `format` because the save route runs formatHtml, which is §4's opt-in
+      // contract exactly: it reformats only a document whose root carries
+      // `formathtml="true"` and stores every other document's bytes as sent. §4 says
+      // a host that does NOT declare `format` ignores that attribute entirely, so
+      // omitting the name while honouring the attribute told every client its bytes
+      // were kept verbatim while this host rewrote them. hyperclay announces it for
+      // the same behaviour.
+      const body = { spec: 1, extensions: ['conditional', 'format', 'sync', 'upload'] };
+      const href = documentUrlHeader(req);
       if (href) {
         try {
           const filePath = await resolveWriteTarget(paths, resolveResourceFromHref(href));
           const stats = await fs.stat(filePath);
           if (stats.isFile()) {
+            // Read before the block is built, so a file that stats but cannot be
+            // read takes the same omission path as one that is not there, rather
+            // than reporting itself writable with no stamp.
+            // Bytes, not decoded text, for the same reason the save route reads bytes:
+            // the stamp announced here is the one a client will send back as If-Match,
+            // and the two must be computed over the same thing.
+            const stored = await fs.readFile(filePath);
             // Everything under the served folder belongs to the person running
             // this app, so there is no permission to consult: writable is what
             // this host IS.
             body.document = {
               writable: true,
               maxBytes: SAVE_MAX_BYTES,
-              upload: { allowed: true, maxBytes: UPLOAD_MAX_BYTES }
+              upload: { allowed: true, maxBytes: UPLOAD_MAX_BYTES },
+              // The stamp of what is on disk right now. A client that loaded the page
+              // before this host announced `conditional`, or that reloaded from cache,
+              // has no stamp of its own; this is where it gets one without a save.
+              etag: documentEtag(stored)
             };
           }
         } catch { /* omission, never a different answer */ }
@@ -944,7 +1197,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     // to '/save', so the multipart body arrives intact.
     app.post('/upload', async (req, res, next) => {
       if (!req.originalUrl.startsWith('/_/upload')) return next();
-      const href = req.headers['document-url'] || req.headers['page-url'];
+      const href = documentUrlHeader(req);
       if (!href) {
         return res.status(400).json({ msg: 'Document-URL header required.', msgType: 'error', code: 'bad-request' });
       }
