@@ -1160,7 +1160,16 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       // omitting the name while honouring the attribute told every client its bytes
       // were kept verbatim while this host rewrote them. hyperclay announces it for
       // the same behaviour.
-      const body = { spec: 1, extensions: ['conditional', 'format', 'sync', 'upload'] };
+      // `scoped-stylesheet` because the save route runs scopeTailwindLink, which
+      // rewrites a document's own Tailwind link so it addresses the stylesheet this
+      // host generates for that document. §4 says stored bytes are the bytes sent, so
+      // a host doing that while announcing nothing has told every client its documents
+      // are stored verbatim when they are not. The opt-in is the link itself: a
+      // document carrying none is returned untouched, and one whose link is already
+      // correct is rewritten to the value it had, so the visible effect is repairing
+      // the link after a rename. It matters most to a client comparing what it sent
+      // against what is on disk, which is what a conditional save does.
+      const body = { spec: 1, extensions: ['conditional', 'format', 'scoped-stylesheet', 'sync', 'upload'] };
       const href = documentUrlHeader(req);
       if (href) {
         try {
