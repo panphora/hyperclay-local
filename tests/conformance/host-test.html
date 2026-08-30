@@ -284,6 +284,9 @@
   async function run(target, token) {
     let caps = new Set();
     let metaDoc = null;
+    // The whole discovery answer, kept alongside the block, because §5's rule is about
+    // WHICH scope a fact is stated in, and that can only be checked by looking at both.
+    let metaBody = null;
 
     // Refuse a cross-origin target: the page only ever touches its own host (the safety
     // contract), and a successful save can't be tested cross-origin anyway.
@@ -342,6 +345,7 @@
           let body = null;
           try { body = await res.json(); } catch (_) {}
           if (body && typeof body.spec === 'number') {
+            metaBody = body;
             caps = new Set(Array.isArray(body.extensions) ? body.extensions : []);
             metaDoc = body.document && typeof body.document === 'object' ? body.document : null;
             r.set('pass', `spec ${body.spec}; extensions: ${[...caps].join(', ') || 'none'}${metaDoc ? '; document block present' : '; no document block'} (via ${metaRoute(token)}).`);
@@ -388,9 +392,57 @@
         }));
         if (res.ok) {
           const body = await res.json();
+          if (body && typeof body.spec === 'number') metaBody = body;
           if (body && typeof body.document === 'object' && body.document) metaDoc = body.document;
         }
       } catch (_) { /* the first answer stands; the checks that need it say so */ }
+    }
+
+    // 2b. §5's two scopes. `spec` and `extensions` describe the HOST and are the same
+    //     for every document it serves; the `document` block describes the one named by
+    //     Document-URL. A host that states a per-document fact at the top level has
+    //     collapsed the distinction the answer exists to draw, and a client reading only
+    //     the specification looks in the block and finds nothing.
+    {
+      const r = row('The `document` block holds the per-document facts, and is withheld for a document that is not there');
+      // Named by the keys hosts actually use. A host may expose whatever else it likes:
+      // what is being checked is the SCOPE a fact is stated in, not the vocabulary.
+      const PER_DOCUMENT = ['etag', 'writable', 'upload', 'path', 'absolutePath', 'name', 'size', 'lastModified'];
+      if (!metaBody) r.set('skip', 'Host answers /_/meta with a clean 404, so there is no answer to place facts in.');
+      else if (!roundTripped) r.set('skip', 'Needs a working save round-trip first, so there is a document to describe.');
+      else try {
+        // Stated at the top level and NOT in the block. A host is free to keep an old
+        // top-level copy for documents already written against it, which is why this
+        // asks whether the block carries the fact rather than whether the top level
+        // is clean: duplication is compatible with §5, absence from the block is not.
+        const strays = PER_DOCUMENT.filter((k) => k in metaBody && !(metaDoc && k in metaDoc));
+        const etagInBlock = metaDoc && typeof metaDoc.etag === 'string' && metaDoc.etag;
+        if (strays.length) {
+          r.set('fail', `Per-document fact(s) ${strays.join(', ')} are stated beside \`spec\` and \`extensions\`, which describe the host. §5 puts anything genuinely per-document in the \`document\` block; a client reading the spec finds nothing there.`);
+        } else if (caps.has('conditional') && !etagInBlock) {
+          r.set('fail', 'Host announces `conditional` but /_/meta carries no `document.etag` for a document that exists. §6 says the stamp is returned in /_/meta, and §5 says it lives in the block; without it a client that loaded before the announcement has no way to get a stamp except by saving.');
+        } else if (token) {
+          // A token names ONE file, so a Document-URL for another document is
+          // meaningless on this route and the omission half cannot be set up here.
+          r.set('pass', `Per-document facts are in the block${etagInBlock ? ' (etag present)' : ''}. Withholding was not probed: this host names the document by token, so /_/meta answers about that file whatever Document-URL says.`);
+        } else {
+          // §5's anti-probe rule: the answer for a document that is not there is the
+          // same answer a caller who may not see one gets. If the block appears for a
+          // path with no file behind it, its presence is not evidence of anything, and
+          // the withholding it is supposed to make invisible becomes readable.
+          const absent = new URL('./_mhf-absent-' + runId + '.html', target).href;
+          const res = await guard(() => fetch(metaRoute(token), {
+            headers: { 'Document-URL': absent }, credentials: creds(), cache: 'no-store',
+          }));
+          let body = null;
+          try { body = await res.json(); } catch (_) {}
+          if (body && body.document && typeof body.document === 'object') {
+            r.set('fail', 'A `document` block came back for a document that does not exist. §5 withholds it by omission, so a block that is always present tells a caller which documents are there.');
+          } else {
+            r.set('pass', `Per-document facts are in the block${etagInBlock ? ' (etag present)' : ''}, and it is omitted for a document that is not there.`);
+          }
+        }
+      } catch (e) { blockedOr(r, e); }
     }
 
     // 3. A body that is not a complete HTML document is refused, and does not clobber.
@@ -406,6 +458,54 @@
         } else {
           r.set('pass', `Refused (status ${res.status}${json && json.code ? ', code ' + json.code : ''})` + (roundTripped ? '; document unchanged.' : '.'));
         }
+      } catch (e) { blockedOr(r, e); }
+    }
+
+    // 3b. What a refusal says. §3 gives a refused save a JSON body with `msg`, a short
+    //     human-readable reason, and optionally `code`, a machine-readable one. A client
+    //     is told to read the status first and treat the body as a bonus, because a
+    //     proxy can answer on a host's behalf with an HTML error page. A conformance
+    //     suite is held to the opposite standard, the same way §5 holds /_/meta: when
+    //     the HOST itself answers, a body with nothing readable in it is a defect, and
+    //     it is the difference between a page that can say why a save failed and one
+    //     that can only say that it did.
+    {
+      const r = row('A refusal the host answers itself carries a readable reason');
+      // Two probes, because an envelope is a property of a route's every exit and a
+      // host can easily get one branch right. The second differs by host shape: where a
+      // token names the document, an unrecognized one exercises the authorization exit
+      // without naming any file; where it does not, there is no second refusal that can
+      // be provoked from a browser without risking a write somewhere real, so that half
+      // is reported rather than invented.
+      const probes = [
+        { how: 'a body that is not a document', run: () => save('this is not an html document', { target, token }) },
+      ];
+      if (token) probes.push({ how: 'an unrecognized save token', run: () => save(doc('envelope-probe'), { target, token: 'mhf-not-a-token-' + runId }) });
+
+      try {
+        let verdict = null;
+        const seen = [];
+        for (const p of probes) {
+          const { res } = await p.run();
+          if (res.ok) { seen.push(`${p.how}: accepted (nothing to read)`); continue; }
+          const text = await res.text();
+          let body = null;
+          try { body = JSON.parse(text); } catch (_) {}
+          if (!body || typeof body !== 'object') {
+            verdict = `Refused ${p.how} with status ${res.status} and a body that is not JSON (${JSON.stringify(text.slice(0, 80))}). §3 says a refusal the host answers carries JSON. If a proxy answered this, the host never saw the request.`;
+          } else if (typeof body.msg !== 'string' || !body.msg.trim()) {
+            verdict = `Refused ${p.how} with status ${res.status} and JSON carrying no \`msg\` (keys: ${Object.keys(body).join(', ') || 'none'}). §3 makes \`msg\` the reason a page shows a person, so without it the page can only say the save failed.`;
+          } else if ('code' in body && typeof body.code !== 'string') {
+            verdict = `Refused ${p.how} with a \`code\` that is not a string (${JSON.stringify(body.code)}); §3's codes are names.`;
+          } else {
+            seen.push(`${p.how}: ${res.status}${body.code ? ' ' + body.code : ''}`);
+            continue;
+          }
+          break;
+        }
+        if (verdict) r.set('fail', verdict);
+        else if (!seen.some((s) => !s.endsWith('(nothing to read)'))) r.set('skip', 'No refusal could be provoked from this page, so there was no envelope to read.');
+        else r.set('pass', `Readable on every refusal probed (${seen.join('; ')}).`);
       } catch (e) { blockedOr(r, e); }
     }
 
@@ -767,6 +867,51 @@
           else r.set('pass', `One byte over ${cap} refused with 413.`);
         } catch (e) { blockedOr(r, e); }
       }
+    }
+
+    // 11. The agent channel, on the one point a page and a process can disagree about
+    //     without either side being visibly broken: how the document is named. §11 says
+    //     a page names it with §3's `Document-URL` header, the same header it saves
+    //     with. A host that grew its wire before the spec settled is likely to read
+    //     some other spelling, and the failure is silent in the worst way: the page
+    //     sends a request, the host answers 404, and the page reports no agent attached
+    //     when there is one.
+    //
+    //     §11 is informative in v1 and `wire` is optional, so a host with no wire at
+    //     all is conforming and this reports a skip. Telling the two apart is the whole
+    //     design of the check: "no wire here" and "a wire that cannot hear a spec
+    //     client" answer a Document-URL frame identically, so the second spelling is
+    //     tried before anything is concluded.
+    {
+      const r = row('wire: a page names its document with the Document-URL header');
+      // wire/cancel for an id nothing issued is the safest frame a stranger can send:
+      // it is a type a page is expected to send, it asks for no work, and §11 has a
+      // handler ignore a frame for an id it does not know. A wire/request could be
+      // picked up and acted on by whatever agent happens to be attached.
+      const frame = JSON.stringify({ type: 'wire/cancel', id: 'mhf-probe-' + runId, text: 'conformance probe, nothing to do' });
+      const sendNamedBy = (header) => guard(() => fetch('/_/wire/send', {
+        method: 'POST', credentials: creds(),
+        headers: { 'Content-Type': 'application/json', [header]: target },
+        body: frame,
+      }));
+      try {
+        const spec = await sendNamedBy('Document-URL');
+        if (spec.ok) {
+          let body = null;
+          try { body = await spec.json(); } catch (_) {}
+          // The count is the capability, not a nicety: §11 makes `delivered` the way a
+          // page finds out an agent is there at all, and it counts handlers only, so a
+          // page's own observer stream cannot register as delivery.
+          if (!body || typeof body.delivered !== 'number') r.set('fail', `Accepted the frame (status ${spec.status}) but answered without a numeric \`delivered\` (got ${JSON.stringify(body)}). §11 makes that count the only way a page can tell an attached agent from silence.`);
+          else r.set('pass', `Named by Document-URL and accepted; delivered: ${body.delivered}.`);
+        } else if (spec.status === 403 && opaqueOrigin) {
+          r.set('skip', `Refused with 403 from this ${originName()} origin: §11 reads a caller the browser does not attest as same-origin as a process, so a sandboxed document cannot reach its own wire from here. Check this one against the host's own tests.`);
+        } else {
+          const legacy = await sendNamedBy('Page-URL');
+          if (legacy.ok) r.set('fail', `Refused a frame named with Document-URL (status ${spec.status}) but accepted the same frame named with Page-URL. §11 names §3's header, so this wire is unreachable from a client written to the specification.`);
+          else r.set('skip', `No wire route answering this page (Document-URL: ${spec.status}, Page-URL: ${legacy.status}). §11 is informative in v1 and \`wire\` is optional, so that is fully conforming.`);
+        }
+      } catch (e) { blockedOr(r, e); }
     }
 
     $('foot').hidden = false;
