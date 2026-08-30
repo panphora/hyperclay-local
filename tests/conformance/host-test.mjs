@@ -93,12 +93,77 @@ async function loadChromium() {
   }
 }
 
+// Origin validation (spec §8), probed from OUTSIDE a browser.
+//
+// The in-page check cannot cover this and now says so. `Document-URL` is not a
+// CORS-safelisted header, so the sandboxed frame's POST is preflighted, and a host
+// that does not answer the preflight never sees the request at all. What the browser
+// refused says nothing about what the host would have done, and scoring that a pass
+// meant a host with no origin validation cleared the row.
+//
+// Node sends no preflight and honours no CORS, so the request the page could not make
+// lands here exactly as written: the save route the page just used successfully, the
+// foreign `Origin` a cross-site attacker sends, and the cookies their browser would
+// attach. A host that writes this is missing the check §8 makes a MUST.
+const FOREIGN_ORIGIN = 'https://mhf-conformance.invalid';
+
+// A host injects ephemeral attributes on the root element at serve time (§4), and a
+// token host mints a fresh token on every serve, so two reads of an unchanged document
+// differ there and nowhere else. Comparing the body past the opening tag is what the
+// page's own stripInjected does, in the one form available to a runner with no DOM.
+const stripRootAttrs = (html) => (html === null ? null : html.replace(/<html\b[^>]*>/i, '<html>'));
+
+async function originValidationRow({ target, token, cookies }) {
+  const name = 'A save carrying a foreign Origin cannot write to the document (server-side)';
+  const headers = {};
+  if (cookies.length) headers.Cookie = cookies.join('; ');
+  const read = async () => {
+    const res = await fetch(target, { headers, cache: 'no-store' });
+    return res.ok ? stripRootAttrs(await res.text()) : null;
+  };
+  try {
+    const before = await read();
+    if (before === null) {
+      return { name, status: 'na', reason: 'Could not read the document to compare against; nothing to check.' };
+    }
+    const route = token ? `/_/save/${encodeURIComponent(token)}` : '/_/save';
+    const res = await fetch(new URL(route, target).href, {
+      method: 'POST',
+      headers: {
+        ...headers,
+        Origin: FOREIGN_ORIGIN,
+        'Content-Type': 'text/html',
+        'Document-URL': target,
+      },
+      body: '<!DOCTYPE html><html><body><p>written from ' + FOREIGN_ORIGIN + '</p></body></html>',
+    });
+    const after = await read();
+    if (after !== before) {
+      return {
+        name,
+        status: 'fail',
+        reason: `A save carrying \`Origin: ${FOREIGN_ORIGIN}\` changed the stored document (status ${res.status}). ` +
+          '§8 requires the host to validate the request\'s origin on every save; without it any page ' +
+          'in the reader\'s browser can rewrite their documents.',
+      };
+    }
+    return { name, status: 'pass', reason: `Refused (status ${res.status}); the document is unchanged.` };
+  } catch (e) {
+    return { name, status: 'na', reason: 'The probe did not complete: ' + (e.message || e) };
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const chromium = await loadChromium();
 
   const served = args.root ? path.join(args.root, args.page) : null;
   if (served) await writeFile(served, await readFile(PAGE));
+
+  // The caller has already said, explicitly, that this host's certificate is not
+  // meant to verify. The browser gets that through ignoreHTTPSErrors below; node's
+  // fetch, which the origin probe uses, has no per-request equivalent.
+  if (args.insecure) process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
   const browser = await chromium.launch();
   // --insecure is opt-in and never a default. A dev host commonly serves HTTPS with a
@@ -153,6 +218,14 @@ async function main() {
       ([target, token]) => window.__hostTest.run({ target, token }),
       [args.target || undefined, token]
     );
+
+    // Run while the scratch document still exists, and before the browser closes, so
+    // a host whose save route needs a live session still has one.
+    rows.push(await originValidationRow({
+      target: args.target || defaults.target,
+      token,
+      cookies: args.cookies,
+    }));
   } finally {
     await browser.close();
     // Only what this runner put there. A page the HOST placed is the host's to clean

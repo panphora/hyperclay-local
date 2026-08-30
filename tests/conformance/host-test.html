@@ -407,7 +407,8 @@
       const r = row('The `document` block holds the per-document facts, and is withheld for a document that is not there');
       // Named by the keys hosts actually use. A host may expose whatever else it likes:
       // what is being checked is the SCOPE a fact is stated in, not the vocabulary.
-      const PER_DOCUMENT = ['etag', 'writable', 'upload', 'path', 'absolutePath', 'name', 'size', 'lastModified'];
+      const PER_DOCUMENT = ['etag', 'writable', 'upload', 'path', 'absolutePath', 'name', 'size',
+                            'lastModified', 'documentid', 'htmlclayid'];
       if (!metaBody) r.set('skip', 'Host answers /_/meta with a clean 404, so there is no answer to place facts in.');
       else if (!roundTripped) r.set('skip', 'Needs a working save round-trip first, so there is a document to describe.');
       else try {
@@ -436,10 +437,18 @@
           }));
           let body = null;
           try { body = await res.json(); } catch (_) {}
-          if (body && body.document && typeof body.document === 'object') {
+          if (!res.ok) {
+            // Withholding by OMISSION is the whole point. Answering 404 for the
+            // document rather than dropping the block turns /_/meta into the probe
+            // §5 forbids, and it takes discovery down with it: a client that cannot
+            // read `spec` and `extensions` does not know what the host can do.
+            r.set('fail', `/_/meta answered ${res.status} for a document that does not exist. §5 withholds the \`document\` block by omission and still answers about the host; a per-document status makes the answer itself the signal.`);
+          } else if (body && body.document && typeof body.document === 'object') {
             r.set('fail', 'A `document` block came back for a document that does not exist. §5 withholds it by omission, so a block that is always present tells a caller which documents are there.');
+          } else if (!body || typeof body.spec !== 'number') {
+            r.set('fail', 'The answer for a document that does not exist carries no numeric `spec`. The host half of §5 is the same for every document, so it must survive a document that is not there.');
           } else {
-            r.set('pass', `Per-document facts are in the block${etagInBlock ? ' (etag present)' : ''}, and it is omitted for a document that is not there.`);
+            r.set('pass', `Per-document facts are in the block${etagInBlock ? ' (etag present)' : ''}, and for a document that is not there the block is omitted while \`spec\` and \`extensions\` still answer.`);
           }
         }
       } catch (e) { blockedOr(r, e); }
@@ -531,11 +540,12 @@
         try {
           const before = (await fetchDoc(target)).stored;
           const probe = doc('origin-null-probe');
-          const { timedOut } = await sandboxedSave('/_/save', target, probe);
+          const { timedOut, blocked } = await sandboxedSave('/_/save', target, probe);
           const after = (await fetchDoc(target)).stored;
           if (after !== before) r.set('fail', 'A null-origin (cross-origin) save changed the stored document.');
           else if (timedOut) r.set('na', 'Inconclusive: the cross-origin probe did not resolve in time; re-run.');
-          else r.set('pass', 'A null-origin save did not change the document.');
+          else if (blocked) r.set('na', `Inconclusive: the browser blocked the probe before the host saw it (${blocked}). The \`Document-URL\` header is not CORS-safelisted, so this POST is preflighted, and a host that does not answer the preflight is unreachable from a page. Nothing here says whether the host validates Origin; check that against its own server-side tests.`);
+          else r.set('pass', 'A null-origin save reached the host and did not change the document.');
         } catch (e) { r.set('fail', 'Probe failed: ' + e.message); }
       }
     }
@@ -929,19 +939,24 @@
       // text/plain keeps this a CORS "simple request" body type; the credentialed fetch
       // carries the opaque Origin: null a real cross-origin attacker would send.
       const inner =
-        '(async()=>{try{await fetch(' + JSON.stringify(new URL(route, location.origin).href) +
+        '(async()=>{var b="";try{await fetch(' + JSON.stringify(new URL(route, location.origin).href) +
         ',{method:"POST",credentials:"include",headers:{"Content-Type":"text/plain","Document-URL":' + JSON.stringify(target) +
-        '},body:' + JSON.stringify(body) + '});}catch(e){}parent.postMessage("mhf-origin-done","*");})();';
+        '},body:' + JSON.stringify(body) + '});}catch(e){b=(e&&e.message)||"blocked";}' +
+        'parent.postMessage({t:"mhf-origin-done",blocked:b},"*");})();';
       iframe.srcdoc = '<!DOCTYPE html><html><body><scr' + 'ipt>' + inner + '</scr' + 'ipt></body></html>';
       let done = false;
-      const finish = (timedOut) => {
+      const finish = (timedOut, blocked) => {
         if (done) return;
         done = true;
         window.removeEventListener('message', onMsg);
         iframe.remove();
-        resolve({ timedOut });
+        resolve({ timedOut, blocked: blocked || '' });
       };
-      const onMsg = (e) => { if (e.data === 'mhf-origin-done') finish(false); };
+      // `Document-URL` is not a CORS-safelisted header, so this POST is preflighted.
+      // A host that does not answer the preflight never sees the request at all, and
+      // the fetch rejects inside the frame. That is the browser refusing, not the
+      // host validating, so the frame reports it and the caller scores it `na`.
+      const onMsg = (e) => { if (e.data && e.data.t === 'mhf-origin-done') finish(false, e.data.blocked); };
       window.addEventListener('message', onMsg);
       document.body.appendChild(iframe);
       setTimeout(() => finish(true), 5000);
