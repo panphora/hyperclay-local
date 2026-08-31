@@ -14,6 +14,7 @@ const os = require('os');
 // product that is not the one running.
 
 const { createApp } = require('../../src/main/server.js');
+const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 const { liveSync } = require('livesync-hyperclay');
 
 const DOC = (attrs) => `<!DOCTYPE html>\n<html${attrs}><body><p>hi</p></body></html>`;
@@ -24,7 +25,11 @@ let app;
 beforeEach(async () => {
   dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'token-strip-')));
   await fs.writeFile(path.join(dir, 'index.html'), DOC(''));
-  app = createApp(dir);
+  app = await listenLoopback(createApp(dir));
+});
+
+afterEach(async () => {
+  await closeLoopback();
 });
 
 const save = (html) => request(app)

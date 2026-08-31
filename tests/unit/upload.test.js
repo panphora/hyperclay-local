@@ -13,6 +13,7 @@ const os = require('os');
 const request = require('supertest');
 
 const { createApp } = require('../../src/main/server.js');
+const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 
 async function cleanup(dir) {
   await new Promise((r) => setTimeout(r, 50));
@@ -35,11 +36,12 @@ describe('uploads', () => {
   beforeEach(async () => {
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'upl-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
     await fs.writeFile(path.join(dir, 'index.html'), '<html>doc</html>');
   });
 
   afterEach(async () => {
+    await closeLoopback();
     await cleanup(dir);
     jest.restoreAllMocks();
   });
@@ -214,11 +216,12 @@ describe('discovery', () => {
   beforeEach(async () => {
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'meta-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
     await fs.writeFile(path.join(dir, 'index.html'), '<html>doc</html>');
   });
 
   afterEach(async () => {
+    await closeLoopback();
     await cleanup(dir);
     jest.restoreAllMocks();
   });

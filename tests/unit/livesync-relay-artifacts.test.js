@@ -25,6 +25,7 @@ jest.mock('livesync-hyperclay', () => ({
 
 const { liveSync } = require('livesync-hyperclay');
 const { createApp, getAndClearSnapshot } = require('../../src/main/server.js');
+const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 
 const PAGE = 'http://localhost:4321/index.html';
 const DOCUMENT = '<!DOCTYPE html><html><body><p>durable</p></body></html>';
@@ -39,10 +40,11 @@ describe('the relay reads both §10 artifacts', () => {
     jest.clearAllMocks();
     jest.spyOn(console, 'error').mockImplementation(() => {});
     jest.spyOn(console, 'log').mockImplementation(() => {});
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
   });
 
   afterEach(async () => {
+    await closeLoopback();
     await fs.rm(dir, { recursive: true, force: true });
     jest.restoreAllMocks();
   });

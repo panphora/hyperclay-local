@@ -22,6 +22,7 @@ jest.mock('livesync-hyperclay', () => ({
 
 const { liveSync } = require('livesync-hyperclay');
 const { createApp } = require('../../src/main/server.js');
+const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 
 describe('local saved-lane livesync', () => {
   let dir;
@@ -32,10 +33,11 @@ describe('local saved-lane livesync', () => {
     jest.clearAllMocks();
     jest.spyOn(console, 'error').mockImplementation(() => {});
     jest.spyOn(console, 'log').mockImplementation(() => {});
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
   });
 
   afterEach(async () => {
+    await closeLoopback();
     await fs.rm(dir, { recursive: true, force: true });
     jest.restoreAllMocks();
   });

@@ -4,6 +4,7 @@ const path = require('path');
 const request = require('supertest');
 
 const { createApp, getAndClearSnapshot, startServer, stopServer } = require('../../src/main/server.js');
+const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 
 // Spec §3: /_/save takes the document as text, and this route has exactly one body
 // shape. The route reads EVERY content type as text so a JSON body can be refused
@@ -34,11 +35,12 @@ describe('POST /save accepts exactly one body shape', () => {
   beforeEach(async () => {
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'shape-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
     await fs.writeFile(path.join(dir, 'index.html'), ORIGINAL);
   });
 
   afterEach(async () => {
+    await closeLoopback();
     jest.restoreAllMocks();
     await cleanup(dir);
   });
@@ -99,6 +101,7 @@ describe('the pending-snapshot map does not outlive its folder', () => {
   });
 
   afterEach(async () => {
+    await closeLoopback();
     jest.restoreAllMocks();
     await cleanup(dirA);
     await cleanup(dirB);
@@ -109,7 +112,7 @@ describe('the pending-snapshot map does not outlive its folder', () => {
   // as folder B's gets broadcast verbatim into B's edit-mode tabs, where
   // hyper-morph merges A's document into B's page.
   it('a snapshot cached under folder A is gone once folder B is served', async () => {
-    const appA = createApp(dirA);
+    const appA = await listenLoopback(createApp(dirA));
     await request(appA)
       .post('/live-sync/save')
       .set('Host', 'localhost')
@@ -125,7 +128,7 @@ describe('the pending-snapshot map does not outlive its folder', () => {
   // The same clear must not break the ordinary case: within one served folder the
   // two lanes still merge into one entry.
   it('within one folder the save lane and the live-sync lane still merge', async () => {
-    const app = createApp(dirA);
+    const app = await listenLoopback(createApp(dirA));
     await request(app)
       .post('/live-sync/save')
       .set('Host', 'localhost')

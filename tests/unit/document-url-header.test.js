@@ -14,6 +14,7 @@ const os = require('os');
 const request = require('supertest');
 
 const { createApp } = require('../../src/main/server.js');
+const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 
 const DOC = '<!DOCTYPE html><html lang="en"><body><p>doc</p></body></html>';
 const HREF = 'http://localhost:4321/index.html';
@@ -26,11 +27,12 @@ describe('Document-URL names the target document on every route', () => {
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'dochdr-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
     await fs.writeFile(path.join(dir, 'index.html'), DOC);
   });
 
   afterEach(async () => {
+    await closeLoopback();
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     jest.restoreAllMocks();
   });

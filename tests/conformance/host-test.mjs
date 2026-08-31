@@ -28,6 +28,11 @@
 // A `skip` is not a failure. A host that never announces `upload` is conforming, and
 // treating its skips as red would make the gate unusable on exactly the hosts it is
 // meant to protect. Only `fail` fails.
+//
+// The exception is a row marked `blocking`, which is a check the spec requires of
+// every host. Those cannot be skipped, only run: a `blocking` row that ends `na`
+// means the harness could not answer, and the gate exits 3 rather than green, so
+// "could not check" never reads as "conforms".
 
 import { readFile, writeFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -141,15 +146,19 @@ async function originValidationRow({ target, token, cookies }) {
     if (after !== before) {
       return {
         name,
+        blocking: true,
         status: 'fail',
         reason: `A save carrying \`Origin: ${FOREIGN_ORIGIN}\` changed the stored document (status ${res.status}). ` +
           '§8 requires the host to validate the request\'s origin on every save; without it any page ' +
           'in the reader\'s browser can rewrite their documents.',
       };
     }
-    return { name, status: 'pass', reason: `Refused (status ${res.status}); the document is unchanged.` };
+    return { name, blocking: true, status: 'pass', reason: `Refused (status ${res.status}); the document is unchanged.` };
   } catch (e) {
-    return { name, status: 'na', reason: 'The probe did not complete: ' + (e.message || e) };
+    // blocking, so an `na` here stops the gate rather than passing it. This probe is the
+    // only place §8's origin MUST is checked from outside a browser; the in-page version
+    // cannot check it, because the preflight is refused before the host ever sees it.
+    return { name, blocking: true, status: 'na', reason: 'The probe did not complete: ' + (e.message || e) };
   }
 }
 
@@ -258,6 +267,20 @@ async function main() {
     console.error('\nThe page produced no results at all. The run did not happen.');
     process.exit(2);
   }
+  // A skipped check is a check that did not run, and two of them exist only because a
+  // host or a harness could not answer: the origin probe degrades to `na` on any fetch
+  // error, and it is the ONLY coverage §8's MUST has left after the in-page version was
+  // descored for browser preflight. Exiting green on those is the "harness broke, so
+  // nothing failed" shape a gate exists to prevent, so they get their own exit code:
+  // distinct from 1, because "could not check" is a different fact from "does not
+  // conform" and a caller should be able to tell them apart.
+  const unrun = rows.filter((r) => r.status === 'na' && r.blocking);
+  if (unrun.length) {
+    console.error(`\n${unrun.length} required check(s) could not run:`);
+    for (const r of unrun) console.error('  ' + r.name);
+    process.exit(3);
+  }
+
   process.exit(failed.length ? 1 : 0);
 }
 

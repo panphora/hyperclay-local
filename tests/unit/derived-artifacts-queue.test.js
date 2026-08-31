@@ -61,6 +61,7 @@ const os = require('os');
 const request = require('supertest');
 
 const { createApp } = require('../../src/main/server.js');
+const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 const { serveSiteApiLocal } = require('../../src/main/utils/data-api');
 const { withFileLock } = require('../../src/main/utils/write-queue');
 const { getConsentRegistry, resolveWritePath } = require('../../src/main/utils/path-resolver');
@@ -80,7 +81,7 @@ describe('A1: the lazy Tailwind GET compiles inside the source file queue slot',
   beforeEach(async () => {
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'tw-queue-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
     await fs.writeFile(
       path.join(dir, 'page.html'),
       '<html><head><link href="https://hyperclay.com/tailwindcss/page.css"></head><body class="p-4">hi</body></html>'
@@ -88,6 +89,7 @@ describe('A1: the lazy Tailwind GET compiles inside the source file queue slot',
   });
 
   afterEach(async () => {
+    await closeLoopback();
     await cleanup(dir);
     jest.restoreAllMocks();
   });

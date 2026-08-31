@@ -440,6 +440,16 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       return res.status(403).json({ msg: 'Cross-origin requests are not allowed.', msgType: 'error' });
     });
 
+    // Nothing below may run before the open-time walk lands. Until it does,
+    // `paths.baseReal` is the lexical resolve of the served folder rather than its
+    // realpath, so a folder reached through a symlink, which every macOS folder
+    // under /var is, fails its own containment test and every route answers 403
+    // "Access denied". The two guards above refuse without consulting a path, so
+    // they stay ahead of this and stay cheap.
+    app.use((req, res, next) => {
+      paths.ready().then(() => next(), next);
+    });
+
     // `/_/<action>` system-route marker: forward `/_/`-prefixed requests to the
     // bare route so URLs emitted by newer hyperclayjs (e.g. `/_/save`,
     // `/_/live-sync/stream`) resolve to the same handlers. Mirrors the hyperclay

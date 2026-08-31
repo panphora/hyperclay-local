@@ -31,6 +31,7 @@ const os = require('os');
 const request = require('supertest');
 
 const { createApp } = require('../../src/main/server.js');
+const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 const { createBackup } = require('../../src/main/utils/backup');
 const dataGuard = require('../../src/main/data-loss-guard');
 
@@ -43,11 +44,12 @@ describe('A1: concurrent /save requests', () => {
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
     backupCalls.length = 0;
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
     await fs.writeFile(path.join(dir, 'index.html'), '<html><body>base</body></html>');
   });
 
   afterEach(async () => {
+    await closeLoopback();
     // The data-loss guard runs detached by design, so it can still be writing
     // into .hyperclay/guard when the request has already responded. Let it
     // settle, and retry the removal if it lands mid-teardown.

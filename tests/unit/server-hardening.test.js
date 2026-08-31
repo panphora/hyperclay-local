@@ -21,6 +21,7 @@ const {
   encodePathSegments,
   addWordBreaks
 } = require('../../src/main/server.js');
+const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 
 // The data-loss guard writes into .hyperclay/guard detached from the request by
 // design, so it can still be running when a test finishes. Let it settle and
@@ -37,11 +38,12 @@ describe('A2: Host header validation', () => {
   beforeEach(async () => {
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'host-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
     await fs.writeFile(path.join(dir, 'index.html'), '<html>ok</html>');
   });
 
   afterEach(async () => {
+    await closeLoopback();
     await cleanup(dir);
     jest.restoreAllMocks();
   });
@@ -124,11 +126,12 @@ describe('Origin validation on the mutating surface', () => {
   beforeEach(async () => {
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'origin-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
     await fs.writeFile(path.join(dir, 'index.html'), '<html>original</html>');
   });
 
   afterEach(async () => {
+    await closeLoopback();
     await cleanup(dir);
     jest.restoreAllMocks();
   });
@@ -185,10 +188,11 @@ describe('A0: directory listing escaping and href encoding', () => {
   beforeEach(async () => {
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'listing-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
   });
 
   afterEach(async () => {
+    await closeLoopback();
     await cleanup(dir);
     jest.restoreAllMocks();
   });
@@ -257,11 +261,12 @@ describe('A0 + A3: a name with %, # and a space survives listing, click and save
   beforeEach(async () => {
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'roundtrip-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
     await fs.writeFile(path.join(dir, NAME), '<html>original</html>');
   });
 
   afterEach(async () => {
+    await closeLoopback();
     await cleanup(dir);
     jest.restoreAllMocks();
   });
@@ -338,12 +343,13 @@ describe('A3: symlink escape blocked on both GET and POST', () => {
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symlink-')));
     outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'outside-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
     await fs.writeFile(path.join(outside, 'secret.txt'), 'TOP SECRET');
     await fs.writeFile(path.join(outside, 'victim.html'), '<html>victim</html>');
   });
 
   afterEach(async () => {
+    await closeLoopback();
     await cleanup(dir);
     await cleanup(outside);
     jest.restoreAllMocks();
@@ -404,7 +410,7 @@ describe('A3: symlink escape blocked on both GET and POST', () => {
     // BEFORE the folder is opened — which is the whole distinction.
     await fs.symlink(path.join(outside, 'victim.html'), path.join(dir, 'preexisting.html'));
 
-    const consenting = createApp(dir);
+    const consenting = await listenLoopback(createApp(dir));
     const res = await request(consenting).get('/preexisting.html');
 
     expect(res.status).toBe(200);
@@ -420,10 +426,11 @@ describe('A4 + A5: dotfiles and internal directories', () => {
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'reserved-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
   });
 
   afterEach(async () => {
+    await closeLoopback();
     await cleanup(dir);
     jest.restoreAllMocks();
   });
@@ -468,5 +475,58 @@ describe('A4 + A5: dotfiles and internal directories', () => {
 
     const res = await request(app).get('/weird.html');
     expect(res.status).toBe(404);
+  });
+});
+
+// A3's registry is what makes a served path canonical, and it is built by a walk that
+// starts when the app does. Until that walk lands, `baseReal` is the lexical resolve, so
+// a folder reached through a symlink fails its own containment test and every route
+// answers 403 "Access denied". The walk used to be started and never joined, and under
+// load it takes long enough for a request to arrive first.
+describe('A3: the open-time walk finishes before any request is served', () => {
+  let dir;
+
+  beforeEach(async () => {
+    dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'scan-')));
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    await closeLoopback();
+    await cleanup(dir);
+    jest.restoreAllMocks();
+  });
+
+  test('a request waits for the walk instead of racing it', async () => {
+    let releaseWalk;
+    let walkStarted;
+    const started = new Promise((resolve) => { walkStarted = resolve; });
+    const realReaddir = fs.readdir.bind(fs);
+
+    jest.spyOn(fs, 'readdir').mockImplementation(async (target, ...rest) => {
+      if (path.resolve(target) !== dir) return realReaddir(target, ...rest);
+      walkStarted();
+      await new Promise((resolve) => { releaseWalk = resolve; });
+      return realReaddir(target, ...rest);
+    });
+
+    const server = await listenLoopback(createApp(dir));
+
+    const order = [];
+    const response = request(server).get('/_/meta').then((res) => {
+      order.push('response');
+      return res;
+    });
+
+    await started;
+    // A lower bound only: long enough for an unjoined walk to let the request
+    // through. Raising it makes this stricter, never greener.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    order.push('walk released');
+    releaseWalk();
+
+    const res = await response;
+    expect(res.status).toBe(200);
+    expect(order).toEqual(['walk released', 'response']);
   });
 });

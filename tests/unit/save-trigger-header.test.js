@@ -4,6 +4,7 @@ const path = require('path');
 const request = require('supertest');
 
 const { createApp, getAndClearSnapshot } = require('../../src/main/server.js');
+const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 const dataGuard = require('../../src/main/data-loss-guard.js');
 
 // Spec §3: a save sends the document as text, so everything else about it rides
@@ -39,11 +40,12 @@ describe('the save trigger reaches the data guard from a header', () => {
       seen.push(userDriven);
       return 'ui-unknown';
     });
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
     await fs.writeFile(path.join(dir, 'index.html'), '<html><body>original</body></html>');
   });
 
   afterEach(async () => {
+    await closeLoopback();
     await cleanup(dir);
     jest.restoreAllMocks();
   });

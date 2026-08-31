@@ -634,7 +634,15 @@
             if (!live || !saved) {
               if (live) live.es.close();
               if (saved) saved.es.close();
-              r.set('skip', 'Host declares `sync` but does not serve the §10 stream at /_/sync, so delivery could not be observed.');
+              // A declared capability is a promise, and §12 holds a host to the rules of
+              // every capability it announces. Announcing `sync` and serving no stream is
+              // exactly the case this row exists to catch: clients read `extensions` and
+              // open the lane on the strength of it. Skipping here passed the host that
+              // lies, which is the only host that needed catching. A host that does not
+              // announce `sync` never reaches this branch and is still skipped.
+              r.set('fail', 'Host declares `sync` in `extensions` but does not serve the §10 stream at /_/sync'
+                + (live || saved ? ' on both lanes (' + (live ? 'saved' : 'live') + ' did not open).' : '.')
+                + ' A client reads `extensions` and opens the lane because the host said it was there.');
             } else {
               const sender = 'mhf-host-test';
               const sent = {};

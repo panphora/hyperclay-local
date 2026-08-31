@@ -13,6 +13,7 @@ jest.mock('../../src/main/utils/data-extractor', () => ({
 
 const { extractData, extractViaTag, parseExtractionRules } = require('../../src/main/utils/data-extractor');
 const { createApp } = require('../../src/main/server.js');
+const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 
 describe('data API route wiring', () => {
   let dir;
@@ -24,9 +25,10 @@ describe('data API route wiring', () => {
     parseExtractionRules.mockReset();
     jest.spyOn(console, 'error').mockImplementation(() => {});
     jest.spyOn(console, 'log').mockImplementation(() => {});
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
   });
   afterEach(async () => {
+    await closeLoopback();
     // POST /_/save fires the data-loss guard without awaiting it, so the guard
     // can still be writing into .hyperclay/guard while this runs. Node's fs.rm
     // defaults maxRetries to 0, and `force` only suppresses ENOENT, so a single

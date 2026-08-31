@@ -25,6 +25,7 @@ const fs = require('fs').promises;
 const os = require('os');
 const path = require('path');
 const { createApp } = require('../../src/main/server.js');
+const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 
 const NAME = 'styled.html';
 // getTailwindCssName only returns a name when the document links the stylesheet,
@@ -39,11 +40,12 @@ beforeEach(async () => {
   dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'tw-nonfatal-')));
   jest.spyOn(console, 'log').mockImplementation(() => {});
   jest.spyOn(console, 'error').mockImplementation(() => {});
-  app = createApp(dir);
+  app = await listenLoopback(createApp(dir));
   await fs.writeFile(path.join(dir, NAME), '<html>original</html>');
 });
 
 afterEach(async () => {
+  await closeLoopback();
   // The data-clobber guard is deliberately fire-and-forget, so it can still be
   // writing into .hyperclay/guard when the response has already returned. Without
   // retries this teardown races it and throws ENOTEMPTY.

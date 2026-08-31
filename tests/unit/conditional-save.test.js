@@ -7,6 +7,7 @@ const os = require('os');
 const request = require('supertest');
 
 const { createApp } = require('../../src/main/server.js');
+const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 const { documentEtag } = require('../../src/main/spec-wire.js');
 
 const DOC = '<!DOCTYPE html><html lang="en"><body><p>one</p></body></html>';
@@ -34,11 +35,12 @@ describe('conditional saves', () => {
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cond-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
-    app = createApp(dir);
+    app = await listenLoopback(createApp(dir));
     await fs.writeFile(path.join(dir, 'index.html'), DOC);
   });
 
   afterEach(async () => {
+    await closeLoopback();
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     jest.restoreAllMocks();
   });
