@@ -72,3 +72,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 scripts/ablation-check.py LICENSE
+
+  # The production tree is what electron-builder puts inside the asar, so a finding here is
+  # a finding in the shipped app. The full tree carries roughly thirty more in build and test
+  # tooling that runs on our own machines against our own inputs, and gating on those means a
+  # check that is red on the day it lands and ignored by the week after.
+  #
+  # Critical only, for the same reason. The highs that remain after the AWS SDK moved out are
+  # each unreachable from the app, so failing on them would spend the gate's credibility on
+  # findings we have already read. Tighten to `high` once those are gone rather than now.
+  #
+  # This job deliberately does not install: `npm audit` reads package-lock.json and asks the
+  # registry, so the gate keeps reporting even when the tree cannot be installed.
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm audit --omit=dev --audit-level=critical
