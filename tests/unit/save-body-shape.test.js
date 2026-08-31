@@ -59,7 +59,7 @@ describe('POST /save accepts exactly one body shape', () => {
   ])('refuses a JSON body with 415: %s', async (contentType, body) => {
     const res = await post(contentType, body);
     expect(res.status).toBe(415);
-    expect(res.body.code).toBe('unsupported-media-type');
+    expect(res.body.code).toBe('unsupported-type');
     expect(await onDisk()).toBe(ORIGINAL);
   });
 

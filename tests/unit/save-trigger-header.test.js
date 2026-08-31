@@ -129,7 +129,7 @@ describe('the save trigger reaches the data guard from a header', () => {
       .send({ content: '<html><body>written</body></html>', userDriven: true });
 
     expect(res.status).toBe(415);
-    expect(res.body.code).toBe('unsupported-media-type');
+    expect(res.body.code).toBe('unsupported-type');
     expect(seen).toEqual([]);
     expect(await fs.readFile(path.join(dir, 'index.html'), 'utf8'))
       .toBe('<html><body>original</body></html>');

@@ -257,6 +257,52 @@ describe('the relay reads both §10 artifacts', () => {
     expect(liveSync.broadcast).toHaveBeenCalled();
   });
 
+  // Spec §6: the stamp of what this host stored for the bytes a tab just saved. The saving
+  // tab attaches it to the snapshot it relays after its save returns, so a receiver adopts
+  // the stamp as part of applying the content it describes and cannot do one without the
+  // other. It reaches editors only, because only an editor saves.
+  //
+  // The frame this replaces was a stamp with no content, sent by the host. It reached
+  // nobody, and had it arrived it would have raced the snapshot it belonged to: a save and
+  // its tab's relay POST are two concurrent requests, so a receiver could take the new stamp
+  // while still holding the old bytes and its next save would then pass If-Match and
+  // overwrite a save it had never seen.
+  test('an etag on a snapshot reaches the editors', async () => {
+    await post({ snapshot: SNAPSHOT, sender: 'tab-1', etag: 'stored-4' });
+
+    const payload = liveSync.broadcast.mock.calls[0][1];
+    expect(payload.etag).toBe('stored-4');
+    expect(payload.html).toBe(SNAPSHOT);
+  });
+
+  test('a document carries no etag: a viewer has no save to answer for', async () => {
+    const res = await post({ document: DOCUMENT, sender: 'tab-1', etag: 'stored-4' });
+
+    expect(res.status).toBe(200);
+    const payload = liveSync.broadcast.mock.calls[0][1];
+    expect(payload.etag).toBeUndefined();
+  });
+
+  test.each([
+    ['a number', 7],
+    ['an object', {}],
+    ['an array', []]
+  ])('an etag that is %s is refused', async (_label, etag) => {
+    const res = await post({ snapshot: SNAPSHOT, sender: 'tab-1', etag });
+
+    expect(res.status).toBe(400);
+    expect(liveSync.broadcast).not.toHaveBeenCalled();
+  });
+
+  // Absent is not malformed, same as the identity map above: every pre-spec client sends
+  // no stamp, and they must go on relaying exactly as they do today.
+  test('no etag at all still relays', async () => {
+    const res = await post({ snapshot: SNAPSHOT, sender: 'tab-1' });
+
+    expect(res.status).toBe(200);
+    expect(liveSync.broadcast.mock.calls[0][1].etag).toBeUndefined();
+  });
+
   // §10 states it flatly: /_/sync never writes to disk, whichever field it
   // carries. Relaying is continuous and safe to lose; saving is a deliberate act
   // with one route and one set of consequences.

@@ -302,7 +302,7 @@ Save-Trigger: user
 - The target file is the pathname of `Document-URL`, percent-decoded exactly once. A URL
   pointing at `/` resolves to `index.html`.
 - A JSON content type is refused with 415
-  `{"msg":"/_/save takes the document as text, not JSON.","msgType":"error","code":"unsupported-media-type"}`.
+  `{"msg":"/_/save takes the document as text, not JSON.","msgType":"error","code":"unsupported-type"}`.
 - `Save-Trigger: user` marks a human gesture, `auto` marks autosave or a script, and any
   unknown value is treated as `auto`. The pre-spec header `X-Hyperclay-User-Driven: 1` is
   read only when `Save-Trigger` is absent. The value feeds the data-clobber guard.

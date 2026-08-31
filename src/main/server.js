@@ -17,6 +17,7 @@ const crypto = require('crypto');
 const busboy = require('busboy');
 const { pruneAllVersions } = require('./utils/prune-versions.js');
 const { scopeTailwindLink } = require('./utils/tailwind-scoping.js');
+const { stripSaveToken } = require('./utils/root-attrs.js');
 const {
   compileTailwind,
   getTailwindCssName
@@ -567,7 +568,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     // the pre-spec spelling of the same thing.
     app.post(['/live-sync/save', '/sync'], async (req, res) => {
       const body = req.body || {};
-      const { sender, identityMap } = body;
+      const { sender, identityMap, etag } = body;
 
       // §10 names two artifacts and the field says which audience each is for. A
       // snapshot is the sending tab's working state, edit controls and all, and
@@ -647,8 +648,24 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         return res.status(400).json({ error: 'identityMap must be a plain object.' });
       }
 
-      const snapshotHtml = lane === 'snapshot' ? html : null;
-      const documentHtml = lane === 'document' ? html : null;
+      // Spec §6: the stamp of what this host stored for the bytes a tab just saved. The SAVING
+      // TAB attaches it and this relay only carries it, unread. A wrong one costs a receiver a
+      // spurious 412 on its next save, never a wrong write, which is why it needs no more than a
+      // shape check here.
+      //
+      // It rides on a snapshot and never alone. A stamp by itself would tell a tab it is in step
+      // with disk without giving it the bytes to be in step with, and its next save would then
+      // overwrite a save it had not received.
+      if (etag !== undefined && typeof etag !== 'string') {
+        return res.status(400).json({ error: 'etag must be a string.' });
+      }
+
+      // §9 runs in both directions. A token belongs to one response and one tab, so
+      // relaying one hands another tab a credential that is not theirs, and a peer that
+      // stores what it received then writes it to disk. HTML Clay strips on this path
+      // too, for the same reason.
+      const snapshotHtml = lane === 'snapshot' ? stripSaveToken(html) : null;
+      const documentHtml = lane === 'document' ? stripSaveToken(html) : null;
 
       const validated = validateAndResolvePath(file, baseDir);
       if (validated.error) {
@@ -675,13 +692,15 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
 
         // Broadcast to other local browsers on the same channel as /live-sync/stream.
         //
-        // identityMap rides along on this lane and only this one. Receivers use it to
-        // pair elements across a morph by stable id instead of by content scoring,
-        // which is what keeps focus, scroll position and half-typed input where they
-        // were. This host had never forwarded it while hyperclay always has, so live
-        // sync in the desktop app lost that state on every frame. A viewer has no
-        // working state to preserve, so the document lane above does not carry it.
-        liveSync.broadcast(file, { html: snapshotHtml, sender, identityMap }, { lane: 'live' });
+        // identityMap and etag both ride along on this lane and only this one. Receivers
+        // use the first to pair elements across a morph by stable id instead of by content
+        // scoring, which is what keeps focus, scroll position and half-typed input where
+        // they were. This host had never forwarded it while hyperclay always has, so live
+        // sync in the desktop app lost that state on every frame. The second tells a
+        // receiver the version its next save is answering, and it is on this lane because
+        // only an editor saves. A viewer has neither working state to preserve nor a save
+        // to make, so the document lane above carries neither.
+        liveSync.broadcast(file, { html: snapshotHtml, sender, identityMap, etag }, { lane: 'live' });
 
         console.log(`[LiveSync] Broadcast: ${file} (from: ${sender})`);
 
@@ -825,7 +844,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         return res.status(415).json({
           msg: '/_/save takes the document as text, not JSON.',
           msgType: 'error',
-          code: 'unsupported-media-type'
+          code: 'unsupported-type'
         });
       }
 
@@ -847,6 +866,14 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
           code: 'invalid-document'
         });
       }
+
+      // Spec §9, and it has to happen HERE, before the etag is computed and before
+      // anything else reads `content`: the stamp must describe the bytes that reach
+      // disk. This host injects no token of its own, but a document that has been
+      // served by one that does carries the attribute in what the browser sends back,
+      // and nothing else on this path would take it out. See utils/root-attrs.js for
+      // what a token on disk costs.
+      content = stripSaveToken(content);
 
       const userDriven = dataGuard.userDrivenFromHeader(req);
 
