@@ -3,6 +3,7 @@
 ## [1.23.0] - 2026-08-29
 
 ### Added
+- Save receipts. A save may carry a `Save-ID`, an opaque id a client mints for that one attempt, and this host remembers which id belongs to the bytes it currently stores, reporting it as `saveId` in discovery, on every accepted save, and on every 412. A client whose save timed out can then ask whether its own write is what landed, rather than guessing and either overwriting somebody else's work or showing a conflict notice over a few seconds of bad wifi. The id is kept beside the stamp of the bytes that save wrote and reported only while that stamp still matches what is on disk, so a write from a text editor, a git checkout, or the sync engine pulling a newer copy down invalidates it without any of them knowing it exists. An id is never minted here and is never a credential.
 - Conditional saves. Discovery announces `conditional`, every save answer carries an `etag`, and a save sent with `If-Match` is refused with 412, nothing written, when the document changed underneath it. The comparison happens inside the write lock, since a stamp checked against bytes read outside it is the exact race the feature exists to close, and the stamp is computed over the bytes on disk rather than over a decoded copy of them.
 - `format` is announced in discovery. This host has always honoured `formathtml="true"`, and a host that does not declare `format` is telling every client its bytes are kept verbatim.
 

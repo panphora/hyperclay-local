@@ -710,7 +710,8 @@ async function main() {
   log(`  macOS (ARM):   https://local.hyperclay.com/HyperclayLocal-${newVersion}-arm64.dmg`);
   log(`  macOS (Intel): https://local.hyperclay.com/HyperclayLocal-${newVersion}.dmg`);
   log(`  Windows:       https://local.hyperclay.com/HyperclayLocal-Setup-${newVersion}.exe`);
-  log(`  Linux:         https://local.hyperclay.com/HyperclayLocal-${newVersion}.AppImage`);
+  log(`  Linux (x64):   https://local.hyperclay.com/HyperclayLocal-${newVersion}.AppImage`);
+  log(`  Linux (ARM):   https://local.hyperclay.com/HyperclayLocal-${newVersion}-arm64.AppImage`);
   log('');
   logSuccess('Released.');
   log('');

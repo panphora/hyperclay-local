@@ -112,11 +112,12 @@ function moveLinuxExecutables() {
       }
     });
 
-    // Move latest-linux.yml for auto-updates
-    const linuxYml = 'latest-linux.yml';
-    if (fs.existsSync(path.join(distDir, linuxYml))) {
-      moved |= moveFile(path.join(distDir, linuxYml), linuxYml);
-    }
+    // Move latest-linux.yml (x64) / latest-linux-arm64.yml for auto-updates
+    ['latest-linux.yml', 'latest-linux-arm64.yml'].forEach(linuxYml => {
+      if (fs.existsSync(path.join(distDir, linuxYml))) {
+        moved |= moveFile(path.join(distDir, linuxYml), linuxYml);
+      }
+    });
   }
 
   if (!moved) {
@@ -136,7 +137,8 @@ function moveAllExecutables() {
           file.endsWith('.exe') || file.endsWith('.exe.blockmap') ||
           file.endsWith('.AppImage') || file.endsWith('.snap') ||
           file.endsWith('.deb') || file.endsWith('.rpm') ||
-          file === 'latest-mac.yml' || file === 'latest.yml' || file === 'latest-linux.yml') {
+          file === 'latest-mac.yml' || file === 'latest.yml' ||
+          file === 'latest-linux.yml' || file === 'latest-linux-arm64.yml') {
         moved |= moveFile(path.join(distDir, file), file);
       }
     });

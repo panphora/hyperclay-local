@@ -126,12 +126,7 @@
     "linux": {
       "icon": "build/icon.png",
       "target": [
-        {
-          "target": "AppImage",
-          "arch": [
-            "x64"
-          ]
-        }
+        "AppImage"
       ]
     },
     "nsis": {
@@ -191,6 +186,9 @@
     "tailwind-hyperclay": "^0.1.17",
     "tailwindcss": "^4.1.14",
     "upath": "^2.0.1"
+  },
+  "overrides": {
+    "yauzl": "^3.4.0"
   },
   "hyper": {
     "kind": "app",

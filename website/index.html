@@ -859,7 +859,7 @@
          for filenames and sizes: the hero button clones the OS-matched row, the
          version tag reads data-version, release tooling reads the literal
          filenames, and it works with JavaScript off. Bump the version by editing
-         the four filenames + data-version here. Sizes are the repo README values. -->
+         the five filenames + data-version here. Sizes are the repo README values. -->
     <section class="section" id="downloads" data-version="1.22.6">
       <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Download</p>
       <h2 class="section-h">Download <span class="version-tag" id="version-tag"></span></h2>
@@ -881,9 +881,14 @@
           <span class="dl-size">90.4 MB</span>
         </li>
         <li class="dl-row" data-os="linux">
-          <span class="dl-os">Linux <span class="dl-arch">AppImage</span></span>
+          <span class="dl-os">Linux <span class="dl-arch">x86_64 AppImage</span></span>
           <a class="dl-file" download href="https://local.hyperclay.com/HyperclayLocal-1.22.6.AppImage">HyperclayLocal-1.22.6.AppImage</a>
           <span class="dl-size">123.8 MB</span>
+        </li>
+        <li class="dl-row" data-os="linux-arm">
+          <span class="dl-os">Linux <span class="dl-arch">ARM64 AppImage</span></span>
+          <a class="dl-file" download href="https://local.hyperclay.com/HyperclayLocal-1.22.6-arm64.AppImage">HyperclayLocal-1.22.6-arm64.AppImage</a>
+          <span class="dl-size">~124 MB</span>
         </li>
       </ul>
       <p class="dl-source">Source code: <a href="https://github.com/panphora/hyperclay-local" target="_blank" rel="noopener">github.com/panphora/hyperclay-local</a></p>
@@ -1081,8 +1086,17 @@ npm install</pre></div>
         feature(hrefFor('windows'), 'Download for Windows');
         sub.innerHTML = '<a href="#downloads">Not on Windows? See all downloads</a>';
       } else if (os === 'linux') {
-        feature(hrefFor('linux'), 'Download for Linux');
-        sub.innerHTML = '<a href="#downloads">Not on Linux? See all downloads</a>';
+        feature(hrefFor('linux'), 'Download for Linux (x86_64)');
+        sub.innerHTML = '<a href="' + hrefFor('linux-arm') + '" download>ARM64?</a> &middot; <a href="#downloads">See all downloads</a>';
+        // Best effort: switch to the ARM64 build if the CPU reports arm.
+        if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+          navigator.userAgentData.getHighEntropyValues(['architecture']).then(function (d) {
+            if (d && d.architecture === 'arm') {
+              feature(hrefFor('linux-arm'), 'Download for Linux (ARM64)');
+              sub.innerHTML = '<a href="' + hrefFor('linux') + '" download>x86_64?</a> &middot; <a href="#downloads">See all downloads</a>';
+            }
+          }).catch(function () {});
+        }
       } else {
         // Mobile or unknown: send to the full desktop list instead of a file.
         btn.href = '#downloads';

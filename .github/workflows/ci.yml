@@ -10,10 +10,9 @@ on:
   pull_request:
 
 env:
-  # Node 24, matching the release workflow. electron's install.js extracts with
-  # extract-zip 2.0.1, which on Node 26 exits without extracting and leaves a tree
-  # where require('electron') throws. See the note in release.yml.
-  NODE_VERSION: "24"
+  # Node 26, matching the release workflow. See the note in release.yml for why this
+  # said 24 until 2026-08-31 and what the yauzl override in package.json fixes.
+  NODE_VERSION: "26"
   NPM_VERSION: "11"
 
 jobs:
@@ -34,9 +33,11 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           npm-version: ${{ env.NPM_VERSION }}
 
-      # Serial: no jest workers for V8 to segfault during GC, and no parallel
-      # contention, which is what made this suite fail intermittently and then pass
-      # in isolation.
+      # Serial, though both reasons for it are now fixed: the GC segfault was V8 13.6,
+      # which is every Node 24, and the "fails intermittently, passes in isolation"
+      # flakiness was supertest binding its test servers on the wildcard address
+      # (tests/helpers/loopback.js). Kept for one release so that a CI failure means
+      # the code rather than the move to Node 26. Drop the flag once that holds.
       - run: npm test -- --runInBand
 
   # The conformance gate drives the Malleable HTML File host-test page against a real

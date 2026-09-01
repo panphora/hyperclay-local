@@ -200,13 +200,28 @@
     s == null ? s : s.replace(/(<html\b[^>]*?)>/i, (m, open) =>
       open.replace(/\s+(?:savetoken|htmlclaytoken|documentid|htmlclayid)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '') + '>');
 
-  async function save(body, { target, token, ifMatch } = {}) {
+  async function save(body, { target, token, ifMatch, saveId } = {}) {
     const headers = { 'Content-Type': 'text/html', 'Document-URL': target };
     if (ifMatch != null) headers['If-Match'] = ifMatch;
+    if (saveId != null) headers['Save-ID'] = saveId;
     const res = await guard(() => fetch(saveRoute(token), { method: 'POST', headers, body, credentials: creds() }));
     let json = null;
     try { json = await res.clone().json(); } catch (_) {}
     return { res, json };
+  }
+
+  // The `document` block as it stands right now, or null. Asked fresh every time,
+  // because the whole point of the block's `etag` and `saveId` is that they change
+  // under the caller's feet.
+  async function metaDocument(token, target) {
+    try {
+      const res = await guard(() => fetch(metaRoute(token), {
+        headers: { 'Document-URL': target }, credentials: creds(), cache: 'no-store'
+      }));
+      if (!res.ok) return null;
+      const body = await res.json();
+      return body && typeof body.document === 'object' ? body.document : null;
+    } catch (_) { return null; }
   }
 
   const uploadRoute = (token) => (token ? `/_/upload/${encodeURIComponent(token)}` : '/_/upload');
@@ -719,6 +734,81 @@
               else if (typeof freshEtag !== 'string' || !freshEtag) r.set('fail', 'A successful conditional save returned no "etag", so the client has nothing to send next (§6).');
               else if (freshEtag === etag) r.set('fail', 'The stamp did not change after a save that changed the document, so the next If-Match would be stale.');
               else r.set('pass', 'etag on every response; stale If-Match → 412 conflict, no write; matching If-Match saved and re-stamped.');
+            }
+          }
+        } catch (e) { blockedOr(r, e); }
+      }
+    }
+
+    // 9b. receipts (capability): the host remembers which save produced the bytes it
+    //     stores and reports that id from all three surfaces, so a client whose save
+    //     timed out can ask whether its own write is what landed (spec §6). Announced
+    //     alone it is not usable, because the send that follows a MISSING receipt is
+    //     only safe because If-Match is there to refuse it.
+    {
+      const r = row('receipts: saveId echoed, reported by /_/meta, and never minted');
+      if (!caps.has('receipts')) r.set('skip', 'Host does not declare `receipts`.');
+      else if (!caps.has('conditional')) {
+        r.set('fail', 'Host declares `receipts` without `conditional`. §9 requires both: a receipt can prove an earlier save ran, but only If-Match makes the send that follows a missing receipt safe.');
+      }
+      else if (!roundTripped) r.set('skip', 'Needs a working save round-trip first.');
+      else {
+        try {
+          const mine = 'mhf-receipt-' + Math.random().toString(36).slice(2, 12);
+          const saved = await save(doc('receipts-baseline'), { target, token, saveId: mine });
+          const echoed = saved.json && saved.json.saveId;
+          const block = await metaDocument(token, target);
+          const reported = block && block.saveId;
+          const stamp = saved.json && saved.json.etag;
+
+          if (!saved.res.ok) {
+            r.set('fail', `A save carrying Save-ID was refused (status ${saved.res.status}).`);
+          } else if (echoed !== mine) {
+            r.set('fail', 'An accepted save did not echo the `saveId` it was sent, so a client that DID get an answer cannot confirm which attempt it was (§6).');
+          } else if (reported !== mine) {
+            r.set('fail', 'GET /_/meta did not report the id of the save that produced the stored bytes, which is the one surface a client can ask after a save it never got an answer to (§6).');
+          } else if (block.etag !== stamp) {
+            r.set('fail', 'The `saveId` in /_/meta is not paired with the stamp of the bytes it describes, so a client cannot tell which version it is being told about (§6).');
+          } else {
+            // Never minted. A host that invents an id hands a client proof of a save
+            // that client never made, which is the one way this capability can cost
+            // somebody their work rather than merely failing to save it.
+            const anon = await save(doc('receipts-anonymous'), { target, token });
+            const afterAnon = await metaDocument(token, target);
+            const anonEchoed = anon.json && anon.json.saveId;
+            const anonReported = afterAnon && afterAnon.saveId;
+            // An id-less save's bytes have no receipt, so EVERY surface must now be
+            // silent. Checking only that the answer is not the previous client's id
+            // lets a host mint one of its own and call it a receipt, which is the
+            // failure that hands a client proof of a save it never made.
+            if (anon.res.ok && typeof anonEchoed === 'string' && anonEchoed) {
+              r.set('fail', `A save that carried no Save-ID was answered with one ("${anonEchoed}"). §6: a host echoes an id, it never mints one.`);
+            } else if (typeof anonReported === 'string' && anonReported) {
+              r.set('fail', anonReported === mine
+                ? 'A later save left the previous receipt in place, so the id now describes bytes that save did not write (§6).'
+                : `/_/meta reports a receipt ("${anonReported}") for bytes written by a save that carried no Save-ID. §6: an id-less save replaces the pair with an id-less one, and a host never mints an id.`);
+            } else {
+              // The refusal surface, in both directions. A 412 must carry the receipt
+              // of the bytes that CAUSED it: neither a stale one, nor the refused
+              // request's own id echoed back, nor nothing at all.
+              const current = 'mhf-receipt-' + Math.random().toString(36).slice(2, 12);
+              const recurrent = await save(doc('receipts-current'), { target, token, saveId: current });
+              const currentEtag = recurrent.json && recurrent.json.etag;
+              const stale = await save(doc('receipts-should-not-write'), { target, token, saveId: 'mhf-refused-' + current, ifMatch: 'stale-' + (currentEtag || '') + '-x' });
+              const onRefusal = stale.json && stale.json.saveId;
+              if (!recurrent.res.ok) {
+                r.set('fail', `A save carrying Save-ID was refused (status ${recurrent.res.status}), so the refusal path could not be checked.`);
+              } else if (stale.res.status !== 412) {
+                r.set('fail', `Stale If-Match did not return 412 (status ${stale.res.status}), so the refusal path could not be checked.`);
+              } else if (onRefusal === mine) {
+                r.set('fail', 'A refusal named the receipt of bytes that are no longer stored. §6 asks for the receipt of the bytes that CAUSED the refusal, and a client reading its own id there concludes its own save landed when it did not.');
+              } else if (onRefusal !== current) {
+                r.set('fail', onRefusal
+                  ? `A refusal named "${onRefusal}" rather than "${current}", the id of the save that wrote the bytes it refused against (§6).`
+                  : 'A refusal carried no `saveId` even though the bytes it refused against were written by a save that named itself. Without it a client cannot tell its own late duplicate from somebody else\'s write, which is the whole recovery this capability exists for (§6).');
+              } else {
+                r.set('pass', 'saveId echoed on the save, reported by /_/meta with the matching stamp, absent everywhere after an id-less save, and a refusal names the id of the bytes that caused it.');
+              }
             }
           }
         } catch (e) { blockedOr(r, e); }

@@ -21,21 +21,23 @@ on:
         type: boolean
 
 env:
-  # Node 24, not 26. electron's install.js extracts its binary with extract-zip 2.0.1,
-  # which on Node 26 resolves in 0.2s without extracting and lets the process exit
-  # before path.txt is written. install.js still exits 0, so `npm ci` reports success
-  # over a tree where require('electron') throws and eleven suites cannot load. Four
-  # dry runs died on it. Node 24 is what this app is released with today and installs
-  # electron correctly.
-  NODE_VERSION: "24"
-  # Node 26 ships npm 12, which blocks dependency install scripts by default.
-  # Electron's postinstall is what downloads the Electron binary, so under npm 12
-  # `npm ci` yields a tree where require('electron') throws and eleven suites cannot
-  # load. package.json carries an allowScripts approval for all seven such packages
-  # and npm 12 stops warning, but the scripts still do not run; two dry runs died on
-  # it. Pinning to the npm this app is actually released with makes the runner install
-  # exactly the way the release machine does, which is what this pipeline wants
-  # regardless. Revisit when npm 12's approval mechanism is pinned down.
+  # Node 26 since 2026-08-31. This said 24 because `npm ci` on 26 produced a tree
+  # where require('electron') throws, which was real but misattributed to
+  # extract-zip. The bug is three levels down, in fd-slicer 1.1.0
+  # (extract-zip 2.0.1 -> yauzl 2.10.0 -> fd-slicer), which sets `destroyed = true`
+  # immediately before `push(null)`. Node 26 drops the bytes a destroyed Readable has
+  # already buffered, so the last chunk of any zip entry over 64KB is stranded,
+  # extract-zip's promise never settles, and the process exits 0 having extracted
+  # nothing. The `overrides` on yauzl in package.json takes yauzl 3, which dropped
+  # fd-slicer entirely; the install then works on 24 and 26 alike. Node 26 is also
+  # the V8 that stops segfaulting jest workers during GC, which every Node 24 does.
+  NODE_VERSION: "26"
+  # Pinned because the Node image's bundled npm moves under us, and the runner should
+  # install the way the release machine does. Node 26 ships npm 11.19, so this is the
+  # major it already had. The earlier note here said Node 26 ships npm 12 and that
+  # npm 12 ignores package.json's allowScripts approvals. Neither is true: no Node 26
+  # release bundles npm 12, and the approvals were verified working under npm 12.0.2.
+  # The broken tree was fd-slicer, which has the identical symptom.
   NPM_VERSION: "11"
 
 jobs:
@@ -101,7 +103,12 @@ jobs:
 
   test-linux:
     needs: verify
-    runs-on: ubuntu-latest
+    # Both shipped Linux arches. The arm64 runner is also what builds the arm64
+    # AppImage, so this is the same environment the release binary comes from.
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -198,10 +205,24 @@ jobs:
           path: executables/
           if-no-files-found: error
 
-  # ── Linux: AppImage ──
+  # ── Linux: AppImage, one per arch ──
+  # Each arch builds on its own native runner rather than cross-building, because
+  # lightningcss resolves its native binding through npm optionalDependencies at
+  # install time: an arm64 AppImage assembled on an x64 runner packages the x64
+  # binding, passes every CI check, and dies on the first Tailwind compile on a
+  # user's machine. package.json pins no linux arch, so each runner builds its own.
   build-linux:
     needs: [test-linux, license]
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x64
+            suffix: ""
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            suffix: "-arm64"
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -216,9 +237,20 @@ jobs:
           # token to read release info while writing update metadata. The old
           # Windows workflow passed one for the same reason and never published.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The website, README and release summary all hard-code these filenames, so
+      # electron-builder quietly changing its arch classifier would ship dead links.
+      - name: Assert the artifact has the advertised name
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          FILE="executables/HyperclayLocal-${VERSION}${{ matrix.suffix }}.AppImage"
+          test -f "$FILE" || {
+            echo "Expected $FILE, found:"
+            ls executables/
+            exit 1
+          }
       - uses: actions/upload-artifact@v4
         with:
-          name: linux
+          name: linux-${{ matrix.arch }}
           path: executables/
           if-no-files-found: error
 

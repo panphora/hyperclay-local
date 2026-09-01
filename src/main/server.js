@@ -83,6 +83,40 @@ let snapshotCleanupTimer = null;
 // the app was closed, and a confident wrong attribution is worse than none.
 const lastBrowserSaveEtags = new Map();
 
+// §6's receipt cap. The id is remembered per open file, so an unbounded header
+// would be free memory to hand away. Overlong is DROPPED rather than truncated:
+// a truncated id could collide with a different client's id and hand somebody
+// else's proof to the wrong tab.
+const MAX_SAVE_ID_LEN = 128;
+
+/**
+ * Spec §6: the id of the save whose body produced the bytes currently on disk,
+ * or null when this host cannot prove that pairing.
+ *
+ * The proof is answer-time and needs no invalidation hooks: the id was recorded
+ * beside the etag of the bytes that save wrote, so a stamp that no longer equals
+ * what is on disk means something else has written since and the pair is
+ * worthless. A text editor, a git checkout, or the sync engine pulling a newer
+ * copy down all invalidate it by moving the bytes, without any of them knowing
+ * this record exists. Unverifiable reads as absent, never as an answer.
+ *
+ * The claim is deliberately about BYTES and not about a person: "disk holds the
+ * stored form of a body that save sent". That is why `mtimeNs`, which `changedBy`
+ * needs to survive a B -> C -> B revert, is not consulted here. Naming an actor
+ * after a revert names the wrong one; attesting to bytes after a revert is still
+ * true, and §6 lets a client adopt a stamp for bytes byte-equivalent to what its
+ * own save produced.
+ *
+ * @param {string} filePath - canonical path, the same key the write queue uses
+ * @param {string} currentEtag - stamp of the bytes on disk right now
+ * @returns {string|null}
+ */
+function saveReceiptFor(filePath, currentEtag) {
+  const ours = lastBrowserSaveEtags.get(filePath);
+  if (!ours || !ours.saveId || ours.etag !== currentEtag) return null;
+  return ours.saveId;
+}
+
 /**
  * Get and clear what a file owes the platform: the live-sync snapshot, the save's
  * provenance bit, or either one alone. Called by the sync engine before uploading.
@@ -887,6 +921,14 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
 
       const userDriven = dataGuard.userDrivenFromHeader(req);
 
+      // §6's receipt id. Opaque, never a credential, and never minted here: this host
+      // only ever echoes an id a client sent, so a client can trust that seeing its
+      // own id back means its own save is what wrote these bytes. Read at route scope
+      // rather than inside the write queue below, because the answer this rides home
+      // on is built after that queue has released.
+      let saveId = req.headers['save-id'];
+      if (typeof saveId !== 'string' || saveId.length > MAX_SAVE_ID_LEN) saveId = '';
+
       // Phase-4 canonical resolution. `filePath` is the real path on disk (an
       // in-tree symlink is followed only when it was consented at open time),
       // and it is also the write-queue key below.
@@ -988,12 +1030,18 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
             const untouchedSinceOurWrite =
               !!ours && ours.mtimeNs !== null && !!now && now.mtimeNs === ours.mtimeNs;
 
+            const currentEtag = documentEtag(storedBytes);
             conflict = {
               status: 412,
-              etag: documentEtag(storedBytes),
-              changedBy: ours && ours.etag === documentEtag(storedBytes) && untouchedSinceOurWrite
+              etag: currentEtag,
+              changedBy: ours && ours.etag === currentEtag && untouchedSinceOurWrite
                 ? 'another-tab'
-                : null
+                : null,
+              // §6's late-duplicate rule. A client that recognises its OWN id here is
+              // being told its own earlier save is what moved the document, which is
+              // not a conflict with anybody: it adopts this stamp and re-sends rather
+              // than alarming somebody about themselves.
+              saveId: saveReceiptFor(filePath, currentEtag)
             };
             return;
           }
@@ -1052,7 +1100,13 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         const wroteAt = await fs.stat(filePath, { bigint: true }).catch(() => null);
         lastBrowserSaveEtags.set(filePath, {
           etag: documentEtag(content),
-          mtimeNs: wroteAt ? wroteAt.mtimeNs : null
+          mtimeNs: wroteAt ? wroteAt.mtimeNs : null,
+          // §6's receipt, bound here and nowhere else: this is the one moment this
+          // host knows both which request's body it stored and what those stored
+          // bytes stamp to. An id-less save records '' and so replaces any id
+          // remembered from an earlier one, which is what keeps a remembered id from
+          // outliving its own bytes when a later save happens to restore them.
+          saveId
         });
 
         // Morph view-mode tabs with the persisted on-disk HTML. Edit-mode tabs
@@ -1134,6 +1188,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
             etag: conflict.etag
           };
           if (conflict.changedBy) body.changedBy = conflict.changedBy;
+          if (conflict.saveId) body.saveId = conflict.saveId;
           console.log(`Refused a conditional save of ${name}: the stored bytes have moved on`);
           return res.status(412).json(body);
         }
@@ -1145,7 +1200,11 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
           // save response, not only the refusals, or a client has nothing to send
           // as its next If-Match. Taken from `content`, which the closure above
           // reassigned to the formatted bytes that reached disk.
-          etag: documentEtag(content)
+          etag: documentEtag(content),
+          // The echo that makes a timed-out save recoverable. A client whose request
+          // never returned asks the host later and compares this id with its own; a
+          // client whose request DID return has it confirmed in the same breath.
+          ...(saveId ? { saveId } : {})
         });
         console.log(`Saved: ${name}`);
       } catch (error) {
@@ -1206,7 +1265,12 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       // correct is rewritten to the value it had, so the visible effect is repairing
       // the link after a rename. It matters most to a client comparing what it sent
       // against what is on disk, which is what a conditional save does.
-      const body = { spec: 1, extensions: ['conditional', 'format', 'scoped-stylesheet', 'sync', 'upload'] };
+      // `receipts` because /_/save remembers the Save-ID of the request whose body
+      // produced the bytes it stores and reports it from all three §6 surfaces. It
+      // is announced only alongside `conditional`, which §9 requires: a receipt can
+      // prove an earlier save ran, but only If-Match makes the send that follows a
+      // MISSING receipt safe.
+      const body = { spec: 1, extensions: ['conditional', 'format', 'receipts', 'scoped-stylesheet', 'sync', 'upload'] };
       const href = documentUrlHeader(req);
       if (href) {
         try {
@@ -1232,6 +1296,11 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
               // has no stamp of its own; this is where it gets one without a save.
               etag: documentEtag(stored)
             };
+            // §6: the id of the save that produced exactly these bytes, when this
+            // host can still prove the pairing. This is the surface a client asks
+            // after a save whose outcome it never learned.
+            const receipt = saveReceiptFor(filePath, body.document.etag);
+            if (receipt) body.document.saveId = receipt;
           }
         } catch { /* omission, never a different answer */ }
       }
