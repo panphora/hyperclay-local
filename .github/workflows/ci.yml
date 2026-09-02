@@ -88,6 +88,10 @@ jobs:
 
       - name: Build the AppImage this runner's arch ships
         run: npm run linux-build:run
+        env:
+          # Not for publishing, same as release.yml: electron-builder infers a GitHub
+          # provider from the remote and refuses to build on CI without a token.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install a virtual display and the browser driver
         run: |
