@@ -67,6 +67,48 @@ jobs:
           HOST_GATE: "1"
           HOST_GATE_RUNNER: ${{ github.workspace }}/tests/conformance/host-test.mjs
 
+  # The shipped AppImage, used the way a Linux user uses it: does it start on a
+  # stock Ubuntu 24.04 (unprivileged user namespaces restricted, no libfuse2), does
+  # its server save a document from a real browser, and does the popover render.
+  # The test matrix above proves the code; this proves the download. Both shipped
+  # arches, on the runners that build them.
+  linux-desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          npm-version: ${{ env.NPM_VERSION }}
+
+      - name: Build the AppImage this runner's arch ships
+        run: npm run linux-build:run
+
+      - name: Install a virtual display and the browser driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb dbus-x11
+          npx playwright install --with-deps chromium
+
+      - name: Linux checks
+        env:
+          SYSTEM_MUTATIONS: "1"
+        run: |
+          export APPIMAGE="$(ls executables/HyperclayLocal-*.AppImage | head -1)"
+          bash tests/linux/run-all.sh
+
+      - name: Upload check artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-checks-${{ matrix.runner }}
+          path: linux-check-artifacts/
+
   license:
     runs-on: ubuntu-latest
     timeout-minutes: 5
