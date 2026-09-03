@@ -13,7 +13,7 @@ SUMMARY="$LINUX_CHECK_OUT/summary.txt"; : > "$SUMMARY"
   for t in xvfb-run dbus-run-session node zenity gio; do printf '%-18s %s\n' "$t" "$(command -v $t || echo MISSING)"; done
 } > "$LINUX_CHECK_OUT/environment.txt"
 failed=0
-for check in ${CHECKS:-appimage-launch server-save popover}; do
+for check in ${CHECKS:-appimage-launch server-save popover autostart}; do
   if bash "$HERE/$check.sh" > "$LINUX_CHECK_OUT/$check.out" 2>&1; then
     echo "PASS $check" | tee -a "$SUMMARY"
   else

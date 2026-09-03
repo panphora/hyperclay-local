@@ -144,6 +144,26 @@ function getDecryptedApiKey() {
   return decryptApiKey(settings.apiKey);
 }
 
+function linuxAutostartEntry() {
+  const configHome = process.env.XDG_CONFIG_HOME || path.join(app.getPath('home'), '.config');
+  return path.join(configHome, 'autostart', 'hyperclay-local.desktop');
+}
+
+function setAutostart(enabled) {
+  if (process.platform !== 'linux') {
+    app.setLoginItemSettings({ openAtLogin: enabled });
+    return;
+  }
+  const entry = linuxAutostartEntry();
+  if (!enabled) {
+    fs.rmSync(entry, { force: true });
+    return;
+  }
+  const exe = process.env.APPIMAGE || process.execPath;
+  fs.mkdirSync(path.dirname(entry), { recursive: true });
+  fs.writeFileSync(entry, `[Desktop Entry]\nType=Application\nName=Hyperclay Local\nExec="${exe}"\nX-GNOME-Autostart-enabled=true\n`);
+}
+
 function loadSettings() {
   try {
     let loaded = {};
@@ -263,6 +283,15 @@ function getTrayIcon() {
 
 function getTrayMenuTemplate() {
   return [
+    ...(process.platform === 'linux' ? [
+      {
+        label: 'Open Panel',
+        click: () => {
+          popover.showPopover(tray.getBounds());
+        }
+      },
+      { type: 'separator' }
+    ] : []),
     {
       label: `Server: ${serverRunning ? 'On' : 'Off'}`,
       enabled: false
@@ -930,7 +959,7 @@ ipcMain.handle('show-options-menu', (event) => {
         if (isDev) return;
         settings.autoStartEnabled = menuItem.checked;
         saveSettings(settings);
-        app.setLoginItemSettings({ openAtLogin: menuItem.checked });
+        setAutostart(menuItem.checked);
       }
     },
     { type: 'separator' },
@@ -995,7 +1024,7 @@ app.whenReady().then(async () => {
   selectedFolder = settings.selectedFolder || null;
 
   if (!isDev) {
-    app.setLoginItemSettings({ openAtLogin: settings.autoStartEnabled || false });
+    setAutostart(settings.autoStartEnabled || false);
   }
 
   // Hide dock icon — app lives in tray only

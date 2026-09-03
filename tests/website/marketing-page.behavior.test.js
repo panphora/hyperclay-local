@@ -79,7 +79,7 @@ describe('download button: OS detection', () => {
   test('desktop Linux gets the AppImage', () => {
     const els = run({ userAgent: UA.linux });
     expect(els.btn.href).toBe(hrefs.linux);
-    expect(els.text.textContent).toBe('Download for Linux');
+    expect(els.text.textContent).toBe('Download for Linux (x86_64)');
   });
 
   test('Android is not treated as desktop Linux: falls back to the list', () => {

@@ -16,7 +16,7 @@ chmod +x "$APPIMAGE"
 
 LAB="$(mktemp -d /tmp/hyperclay-local-lab.XXXXXX)"
 pass() { echo "ok   [$CHECK] $*"; }
-fail() { echo "FAIL [$CHECK] $*" >&2; [ -f "$LAB/app.log" ] && { echo "--- app.log (tail)" >&2; tail -40 "$LAB/app.log" >&2; }; exit 1; }
+fail() { echo "FAIL [$CHECK] $*" >&2; [ -f "$LAB/app.log" ] && { echo "--- app.log (tail)" >&2; tail -40 "$LAB/app.log" >&2; }; [ -f "$LAB/app.pid" ] && stop "$(cat "$LAB/app.pid")"; exit 1; }
 keep() { cp -r "$@" "$OUT/$CHECK/" 2>/dev/null || true; }
 
 # A fresh HOME whose settings already name a served folder, so the app starts its
@@ -46,6 +46,7 @@ launch() {
   local home="$1"; shift
   : > "$LAB/app.log"
   HOME="$home" XDG_CONFIG_HOME="$home/.config" setsid xvfb-run -a -s "-screen 0 1280x800x24" "$APPIMAGE" "$@" > "$LAB/app.log" 2>&1 &
+  echo $! > "$LAB/app.pid"
   echo $!
 }
 

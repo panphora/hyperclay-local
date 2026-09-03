@@ -561,6 +561,7 @@ const PopoverApp = () => {
   const syncUsername = state.syncStatus?.username || credUsername || null;
 
   const arrowOnBottom = arrowPosition === 'bottom';
+  const arrowHidden = arrowPosition === 'none';
 
   const arrowStyle = {
     position: 'absolute',
@@ -583,13 +584,13 @@ const PopoverApp = () => {
 
   return (
     <div style={{
-      padding: arrowOnBottom ? 0 : `${ARROW_HEIGHT}px 0 0 0`,
+      padding: arrowOnBottom || arrowHidden ? 0 : `${ARROW_HEIGHT}px 0 0 0`,
       width: '100%',
       height: '100%',
       position: 'relative',
     }}>
       {/* Arrow (only shown when at top, i.e. macOS) */}
-      {!arrowOnBottom && <div style={arrowStyle} />}
+      {!arrowOnBottom && !arrowHidden && <div style={arrowStyle} />}
 
       {/* Panel body */}
       <div
@@ -597,7 +598,7 @@ const PopoverApp = () => {
           background: C.surface,
           borderRadius: 10,
           overflow: 'hidden',
-          height: arrowOnBottom ? '100%' : `calc(100% - ${ARROW_HEIGHT}px)`,
+          height: arrowOnBottom || arrowHidden ? '100%' : `calc(100% - ${ARROW_HEIGHT}px)`,
           display: 'flex',
           flexDirection: 'column',
         }}

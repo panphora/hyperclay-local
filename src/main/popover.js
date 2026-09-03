@@ -64,6 +64,14 @@ function clamp(n, min, max) {
 function positionPopover(trayBounds) {
   if (!popoverWindow) return;
 
+  if (!trayBounds || !trayBounds.width) {
+    const { workArea } = screen.getPrimaryDisplay();
+    const { width, height } = popoverWindow.getBounds();
+    popoverWindow.setPosition(workArea.x + workArea.width - width - MARGIN_Y, workArea.y + MARGIN_Y, false);
+    popoverWindow.webContents.send('popover-arrow-position', 'none');
+    return;
+  }
+
   const display = screen.getDisplayNearestPoint({ x: trayBounds.x, y: trayBounds.y });
   const workArea = display.workArea;
   const { width, height } = popoverWindow.getBounds();

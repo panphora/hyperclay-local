@@ -24,21 +24,22 @@ describe('download list: single source of truth (version <-> filenames)', () => 
     expect(version).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
-  test('exactly the four expected OS rows are present, in order', () => {
+  test('exactly the five expected OS rows are present, in order', () => {
     const osList = section.find('.dl-row').map((_, r) => $(r).attr('data-os')).get();
-    expect(osList).toEqual(['mac-arm', 'mac-intel', 'windows', 'linux']);
+    expect(osList).toEqual(['mac-arm', 'mac-intel', 'windows', 'linux', 'linux-arm']);
   });
 
-  // The whole page bumps version by editing these four filenames + data-version.
+  // The whole page bumps version by editing these five filenames + data-version.
   // A version bump that misses one filename is the exact failure this guards.
   const expectedFile = (v) => ({
     'mac-arm': `HyperclayLocal-${v}-arm64.dmg`,
     'mac-intel': `HyperclayLocal-${v}.dmg`,
     windows: `HyperclayLocal-Setup-${v}.exe`,
     linux: `HyperclayLocal-${v}.AppImage`,
+    'linux-arm': `HyperclayLocal-${v}-arm64.AppImage`,
   });
 
-  test.each(['mac-arm', 'mac-intel', 'windows', 'linux'])(
+  test.each(['mac-arm', 'mac-intel', 'windows', 'linux', 'linux-arm'])(
     '%s row: href, visible text, and filename all agree and embed the version',
     (os) => {
       const row = section.find(`.dl-row[data-os="${os}"]`);
@@ -56,7 +57,7 @@ describe('download list: single source of truth (version <-> filenames)', () => 
 
   test('every row shows a plausible size', () => {
     section.find('.dl-row').each((_, r) => {
-      expect($(r).find('.dl-size').text().trim()).toMatch(/^\d+(\.\d+)?\s?MB$/);
+      expect($(r).find('.dl-size').text().trim()).toMatch(/^~?\d+(\.\d+)?\s?MB$/);
     });
   });
 });
