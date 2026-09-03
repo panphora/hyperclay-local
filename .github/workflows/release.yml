@@ -106,6 +106,7 @@ jobs:
     # Both shipped Linux arches. The arm64 runner is also what builds the arm64
     # AppImage, so this is the same environment the release binary comes from.
     strategy:
+      fail-fast: false
       matrix:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
@@ -176,10 +177,6 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          # Not for publishing: build.publish is null and no job passes --publish.
-          # electron-builder infers a GitHub provider from the remote and wants a token
-          # to read release info while writing update metadata.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run mac-build:run
 
       - run: node build-scripts/move-executables.js mac
@@ -214,6 +211,11 @@ jobs:
   build-linux:
     needs: [test-linux, license]
     strategy:
+      # Two independent native builds. A failure in one says nothing about the
+      # other, and cancelling the sibling throws away the only evidence from this
+      # commit about whether that arch works. `upload` needs both legs green, so
+      # letting the sibling finish cannot ship a half release.
+      fail-fast: false
       matrix:
         include:
           - runner: ubuntu-latest
@@ -231,12 +233,6 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           npm-version: ${{ env.NPM_VERSION }}
       - run: npm run linux-build:run
-        env:
-          # Not for publishing. build.publish is null and no job passes --publish;
-          # electron-builder infers a GitHub provider from the remote and wants a
-          # token to read release info while writing update metadata. The old
-          # Windows workflow passed one for the same reason and never published.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # The website, README and release summary all hard-code these filenames, so
       # electron-builder quietly changing its arch classifier would ship dead links.
       - name: Assert the artifact has the advertised name
@@ -248,6 +244,33 @@ jobs:
             ls executables/
             exit 1
           }
+
+      # Does the thing we are about to publish actually start? ci.yml runs these
+      # same checks on every push, but release.yml never waited for it, so a
+      # release could and did reach the point of uploading an AppImage that CI
+      # said could not launch on either arch (2026-09-02). Run here rather than
+      # as a separate job because the binary under test is the one this job just
+      # built, which is stronger than proving a different build of the same commit.
+      - name: Install a virtual display and the browser driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb dbus-x11
+          npx playwright install --with-deps chromium
+
+      - name: The AppImage starts, serves and saves
+        env:
+          SYSTEM_MUTATIONS: "1"
+        run: |
+          export APPIMAGE="$(ls executables/HyperclayLocal-*.AppImage | head -1)"
+          bash tests/linux/run-all.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-checks-${{ matrix.arch }}
+          path: linux-check-artifacts/
+          if-no-files-found: warn
+
       - uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.arch }}
@@ -273,10 +296,9 @@ jobs:
         run: npm run build-react-prod
 
       - name: Build unsigned installer
-        run: npm run clean-windows && npx electron-builder --win
+        run: npm run clean-windows && npx electron-builder --win --publish never
         env:
           NODE_ENV: production
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install TrustedSigning module
         run: Install-Module -Name TrustedSigning -Force -Scope CurrentUser -AcceptLicense

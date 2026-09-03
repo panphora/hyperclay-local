@@ -12,6 +12,7 @@ const os = require('os');
 let VERSION_TYPE = '';
 let RESUME = false;
 let IGNORE_WINDOW = false;
+let DRY_RUN = false;
 
 for (const arg of process.argv.slice(2)) {
   switch (arg) {
@@ -20,9 +21,10 @@ for (const arg of process.argv.slice(2)) {
     case '--patch': VERSION_TYPE = 'patch'; break;
     case '--resume': RESUME = true; break;
     case '--ignore-window': IGNORE_WINDOW = true; break;
+    case '--dry-run': DRY_RUN = true; break;
     case '--help':
     case '-h':
-      console.log('Usage: node scripts/release.js [--major|--minor|--patch] [--resume] [--ignore-window]');
+      console.log('Usage: node scripts/release.js [--major|--minor|--patch] [--resume] [--dry-run] [--ignore-window]');
       console.log('');
       console.log('Bumps the version, pushes it, and hands the build to GitHub Actions.');
       console.log('Nothing is compiled, signed or uploaded on this machine any more.');
@@ -35,6 +37,11 @@ for (const arg of process.argv.slice(2)) {
       console.log('                       the bump, commit and push. Dispatches a fresh build,');
       console.log('                       or picks up after the build if that commit already');
       console.log('                       has a green run.');
+      console.log('  --dry-run            Build, sign and notarize the version already in');
+      console.log('                       package.json on every platform, and publish nothing.');
+      console.log('                       Bumps nothing, so it costs no version. Use it to');
+      console.log('                       prove a change to the release path before spending a');
+      console.log('                       release on finding out. Runs at any hour.');
       console.log('  --ignore-window      Release inside the Tue-Fri 09:00-18:00 ET window.');
       console.log('                       Deliberate override; a release publishes publicly.');
       console.log('');
@@ -53,6 +60,16 @@ if (RESUME && VERSION_TYPE) {
   console.error('Resume reuses the version already in package.json.');
   process.exit(1);
 }
+
+if (DRY_RUN && VERSION_TYPE) {
+  console.error('--dry-run cannot be combined with --major/--minor/--patch');
+  console.error('A dry run builds the version already in package.json and bumps nothing.');
+  process.exit(1);
+}
+
+// A dry run reaches the same commit-and-push preconditions as a resume: the workflow
+// builds a ref, so the version under test has to be the committed, pushed one.
+if (DRY_RUN) RESUME = true;
 
 // ============================================
 // CONFIGURATION
@@ -263,6 +280,11 @@ function verifyPublishWindow() {
 
   if (!blocked) return;
 
+  // A dry run uploads nothing to R2 and deploys no site, so the window does not
+  // apply. Exempting it is the point: the hours when a release is forbidden are
+  // exactly the hours you want to be free to rehearse one.
+  if (DRY_RUN) return;
+
   if (IGNORE_WINDOW) {
     logWarn(`Releasing inside the publish window (${parts.weekday} ${parts.hour}:${parts.minute} ET) because --ignore-window was passed.`);
     return;
@@ -396,7 +418,7 @@ async function dispatchRelease(version) {
   // ten more minutes producing the same bytes. Reads before the dispatch are allowed
   // to fail loudly, because nothing is in flight yet; reads after it never decide
   // anything, because a build is running.
-  if (RESUME) {
+  if (RESUME && !DRY_RUN) {
     const rows = JSON.parse(execSafe(
       'gh run list --workflow release.yml --limit 15 --json databaseId,headSha,event,status,conclusion'
     ));
@@ -412,8 +434,8 @@ async function dispatchRelease(version) {
     }
   }
 
-  logInfo(`Dispatching release.yml for v${version}...`);
-  execSafe(`gh workflow run release.yml -f version=${version} -f dry_run=false --ref main`);
+  logInfo(`Dispatching release.yml for v${version}${DRY_RUN ? ' (dry run, publishes nothing)' : ''}...`);
+  execSafe(`gh workflow run release.yml -f version=${version} -f dry_run=${DRY_RUN} --ref main`);
 
   // `gh workflow run` returns before the run exists, and the wait below needs an id.
   // Matched on this commit's sha rather than "the newest run", so a run someone else
@@ -665,6 +687,13 @@ async function main() {
   logSection('Step 5: Build, Sign and Upload on GitHub');
 
   await dispatchRelease(newVersion);
+
+  if (DRY_RUN) {
+    logSection('Dry run complete');
+    logSuccess(`v${newVersion} built, signed and notarized on every platform. Nothing was published.`);
+    logInfo('The installers are downloadable from the run\'s artifacts.');
+    return;
+  }
 
   logSection('Step 6: Download Sizes');
 

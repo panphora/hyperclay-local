@@ -12,11 +12,13 @@ mkdir -p "$OUT/$CHECK"
 
 [ "$(id -u)" -ne 0 ] || { echo "FAIL: run as an ordinary user, the way the app is used" >&2; exit 1; }
 [ -n "$APPIMAGE" ] && [ -f "$APPIMAGE" ] || { echo "FAIL: no AppImage (set APPIMAGE or build with npm run linux-build:run)" >&2; exit 1; }
+# popover.sh runs it from inside the lab, so a relative path from the caller must not survive.
+APPIMAGE="$(cd "$(dirname "$APPIMAGE")" && pwd)/$(basename "$APPIMAGE")"
 chmod +x "$APPIMAGE"
 
 LAB="$(mktemp -d /tmp/hyperclay-local-lab.XXXXXX)"
 pass() { echo "ok   [$CHECK] $*"; }
-fail() { echo "FAIL [$CHECK] $*" >&2; [ -f "$LAB/app.log" ] && { echo "--- app.log (tail)" >&2; tail -40 "$LAB/app.log" >&2; }; [ -f "$LAB/app.pid" ] && stop "$(cat "$LAB/app.pid")"; exit 1; }
+fail() { echo "FAIL [$CHECK] $*" >&2; [ -f "$LAB/app.log" ] && { echo "--- app.log (tail)" >&2; tail -40 "$LAB/app.log" >&2; }; { echo "--- listening sockets"; ss -ltn 2>/dev/null || true; } >&2; [ -f "$LAB/app.pid" ] && stop "$(cat "$LAB/app.pid")"; exit 1; }
 keep() { cp -r "$@" "$OUT/$CHECK/" 2>/dev/null || true; }
 
 # A fresh HOME whose settings already name a served folder, so the app starts its

@@ -1673,8 +1673,10 @@ function startServer(baseDir, devHooks = null, isKnownPath = null) {
 
     app = createApp(baseDir, devHooks, isKnownPath);
 
-    // Start the server
-    server = app.listen(PORT, 'localhost', (err) => {
+    // The literal, not 'localhost': that name binds only the address the resolver
+    // lists first (::1 on macOS and Windows), and a 127.0.0.1 client is then refused.
+    // A browser opening http://localhost:4321 falls through to 127.0.0.1 on its own.
+    server = app.listen(PORT, '127.0.0.1', (err) => {
       if (err) {
         server = null;
         return reject(err);
