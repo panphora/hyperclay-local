@@ -257,9 +257,18 @@ jobs:
           sudo apt-get install -y xvfb dbus-x11
           npx playwright install --with-deps chromium
 
-      - name: The AppImage starts, serves and saves
+      # Only `appimage-launch` gates the release, not all four checks. It is the
+      # one that answers the release question - does the binary about to ship
+      # start and serve, in four launch configurations including stock Ubuntu
+      # 24.04's restricted user namespaces - and it has passed on both arches in
+      # every run since the `::1` bind was fixed. `server-save` and `autostart`
+      # ask richer questions and each flaked once in four post-fix runs (a launch
+      # that prints one line and then goes quiet, cause not yet found), so they
+      # stay in ci.yml where a flake costs a re-run rather than a release.
+      - name: The AppImage starts and serves
         env:
           SYSTEM_MUTATIONS: "1"
+          CHECKS: appimage-launch
         run: |
           export APPIMAGE="$(ls executables/HyperclayLocal-*.AppImage | head -1)"
           bash tests/linux/run-all.sh

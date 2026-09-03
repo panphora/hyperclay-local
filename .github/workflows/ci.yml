@@ -86,12 +86,14 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           npm-version: ${{ env.NPM_VERSION }}
 
+      # `--publish never` lives on the electron-builder call in package.json.
+      # Without it electron-builder infers a GitHub provider from the remote,
+      # CI detection turns publishing on, and every build makes a release upload
+      # that can only ever be skipped: this repo has zero GitHub releases and
+      # GITHUB_TOKEN is contents:read. It is a pointless HTTPS call on the
+      # critical path, and it killed release run 33699356922 with a socket hang up.
       - name: Build the AppImage this runner's arch ships
         run: npm run linux-build:run
-        env:
-          # Not for publishing, same as release.yml: electron-builder infers a GitHub
-          # provider from the remote and refuses to build on CI without a token.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install a virtual display and the browser driver
         run: |
