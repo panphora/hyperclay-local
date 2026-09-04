@@ -29,6 +29,7 @@ module.exports = {
       cwd: this.syncFolder,
       persistent: true,
       ignoreInitial: true,
+      followSymlinks: false,
       ignored: [
         '**/node_modules/**',
         '**/sites-versions/**',
