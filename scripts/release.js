@@ -10,11 +10,36 @@ const os = require('os');
 // ============================================
 
 let VERSION_TYPE = '';
+let EXPLICIT_VERSION = '';
 let RESUME = false;
 let IGNORE_WINDOW = false;
 let DRY_RUN = false;
 
+const VERSION_RE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+
+// electron-builder writes these into the Windows version resource, which packs
+// each component into a uint16. A larger number ships a wrong FileVersion while
+// every string field still reads what you typed.
+const VERSION_COMPONENT_MAX = 65535;
+
 for (const arg of process.argv.slice(2)) {
+  if (arg.startsWith('--version=')) {
+    EXPLICIT_VERSION = arg.slice('--version='.length);
+    if (!VERSION_RE.test(EXPLICIT_VERSION)) {
+      console.error(`--version needs X.Y.Z: plain numbers, no v prefix, no suffix (got '${EXPLICIT_VERSION}')`);
+      process.exit(1);
+    }
+    if (EXPLICIT_VERSION.split('.').some(n => Number(n) > VERSION_COMPONENT_MAX)) {
+      console.error(`--version=${EXPLICIT_VERSION} has a component above ${VERSION_COMPONENT_MAX},`);
+      console.error('which the Windows version resource silently truncates to a wrong FileVersion.');
+      process.exit(1);
+    }
+    continue;
+  }
+  if (arg === '--version') {
+    console.error('--version needs a value: --version=1.24.0');
+    process.exit(1);
+  }
   switch (arg) {
     case '--major': VERSION_TYPE = 'major'; break;
     case '--minor': VERSION_TYPE = 'minor'; break;
@@ -24,7 +49,7 @@ for (const arg of process.argv.slice(2)) {
     case '--dry-run': DRY_RUN = true; break;
     case '--help':
     case '-h':
-      console.log('Usage: node scripts/release.js [--major|--minor|--patch] [--resume] [--dry-run] [--ignore-window]');
+      console.log('Usage: node scripts/release.js [--major|--minor|--patch|--version=X.Y.Z] [--resume] [--dry-run] [--ignore-window]');
       console.log('');
       console.log('Bumps the version, pushes it, and hands the build to GitHub Actions.');
       console.log('Nothing is compiled, signed or uploaded on this machine any more.');
@@ -33,6 +58,7 @@ for (const arg of process.argv.slice(2)) {
       console.log('  --major              Major version bump (breaking changes)');
       console.log('  --minor              Minor version bump (new features)');
       console.log('  --patch              Patch version bump (bug fixes)');
+      console.log('  --version=X.Y.Z      Release exactly this version instead of a bump.');
       console.log('  --resume             Finish the version already in package.json, skipping');
       console.log('                       the bump, commit and push. Dispatches a fresh build,');
       console.log('                       or picks up after the build if that commit already');
@@ -58,6 +84,24 @@ for (const arg of process.argv.slice(2)) {
 if (RESUME && VERSION_TYPE) {
   console.error('--resume cannot be combined with --major/--minor/--patch');
   console.error('Resume reuses the version already in package.json.');
+  process.exit(1);
+}
+
+if (RESUME && EXPLICIT_VERSION) {
+  console.error('--resume cannot be combined with --version=');
+  console.error('Resume reuses the version already in package.json.');
+  process.exit(1);
+}
+
+if (EXPLICIT_VERSION && VERSION_TYPE) {
+  console.error('--version= cannot be combined with --major/--minor/--patch');
+  console.error('Pass the number you want, or the bump, not both.');
+  process.exit(1);
+}
+
+if (DRY_RUN && EXPLICIT_VERSION) {
+  console.error('--dry-run cannot be combined with --version=');
+  console.error('A dry run builds the version already in package.json and bumps nothing.');
   process.exit(1);
 }
 
@@ -177,6 +221,15 @@ function getCurrentVersion() {
   const pkgPath = path.join(ROOT_DIR, 'package.json');
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
   return pkg.version;
+}
+
+function isVersionAbove(a, b) {
+  const x = a.split('.').map(Number);
+  const y = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if (x[i] !== y[i]) return x[i] > y[i];
+  }
+  return false;
 }
 
 function bumpVersion(current, type) {
@@ -594,55 +647,99 @@ async function main() {
     const currentVersion = getCurrentVersion();
     log(`Current version: ${currentVersion}`);
 
-    let bumpType;
-    if (VERSION_TYPE) {
-      bumpType = VERSION_TYPE;
-      logSuccess(`Using version type from argument: ${bumpType}`);
-    } else {
-      logInfo('Asking Claude Code for version bump recommendation...');
-
-      const lastTag = execSafe('git tag --sort=-version:refname | head -1').trim();
-      let gitLog = '';
-      if (lastTag) {
-        gitLog = execSafe(`git log ${lastTag}..HEAD --pretty=format:"%s"`).trim();
-      } else {
-        gitLog = execSafe('git log --pretty=format:"%s" -20').trim();
-      }
-
-      if (!gitLog) {
-        logError('No commits found to analyze');
-        process.exit(1);
-      }
-
-      try {
-        const recommendation = execSafe(
-          `echo ${JSON.stringify(gitLog)} | env -u CLAUDECODE claude --model sonnet -p "Based on these git commit messages, should this be a patch or minor release? Reply with a single word: patch or minor"`,
-          { stdio: 'pipe' }
-        ).trim().toLowerCase();
-
-        // Claude sometimes answers in a sentence rather than a bare word, so take
-        // the first patch/minor token it mentions.
-        const match = recommendation.match(/patch|minor/);
-        if (match) {
-          bumpType = match[0];
-          logSuccess(`Claude recommends: ${bumpType}`);
-        } else {
-          bumpType = 'patch';
-          logError(`Unexpected response from Claude: "${recommendation}" — defaulting to patch.`);
-        }
-      } catch (error) {
-        // A release is not the place to fail on an advisory call. The bump is a
-        // recommendation, and patch is the conservative one: shipping 1.20.2
-        // where 1.21.0 was meant is a wrong label on a real release, while
-        // exiting here strands a train that has already published its libraries.
-        bumpType = 'patch';
-        logError('Claude Code failed — defaulting to patch. Re-run with --minor if wrong.');
-      }
+    // The tag is written at Step 4, right after the version commit and BEFORE
+    // Step 5 dispatches the CI build. So a package.json version with no tag
+    // means the run never got as far as committing it, and bumping again ships
+    // the next number and skips that one forever. That is not hypothetical:
+    // 1.21.0 was bumped in the tree without a release, the 1.22.0 release then
+    // rewrote nothing, and hyperclaylocal.com advertised 1.20.1 downloads for
+    // four days. A hand-set version is the same shape and is caught here too.
+    //
+    // What this does NOT catch, precisely because the tag comes first: a run
+    // that tagged and then died in the build. That version is tagged, so this
+    // guard passes it and a later run can bump past it. Routing that case here
+    // as well means moving the tag to after the build is green, which changes
+    // what `--resume` resumes from; it is worth doing and is not this change.
+    //
+    // Tags are fetched first because a fresh clone has none, and "no tag" would
+    // then describe every version.
+    execSafe('git fetch --tags --quiet origin');
+    if (execSafe(`git tag --list "v${currentVersion}"`).trim() === '') {
+      logError(`v${currentVersion} is in package.json but was never tagged.`);
+      logError('A release of it was started and did not finish, so bumping now would ship a');
+      logError(`new number and skip v${currentVersion} for good.`);
+      console.log('');
+      console.log('  Finish it:   npm run release -- --resume');
+      console.log('  Or replace it: edit package.json back, then release normally.');
+      console.log('');
+      process.exit(1);
     }
 
-    newVersion = bumpVersion(currentVersion, bumpType);
-    log('');
-    logSuccess(`Version: ${currentVersion} → ${newVersion}`);
+    let bumpType;
+    if (EXPLICIT_VERSION) {
+      if (!isVersionAbove(EXPLICIT_VERSION, currentVersion)) {
+        if (EXPLICIT_VERSION === currentVersion) {
+          logError(`v${currentVersion} is already released (it is tagged). Pick a higher version.`);
+        } else {
+          logError(`--version=${EXPLICIT_VERSION} is below the current ${currentVersion}.`);
+          logError('The update feed compares numerically, so every installed copy would ignore');
+          logError('it, and the website would advertise a downgrade.');
+        }
+        process.exit(1);
+      }
+      newVersion = EXPLICIT_VERSION;
+      log('');
+      logSuccess(`Version: ${currentVersion} → ${newVersion} (explicit)`);
+    } else {
+      if (VERSION_TYPE) {
+        bumpType = VERSION_TYPE;
+        logSuccess(`Using version type from argument: ${bumpType}`);
+      } else {
+        logInfo('Asking Claude Code for version bump recommendation...');
+
+        const lastTag = execSafe('git tag --sort=-version:refname | head -1').trim();
+        let gitLog = '';
+        if (lastTag) {
+          gitLog = execSafe(`git log ${lastTag}..HEAD --pretty=format:"%s"`).trim();
+        } else {
+          gitLog = execSafe('git log --pretty=format:"%s" -20').trim();
+        }
+
+        if (!gitLog) {
+          logError('No commits found to analyze');
+          process.exit(1);
+        }
+
+        try {
+          const recommendation = execSafe(
+            `echo ${JSON.stringify(gitLog)} | env -u CLAUDECODE claude --model sonnet -p "Based on these git commit messages, should this be a patch or minor release? Reply with a single word: patch or minor"`,
+            { stdio: 'pipe' }
+          ).trim().toLowerCase();
+
+          // Claude sometimes answers in a sentence rather than a bare word, so take
+          // the first patch/minor token it mentions.
+          const match = recommendation.match(/patch|minor/);
+          if (match) {
+            bumpType = match[0];
+            logSuccess(`Claude recommends: ${bumpType}`);
+          } else {
+            bumpType = 'patch';
+            logError(`Unexpected response from Claude: "${recommendation}" — defaulting to patch.`);
+          }
+        } catch (error) {
+          // A release is not the place to fail on an advisory call. The bump is a
+          // recommendation, and patch is the conservative one: shipping 1.20.2
+          // where 1.21.0 was meant is a wrong label on a real release, while
+          // exiting here strands a train that has already published its libraries.
+          bumpType = 'patch';
+          logError('Claude Code failed — defaulting to patch. Re-run with --minor if wrong.');
+        }
+      }
+
+      newVersion = bumpVersion(currentVersion, bumpType);
+      log('');
+      logSuccess(`Version: ${currentVersion} → ${newVersion}`);
+    }
 
     logSection('Step 3: Update Files');
 
