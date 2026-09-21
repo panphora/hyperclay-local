@@ -18,8 +18,40 @@ chmod +x "$APPIMAGE"
 
 LAB="$(mktemp -d /tmp/hyperclay-local-lab.XXXXXX)"
 pass() { echo "ok   [$CHECK] $*"; }
-fail() { echo "FAIL [$CHECK] $*" >&2; [ -f "$LAB/app.log" ] && { echo "--- app.log (tail)" >&2; tail -40 "$LAB/app.log" >&2; }; { echo "--- listening sockets"; ss -ltn 2>/dev/null || true; } >&2; [ -f "$LAB/app.pid" ] && stop "$(cat "$LAB/app.pid")"; exit 1; }
 keep() { cp -r "$@" "$OUT/$CHECK/" 2>/dev/null || true; }
+
+capture_failure() {
+  local pid=""
+  [ ! -f "$LAB/app.pid" ] || pid="$(cat "$LAB/app.pid")"
+  [ ! -f "$LAB/app.log" ] || keep "$LAB/app.log"
+  [ ! -f "$LAB/app.pid" ] || keep "$LAB/app.pid"
+  {
+    date -u '+%Y-%m-%dT%H:%M:%SZ'
+    printf 'check=%s\nreason=%s\nappimage=%s\nlauncher_pid=%s\n' "$CHECK" "$*" "$APPIMAGE" "$pid"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
+      if kill -0 "$pid" 2>/dev/null; then
+        echo "launcher_status=present (see STAT below)"
+      else
+        echo "launcher_status=absent (exit status unavailable)"
+      fi
+      echo "--- launcher and its process group, before cleanup"
+      ps -eo pid,ppid,pgid,stat,etime,args | awk -v pid="$pid" 'NR == 1 || $1 == pid || $3 == pid'
+    else
+      echo "launcher_status=not recorded"
+    fi
+    echo "--- listening sockets, before cleanup"
+    ss -ltnp || true
+  } > "$OUT/$CHECK/startup-diagnostics.txt" 2>&1
+}
+
+fail() {
+  echo "FAIL [$CHECK] $*" >&2
+  capture_failure "$*" || true
+  [ ! -f "$LAB/app.log" ] || { echo "--- app.log (tail)" >&2; tail -40 "$LAB/app.log" >&2; }
+  [ ! -f "$OUT/$CHECK/startup-diagnostics.txt" ] || cat "$OUT/$CHECK/startup-diagnostics.txt" >&2
+  [ ! -f "$LAB/app.pid" ] || stop "$(cat "$LAB/app.pid")"
+  exit 1
+}
 
 # A fresh HOME whose settings already name a served folder, so the app starts its
 # server on launch (main.js: settings.serverEnabled && settings.serverFolder).
