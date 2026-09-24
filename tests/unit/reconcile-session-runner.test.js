@@ -321,6 +321,72 @@ describe('access refusals', () => {
   });
 });
 
+describe('a rediscover that fails', () => {
+  it('account-changed key-revoked pauses every session with key-revoked and does not rediscover', async () => {
+    const { runner, manager, stream } = session();
+
+    runner.start();
+    stream.push({ type: 'account-changed', accountId: ACCOUNT_ID, reason: 'key-revoked' });
+
+    expect(stream.close).toHaveBeenCalled();
+    expect(manager.pauseAll).toHaveBeenCalledWith('key-revoked');
+    expect(manager.rediscover).not.toHaveBeenCalled();
+
+    await flush();
+    expect(manager.rediscover).not.toHaveBeenCalled();
+  });
+
+  it('a rediscover that fails 401 pauses every session with key-revoked', async () => {
+    const { runner, manager, stream } = session();
+    manager.rediscover.mockRejectedValue(Object.assign(new Error('unauthorized'), { statusCode: 401 }));
+
+    runner.start();
+    stream.push({ type: 'account-changed', accountId: ACCOUNT_ID, reason: 'role' });
+    await flush();
+
+    expect(manager.rediscover).toHaveBeenCalledWith({ reason: 'role', sessionId: SESSION_ID });
+    expect(manager.pauseAll).toHaveBeenCalledWith('key-revoked');
+    expect(runner.state).not.toBe('live');
+    expect(runner.lastError).toBe('unauthorized');
+  });
+
+  it('a rediscover that fails offline backs off and retries', async () => {
+    const { runner, manager, stream } = session();
+    manager.rediscover.mockRejectedValue(new Error('socket hang up'));
+
+    runner.start();
+    stream.push({ type: 'account-changed', accountId: ACCOUNT_ID, reason: 'role' });
+    await flush();
+
+    expect(runner.state).toBe('offline');
+    await jest.advanceTimersByTimeAsync(4_999);
+    expect(stream.opens()).toBe(1);
+
+    await jest.advanceTimersByTimeAsync(1);
+    expect(stream.opens()).toBe(2);
+    expect(runner.state).toBe('starting');
+  });
+
+  it('a rediscover rejection is never unhandled', async () => {
+    const unhandled = jest.fn();
+    const { runner, manager, stream } = session();
+    manager.rediscover.mockRejectedValue(Object.assign(new Error('unauthorized'), { statusCode: 401 }));
+    process.on('unhandledRejection', unhandled);
+    try {
+      runner.start();
+      stream.push({ type: 'account-changed', accountId: ACCOUNT_ID, reason: 'role' });
+      await flush();
+      await Promise.resolve();
+      await flush();
+      await Promise.resolve();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+});
+
 describe('offline backoff', () => {
   it('backs off on an incomplete inventory and deletes nothing', async () => {
     const { runner, engine, api, stream } = session();

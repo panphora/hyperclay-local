@@ -200,7 +200,21 @@ class SessionRunner extends EventEmitter {
   #onAccountChanged(gen, data) {
     if (gen !== this.generation) return;
     this.stream.close();
-    this.manager.rediscover({ reason: data.reason, sessionId: this.engine.sessionId });
+    // The key belongs to the install, not the session: every session is done with it.
+    if (data.reason === 'key-revoked') return this.manager.pauseAll('key-revoked');
+    this.#rediscover(gen, data.reason);
+  }
+
+  #rediscover(gen, reason) {
+    Promise.resolve(this.manager.rediscover({ reason, sessionId: this.engine.sessionId })).catch((error) => {
+      if (gen !== this.generation) return;
+      const c = classifyError(error);
+      this.lastError = (error && error.message) || null;
+      if (c.kind === 'pause-all') return this.manager.pauseAll(c.reason);
+      if (c.kind === 'pause') return this.pause(c.reason);
+      if (c.kind === 'offline' || c.kind === 'backoff') return this.#backoff(c);
+      return this.pause('unavailable');
+    });
   }
 
   #onError(gen, error) {
@@ -211,12 +225,16 @@ class SessionRunner extends EventEmitter {
     this.lastError = (error && error.message) || null;
     if (c.kind === 'pause') return this.pause(c.reason);
     if (c.kind === 'pause-all') return this.manager.pauseAll(c.reason);
-    if (c.kind === 'rediscover') return this.manager.rediscover({ reason: c.reason, sessionId: this.engine.sessionId });
+    if (c.kind === 'rediscover') return this.#rediscover(gen, c.reason);
     if (c.kind === 'fatal') {
       this.#bump('error');
       this.emit('fatal', c);
       return;
     }
+    return this.#backoff(c);
+  }
+
+  #backoff(c) {
     const delay = c.retryAfterMs ?? BACKOFF_MS[Math.min(this.backoffIndex++, BACKOFF_MS.length - 1)];
     this.#bump('offline');
     const offlineGen = this.generation;
