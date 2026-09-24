@@ -3,5 +3,5 @@
 // scripts/screenshot-popover.js (so marketing captures match the real window).
 module.exports = {
   PANEL_WIDTH: 340,
-  PANEL_HEIGHT: 460,
+  PANEL_HEIGHT: 500,
 };

@@ -28,7 +28,7 @@ const { switchSublines } = require('../src/main/ui/card-model');
 
 const FOLDER = '/Users/panphora/HyperclayApps/local-hyperclay-apps';
 const USERNAME = 'panphora';
-const APP_VERSION = '1.18.0';
+const APP_VERSION = '1.24.0';
 
 const HOME = '/Users/panphora';
 const DEV_HOME = '/Users/alex';
