@@ -10,6 +10,7 @@ const { SessionRunner } = require('../sync-engine/reconcile/session-runner');
 const { firstBind, inventoryTotals, BIND_MARKER } = require('../sync-engine/reconcile/first-bind');
 const { validateRootPath, defaultTeamFolder, allocateTeamPort } = require('./roots');
 const { realpathNearestParent } = require('./utils/path-resolver');
+const { getServerBaseUrl } = require('./utils/utils');
 const { createRootLive } = require('./utils/root-live');
 const { RootObserver } = require('./root-observer');
 const { load: loadConflicts, list: listConflicts } = require('../sync-engine/reconcile/conflicts');
@@ -66,7 +67,9 @@ function isoOrNull(value) {
 class SyncManager extends EventEmitter {
   constructor({ userData, deviceId, serverUrl, getApiKey, settingsStore, observerFor = null, takeSnapshot = () => null }) {
     super();
-    Object.assign(this, { userData, deviceId, serverUrl, getApiKey, settingsStore, takeSnapshot });
+    // v1 settings never stored a server, so the manager falls back to the same default the
+    // engine does; without it discovery asks `null/_/sync/accounts` and every session 428s.
+    Object.assign(this, { userData, deviceId, serverUrl: getServerBaseUrl(serverUrl), getApiKey, settingsStore, takeSnapshot });
     this.ownObservers = new Map();
     this.observerFor = observerFor || ((rootId) => this._ownObserver(rootId));
     this.sessions = new Map();
