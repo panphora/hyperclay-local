@@ -239,6 +239,15 @@ describe('executeDecision — one case per action kind', () => {
     expect(engine.repo.getBaseline('901').remoteEtag).toBe(REMOTE_ETAG);
   });
 
+  it('a noop pass refreshes a stale structureVersion', async () => {
+    await seedSite();
+    const result = await executeDecision(engine, '901', { action: A.NOOP }, { structureVersion: 'st5' });
+
+    expect(result).toEqual({ action: A.NOOP });
+    expect(engine.repo.getBaseline('901').structureVersion).toBe('st5');
+    expect(api.putNodeContent).not.toHaveBeenCalled();
+  });
+
   it('defer writes nothing', async () => {
     await seedSite();
     const result = await executeDecision(engine, '901', { action: A.DEFER });
@@ -301,6 +310,19 @@ describe('executeDecision — one case per action kind', () => {
       uploadBlocked: false
     });
     expect(engine.repo.get(902).path).toBe('board.html');
+  });
+
+  it('adopt keeps the listed structureVersion', async () => {
+    await writeLocalFile('board.html', REMOTE_BYTES);
+    const result = await executeDecision(engine, 903, { action: A.ADOPT }, {
+      path: 'board.html',
+      type: 'site',
+      etag: REMOTE_SUM,
+      structureVersion: 'st7'
+    });
+
+    expect(result).toEqual({ action: A.ADOPT, checksum: REMOTE_SUM });
+    expect(engine.repo.getBaseline(903).structureVersion).toBe('st7');
   });
 
   it('conflict keeps the local bytes, parks the remote bytes and records it', async () => {

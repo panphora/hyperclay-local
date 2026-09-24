@@ -311,6 +311,15 @@ async function download(engine, nodeId, entry, context, gen) {
   return { action: A.DOWNLOAD, checksum: localChecksum };
 }
 
+// A noop pass is where a version the desktop did not cause (a teammate's rename of a parent,
+// a folder's subtree) reaches the baseline, so the next structural change sends it.
+async function refreshStructureVersion(engine, nodeId, entry, context) {
+  if (!entry || !context.structureVersion) return;
+  const baseline = engine.repo.getBaseline(nodeId);
+  if (!baseline || baseline.structureVersion === context.structureVersion) return;
+  await engine.repo.updateBaseline(nodeId, { structureVersion: context.structureVersion });
+}
+
 async function adopt(engine, nodeId, entry, context) {
   const rel = relPathOf(entry, context, nodeId);
   const localChecksum = await localChecksumOf(engine, rel);
@@ -320,6 +329,7 @@ async function adopt(engine, nodeId, entry, context) {
   await saveEntry(engine, nodeId, entry, {
     remoteEtag: context.etag || localChecksum,
     localChecksum,
+    structureVersion: context.structureVersion === undefined ? null : context.structureVersion,
   }, await entryMeta(engine, rel, type, parentId));
 
   return { action: A.ADOPT, checksum: localChecksum };
@@ -334,12 +344,12 @@ async function trashLocal(engine, nodeId, entry, context) {
 async function deleteRemote(engine, nodeId, entry, context) {
   const rel = relPathOf(entry, context, nodeId);
   const type = typeOf(entry, context, rel);
-  const baseline = engine.repo.getBaseline(nodeId) || {};
   const id = idOf(nodeId);
+  const expectedVersion = (await engine._expectedVersion(id)) ?? null;
 
   engine.outbox.markInFlight('delete', id);
   try {
-    await deleteNode(engine.conn, id, { expectedVersion: baseline.structureVersion });
+    await deleteNode(engine.conn, id, { expectedVersion });
   } catch (error) {
     if (!error.statusCode && (await deleteLanded(engine, id))) {
       await finishDelete(engine, nodeId, rel, type);
@@ -443,6 +453,8 @@ async function executeDecision(session, nodeId, decision, context = {}) {
 
   switch (decision.action) {
     case A.NOOP:
+      await refreshStructureVersion(engine, nodeId, entry, context);
+      return { action: decision.action };
     case A.DEFER:
       return { action: decision.action };
     case A.FORGET:
