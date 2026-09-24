@@ -446,4 +446,60 @@ describe('the manager', () => {
     expect(Object.keys(await readJson(path.join(v2, 'node-map.json')))).toEqual(['901']);
     await manager.stop(SESSION_ID);
   });
+
+  it('a migrated personal session passes the discovered account id to init', async () => {
+    const userData = await tmpDir('legacy-userdata-');
+    const folder = await tmpDir('legacy-launch-root-');
+    const legacyName = '5f2b7c1d9e04';
+    api.getAccounts.mockResolvedValue(discovery({ accounts: [{ ...discovery().accounts[0], id: 77 }] }));
+
+    const personal = {
+      id: SESSION_ID, rootId: ROOT_ID, accountId: null, kind: 'personal',
+      cached: { username: 'alex' }, paused: null, legacyMetaDir: legacyName
+    };
+    const personalRoot = { id: ROOT_ID, kind: 'personal', path: folder, port: 4321, trustedAt: null };
+    const settings = { settingsVersion: 2, roots: [personalRoot], syncSessions: [personal] };
+    const { manager } = makeManager({ userData, settings });
+    jest.spyOn(SyncEngine.prototype, 'sessionStream').mockReturnValue(fakeStream());
+    const init = jest.spyOn(SyncEngine.prototype, 'init');
+
+    await manager.start(personal, personalRoot, { syncBase: '/_/sync', protocol: 2 });
+
+    // The session names the account discovery found on init's own requests too
+    // (5.9 step 1): without it the clock calibration is refused with 428 and the
+    // migrated session never starts.
+    expect(init).toHaveBeenCalledWith(
+      'hcsk_test', 'alex', folder, 'https://hyperclay.test', 'device-1',
+      expect.any(String), expect.objectContaining({ accountId: 77, protocol: 2 })
+    );
+    // Naming it is not persisting it: the import's step 5 is what identifies the
+    // session.
+    expect(personal.accountId).toBeNull();
+    await manager.stop(SESSION_ID);
+  });
+
+  it('a failed account resolution still starts the session', async () => {
+    const userData = await tmpDir('legacy-userdata-');
+    const folder = await tmpDir('legacy-launch-root-');
+    const legacyName = '5f2b7c1d9e04';
+    api.getAccounts.mockRejectedValue(new Error('fetch failed'));
+
+    const personal = {
+      id: SESSION_ID, rootId: ROOT_ID, accountId: null, kind: 'personal',
+      cached: { username: 'alex' }, paused: null, legacyMetaDir: legacyName
+    };
+    const personalRoot = { id: ROOT_ID, kind: 'personal', path: folder, port: 4321, trustedAt: null };
+    const settings = { settingsVersion: 2, roots: [personalRoot], syncSessions: [personal] };
+    const { manager } = makeManager({ userData, settings });
+    jest.spyOn(SyncEngine.prototype, 'sessionStream').mockReturnValue(fakeStream());
+    const init = jest.spyOn(SyncEngine.prototype, 'init');
+
+    // Offline at launch is not fatal: init runs as it did before and the session
+    // goes offline from its own runner, which resolves the id again.
+    const result = await manager.start(personal, personalRoot, { syncBase: '/_/sync', protocol: 2 });
+
+    expect(result.success).toBe(true);
+    expect(init.mock.calls[0][6]).toMatchObject({ accountId: null, protocol: 2 });
+    await manager.stop(SESSION_ID);
+  });
 });

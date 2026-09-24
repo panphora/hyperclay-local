@@ -300,7 +300,7 @@ describe('SyncManager.startEnabledSessions', () => {
     expect(statuses.map((status) => status.sessionId)).toEqual([personal.id]);
     expect(personal.paused).toBeNull();
     expect(statuses[0].status).not.toBe('paused');
-    expect(connections()).toEqual([[2, '/_/sync', null]]);
+    expect(connections()).toEqual([[2, '/_/sync', PERSONAL_ACCOUNT_ID]]);
     expect(manager.sessions.get(personal.id).engine.syncBase).toBe('/_/sync');
   });
 

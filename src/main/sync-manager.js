@@ -194,12 +194,26 @@ class SyncManager extends EventEmitter {
       };
     }
 
+    // C3 §5.9 step 1, as the runner does for its stream: a protocol 2 session names its
+    // account on every request, init's own included. A migrated personal session has no id
+    // until its import persists one, so discovery names it; if that fails, init runs as
+    // before and the runner resolves it again.
+    const effectiveProtocol = ownsFirstPass ? 2 : protocol;
+    let accountId = session.accountId;
+    if (effectiveProtocol === 2 && accountId == null) {
+      try {
+        accountId = await this.resolveAccountId(entry);
+      } catch {
+        accountId = null;
+      }
+    }
+
     await this._acquireInitialSlot();
     try {
       const result = await engine.init(apiKey, session.cached?.username, root.path, this.serverUrl,
         this.deviceId, resumed === 'import' ? this.v2MetaDir(session) : metaDir, {
-          sessionId: session.id, accountId: session.accountId,
-          syncBase, protocol: ownsFirstPass ? 2 : protocol, firstBind: noInitPasses,
+          sessionId: session.id, accountId,
+          syncBase, protocol: effectiveProtocol, firstBind: noInitPasses,
           createFolder: setup,
           live: createRootLive(root),
           snapshots: { take: (rel) => this.takeSnapshot(rel, root.id) },
