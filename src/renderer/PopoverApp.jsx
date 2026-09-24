@@ -28,6 +28,7 @@ const C = {
   faultFill: '#7B2525',
   faultLt: '#B45454',
   faultDk: '#371111',
+  amber: '#E3A93C',
 };
 
 const bevelOut = (lt, dk) => ({
@@ -152,20 +153,32 @@ const BevelButton = ({ label, onClick, variant, disabled, small, tiny, style: ex
   );
 };
 
-const STATE_CACHE_KEY = 'hyperclayPopoverStateCache';
+const LED_BY_STATE = {
+  synced: { on: true, color: C.ledGreen, glow: 'rgba(40,200,62,0.55)' },
+  syncing: { on: true, color: C.ledGreen, glow: 'rgba(40,200,62,0.55)' },
+  paused: { on: true, color: C.amber, glow: 'rgba(227,169,60,0.5)' },
+  offline: { on: true, color: C.amber, glow: 'rgba(227,169,60,0.5)' },
+  conflict: { on: true, color: C.fault, glow: 'rgba(247,61,72,0.55)' },
+  error: { on: true, color: C.fault, glow: 'rgba(247,61,72,0.55)' },
+  'port-taken': { on: true, color: C.fault, glow: 'rgba(247,61,72,0.55)' },
+};
+
+const linkClass = "bg-transparent border-none p-0 cursor-pointer text-[11.5px] font-['Berkeley_Mono',monospace] hover:underline";
+
+const STATE_CACHE_KEY = 'hyperclayPopoverStateCache.v2';
 const DEFAULT_STATE = {
-  selectedFolder: null,
-  serverRunning: false,
-  serverPort: 4321,
+  serverEnabled: false,
   syncEnabled: false,
-  syncStatus: { isRunning: false, username: null, stats: { lastSync: null } },
+  hasApiKey: false,
+  actor: null,
+  banner: null,
+  cards: [],
+  activity: [],
   appVersion: null,
 };
 
 // Paint the popover from last-known state so it stays responsive even when
 // the main process is blocked (e.g. first-launch safeStorage Keychain hit).
-// Includes hasStoredApiKey/username so a connected account paints as
-// paused/synced from cache, not as the not-connected state.
 const readCachedState = () => {
   try {
     const raw = localStorage.getItem(STATE_CACHE_KEY);
@@ -178,17 +191,20 @@ const readCachedState = () => {
 
 const CACHED_STATE = readCachedState();
 
-const folderName = (p) => {
-  if (!p) return '';
-  const parts = String(p).split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] || p;
+// C4 §4.9: the feed's five verbs. `line.path` and `line.verb` come from main.
+const VERB_GLYPHS = {
+  uploaded: { glyph: '↑', color: C.ledGreen },
+  downloaded: { glyph: '↓', color: C.blue },
+  conflict: { glyph: '!', color: C.fault },
+  deleted: { glyph: '×', color: C.muted },
+  renamed: { glyph: '→', color: C.muted },
 };
 
 const PopoverApp = () => {
   const [arrowX, setArrowX] = useState(null);
   const [arrowPosition, setArrowPosition] = useState('top');
-  const [hasStoredApiKey, setHasStoredApiKey] = useState(!!CACHED_STATE.cachedHasApiKey);
   const [currentView, setCurrentView] = useState('home');
+  const [setupAccountId, setSetupAccountId] = useState(null);
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [updateVersion, setUpdateVersion] = useState(null);
 
@@ -199,12 +215,8 @@ const PopoverApp = () => {
   const errorIdCounter = useRef(0);
   const unreadCount = errorQueue.filter(e => !e.read).length;
 
-  // Transfers
-  const [recentUploads, setRecentUploads] = useState([]);
-  const [recentDownloads, setRecentDownloads] = useState([]);
-
   // Credentials form
-  const [credUsername, setCredUsername] = useState(CACHED_STATE.cachedUsername || '');
+  const [credUsername, setCredUsername] = useState(CACHED_STATE.actor?.username || '');
   const [credApiKey, setCredApiKey] = useState('');
   const [credError, setCredError] = useState('');
   const [credLoading, setCredLoading] = useState(false);
@@ -212,8 +224,6 @@ const PopoverApp = () => {
   // Button loading states
   const [serverLoading, setServerLoading] = useState(false);
   const [syncLoading, setSyncLoading] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const copiedTimer = useRef(null);
   // Re-render lags a fast second click, so state alone can't debounce the
   // rockers — these refs make the flips single-flight.
   const serverBusy = useRef(false);
@@ -260,134 +270,92 @@ const PopoverApp = () => {
   // from cache, even if the main process is momentarily unresponsive.
   useEffect(() => {
     try {
-      localStorage.setItem(STATE_CACHE_KEY, JSON.stringify({
-        ...state,
-        cachedHasApiKey: hasStoredApiKey,
-        cachedUsername: credUsername,
-      }));
+      localStorage.setItem(STATE_CACHE_KEY, JSON.stringify(state));
     } catch {}
-  }, [state, hasStoredApiKey, credUsername]);
+  }, [state]);
 
   useEffect(() => {
-    if (!window.electronAPI) return;
+    const api = window.electronAPI;
+    if (!api) return;
 
-    window.electronAPI.getState().then((s) => {
-      setState((prev) => ({ ...prev, ...s, syncEnabled: s.syncStatus?.isRunning }));
+    api.getState().then((s) => {
+      setState((prev) => ({ ...prev, ...s }));
+      if (s.actor?.username) setCredUsername((current) => current || s.actor.username);
       if (s.availableUpdate) {
         setUpdateAvailable(true);
         setUpdateVersion(s.availableUpdate.latestVersion);
       }
     });
 
-    window.electronAPI.getApiKeyInfo().then((info) => {
-      if (info && info.hasApiKey) {
-        setHasStoredApiKey(true);
-        setCredUsername(info.username || '');
-      } else {
-        setHasStoredApiKey(false);
-      }
-    });
-
-    window.electronAPI.onArrowX((x) => setArrowX(x));
-    window.electronAPI.onArrowPosition((pos) => setArrowPosition(pos));
-
-    window.electronAPI.onStateUpdate((s) => {
-      setState((prev) => ({
-        ...prev,
-        ...s,
-        syncEnabled: s.syncStatus?.isRunning ?? s.syncEnabled ?? prev.syncEnabled,
-      }));
-    });
-
-    window.electronAPI.onSyncStats((stats) => {
-      setState((prev) => ({
-        ...prev,
-        syncStatus: { ...prev.syncStatus, stats },
-      }));
-    });
-
-    window.electronAPI.onSyncUpdate((data) => {
-      if (data.error) {
-        if (data.type === 'validation') {
-          addError({
-            ...data,
-            priority: data.priority || 2,
-            dismissable: true,
-            error: `Validation failed: ${data.error}`,
-            file: data.file
-          });
-        } else {
-          addError(data);
+    const unsubscribe = [
+      api.onArrowX((x) => setArrowX(x)),
+      api.onArrowPosition((pos) => setArrowPosition(pos)),
+      api.onStateUpdate((s) => {
+        setState((prev) => ({ ...prev, ...s }));
+      }),
+      api.onSyncUpdate((data) => {
+        if (data.error) {
+          if (data.type === 'validation') {
+            addError({
+              ...data,
+              priority: data.priority || 2,
+              dismissable: true,
+              error: `Validation failed: ${data.error}`,
+              file: data.file
+            });
+          } else {
+            addError(data);
+          }
         }
-      }
-    });
+      }),
+      api.onSyncRetry((data) => {
+        addError({
+          ...data,
+          priority: 3,
+          type: 'sync_retry',
+          dismissable: true,
+          error: `Retrying ${data.file} (attempt ${data.attempt}/${data.maxAttempts})`
+        });
+      }),
+      api.onSyncFailed((data) => {
+        addError({
+          ...data,
+          error: `Failed to sync ${data.file} after ${data.attempts} attempts: ${data.error}`
+        });
+      }),
+      api.onShowCredentials(() => {
+        setCurrentView('credentials');
+      }),
+      api.onShowTeamSetup((data) => {
+        if (!data || data.accountId == null) return;
+        setSetupAccountId(data.accountId);
+        setCurrentView('setup');
+      }),
+      api.onUpdateAvailable((data) => {
+        setUpdateAvailable(true);
+        setUpdateVersion(data.latestVersion);
+      }),
+    ];
 
-    window.electronAPI.onSyncRetry((data) => {
-      addError({
-        ...data,
-        priority: 3,
-        type: 'sync_retry',
-        dismissable: true,
-        error: `Retrying ${data.file} (attempt ${data.attempt}/${data.maxAttempts})`
-      });
-    });
-
-    window.electronAPI.onSyncFailed((data) => {
-      addError({
-        ...data,
-        error: `Failed to sync ${data.file} after ${data.attempts} attempts: ${data.error}`
-      });
-    });
-
-    window.electronAPI.onShowCredentials(() => {
-      setCurrentView('credentials');
-    });
-
-    window.electronAPI.onFileSynced((data) => {
-      const entry = { file: data.file, timestamp: Date.now() };
-      if (data.action === 'download') {
-        setRecentDownloads(prev => [entry, ...prev.filter(e => e.file !== entry.file)].slice(0, 100));
-      } else if (data.action === 'upload') {
-        setRecentUploads(prev => [entry, ...prev.filter(e => e.file !== entry.file)].slice(0, 100));
-      }
-    });
-
-    window.electronAPI.onUpdateAvailable((data) => {
-      setUpdateAvailable(true);
-      setUpdateVersion(data.latestVersion);
-    });
-
-    return () => {
-      const channels = [
-        'update-state', 'sync-update', 'sync-stats', 'file-synced',
-        'sync-retry', 'sync-failed', 'popover-arrow-x', 'popover-arrow-position',
-        'show-credentials', 'update-available'
-      ];
-      channels.forEach(ch => window.electronAPI.removeAllListeners(ch));
-    };
+    return () => unsubscribe.forEach((off) => off && off());
   }, []);
 
-  // Auto-refresh relative time
-  const lastSync = state.syncStatus?.stats?.lastSync;
+  // Auto-refresh the relative times the cards and the feed print
+  const hasRelativeTime = state.cards.some((card) => card.lastSyncAt)
+    || state.activity.some((line) => line.time);
   const [, setTick] = useState(0);
   useEffect(() => {
-    if (!lastSync) return;
+    if (!hasRelativeTime) return;
     const id = setInterval(() => setTick(t => t + 1), 10000);
     return () => clearInterval(id);
-  }, [lastSync]);
-
-  useEffect(() => () => clearTimeout(copiedTimer.current), []);
+  }, [hasRelativeTime]);
 
   const handleServerFlip = async () => {
     if (serverBusy.current) return;
     serverBusy.current = true;
     setServerLoading(true);
     try {
-      if (state.serverRunning) {
-        await window.electronAPI?.stopServer();
-      } else {
-        await window.electronAPI?.startServer();
-      }
+      await window.electronAPI?.setServerEnabled(!state.serverEnabled);
     } finally {
       serverBusy.current = false;
       setServerLoading(false);
@@ -397,19 +365,7 @@ const PopoverApp = () => {
   const handleSyncFlip = async () => {
     if (syncBusy.current) return;
 
-    if (state.syncEnabled) {
-      syncBusy.current = true;
-      setSyncLoading(true);
-      try {
-        await window.electronAPI?.toggleSync(false);
-      } finally {
-        syncBusy.current = false;
-        setSyncLoading(false);
-      }
-      return;
-    }
-
-    if (!hasStoredApiKey) {
+    if (!state.hasApiKey) {
       setCurrentView('credentials');
       return;
     }
@@ -417,12 +373,8 @@ const PopoverApp = () => {
     syncBusy.current = true;
     setSyncLoading(true);
     try {
-      const result = await window.electronAPI?.toggleSync(true);
-      if (result?.error === 'no-api-key') {
-        setHasStoredApiKey(false);
-        setCurrentView('credentials');
-        return;
-      }
+      const result = await window.electronAPI?.setSyncEnabled(!state.syncEnabled);
+      if (result?.error === 'no-api-key') setCurrentView('credentials');
     } finally {
       syncBusy.current = false;
       setSyncLoading(false);
@@ -438,40 +390,10 @@ const PopoverApp = () => {
     serverBusy.current = true;
     setServerLoading(true);
     try {
-      await window.electronAPI?.startServer();
+      await window.electronAPI?.setServerEnabled(true);
     } finally {
       serverBusy.current = false;
       setServerLoading(false);
-    }
-  };
-
-  // Change: repoint the unit. The server follows the new folder; sync pauses
-  // instead of silently continuing on the old folder or starting a full sync
-  // of a different folder — re-enabling it is an explicit flip of the rocker.
-  const handleChangeFolder = async () => {
-    if (serverBusy.current || syncBusy.current) return;
-    const result = await window.electronAPI?.selectFolder();
-    if (!result?.success) return;
-    if (state.syncEnabled) {
-      syncBusy.current = true;
-      setSyncLoading(true);
-      try {
-        await window.electronAPI?.toggleSync(false);
-      } finally {
-        syncBusy.current = false;
-        setSyncLoading(false);
-      }
-    }
-    if (state.serverRunning) {
-      serverBusy.current = true;
-      setServerLoading(true);
-      try {
-        await window.electronAPI?.stopServer();
-        await window.electronAPI?.startServer();
-      } finally {
-        serverBusy.current = false;
-        setServerLoading(false);
-      }
     }
   };
 
@@ -496,13 +418,10 @@ const PopoverApp = () => {
         return;
       }
 
-      setHasStoredApiKey(true);
       setCredUsername(keyResult.username || credUsername.trim());
       setCredApiKey('');
 
-      if (state.selectedFolder) {
-        await window.electronAPI?.toggleSync(true);
-      }
+      await window.electronAPI?.setSyncEnabled(true);
 
       setCurrentView('home');
     } catch (err) {
@@ -512,20 +431,23 @@ const PopoverApp = () => {
     }
   };
 
-  const handleCopyUrl = async () => {
-    const url = `http://localhost:${state.serverPort || 4321}`;
-    await window.electronAPI?.copyText(url);
-    setCopied(true);
-    clearTimeout(copiedTimer.current);
-    copiedTimer.current = setTimeout(() => setCopied(false), 1400);
-  };
+  const handleAction = (action, card) => {
+    const api = window.electronAPI;
+    if (!api) return;
 
-  const handleOpenBrowser = () => {
-    window.electronAPI?.openBrowser();
-  };
-
-  const handleOpenFolder = () => {
-    window.electronAPI?.openFolder();
+    if (action === 'open') api.openInBrowser(card.rootId);
+    else if (action === 'copy') api.copyText(card.url);
+    else if (action === 'reveal') api.revealFolder(card.rootId);
+    else if (action === 'more') api.showCardMenu(card.rootId);
+    else if (action === 'web') api.openWeb(card.accountId);
+    else if (action === 'disconnect') api.disconnect(card.sessionId);
+    else if (action === 'retry') api.retryPort(card.rootId);
+    else if (action === 'change-port') api.changePort(card.rootId);
+    else if (action === 'notices') setCurrentView('notices');
+    else if (action === 'setup') {
+      setSetupAccountId(card.accountId);
+      setCurrentView('setup');
+    }
   };
 
   const handleOptions = () => {
@@ -544,21 +466,9 @@ const PopoverApp = () => {
     setCurrentView(currentView === 'notices' ? 'home' : 'notices');
   };
 
-  const clearActivity = () => {
-    setRecentUploads([]);
-    setRecentDownloads([]);
-  };
-
-  const activity = [
-    ...recentUploads.map(e => ({ ...e, dir: 'up' })),
-    ...recentDownloads.map(e => ({ ...e, dir: 'down' })),
-  ].sort((a, b) => b.timestamp - a.timestamp);
-
-  const criticalNotice = errorQueue
-    .filter(e => !e.read && e.priority === 1)
-    .sort((a, b) => b.timestamp - a.timestamp)[0] || null;
-
-  const syncUsername = state.syncStatus?.username || credUsername || null;
+  const setupCard = currentView === 'setup'
+    ? (state.cards || []).find((card) => card.accountId === setupAccountId)
+    : null;
 
   const arrowOnBottom = arrowPosition === 'bottom';
   const arrowHidden = arrowPosition === 'none';
@@ -640,7 +550,10 @@ const PopoverApp = () => {
                 </svg>
               </button>
               <span className="text-[#E8EAF6] text-[15px] font-semibold tracking-wide font-['Berkeley_Mono',monospace]">
-                {currentView === 'notices' ? 'Notices' : currentView === 'activity' ? 'Activity' : 'Connect'}
+                {currentView === 'notices' ? 'Notices'
+                  : currentView === 'activity' ? 'Activity'
+                    : currentView === 'setup' ? `Set up ${(setupCard && setupCard.title) || 'team'}`
+                      : 'Connect'}
               </span>
               <div className="ml-auto flex gap-1">
                 {currentView === 'notices' && (
@@ -648,9 +561,6 @@ const PopoverApp = () => {
                     <BevelButton label="mark read" onClick={markAllRead} variant="neutral" tiny />
                     <BevelButton label="clear" onClick={clearAllErrors} variant="sync" tiny />
                   </>
-                )}
-                {currentView === 'activity' && (
-                  <BevelButton label="clear" onClick={clearActivity} variant="sync" tiny />
                 )}
               </div>
             </>
@@ -675,38 +585,31 @@ const PopoverApp = () => {
           {currentView === 'home' && (
             <HomeView
               state={state}
-              hasStoredApiKey={hasStoredApiKey}
-              syncUsername={syncUsername}
-              lastSync={lastSync}
               serverLoading={serverLoading}
               syncLoading={syncLoading}
-              copied={copied}
-              activity={activity}
-              criticalNotice={criticalNotice}
               onServerFlip={handleServerFlip}
               onSyncFlip={handleSyncFlip}
               onChooseFolder={handleChooseFolder}
-              onChangeFolder={handleChangeFolder}
-              onOpenFolder={handleOpenFolder}
-              onOpenBrowser={handleOpenBrowser}
-              onCopyUrl={handleCopyUrl}
               onConnect={() => setCurrentView('credentials')}
               onShowActivity={() => setCurrentView('activity')}
-              onShowNotices={() => setCurrentView('notices')}
+              onAction={handleAction}
             />
           )}
 
           {currentView === 'notices' && (
             <NoticesView
               errors={errorQueue}
+              conflicts={state.conflicts || []}
+              cards={state.cards || []}
               onMarkErrorRead={markErrorRead}
               onDismissError={dismissError}
+              onResolveConflict={(sessionId, path, choice) => window.electronAPI?.resolveConflict(sessionId, path, choice)}
             />
           )}
 
           {currentView === 'activity' && (
             <ActivityView
-              activity={activity}
+              lines={state.activity || []}
             />
           )}
 
@@ -716,10 +619,17 @@ const PopoverApp = () => {
               apiKey={credApiKey}
               error={credError}
               loading={credLoading}
-              folderLabel={folderName(state.selectedFolder)}
               onUsernameChange={setCredUsername}
               onApiKeyChange={setCredApiKey}
               onSubmit={handleCredentialsSubmit}
+              onCancel={navigateHome}
+            />
+          )}
+
+          {currentView === 'setup' && (
+            <TeamSetupView
+              accountId={setupAccountId}
+              onDone={navigateHome}
               onCancel={navigateHome}
             />
           )}
@@ -743,217 +653,312 @@ const PopoverApp = () => {
 // =============================================================================
 
 const HomeView = ({
-  state, hasStoredApiKey, syncUsername, lastSync, serverLoading, syncLoading,
-  copied, activity, criticalNotice,
-  onServerFlip, onSyncFlip, onChooseFolder, onChangeFolder, onOpenFolder,
-  onOpenBrowser, onCopyUrl, onConnect, onShowActivity, onShowNotices,
+  state, serverLoading, syncLoading,
+  onServerFlip, onSyncFlip, onChooseFolder, onConnect, onShowActivity, onAction,
 }) => {
-  const hasFolder = !!state.selectedFolder;
-  const port = state.serverPort || 4321;
-
-  const serverSub = serverLoading
-    ? (state.serverRunning ? 'stopping…' : 'starting…')
-    : state.serverRunning
-      ? (
-        <>
-          <button
-            onClick={onOpenBrowser}
-            className="bg-transparent border-none p-0 cursor-pointer text-[#69AEFE] text-[11.5px] font-['Berkeley_Mono',monospace] hover:underline"
-          >
-            localhost:{port}
-          </button>
-          <button
-            onClick={onCopyUrl}
-            title="Copy URL"
-            aria-label="Copy URL"
-            className="bg-transparent border-none p-0 cursor-pointer text-[11px] text-[#6B7194] font-['Berkeley_Mono',monospace] hover:text-[#B8BFE5]"
-          >
-            {copied ? 'copied' : '⧉'}
-          </button>
-        </>
-      )
-      : `starts at localhost:${port}`;
-
-  const syncSub = syncLoading
-    ? (state.syncEnabled ? 'stopping…' : 'enabling…')
-    : !hasStoredApiKey
-      ? 'connects to your hyperclay.com account'
-      : state.syncEnabled
-        ? `@${syncUsername || '…'} · ${lastSync ? `synced ${formatRelativeTime(lastSync)}` : 'active'}`
-        : `@${syncUsername || '…'} · paused`;
+  const cards = state.cards || [];
+  const activity = state.activity || [];
+  const hasPersonal = cards.some((card) => card.kind === 'personal');
+  const hasTeam = cards.some((card) => card.kind !== 'personal');
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
-      {/* Folder bay */}
-      {hasFolder ? (
-        <div
-          onClick={onOpenFolder}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              onOpenFolder();
-            }
-          }}
-          role="button"
-          tabIndex={0}
-          aria-label={`Open folder ${folderName(state.selectedFolder)}`}
-          title="Open folder"
-          className="mx-3 mt-3 mb-2.5 px-2.5 py-2 cursor-pointer group"
-          style={{ background: C.well, ...bevelIn() }}
-        >
-          <div className="flex items-center gap-2">
-            <span className="relative shrink-0" style={{ width: 16, height: 12, background: C.greenFill, border: `1px solid ${C.greenLt}` }}>
-              <span className="absolute" style={{ top: -4, left: -1, width: 7, height: 3, background: C.greenFill, borderLeft: `1px solid ${C.greenLt}`, borderTop: `1px solid ${C.greenLt}`, borderRight: `1px solid ${C.greenLt}` }} />
-            </span>
-            <span className="text-[13px] font-medium text-[#E8EAF6] whitespace-nowrap overflow-hidden text-ellipsis group-hover:text-[#F6F7FB]">
-              {folderName(state.selectedFolder)}
-            </span>
-          </div>
-          <div className="flex mt-[3px] pl-6 text-[11px] text-[#6B7194]">
-            <span>mounted · open folder</span>
-            <button
-              onClick={(e) => { e.stopPropagation(); onChangeFolder(); }}
-              className="ml-auto bg-transparent border-none p-0 cursor-pointer text-[11px] text-[#6B7194] underline underline-offset-2 font-['Berkeley_Mono',monospace] hover:text-[#B8BFE5]"
-            >
-              change
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div
-          className="mx-3 mt-3 mb-2.5 px-3 pt-4 pb-3.5 text-center"
-          style={{ background: C.well, border: `2px dashed ${C.border}` }}
-        >
-          <BevelButton
-            label={serverLoading ? 'Starting…' : 'Choose Folder…'}
-            onClick={onChooseFolder}
-            variant="success"
-            disabled={serverLoading}
-          />
-          <div className="mt-2.5 text-[11.5px] leading-[1.5] text-[#6B7194]">
-            Serve your HTML apps locally.<br />Sync them to hyperclay.com.
-          </div>
-        </div>
+      <SwitchBar
+        serverEnabled={state.serverEnabled}
+        syncEnabled={state.syncEnabled}
+        hasApiKey={state.hasApiKey}
+        sublines={state.sublines}
+        serverLoading={serverLoading}
+        syncLoading={syncLoading}
+        onServerFlip={onServerFlip}
+        onSyncFlip={onSyncFlip}
+        onConnect={onConnect}
+      />
+
+      <GlobalBanner banner={state.banner} onReconnect={onConnect} />
+
+      {!hasPersonal && (
+        <FirstRunBay serverLoading={serverLoading} onChooseFolder={onChooseFolder} />
       )}
 
-      {/* Server row */}
-      <div className="flex items-center gap-[9px] px-3.5 pt-[7px]">
-        <Led on={state.serverRunning} />
-        <span className={`text-[12px] tracking-[0.14em] ${hasFolder ? 'text-[#B8BFE5]' : 'text-[#4A4F6E]'}`}>SERVER</span>
-        <Rocker
-          on={state.serverRunning}
-          disabled={!hasFolder || serverLoading}
-          onFlip={onServerFlip}
-          label={state.serverRunning ? 'Turn server off' : 'Turn server on'}
-        />
-      </div>
-      <div className={`flex items-center gap-1.5 pl-[30px] pr-3.5 pt-[2px] pb-1.5 text-[11.5px] ${hasFolder ? 'text-[#6B7194]' : 'text-[#4A4F6E]'}`}>
-        {serverSub}
+      <CardList cards={cards} onAction={onAction} />
+
+      <ActivityFeed
+        lines={activity}
+        onShowAll={onShowActivity}
+        showSharedNote={hasTeam || !state.hasApiKey}
+      />
+    </div>
+  );
+};
+
+// =============================================================================
+// SWITCH BAR
+// =============================================================================
+
+const SwitchBar = ({
+  serverEnabled, syncEnabled, hasApiKey, sublines,
+  serverLoading, syncLoading, onServerFlip, onSyncFlip, onConnect,
+}) => {
+  const lines = sublines || {};
+  const serverSub = serverLoading
+    ? (serverEnabled ? 'stopping…' : 'starting…')
+    : lines.server;
+  const syncSub = syncLoading
+    ? (syncEnabled ? 'stopping…' : 'enabling…')
+    : lines.sync;
+
+  return (
+    <div className="flex px-3.5 pt-[9px]">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-[9px]">
+          <Led on={serverEnabled} />
+          <span className="text-[12px] tracking-[0.14em] text-[#B8BFE5]">SERVER</span>
+          <Rocker
+            on={serverEnabled}
+            disabled={serverLoading}
+            onFlip={onServerFlip}
+            label={serverEnabled ? 'Turn server off' : 'Turn server on'}
+          />
+        </div>
+        <div className="pl-[30px] pt-[2px] pb-1.5 text-[11.5px] text-[#6B7194] whitespace-nowrap overflow-hidden text-ellipsis">
+          {serverSub}
+        </div>
       </div>
 
-      {/* Sync row */}
-      <div className="flex items-center gap-[9px] px-3.5 pt-[7px]">
-        <Led on={state.syncEnabled} />
-        <span className={`text-[12px] tracking-[0.14em] ${hasFolder ? 'text-[#B8BFE5]' : 'text-[#4A4F6E]'}`}>SYNC</span>
-        {hasStoredApiKey ? (
-          <Rocker
-            on={state.syncEnabled}
-            disabled={!hasFolder || syncLoading}
-            onFlip={onSyncFlip}
-            label={state.syncEnabled ? 'Turn sync off' : 'Turn sync on'}
-          />
-        ) : (
-          <button
-            onClick={onConnect}
-            disabled={!hasFolder}
-            className={`ml-auto bg-transparent border-none p-0 text-[12px] font-['Berkeley_Mono',monospace] ${hasFolder ? 'cursor-pointer text-[#69AEFE] hover:underline' : 'cursor-default text-[#4A4F6E]'}`}
-          >
-            Connect →
-          </button>
+      <div className="flex-1 min-w-0 pl-3">
+        <div className="flex items-center gap-[9px]">
+          <Led on={hasApiKey && syncEnabled} />
+          <span className="text-[12px] tracking-[0.14em] text-[#B8BFE5]">SYNC</span>
+          {hasApiKey ? (
+            <Rocker
+              on={syncEnabled}
+              disabled={syncLoading}
+              onFlip={onSyncFlip}
+              label={syncEnabled ? 'Turn sync off' : 'Turn sync on'}
+            />
+          ) : (
+            <button
+              onClick={onConnect}
+              className="ml-auto bg-transparent border-none p-0 text-[12px] cursor-pointer text-[#69AEFE] font-['Berkeley_Mono',monospace] hover:underline"
+            >
+              Connect →
+            </button>
+          )}
+        </div>
+        <div className="pl-[30px] pt-[2px] pb-1.5 text-[11.5px] text-[#6B7194] whitespace-nowrap overflow-hidden text-ellipsis">
+          {syncSub}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// =============================================================================
+// GLOBAL BANNER
+// =============================================================================
+
+const GlobalBanner = ({ banner, onReconnect }) => {
+  if (banner === 'reconnect') {
+    return (
+      <button
+        onClick={onReconnect}
+        className="flex items-start gap-2 mx-3 mt-1.5 px-2.5 py-2 border-none cursor-pointer text-left font-['Berkeley_Mono',monospace]"
+        style={{ background: '#2A1518', borderLeft: `3px solid ${C.faultFill}` }}
+      >
+        <Led on color={C.fault} glow="rgba(247,61,72,0.55)" />
+        <span className="flex-1 min-w-0 text-[11.5px] leading-[1.4] text-[#E8C7CA]">
+          Sync key no longer works.
+        </span>
+        <span className="text-[11px] text-[#F73D48] whitespace-nowrap">Reconnect →</span>
+      </button>
+    );
+  }
+
+  if (banner === 'server-update') {
+    return (
+      <div
+        className="flex items-start gap-2 mx-3 mt-1.5 px-2.5 py-2"
+        style={{ background: '#2A2415', borderLeft: `3px solid ${C.amber}` }}
+      >
+        <Led on color={C.amber} glow="rgba(227,169,60,0.5)" />
+        <span className="flex-1 min-w-0 text-[11.5px] leading-[1.4] text-[#E4D3AE]">
+          hyperclay.com needs an update before sync can run. Folders are still served.
+        </span>
+      </div>
+    );
+  }
+
+  return null;
+};
+
+// =============================================================================
+// CARD LIST AND CARD
+// =============================================================================
+
+const CardList = ({ cards, onAction }) => (
+  <div className="overflow-y-auto pt-1.5" style={{ maxHeight: 236 }}>
+    {cards.map((card) => (
+      <FolderCard
+        key={card.rootId || `account-${card.accountId}`}
+        card={card}
+        onAction={onAction}
+      />
+    ))}
+  </div>
+);
+
+const FolderCard = ({ card, onAction }) => {
+  const led = LED_BY_STATE[card.state] || { on: false };
+  const dimmed = card.state === 'viewer';
+  const detail = card.state === 'synced' && card.lastSyncAt
+    ? `synced ${formatRelativeTime(card.lastSyncAt)}`
+    : card.detail;
+  const inline = card.actions.find((a) => a === 'setup' || a === 'web') || null;
+  return (
+    <div
+      className="mx-3 mb-1.5 px-2.5 py-[7px]"
+      style={{ background: C.well, opacity: dimmed ? 0.55 : 1, ...bevelIn() }}
+      title={card.detailLong || undefined}
+      data-card-state={card.state}
+    >
+      <div className="flex items-center gap-2 min-w-0">
+        <Led on={led.on} color={led.color} glow={led.glow} />
+        <span className="text-[13px] font-medium text-[#E8EAF6] whitespace-nowrap overflow-hidden text-ellipsis">
+          {card.title}
+        </span>
+        <span className="ml-auto flex items-center gap-1.5 shrink-0">
+          {inline === 'setup' && (
+            <button onClick={() => onAction('setup', card)} className={`${linkClass} text-[#69AEFE]`}>Set up →</button>
+          )}
+          {inline === 'web' && (
+            <button onClick={() => onAction('web', card)} className={`${linkClass} text-[#69AEFE]`}>hyperclay.com ↗</button>
+          )}
+          {!inline && card.state === 'port-taken' && (
+            <span className="text-[11.5px] text-[#F73D48]">port {card.port} is in use</span>
+          )}
+          {!inline && card.state !== 'port-taken' && card.url && (
+            <>
+              <button onClick={() => onAction('open', card)} className={`${linkClass} text-[#69AEFE]`}>
+                {card.url.replace('http://', '')}
+              </button>
+              <button
+                onClick={() => onAction('copy', card)}
+                title="Copy URL"
+                aria-label={`Copy URL for ${card.title}`}
+                className="bg-transparent border-none p-0 cursor-pointer text-[11px] text-[#6B7194] hover:text-[#B8BFE5]"
+              >
+                ⧉
+              </button>
+            </>
+          )}
+          {!inline && card.state !== 'port-taken' && !card.url && card.port && (
+            <span className="text-[11.5px] text-[#6B7194]">starts at :{card.port}</span>
+          )}
+        </span>
+      </div>
+      <div className="mt-[2px] pl-[15px] text-[11px] text-[#6B7194] whitespace-nowrap overflow-hidden text-ellipsis">
+        {card.subtitle}{detail ? ` · ${detail}` : ''}
+        {(card.state === 'conflict' || card.state === 'error') && (
+          <button onClick={() => onAction('notices', card)} className={`${linkClass} ml-1.5 text-[#F73D48]`}>see notices</button>
         )}
       </div>
-      <div className={`pl-[30px] pr-3.5 pt-[2px] pb-1.5 text-[11.5px] ${hasFolder ? 'text-[#6B7194]' : 'text-[#4A4F6E]'}`}>
-        {syncSub}
-      </div>
-
-      {/* Critical notice banner */}
-      {criticalNotice && (
-        <button
-          onClick={onShowNotices}
-          className="flex items-start gap-2 mx-3 mt-1.5 px-2.5 py-2 border-none cursor-pointer text-left font-['Berkeley_Mono',monospace]"
-          style={{ background: '#2A1518', borderLeft: `3px solid ${C.faultFill}` }}
-        >
-          <Led on color={C.fault} glow="rgba(247,61,72,0.55)" />
-          <span className="flex-1 min-w-0 text-[11.5px] leading-[1.4] text-[#E8C7CA] overflow-hidden" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
-            {criticalNotice.error}
+      {card.folder && (
+        <div className="flex items-center gap-2 mt-[2px] pl-[15px] text-[11px] text-[#6B7194]">
+          <button
+            onClick={() => onAction('reveal', card)}
+            title="Reveal folder"
+            className={`${linkClass} text-[11px] text-[#6B7194] whitespace-nowrap overflow-hidden text-ellipsis`}
+          >
+            {card.folder}
+          </button>
+          <span className="ml-auto flex items-center gap-2.5 shrink-0">
+            {card.actions.includes('retry') && (
+              <button onClick={() => onAction('retry', card)} className={`${linkClass} text-[#B8BFE5]`}>Retry</button>
+            )}
+            {card.actions.includes('change-port') && card.nextPort && (
+              <button onClick={() => onAction('change-port', card)} className={`${linkClass} text-[#B8BFE5]`}>Use port {card.nextPort}…</button>
+            )}
+            {card.state === 'paused' && card.actions.includes('disconnect') && (
+              <button onClick={() => onAction('disconnect', card)} className={`${linkClass} text-[#B8BFE5]`}>Disconnect…</button>
+            )}
+            <button
+              onClick={() => onAction('more', card)}
+              title="More"
+              aria-label={`More actions for ${card.title}`}
+              className="bg-transparent border-none px-1 cursor-pointer text-[13px] leading-none text-[#6B7194] hover:text-[#B8BFE5]"
+            >
+              ⋯
+            </button>
           </span>
-          <span className="text-[11px] text-[#F73D48] whitespace-nowrap">Details →</span>
-        </button>
-      )}
-
-      {/* Activity — only when sync is on or there is history to show. It is
-          fed solely by sync transfers, so server-only users never see it. */}
-      {hasFolder && (state.syncEnabled || activity.length > 0) && (
-        <>
-          <div className="flex items-center gap-2 mx-3.5 mt-2 mb-0.5">
-            <span className="text-[10px] tracking-[0.22em] text-[#6B7194]">ACTIVITY</span>
-            <span className="flex-1 h-px bg-[#292F52]" />
-            {activity.length > 0 && (
-              <button
-                onClick={onShowActivity}
-                className="bg-transparent border-none p-0 cursor-pointer text-[11px] text-[#6B7194] font-['Berkeley_Mono',monospace] hover:text-[#B8BFE5]"
-              >
-                all →
-              </button>
-            )}
-          </div>
-          <div className="flex-1 overflow-hidden px-3.5">
-            {activity.length === 0 ? (
-              <div className="pt-3 text-[11.5px] text-[#454A68]">
-                watching for changes
-              </div>
-            ) : (
-              activity.slice(0, 5).map((item, i) => (
-                <ActivityRow key={item.dir + item.file + '-' + i} item={item} />
-              ))
-            )}
-          </div>
-        </>
-      )}
-
-      {/* First-run tip */}
-      {!hasFolder && (
-        <div className="flex-1 flex items-end justify-center px-3.5 pb-3">
-          <div className="text-[11px] leading-[1.55] text-[#454A68] text-center">
-            Any .html file in your folder becomes<br />
-            an app you can open, edit, and save,<br />
-            right in the browser.
-          </div>
         </div>
       )}
     </div>
   );
 };
 
-const ActivityRow = ({ item }) => (
-  <div className="flex items-baseline gap-2 py-[4px] border-b border-[#1D1F2F] last:border-b-0">
-    <span className={`shrink-0 w-3 text-[12px] ${item.dir === 'up' ? 'text-[#28C83E]' : 'text-[#69AEFE]'}`}>
-      {item.dir === 'up' ? '↑' : '↓'}
-    </span>
-    <span className="text-[12px] text-[#B8BFE5] whitespace-nowrap overflow-hidden text-ellipsis">
-      {item.file}
-    </span>
-    <span className="ml-auto shrink-0 text-[11px] text-[#6B7194] tabular-nums">
-      {formatShortTime(item.timestamp)}
-    </span>
+// =============================================================================
+// ACTIVITY
+// =============================================================================
+
+const ActivityFeed = ({ lines, onShowAll, showSharedNote }) => (
+  <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+    <div className="flex items-center gap-2 mx-3.5 mt-2 mb-0.5">
+      <span className="text-[10px] tracking-[0.22em] text-[#6B7194]">ACTIVITY</span>
+      <span className="flex-1 h-px bg-[#292F52]" />
+      {lines.length > 0 && (
+        <button
+          onClick={onShowAll}
+          className="bg-transparent border-none p-0 cursor-pointer text-[11px] text-[#6B7194] font-['Berkeley_Mono',monospace] hover:text-[#B8BFE5]"
+        >
+          all →
+        </button>
+      )}
+    </div>
+    <div className="flex-1 overflow-hidden px-3.5" style={{ minHeight: 48 }}>
+      {lines.length === 0 ? (
+        <div className="pt-3 text-[11.5px] text-[#454A68]">
+          watching for changes
+        </div>
+      ) : (
+        lines.slice(0, 5).map((line, i) => (
+          <ActivityRow key={line.path + '-' + i} line={line} />
+        ))
+      )}
+    </div>
+    {showSharedNote && (
+      <button
+        onClick={() => window.electronAPI?.openBrowser('https://hyperclay.com/dashboard')}
+        className="mx-3.5 mb-2 mt-1 bg-transparent border-none p-0 cursor-pointer text-left text-[10.5px] text-[#454A68] font-['Berkeley_Mono',monospace] hover:text-[#B8BFE5]"
+      >
+        Shared documents and links are on the website
+      </button>
+    )}
   </div>
 );
+
+const ActivityRow = ({ line }) => {
+  const verb = VERB_GLYPHS[line.verb] || { glyph: '·', color: C.muted };
+  return (
+    <div className="flex items-baseline gap-2 py-[4px] border-b border-[#1D1F2F] last:border-b-0">
+      <span className="shrink-0 w-3 text-[12px]" style={{ color: verb.color }}>
+        {verb.glyph}
+      </span>
+      <span className="text-[12px] text-[#B8BFE5] whitespace-nowrap overflow-hidden text-ellipsis">
+        {line.path}
+      </span>
+      <span className="ml-auto shrink-0 text-[11px] text-[#6B7194] tabular-nums">
+        {line.time ? formatShortTime(line.time) : ''}
+      </span>
+    </div>
+  );
+};
 
 // =============================================================================
 // NOTICES VIEW
 // =============================================================================
 
-const NoticesView = ({ errors, onMarkErrorRead, onDismissError }) => {
+const NoticesView = ({ errors, conflicts, cards, onMarkErrorRead, onDismissError, onResolveConflict }) => {
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -961,51 +966,85 @@ const NoticesView = ({ errors, onMarkErrorRead, onDismissError }) => {
     return () => clearInterval(interval);
   }, []);
 
+  const titleForSession = (sessionId) => {
+    const card = (cards || []).find((candidate) => candidate.sessionId === sessionId);
+    return card ? card.title : null;
+  };
+
   const sortedErrors = [...errors].sort((a, b) => b.timestamp - a.timestamp);
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
       <div className="flex-1 overflow-y-auto px-3.5 pt-3 pb-2.5">
-        {sortedErrors.length === 0 ? (
+        {(sortedErrors.length === 0 && (conflicts || []).length === 0) ? (
           <div className="py-10 text-center text-[#6B7194] text-[13px]">
             All quiet
           </div>
         ) : (
-          sortedErrors.map(error => (
-            <div
-              key={error.id}
-              className="flex gap-2 items-start py-2 border-b border-[#1D1F2F]"
-              style={error.priority === 1 ? { borderLeft: `3px solid ${C.faultFill}`, paddingLeft: 8, marginLeft: -11 } : undefined}
-            >
-              {!error.read ? (
-                <button
-                  onClick={() => onMarkErrorRead(error.id)}
-                  title="Mark as read"
-                  aria-label="Mark as read"
-                  className={`shrink-0 mt-[5px] w-[7px] h-[7px] rounded-full border-none cursor-pointer p-0 ${error.priority === 1 ? 'bg-[#F73D48]' : 'bg-gray-500'}`}
-                />
-              ) : (
-                <div className="shrink-0 w-[7px]" />
-              )}
-              <div className="flex-1 min-w-0 text-[12px] text-[#D1D5E8] break-words leading-[1.4]">
-                {error.error}
-                {error.file && (
-                  <div className="mt-0.5 text-[11px] text-[#6B7194]">{error.file}</div>
-                )}
-                {error.dismissable !== false && error.priority !== 1 && (
+          <>
+            {(conflicts || []).map((conflict, i) => {
+              const label = titleForSession(conflict.sessionId);
+              return (
+                <div key={`conflict-${conflict.sessionId}-${conflict.path}-${i}`} className="py-2 border-b border-[#1D1F2F]" style={{ borderLeft: `3px solid ${C.amber}`, paddingLeft: 8, marginLeft: -11 }}>
+                  <div className="text-[12px] text-[#D1D5E8] break-words leading-[1.4]">
+                    {label ? `${label}: ` : ''}{conflict.path} changed here and on hyperclay.com
+                  </div>
+                  <div className="mt-1 flex gap-2">
+                    <button
+                      onClick={() => onResolveConflict(conflict.sessionId, conflict.path, 'mine')}
+                      className={`${linkClass} text-[#B8BFE5]`}
+                    >
+                      Keep mine
+                    </button>
+                    <button
+                      onClick={() => onResolveConflict(conflict.sessionId, conflict.path, 'theirs')}
+                      className={`${linkClass} text-[#B8BFE5]`}
+                    >
+                      Keep theirs
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+            {sortedErrors.map(error => (
+              <div
+                key={error.id}
+                className="flex gap-2 items-start py-2 border-b border-[#1D1F2F]"
+                style={error.priority === 1 ? { borderLeft: `3px solid ${C.faultFill}`, paddingLeft: 8, marginLeft: -11 } : undefined}
+              >
+                {!error.read ? (
                   <button
-                    onClick={() => onDismissError(error.id)}
-                    className="block mt-1 bg-transparent border-none p-0 cursor-pointer text-[11px] text-[#6B7194] underline underline-offset-2 font-['Berkeley_Mono',monospace] hover:text-[#B8BFE5]"
-                  >
-                    Dismiss
-                  </button>
+                    onClick={() => onMarkErrorRead(error.id)}
+                    title="Mark as read"
+                    aria-label="Mark as read"
+                    className={`shrink-0 mt-[5px] w-[7px] h-[7px] rounded-full border-none cursor-pointer p-0 ${error.priority === 1 ? 'bg-[#F73D48]' : 'bg-gray-500'}`}
+                  />
+                ) : (
+                  <div className="shrink-0 w-[7px]" />
                 )}
+                <div className="flex-1 min-w-0 text-[12px] text-[#D1D5E8] break-words leading-[1.4]">
+                  {(() => {
+                    const label = error.sessionId ? titleForSession(error.sessionId) : null;
+                    return label ? `${label}: ${error.error}` : error.error;
+                  })()}
+                  {error.file && (
+                    <div className="mt-0.5 text-[11px] text-[#6B7194]">{error.file}</div>
+                  )}
+                  {error.dismissable !== false && error.priority !== 1 && (
+                    <button
+                      onClick={() => onDismissError(error.id)}
+                      className="block mt-1 bg-transparent border-none p-0 cursor-pointer text-[11px] text-[#6B7194] underline underline-offset-2 font-['Berkeley_Mono',monospace] hover:text-[#B8BFE5]"
+                    >
+                      Dismiss
+                    </button>
+                  )}
+                </div>
+                <div className="shrink-0 text-[11px] text-gray-500 tabular-nums">
+                  {formatRelativeTime(error.timestamp)}
+                </div>
               </div>
-              <div className="shrink-0 text-[11px] text-gray-500 tabular-nums">
-                {formatRelativeTime(error.timestamp)}
-              </div>
-            </div>
-          ))
+            ))}
+          </>
         )}
       </div>
     </div>
@@ -1016,7 +1055,7 @@ const NoticesView = ({ errors, onMarkErrorRead, onDismissError }) => {
 // ACTIVITY VIEW
 // =============================================================================
 
-const ActivityView = ({ activity }) => {
+const ActivityView = ({ lines }) => {
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -1027,13 +1066,13 @@ const ActivityView = ({ activity }) => {
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
       <div className="flex-1 overflow-y-auto px-3.5 pt-3 pb-2.5">
-        {activity.length === 0 ? (
+        {lines.length === 0 ? (
           <div className="py-10 text-center text-[#6B7194] text-[13px]">
             Transfers show up here
           </div>
         ) : (
-          activity.map((item, i) => (
-            <ActivityRow key={item.dir + item.file + '-' + i} item={item} />
+          lines.map((line, i) => (
+            <ActivityRow key={line.path + '-' + i} line={line} />
           ))
         )}
       </div>
@@ -1042,10 +1081,173 @@ const ActivityView = ({ activity }) => {
 };
 
 // =============================================================================
+// TEAM SETUP VIEW
+// =============================================================================
+
+const TeamSetupView = ({ accountId, onDone, onCancel }) => {
+  const [setup, setSetup] = useState(null);
+  const [folder, setFolder] = useState(null);
+  const [alternative, setAlternative] = useState(null);
+  const [folderError, setFolderError] = useState(null);
+  const [trusted, setTrusted] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    window.electronAPI?.getTeamSetup(accountId).then((result) => {
+      if (!alive || !result || !result.ok) return;
+      setSetup(result);
+      setFolder(result.suggestedFolder || null);
+    });
+    return () => { alive = false; };
+  }, [accountId]);
+
+  const handleChooseFolder = async () => {
+    const result = await window.electronAPI?.chooseTeamFolder(accountId);
+    if (!result || !result.ok) return;
+    setFolder(result.folder);
+    if (result.empty) {
+      setFolderError(null);
+      setAlternative(null);
+      return;
+    }
+    setFolderError("This folder isn't empty. A team folder has to start empty.");
+    setAlternative(subfolderPath(result.folder, (setup && setup.username) || 'team'));
+  };
+
+  const handleSetup = async () => {
+    if (saving || !folder || !trusted) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await window.electronAPI?.setupTeam(accountId, folder, true);
+      if (result && result.ok === false) {
+        setError('Could not set up this folder.');
+        return;
+      }
+      onDone();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const username = (setup && setup.username) || 'this team';
+  const role = setup && setup.role;
+  const files = setup && setup.files;
+  const size = formatBytes(setup && setup.bytes);
+
+  return (
+    <div className="flex-1 overflow-y-auto px-3.5 pt-3 pb-2.5">
+      <div className="text-[12px] text-[#B8BFE5]">
+        {(setup && setup.displayName) || username}{role ? ` · you're an ${role}` : ''}
+      </div>
+
+      <div className="mt-3 text-[10px] tracking-[0.22em] text-[#6B7194]">FOLDER</div>
+      <div className="mt-1 flex items-center gap-2 px-2.5 py-2" style={{ background: C.well, ...bevelIn() }}>
+        <span className={`text-[12px] whitespace-nowrap overflow-hidden text-ellipsis ${folder ? 'text-[#E8EAF6]' : 'text-[#454A68]'}`}>
+          {folder || ''}
+        </span>
+        <span className="ml-auto shrink-0 text-[11px] text-[#6B7194]">
+          {setup && setup.folderIsNew ? '(new)' : ''}
+        </span>
+      </div>
+      {folderError && (
+        <div className="mt-1 text-[11.5px] text-[#F73D48]">{folderError}</div>
+      )}
+      {alternative && (
+        <button
+          onClick={() => { setFolder(alternative); setFolderError(null); setAlternative(null); }}
+          className={`${linkClass} mt-1 text-[#69AEFE] block`}
+        >
+          Use {alternative} instead
+        </button>
+      )}
+      <button
+        onClick={handleChooseFolder}
+        className={`${linkClass} mt-1.5 text-[#69AEFE] block`}
+      >
+        Choose another folder…
+      </button>
+
+      <div className="mt-3.5 flex items-center gap-3">
+        <span className="text-[10px] tracking-[0.22em] text-[#6B7194]">ADDRESS</span>
+        {setup && (
+          <span className="text-[12px] text-[#B8BFE5]">localhost:{setup.port}</span>
+        )}
+      </div>
+
+      <div className="mt-3.5 text-[11.5px] leading-[1.5] text-[#6B7194]">
+        Pages in this folder come from {username}'s editors. They run in your browser at this address, like your own apps do.
+      </div>
+
+      <label className="mt-3.5 flex items-center gap-2 cursor-pointer text-[11.5px] text-[#B8BFE5]">
+        <input
+          type="checkbox"
+          checked={trusted}
+          onChange={(e) => setTrusted(e.target.checked)}
+          className="w-3.5 h-3.5 cursor-pointer accent-[#1E8136]"
+        />
+        I trust {username}'s editors
+      </label>
+
+      {error && (
+        <div className="mt-2 text-[12px] text-[#FE5F58] text-center">{error}</div>
+      )}
+
+      <div className="mt-3 flex items-center justify-end gap-2">
+        <BevelButton label="Cancel" onClick={onCancel} variant="neutral" small />
+        <BevelButton
+          label="Set up & sync"
+          onClick={handleSetup}
+          variant="success"
+          small
+          disabled={!trusted || !folder || saving}
+        />
+      </div>
+
+      <div className="mt-2 text-[11px] text-[#6B7194]">
+        {!setup
+          ? 'Counting files…'
+          : (files == null ? '' : `${files} ${files === 1 ? 'file' : 'files'}${size ? `, ${size}` : ''} will download.`)}
+      </div>
+    </div>
+  );
+};
+
+// =============================================================================
+// FIRST-RUN BAY
+// =============================================================================
+
+const FirstRunBay = ({ serverLoading, onChooseFolder }) => (
+  <>
+    <div
+      className="mx-3 mt-3 mb-2.5 px-3 pt-4 pb-3.5 text-center"
+      style={{ background: C.well, border: `2px dashed ${C.border}` }}
+    >
+      <BevelButton
+        label={serverLoading ? 'Starting…' : 'Choose Folder…'}
+        onClick={onChooseFolder}
+        variant="success"
+        disabled={serverLoading}
+      />
+      <div className="mt-2.5 text-[11.5px] leading-[1.5] text-[#6B7194]">
+        Serve your HTML apps locally.<br />Sync them to hyperclay.com.
+      </div>
+    </div>
+    <div className="px-3.5 pb-3 text-center text-[11px] leading-[1.55] text-[#454A68]">
+      Any .html file in your folder becomes<br />
+      an app you can open, edit, and save,<br />
+      right in the browser.
+    </div>
+  </>
+);
+
+// =============================================================================
 // CREDENTIALS VIEW
 // =============================================================================
 
-const CredentialsView = ({ username, apiKey, error, loading, folderLabel, onUsernameChange, onApiKeyChange, onSubmit, onCancel }) => {
+const CredentialsView = ({ username, apiKey, error, loading, onUsernameChange, onApiKeyChange, onSubmit, onCancel }) => {
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !loading) onSubmit();
   };
@@ -1053,7 +1255,7 @@ const CredentialsView = ({ username, apiKey, error, loading, folderLabel, onUser
   return (
     <div className="flex-1 px-3.5 pt-3.5 pb-2.5">
       <div className="text-[11.5px] text-[#6B7194] leading-[1.5] mb-3">
-        Two-way syncs {folderLabel ? `"${folderLabel}"` : 'your folder'} with your hyperclay.com account.
+        Syncs your folders with hyperclay.com. Teams you're on appear automatically.
       </div>
 
       <div className="mb-2.5">
@@ -1156,7 +1358,19 @@ function formatShortTime(timestamp) {
       else str = `${Math.floor(hours / 24)}d`;
     }
   }
-  return str.padStart(3, ' ');
+  return str.padStart(3, ' ');
+}
+
+function formatBytes(bytes) {
+  if (bytes == null) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${Math.round(kb)} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
+}
+
+function subfolderPath(folder, name) {
+  return `${String(folder).replace(/[\\/]+$/, '')}/${name}`;
 }
 
 export default PopoverApp;
