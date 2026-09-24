@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, shell, Menu, Tray, nativeImage, ipcMain, safeStorage, clipboard } = require('electron');
+const { app, BrowserWindow, dialog, shell, Menu, Tray, Notification, nativeImage, ipcMain, safeStorage, clipboard } = require('electron');
 const path = require('upath');
 const fs = require('fs');
 const fsPromises = require('fs').promises;
@@ -21,6 +21,8 @@ const { servedRootsPath, writeServedRoots, removeServedRoots } = require('./serv
 const { extractOpenPaths, handleOpenPath, htmlClayLauncher } = require('./open-path');
 const { removeProgram, forgetDecisions } = require('./helpers/store');
 const { runAiEdit } = require('./helpers/ai-edit');
+const { buildCards, worstState, trayIconVariant, trayTooltip, switchSublines, toLine, trayMenuModel } = require('./ui/card-model');
+const { createNewTeamNotifier } = require('./new-team-notifier');
 
 let manager = null;
 let lastPersonalStatus = null;
@@ -77,6 +79,13 @@ let tray = null;
 let settings = {};
 let isQuitting = false;
 let availableUpdate = null;
+
+const ACTIVITY_LIMIT = 100;
+let activity = [];
+let lastCards = [];
+let trayIconName = null;
+let firstDiscoveryForKey = true;
+let notifyNewTeam = null;
 
 const pool = new RootServerPool({
   devHooks: getDevHooks(),
@@ -200,6 +209,14 @@ function personalSession() {
   const root = personalRoot(settings.roots || []);
   if (!root) return null;
   return (settings.syncSessions || []).find((session) => session.rootId === root.id) || null;
+}
+
+function personalUsername() {
+  const session = personalSession();
+  return (session && session.cached && session.cached.username) ||
+    settings.syncUsername ||
+    (settings.actor && settings.actor.username) ||
+    null;
 }
 
 function ensurePersonalSession(username) {
@@ -462,20 +479,35 @@ function getAppIcon() {
   return null;
 }
 
-function getTrayIcon() {
-  const trayIconPath = path.join(__dirname, '../../assets/icons/tray-icon.png');
+const TRAY_ICON_FILES = {
+  normal: 'tray-icon',
+  dim: 'tray-icon-dim',
+  alert: 'tray-icon-alert',
+};
+
+const trayIcons = new Map();
+
+function loadTrayIcon(name) {
+  try {
+    const iconPath = path.join(__dirname, `../../assets/icons/${name}.png`);
+    if (!fs.existsSync(iconPath)) return null;
+
+    const icon = nativeImage.createFromPath(iconPath);
+    if (icon.isEmpty()) return null;
+
+    if (process.platform === 'darwin') icon.setTemplateImage(true);
+    return icon;
+  } catch (error) {
+    console.error('Failed to load tray icon:', error);
+    return null;
+  }
+}
+
+function appIconForTray() {
   const mainIconPath = path.join(__dirname, '../../assets/icons/icon.png');
 
   try {
-    if (fs.existsSync(trayIconPath)) {
-      const icon = nativeImage.createFromPath(trayIconPath);
-
-      if (process.platform === 'darwin') {
-        icon.setTemplateImage(true);
-      }
-
-      return icon;
-    } else if (fs.existsSync(mainIconPath)) {
+    if (fs.existsSync(mainIconPath)) {
       const icon = nativeImage.createFromPath(mainIconPath);
       const size = process.platform === 'darwin' ? 22 : 16;
       return icon.resize({ width: size, height: size });
@@ -484,143 +516,106 @@ function getTrayIcon() {
     console.error('Failed to load tray icon:', error);
   }
 
-  return nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAAdgAAAHYBTnsmCAAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAAFYSURBVDiNpZM9SwNBEIafgwQSCxsLwcJCG1sLG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sL');
+  return null;
+}
+
+function trayIconFor(variant) {
+  const name = TRAY_ICON_FILES[variant] ? variant : 'normal';
+  if (trayIcons.has(name)) return trayIcons.get(name);
+
+  const icon = loadTrayIcon(TRAY_ICON_FILES[name]) ||
+    (name === 'normal' ? appIconForTray() : trayIconFor('normal')) ||
+    nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAAdgAAAHYBTnsmCAAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAAFYSURBVDiNpZM9SwNBEIafgwQSCxsLwcJCG1sLG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sLwcJCG1sL');
+
+  trayIcons.set(name, icon);
+  return icon;
 }
 
 // =============================================================================
 // TRAY MENU MANAGEMENT
 // =============================================================================
 
-function getTrayMenuTemplate() {
-  return [
-    ...(process.platform === 'linux' ? [
-      {
-        label: 'Open Panel',
-        click: () => {
-          popover.showPopover(tray.getBounds());
-        }
-      },
-      { type: 'separator' }
-    ] : []),
-    {
-      label: `Server: ${serverRunning() ? 'On' : 'Off'}`,
-      enabled: false
-    },
-    {
-      label: `Sync: ${settings.syncEnabled ? 'On' : 'Off'}`,
-      enabled: false
-    },
-    {
-      label: `AI Editing: ${settings.aiEdit?.enabled === true ? 'On' : 'Off'}`,
-      enabled: false
-    },
-    { type: 'separator' },
-    {
-      label: serverRunning() ? 'Stop Server' : 'Start Server',
-      click: () => {
-        if (serverRunning()) {
-          handleStopServer();
-        } else {
-          handleStartServer();
-        }
-      }
-    },
-    {
-      label: settings.syncEnabled ? 'Disable Sync' : 'Enable Sync',
-      enabled: !!(settings.hasApiKey && personalRootPath()),
-      click: async () => {
-        if (settings.syncEnabled) {
-          await handleSyncStop();
-        } else {
-          if (settings.hasApiKey && personalRootPath()) {
-            const apiKey = getDecryptedApiKey();
-            if (apiKey) {
-              await handleSyncStart(
-                apiKey,
-                settings.syncUsername,
-                personalRootPath(),
-                settings.serverUrl
-              );
-            }
-          }
-        }
-      }
-    },
-    {
-      label: settings.aiEdit?.enabled === true ? 'Disable AI Editing' : 'Enable AI Editing',
-      click: () => {
-        settings.aiEdit = { ...settings.aiEdit, enabled: !(settings.aiEdit?.enabled === true) };
-        saveSettings(settings);
-        updateTrayMenu();
-      }
-    },
-    { type: 'separator' },
-    {
-      label: 'Open Folder',
-      enabled: !!personalRootPath(),
-      click: () => {
-        const folder = personalRootPath();
-        if (folder) {
-          shell.openPath(folder);
-        }
-      }
-    },
-    {
-      label: 'Backups',
-      enabled: !!personalRootPath(),
-      click: async () => {
-        const root = personalRoot(settings.roots || []);
-        if (root) await openBackups(root.id);
-      }
-    },
-    {
-      label: 'Open Browser',
-      enabled: serverRunning(),
-      click: () => {
-        if (serverRunning()) {
-          shell.openExternal(`http://localhost:${PERSONAL_PORT}`);
-        }
-      }
-    },
-    { type: 'separator' },
-    {
-      label: 'View Sync Logs',
-      click: () => {
-        const logsPath = app.getPath('logs');
-        shell.openPath(path.join(logsPath, 'sync'));
-      }
-    },
-    {
-      label: 'View Error Logs',
-      click: () => {
-        const logsPath = app.getPath('logs');
-        shell.openPath(path.join(logsPath, 'errors'));
-      }
-    },
-    { type: 'separator' },
-    {
-      label: 'About Hyperclay Local',
-      click: () => {
-        if (process.platform === 'darwin') {
-          app.showAboutPanel();
-        } else {
-          dialog.showMessageBox({
-            type: 'info',
-            title: 'About Hyperclay Local',
-            message: `Hyperclay Local Server v${app.getVersion()}`,
-            detail: 'A local server for running your malleable HTML files offline.\n\nMade with \u2764\ufe0f for the Hyperclay platform.',
-            buttons: ['OK']
-          });
-        }
-      }
-    },
-    { type: 'separator' },
-    {
-      label: 'Quit',
-      click: () => {
-        app.quit();
-      }
+function cardActionClick(card, action) {
+  if (action === 'open') return () => { if (card.url) shell.openExternal(card.url); };
+  if (action === 'reveal') return () => { revealRoot(card.rootId); };
+  if (action === 'backups') return () => { openBackups(card.rootId); };
+  if (action === 'setup') return () => showSetupView(card.accountId);
+  return null;
+}
+
+function cardSubmenu(card, model) {
+  return model.map((item, index) => {
+    const click = cardActionClick(card, card.actions[index]);
+    return click ? { ...item, click } : { ...item };
+  });
+}
+
+function toggleAiEditing() {
+  settings.aiEdit = { ...settings.aiEdit, enabled: !(settings.aiEdit?.enabled === true) };
+  saveSettings(settings);
+  updateTrayMenu();
+}
+
+function showAboutDialog() {
+  if (process.platform === 'darwin') {
+    app.showAboutPanel();
+    return;
+  }
+
+  dialog.showMessageBox({
+    type: 'info',
+    title: 'About Hyperclay Local',
+    message: `Hyperclay Local Server v${app.getVersion()}`,
+    detail: 'A local server for running your malleable HTML files offline.\n\nMade with \u2764\ufe0f for the Hyperclay platform.',
+    buttons: ['OK']
+  });
+}
+
+const TRAY_ITEM_CLICKS = {
+  'Start Server': () => handleStartServer(),
+  'Stop Server': () => handleStopServer(),
+  'Enable Sync': () => startPersonalSync(),
+  'Disable Sync': () => handleSyncStop(),
+  'Enable AI Editing': toggleAiEditing,
+  'Disable AI Editing': toggleAiEditing,
+  'View Sync Logs': () => shell.openPath(path.join(app.getPath('logs'), 'sync')),
+  'View Error Logs': () => shell.openPath(path.join(app.getPath('logs'), 'errors')),
+  'About Hyperclay Local': () => showAboutDialog(),
+  'Quit': () => app.quit()
+};
+
+function getTrayMenuTemplate(cards = lastCards) {
+  const model = trayMenuModel(cards, {
+    serverEnabled: settings.serverEnabled === true,
+    syncEnabled: settings.syncEnabled === true,
+    hasApiKey: !!settings.hasApiKey,
+    aiEditEnabled: settings.aiEdit?.enabled === true
+  });
+
+  const cardItems = cards.filter((card) => card.state !== 'viewer');
+  let nextCard = 0;
+
+  const items = model.map((item) => {
+    if (item.submenu) {
+      const card = cardItems[nextCard++];
+      return card ? { label: item.label, submenu: cardSubmenu(card, item.submenu) } : { ...item };
     }
+
+    const click = TRAY_ITEM_CLICKS[item.label];
+    return click ? { ...item, click } : { ...item };
+  });
+
+  if (process.platform !== 'linux') return items;
+
+  return [
+    {
+      label: 'Open Panel',
+      click: () => {
+        popover.showPopover(tray.getBounds());
+      }
+    },
+    { type: 'separator' },
+    ...items
   ];
 }
 
@@ -634,6 +629,38 @@ function updateTrayMenu() {
 }
 
 // =============================================================================
+// TEAM NOTIFICATIONS
+// =============================================================================
+
+function showSetupView(accountId) {
+  if (tray) popover.showPopover(tray.getBounds());
+  sendToPopover('show-setup', { accountId });
+}
+
+function notifyNewTeamAccount(account) {
+  if (!Notification.isSupported()) return;
+
+  const viewer = !(account.sync && account.sync.enabled === true);
+  const team = account.displayName || account.username;
+  const notification = new Notification({
+    title: `Added to ${team}`,
+    body: viewer
+      ? `You're a viewer on ${account.username}. Open it on hyperclay.com.`
+      : `You were added to ${account.username}. Set up a folder?`
+  });
+
+  notification.on('click', () => {
+    if (viewer) {
+      if (account.webUrl) shell.openExternal(account.webUrl);
+      return;
+    }
+    showSetupView(account.id);
+  });
+
+  notification.show();
+}
+
+// =============================================================================
 // UI UPDATE
 // =============================================================================
 
@@ -644,27 +671,116 @@ function sendToPopover(channel, data) {
   }
 }
 
-function updateUI() {
-  const syncStatus = personalSyncStatus();
-  const statePayload = {
-    selectedFolder: personalRootPath(),
-    serverRunning: serverRunning(),
-    serverPort: PERSONAL_PORT,
-    syncEnabled: settings.syncEnabled,
-    syncStatus: syncStatus,
-    syncStats: syncStatus.stats,
-    syncUsername: settings.syncUsername,
-    syncFolder: personalRootPath(),
-    roots: rootsState()
-  };
+async function nextPortFor(rootId) {
+  try {
+    return await allocateTeamPort((settings.roots || []).filter((root) => root.id !== rootId));
+  } catch (error) {
+    return null;
+  }
+}
 
-  sendToPopover('update-state', statePayload);
+function snapshotSessions() {
+  const statuses = new Map((manager ? manager.statuses() : []).map((status) => [status.sessionId, status]));
+
+  return (settings.syncSessions || []).map((session) => {
+    const status = statuses.get(session.id) || {};
+    return {
+      id: session.id,
+      rootId: session.rootId,
+      accountId: session.accountId ?? null,
+      kind: session.kind,
+      cached: session.cached || null,
+      paused: status.paused ?? session.paused ?? null,
+      status: status.status || 'idle',
+      pendingCount: status.pendingCount || 0,
+      conflicts: status.conflicts || [],
+      lastSyncAt: status.lastSyncAt ?? status.lastSync ?? null,
+      lastError: status.lastError || null
+    };
+  });
+}
+
+async function buildSnapshot() {
+  const states = new Map(pool.states().map((state) => [state.rootId, state]));
+  const roots = [];
+
+  for (const root of settings.roots || []) {
+    const state = states.get(root.id) || null;
+    const portTaken = !!state && state.state === 'port-taken';
+    roots.push({
+      id: root.id,
+      kind: root.kind,
+      path: root.path,
+      port: root.port,
+      formerAccount: root.formerAccount || null,
+      running: !!state && state.state === 'running',
+      portTaken,
+      nextPort: portTaken ? await nextPortFor(root.id) : null
+    });
+  }
+
+  const sessions = snapshotSessions();
+  const discovery = manager ? manager.discovery : null;
+  const reasons = sessions.map((session) => session.paused && session.paused.reason).filter(Boolean);
+
+  return {
+    serverEnabled: settings.serverEnabled === true,
+    syncEnabled: settings.syncEnabled === true,
+    hasApiKey: !!settings.hasApiKey,
+    actor: (discovery && discovery.actor) || settings.actor || null,
+    serverUpdateRequired: reasons.includes('server-update-required'),
+    keyInvalid: reasons.includes('key-revoked'),
+    roots,
+    sessions,
+    accounts: (discovery && discovery.accounts) || [],
+    home: app.getPath('home')
+  };
+}
+
+function bannerFor(snapshot) {
+  if (snapshot.keyInvalid) return 'reconnect';
+  if (snapshot.serverUpdateRequired) return 'server-update';
+  return null;
+}
+
+async function buildStatePayload() {
+  const snapshot = await buildSnapshot();
+  lastCards = buildCards(snapshot);
+
+  return {
+    serverEnabled: snapshot.serverEnabled,
+    syncEnabled: snapshot.syncEnabled,
+    hasApiKey: snapshot.hasApiKey,
+    actor: snapshot.actor,
+    banner: bannerFor(snapshot),
+    cards: lastCards,
+    sublines: switchSublines(snapshot, lastCards),
+    activity: [...activity]
+  };
+}
+
+function applyTrayState(cards) {
+  if (!tray) return;
+
+  const variant = trayIconVariant(worstState(cards));
+  if (variant !== trayIconName) {
+    tray.setImage(trayIconFor(variant));
+    trayIconName = variant;
+  }
+
+  tray.setToolTip(trayTooltip(cards));
+  updateTrayMenu();
+}
+
+async function updateUI() {
+  const payload = await buildStatePayload();
+  sendToPopover('update-state', payload);
+  applyTrayState(payload.cards);
 }
 
 async function afterRootsChanged() {
   syncObservers();
-  updateTrayMenu();
-  updateUI();
+  await updateUI();
   await publishServedRoots();
 }
 
@@ -732,8 +848,9 @@ async function checkForUpdates() {
 // =============================================================================
 
 function createTray() {
-  tray = new Tray(getTrayIcon());
-  tray.setToolTip('Hyperclay Local Server');
+  trayIconName = 'normal';
+  tray = new Tray(trayIconFor('normal'));
+  tray.setToolTip(trayTooltip(lastCards));
 
   tray.on('click', (event, bounds) => {
     popover.togglePopover(bounds || tray.getBounds());
@@ -844,6 +961,14 @@ async function openBackups(rootId) {
   return failure ? { ok: false, error: 'open-failed' } : { ok: true };
 }
 
+async function revealRoot(rootId) {
+  const root = (settings.roots || []).find((r) => r.id === rootId);
+  if (!root) return { ok: false, error: 'unknown' };
+
+  const failure = await shell.openPath(root.path);
+  return failure ? { ok: false, error: 'open-failed' } : { ok: true };
+}
+
 async function changePort(rootId) {
   const root = (settings.roots || []).find((r) => r.id === rootId);
   if (!root) return { ok: false, error: 'unknown' };
@@ -903,7 +1028,16 @@ function setupSyncEventHandlers() {
   });
 
   manager.on('file-synced', data => {
+    const sessionsById = new Map((settings.syncSessions || []).map((session) => [session.id, session]));
+    const line = toLine({ ...data, timestamp: new Date().toISOString() }, sessionsById, personalUsername());
+    if (line) activity = [line, ...activity].slice(0, ACTIVITY_LIMIT);
     sendToPopover('file-synced', data);
+  });
+
+  manager.on('accounts', discovery => {
+    if (!notifyNewTeam) return;
+    notifyNewTeam(discovery.accounts || [], { firstDiscoveryForKey });
+    firstDiscoveryForKey = false;
   });
 
   manager.on('sync-stats', data => {
@@ -949,8 +1083,7 @@ async function handleSyncStart(apiKey, username, syncFolder, serverUrl) {
       saveSettings(settings);
     }
 
-    updateUI();
-    updateTrayMenu();
+    await updateUI();
     return result;
   } catch (error) {
     if (session) await manager.stop(session.id);
@@ -971,8 +1104,7 @@ async function handleSyncStop() {
 
     syncObservers();
 
-    updateUI();
-    updateTrayMenu();
+    await updateUI();
     return result;
   } catch (error) {
     return {
@@ -980,6 +1112,16 @@ async function handleSyncStop() {
       error: error.message
     };
   }
+}
+
+async function startPersonalSync() {
+  const folder = personalRootPath();
+  if (!settings.hasApiKey || !folder) return { success: false, error: 'no-api-key' };
+
+  const apiKey = getDecryptedApiKey();
+  if (!apiKey) return { success: false, error: 'no-api-key' };
+
+  return await handleSyncStart(apiKey, settings.syncUsername, folder, settings.serverUrl);
 }
 
 // =============================================================================
@@ -990,15 +1132,10 @@ ipcMain.handle('select-folder', (event) => handleSelectFolder(event));
 ipcMain.handle('start-server', handleStartServer);
 ipcMain.handle('stop-server', handleStopServer);
 
-ipcMain.handle('get-state', () => ({
-  selectedFolder: personalRootPath(),
-  serverRunning: serverRunning(),
-  serverPort: PERSONAL_PORT,
-  syncEnabled: settings.syncEnabled,
-  syncStatus: personalSyncStatus(),
+ipcMain.handle('get-state', async () => ({
+  ...(await buildStatePayload()),
   availableUpdate,
-  appVersion: app.getVersion(),
-  roots: rootsState()
+  appVersion: app.getVersion()
 }));
 
 ipcMain.handle('copy-text', (event, text) => {
@@ -1115,6 +1252,7 @@ ipcMain.handle('set-api-key', async (event, key, serverUrl) => {
     settings.syncUsername = data.username;
     settings.serverUrl = baseUrl;
     ensurePersonalSession(data.username);
+    firstDiscoveryForKey = true;
     saveSettings(settings);
 
     return { success: true, username: data.username };
@@ -1386,6 +1524,7 @@ app.whenReady().then(async () => {
   }
 
   settings = loadSettings();
+  notifyNewTeam = createNewTeamNotifier({ settings, saveSettings, notify: notifyNewTeamAccount });
 
   manager = new SyncManager({
     userData,
@@ -1466,6 +1605,8 @@ app.whenReady().then(async () => {
 
     openHandlerReady = true;
     for (const p of pendingOpenPaths.splice(0)) queueOpenPath(p);
+
+    await updateUI();
   });
 
   // On first launch, auto-show popover so user isn't staring at an empty tray
