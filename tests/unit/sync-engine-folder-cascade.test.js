@@ -133,15 +133,22 @@ describe('_applyFolderRelocate', () => {
     expect(syncEngine.repo.get('61').path).toBe('new/a.html');
   });
 
-  it('bails out on collision at the new path', async () => {
+  it('moves the occupant aside when the new path is taken', async () => {
     syncEngine.repo._map.set('60', { type: 'folder', path: 'old' });
     fileOps.fileExists.mockResolvedValueOnce(true).mockResolvedValueOnce(true);
     nodeMapModule.walkDescendants.mockReturnValue([]);
 
     await syncEngine._applyFolderRelocate(60, 'old', 'new');
 
-    expect(fileOps.moveFile).not.toHaveBeenCalled();
-    expect(syncEngine.repo.get('60').path).toBe('old');
+    expect(fileOps.moveFile).toHaveBeenCalledWith(
+      path.join('/tmp/test-sync', 'new'),
+      path.join('/tmp/test-sync', 'new (conflicted copy)')
+    );
+    expect(fileOps.moveFile).toHaveBeenCalledWith(
+      path.join('/tmp/test-sync', 'old'),
+      path.join('/tmp/test-sync', 'new')
+    );
+    expect(syncEngine.repo.get('60').path).toBe('new');
   });
 
   it('suppresses watcher echo via suppression set, not outbox', async () => {

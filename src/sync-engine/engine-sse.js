@@ -413,6 +413,29 @@ module.exports = {
     this.emit('file-synced', { file: localFolderPath, action: 'trash', source: 'sse', type: 'folder' });
   },
 
+  /**
+   * Make room at `relPath` for a tracked file or folder the server says lives there. Whatever
+   * already occupies it (a file the user made, a folder the watcher never sent) is renamed to a
+   * "conflicted copy" beside it, never overwritten. Returns the name it was moved to, or null.
+   */
+  async _moveOccupantAside(relPath) {
+    this.resolveContainedPath(relPath);
+    const full = path.join(this.syncFolder, relPath);
+    if (!(await fileExists(full))) return null;
+    const ext = path.extname(relPath);
+    const stem = relPath.slice(0, relPath.length - ext.length);
+    let aside = `${stem} (conflicted copy)${ext}`;
+    for (let n = 2; n <= 100; n++) {
+      if (!(await fileExists(path.join(this.syncFolder, aside)))) break;
+      aside = `${stem} (conflicted copy ${n})${ext}`;
+    }
+    this.cascade.mark([relPath, aside]);
+    await moveFile(full, path.join(this.syncFolder, aside));
+    console.warn(`[SYNC] ${relPath} was occupied; moved the occupant to ${aside}`);
+    this.emit('file-synced', { file: aside, action: 'conflict-copy', source: 'relocate' });
+    return aside;
+  },
+
   async _applyFileRelocate(nodeId, oldPath, newPath, nodeType) {
     this.resolveContainedPath(newPath);
     const entry = this.repo.get(nodeId);
@@ -435,9 +458,9 @@ module.exports = {
       }
       const inode = await nodeMap.getInode(newLocalPath);
       await this.repo.set(nodeId, {
+        ...(entry || { checksum: null }),
         type: nodeType,
         path: newPath,
-        checksum: entry?.checksum || null,
         inode,
         syncedAt: alreadyMoved ? Date.now() : entry?.syncedAt
       });
@@ -449,14 +472,15 @@ module.exports = {
     // handler. No markBrowserSave needed.
     this.cascade.mark([currentPath, newPath]);
 
+    await this._moveOccupantAside(newPath);
     await ensureDirectory(path.dirname(newLocalPath));
     await moveFile(localPath, newLocalPath);
 
     const inode = await nodeMap.getInode(newLocalPath);
     await this.repo.set(nodeId, {
+      ...(entry || { checksum: null }),
       type: nodeType,
       path: newPath,
-      checksum: entry?.checksum || null,
       inode,
       syncedAt: Date.now()
     });
@@ -506,11 +530,7 @@ module.exports = {
       return;
     }
 
-    const collision = await fileExists(localNewPath);
-    if (collision) {
-      console.warn(`[SYNC] SSE node-relocated: ${newPath} already exists locally; cannot apply rename`);
-      return;
-    }
+    await this._moveOccupantAside(newPath);
 
     await ensureDirectory(path.dirname(localNewPath));
 

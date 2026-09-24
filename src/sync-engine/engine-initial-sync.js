@@ -429,6 +429,13 @@ module.exports = {
       const newFullPath = path.join(this.syncFolder, relativePath);
       try {
         this.live.markBrowserSave(relativePath);
+        if (localFiles.has(relativePath)) {
+          const aside = await this._moveOccupantAside(relativePath);
+          if (aside) {
+            localFiles.set(aside, localFiles.get(relativePath));
+            localFiles.delete(relativePath);
+          }
+        }
         await moveFile(oldFullPath, newFullPath);
 
         const localInfo = localFiles.get(knownPath);

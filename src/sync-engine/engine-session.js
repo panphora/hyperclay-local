@@ -11,6 +11,7 @@
 
 const path = require('upath');
 const { fileExists } = require('./file-operations');
+const { decidePath } = require('./reconcile/decide');
 
 module.exports = {
   /**
@@ -67,8 +68,30 @@ module.exports = {
     if (this.staleWork(generation, signal, work)) return null;
 
     const node = (inventory || []).find((n) => String(n.id) === id);
-    const entry = this.repo.get(id) || null;
+    let entry = this.repo.get(id) || null;
     const remote = node ? this.remoteViewOf(node) : null;
+    const isFolder = (remote && remote.type === 'folder') || (entry && entry.type === 'folder');
+
+    if (entry && remote && entry.path && remote.path !== entry.path) {
+      await this.applyRemotePath(id, entry, remote, isFolder);
+      if (this.staleWork(generation, signal, work)) return null;
+      entry = this.repo.get(id) || null;
+    }
+
+    // A folder has no content to decide: a new one is created, a deleted one is trashed only
+    // on a complete list, and a moved one was relocated above.
+    if (isFolder) {
+      if (remote && !entry) {
+        await this._applyNodeSavedFolder({ nodeId: node.id, nodeType: 'folder', name: node.name, path: remote.path, parentId: node.parentId });
+        return 'create-folder';
+      }
+      if (!remote && entry && this.serverNodesComplete) {
+        await this._applyFolderDelete(id, entry.path);
+        return 'trash-folder';
+      }
+      return null;
+    }
+
     const rel = remote ? remote.path : entry && entry.path;
     if (!rel) return null;
 
@@ -83,6 +106,25 @@ module.exports = {
 
     await this.runPlanItem(item, { inventory, refreshed: new Set() });
     return item.decision.action;
+  },
+
+  /**
+   * A node whose listed path differs from its baseline path moved on one side. The local file is
+   * either still at the baseline path (a teammate moved it: apply the move here) or already at the
+   * listed path (adopt it). A local move is the watcher's to send, so it is never undone here.
+   */
+  async applyRemotePath(id, entry, remote, isFolder) {
+    const atBase = fileExists(path.join(this.syncFolder, entry.path));
+    const atRemote = fileExists(path.join(this.syncFolder, remote.path));
+    const localPath = atBase || !atRemote ? entry.path : remote.path;
+    const { action } = decidePath({ basePath: entry.path, localPath, remotePath: remote.path });
+    if (action === 'adopt-path') {
+      await this.repo.set(id, { ...entry, path: remote.path, parentId: remote.parentId ?? entry.parentId });
+      return action;
+    }
+    if (isFolder) await this._applyFolderRelocate(id, entry.path, remote.path);
+    else await this._applyFileRelocate(id, entry.path, remote.path, remote.type || entry.type);
+    return action;
   },
 
   /**
