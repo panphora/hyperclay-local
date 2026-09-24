@@ -8,7 +8,7 @@ const errorLogger = require('./error-logger');
 const { getServerBaseUrl } = require('./utils/utils');
 const { makeIsKnownPath } = require('./utils/known-path');
 const popover = require('./popover');
-const { PERSONAL_PORT, personalRoot, validateRootPath, allocateTeamPort } = require('./roots');
+const { PERSONAL_PORT, personalRoot, validateRootPath, defaultTeamFolder, allocateTeamPort } = require('./roots');
 const { migrateSettings, legacyMetaDirName } = require('./settings-v2');
 const { RootServerPool } = require('./root-servers');
 const { SyncManager } = require('./sync-manager');
@@ -23,9 +23,9 @@ const { removeProgram, forgetDecisions } = require('./helpers/store');
 const { runAiEdit } = require('./helpers/ai-edit');
 const { buildCards, worstState, trayIconVariant, trayTooltip, switchSublines, toLine, trayMenuModel } = require('./ui/card-model');
 const { createNewTeamNotifier } = require('./new-team-notifier');
+const { isAllowedExternalUrl, requireRoot, requireSession, requireAccount, cardMenuModel, disconnectDialog, removeFolderDialog, movePortDialog } = require('./ui/main-ipc');
 
 let manager = null;
-let lastPersonalStatus = null;
 const observers = new Map();
 
 const engineRegistry = { forRoot: (rootId) => (manager ? manager.forRoot(rootId) : null) };
@@ -198,14 +198,6 @@ function rootsState() {
   });
 }
 
-const IDLE_SYNC_STATUS = {
-  isRunning: false,
-  syncFolder: null,
-  username: null,
-  stats: { lastSync: null, errors: [] },
-  queueStatus: { queueLength: 0, isProcessing: false, retryItems: [] }
-};
-
 function personalSession() {
   const root = personalRoot(settings.roots || []);
   if (!root) return null;
@@ -249,15 +241,6 @@ function ensurePersonalSession(username) {
 function personalEngine() {
   const session = personalSession();
   return session && manager ? manager.get(session.id) : null;
-}
-
-function personalSyncStatus() {
-  const engine = personalEngine();
-  if (engine) {
-    lastPersonalStatus = engine.getStatus();
-    return lastPersonalStatus;
-  }
-  return { ...(lastPersonalStatus || IDLE_SYNC_STATUS), isRunning: false };
 }
 
 function observerFor(rootId) {
@@ -635,7 +618,7 @@ function updateTrayMenu() {
 
 function showSetupView(accountId) {
   if (tray) popover.showPopover(tray.getBounds());
-  sendToPopover('show-setup', { accountId });
+  sendToPopover('show-team-setup', { accountId });
 }
 
 function notifyNewTeamAccount(account) {
@@ -947,14 +930,32 @@ async function handleStopServer() {
   }
 }
 
+// C4 §5.2: the two global switches. `on` is the whole argument — a port, a path
+// or a key never crosses this boundary.
+async function setServerEnabled(on) {
+  if (on) await handleStartServer();
+  else await handleStopServer();
+  return { ok: true };
+}
+
+async function setSyncEnabled(on) {
+  if (!on) {
+    const stopped = await handleSyncStop();
+    return stopped.success === false ? { ok: false, error: stopped.error || 'sync-failed' } : { ok: true };
+  }
+
+  const started = await startPersonalSync();
+  return started.success ? { ok: true } : { ok: false, error: started.error || 'sync-failed' };
+}
+
 // The "Backups" action of a folder: show the version store C1 keeps for it. The
 // directory is created first, because a folder that has never been saved into has
 // no history yet and the OS would otherwise refuse to open a path that is not there.
 async function openBackups(rootId) {
-  const root = (settings.roots || []).find((r) => r.id === rootId);
-  if (!root) return { ok: false, error: 'unknown' };
+  const check = requireRoot(settings.roots, rootId);
+  if (!check.ok) return check;
 
-  const backupsPath = path.join(root.path, VERSIONS_DIR);
+  const backupsPath = path.join(check.root.path, VERSIONS_DIR);
   try {
     await fsPromises.mkdir(backupsPath, { recursive: true });
   } catch {}
@@ -964,16 +965,31 @@ async function openBackups(rootId) {
 }
 
 async function revealRoot(rootId) {
-  const root = (settings.roots || []).find((r) => r.id === rootId);
-  if (!root) return { ok: false, error: 'unknown' };
+  const check = requireRoot(settings.roots, rootId);
+  if (!check.ok) return check;
 
-  const failure = await shell.openPath(root.path);
+  const failure = await shell.openPath(check.root.path);
   return failure ? { ok: false, error: 'open-failed' } : { ok: true };
 }
 
-async function changePort(rootId) {
-  const root = (settings.roots || []).find((r) => r.id === rootId);
-  if (!root) return { ok: false, error: 'unknown' };
+// C4 §4.9: the address on the card opens the folder this computer serves.
+async function openRootInBrowser(rootId) {
+  const check = requireRoot(settings.roots, rootId);
+  if (!check.ok) return check;
+
+  const server = pool.get(rootId);
+  if (!server || server.state !== 'running') return { ok: false, error: 'not-running' };
+
+  await shell.openExternal(`http://localhost:${check.root.port}`);
+  return { ok: true };
+}
+
+// C1-C2 §5.6: main proposes the port, the renderer never supplies one.
+async function confirmAndChangePort(rootId) {
+  const check = requireRoot(settings.roots, rootId);
+  if (!check.ok) return check;
+
+  const root = check.root;
   if (root.kind === 'personal') return { ok: false, error: 'personal' };
 
   let nextPort;
@@ -984,14 +1000,11 @@ async function changePort(rootId) {
     return { ok: false, error: 'no-port' };
   }
 
-  const { response } = await dialog.showMessageBox({
-    type: 'question',
-    message: `Move ${path.basename(root.path)} to localhost:${nextPort}?`,
-    detail: `Links and bookmarks to localhost:${root.port} will stop working. The htmlclay wire command finds the new port by itself.`,
-    buttons: ['Move', 'Cancel'],
-    defaultId: 1,
-    cancelId: 1
-  });
+  const { response } = await dialog.showMessageBox(movePortDialog({
+    title: rootTitleFor(root),
+    port: root.port,
+    nextPort,
+  }));
   if (response !== 0) return { ok: false, error: 'cancelled' };
 
   root.port = nextPort;
@@ -1081,6 +1094,22 @@ function refreshDiscovery({ stale = false } = {}) {
   });
 }
 
+/** C4 §5.2: the Options menu's Refresh Teams, and the popover's own refresh. */
+async function handleRefreshAccounts() {
+  if (!manager) return { ok: false, error: 'unavailable' };
+
+  try {
+    await manager.refreshAccounts();
+  } catch (error) {
+    console.error('[SYNC] Discovery refresh failed:', error.message);
+    errorLogger.error('Sync', 'Discovery refresh failed', error);
+    return { ok: false, error: 'offline' };
+  }
+
+  await updateUI();
+  return { ok: true };
+}
+
 /** The five minute timer follows sync: it runs while sync is on and stops with it. */
 function syncDiscoveryTimer() {
   if (!manager) return;
@@ -1154,12 +1183,200 @@ async function startPersonalSync() {
 }
 
 // =============================================================================
+// TEAM COMMANDS
+// =============================================================================
+
+function currentAccounts() {
+  return (manager && manager.discovery && manager.discovery.accounts) || [];
+}
+
+async function pathExists(dir) {
+  try {
+    await fsPromises.stat(dir);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function dirIsEmpty(dir) {
+  try {
+    return (await fsPromises.readdir(dir)).length === 0;
+  } catch {
+    return false;
+  }
+}
+
+function sessionIdForRoot(rootId) {
+  const session = (settings.syncSessions || []).find((candidate) => candidate.rootId === rootId);
+  return session ? session.id : null;
+}
+
+/** The card model's `title`: the account's username, or the folder's own name. */
+function rootTitleFor(root) {
+  const session = (settings.syncSessions || []).find((candidate) => candidate.rootId === root.id);
+  const accountId = session ? session.accountId : null;
+  const account = currentAccounts().find((candidate) => candidate.id === accountId) || null;
+  return (session && session.cached && session.cached.username) ||
+    (account && account.username) ||
+    (root.formerAccount && root.formerAccount.username) ||
+    path.basename(root.path);
+}
+
+// C4 §5.2: everything the setup view draws, gathered before anything is created.
+// No root, session or file exists until `setup-team`.
+async function getTeamSetup(accountId) {
+  const check = requireAccount(currentAccounts(), accountId);
+  if (!check.ok) return check;
+
+  const account = check.account;
+  const roots = settings.roots || [];
+  const suggestedFolder = await defaultTeamFolder(account.username, roots, {
+    realPathOf: realpathNearestParent,
+    exists: pathExists,
+    isEmptyDir: dirIsEmpty,
+    home: app.getPath('home'),
+  });
+
+  let port = null;
+  try {
+    port = await allocateTeamPort(roots);
+  } catch (error) {
+    errorLogger.error('App', 'Failed to allocate a port', error);
+  }
+
+  const preview = manager ? await manager.previewTeam(accountId) : { ok: false };
+  const files = preview.ok ? preview.files : null;
+
+  return {
+    ok: true,
+    accountId: account.id,
+    username: account.username,
+    displayName: account.displayName || account.username,
+    role: account.role || null,
+    suggestedFolder,
+    folderIsNew: suggestedFolder ? !(await pathExists(suggestedFolder)) : false,
+    port,
+    files,
+    bytes: files === null ? null : preview.bytes,
+  };
+}
+
+/** CONTRACTS §8: the picker's answer is a folder and whether it is empty. */
+async function chooseTeamFolder(accountId) {
+  const check = requireAccount(currentAccounts(), accountId);
+  if (!check.ok) return check;
+
+  const account = check.account;
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory', 'createDirectory'],
+    title: `Choose a folder for ${account.displayName || account.username}`,
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: false, error: 'cancelled' };
+
+  const folder = result.filePaths[0];
+  return { ok: true, folder, empty: await dirIsEmpty(folder) };
+}
+
+/** C4 §5.2: C3 creates the root and binds it; main only starts serving it. */
+async function setupTeam(accountId, folder, trusted) {
+  const check = requireAccount(currentAccounts(), accountId);
+  if (!check.ok) return check;
+  if (!manager) return { ok: false, error: 'unavailable' };
+
+  const result = await manager.setupTeam({ accountId, folder, trusted });
+  await pool.sync(rootsSnapshot(), { enabled: settings.serverEnabled });
+  await afterRootsChanged();
+  return result;
+}
+
+// C4 §4.9: sync stops, the folder stays on disk and is still served.
+async function confirmAndDisconnect(sessionId) {
+  const check = requireSession(settings.syncSessions, sessionId);
+  if (!check.ok) return check;
+  if (!manager) return { ok: false, error: 'unavailable' };
+
+  const session = check.session;
+  const root = (settings.roots || []).find((candidate) => candidate.id === session.rootId) || null;
+  const cached = session.cached || {};
+  const { response } = await dialog.showMessageBox(disconnectDialog({
+    team: cached.displayName || cached.username || 'this team',
+    folder: root ? root.path : '',
+    port: root ? root.port : null,
+  }));
+  if (response !== 0) return { ok: false, error: 'cancelled' };
+
+  const result = await manager.disconnect(sessionId);
+  await afterRootsChanged();
+  return result;
+}
+
+// C4 §4.9: the folder and its files stay; the port stops answering. Not offered
+// for the personal folder, which moves through Options, `Change Personal Folder…`.
+async function confirmAndRemoveFolder(rootId) {
+  const check = requireRoot(settings.roots, rootId);
+  if (!check.ok) return check;
+
+  const root = check.root;
+  if (root.kind === 'personal') return { ok: false, error: 'personal' };
+  if (!manager) return { ok: false, error: 'unavailable' };
+
+  const { response } = await dialog.showMessageBox(removeFolderDialog({ folder: root.path, port: root.port }));
+  if (response !== 0) return { ok: false, error: 'cancelled' };
+
+  const result = await manager.removeRoot(rootId);
+  await pool.sync(rootsSnapshot(), { enabled: settings.serverEnabled });
+  await afterRootsChanged();
+  return result;
+}
+
+async function openTeamWeb(accountId) {
+  const check = requireAccount(currentAccounts(), accountId);
+  if (!check.ok) return check;
+  if (!check.account.webUrl) return { ok: false, error: 'no-url' };
+
+  await shell.openExternal(check.account.webUrl);
+  return { ok: true };
+}
+
+function cardMenuClick(card, action) {
+  if (action === 'open') return () => openRootInBrowser(card.rootId);
+  if (action === 'reveal') return () => revealRoot(card.rootId);
+  if (action === 'backups') return () => openBackups(card.rootId);
+  if (action === 'disconnect') return () => confirmAndDisconnect(card.sessionId || sessionIdForRoot(card.rootId));
+  if (action === 'remove') return () => confirmAndRemoveFolder(card.rootId);
+  return null;
+}
+
+/** C4 §4: the `⋯` menu of one card, as a native menu beside the popover. */
+function showCardMenu(event, rootId) {
+  const check = requireRoot(settings.roots, rootId);
+  if (!check.ok) return check;
+
+  const root = check.root;
+  const card = lastCards.find((candidate) => candidate.rootId === rootId) || {
+    rootId,
+    sessionId: null,
+    kind: root.kind,
+    actions: root.kind === 'personal' ? ['open', 'reveal', 'backups'] : ['open', 'reveal', 'backups', 'remove'],
+  };
+
+  const template = cardMenuModel(card).map((item) => {
+    if (item.type === 'separator') return { type: 'separator' };
+    const click = cardMenuClick(card, item.action);
+    return click ? { label: item.label, click } : { label: item.label, enabled: false };
+  });
+
+  const win = event && event.sender ? BrowserWindow.fromWebContents(event.sender) : null;
+  Menu.buildFromTemplate(template).popup(win ? { window: win } : {});
+  return { ok: true };
+}
+
+// =============================================================================
 // IPC HANDLERS
 // =============================================================================
 
 ipcMain.handle('select-folder', (event) => handleSelectFolder(event));
-ipcMain.handle('start-server', handleStartServer);
-ipcMain.handle('stop-server', handleStopServer);
 
 ipcMain.handle('get-state', async () => ({
   ...(await buildStatePayload()),
@@ -1169,13 +1386,6 @@ ipcMain.handle('get-state', async () => ({
 
 ipcMain.handle('copy-text', (event, text) => {
   clipboard.writeText(String(text ?? ''));
-});
-
-ipcMain.handle('open-folder', () => {
-  const folder = personalRootPath();
-  if (folder) {
-    shell.openPath(folder);
-  }
 });
 
 ipcMain.handle('open-logs', () => {
@@ -1191,69 +1401,47 @@ ipcMain.handle('open-error-logs', async () => {
   shell.openPath(errorLogsPath);
 });
 
+// C4 §5.2: only the two hyperclay https prefixes leave this app's own pages.
 ipcMain.handle('open-browser', (event, url) => {
-  if (url) {
-    shell.openExternal(url);
-  } else if (serverRunning()) {
-    shell.openExternal(`http://localhost:${PERSONAL_PORT}`);
-  }
+  if (!isAllowedExternalUrl(url)) return { ok: false, error: 'blocked' };
+
+  shell.openExternal(url);
+  return { ok: true };
 });
 
-// Server IPC handlers
+// The two global switches, the team commands and the per-card commands (C4 §5.2).
+// The renderer names ids; ports, paths and keys stay in main.
+ipcMain.handle('set-server-enabled', (event, { on } = {}) => setServerEnabled(!!on));
+ipcMain.handle('set-sync-enabled', (event, { on } = {}) => setSyncEnabled(!!on));
+ipcMain.handle('refresh-accounts', () => handleRefreshAccounts());
+ipcMain.handle('get-team-setup', (event, { accountId } = {}) => getTeamSetup(accountId));
+ipcMain.handle('choose-team-folder', (event, { accountId } = {}) => chooseTeamFolder(accountId));
+ipcMain.handle('setup-team', (event, { accountId, folder, trusted } = {}) => setupTeam(accountId, folder, trusted));
+ipcMain.handle('disconnect', (event, { sessionId } = {}) => confirmAndDisconnect(sessionId));
+ipcMain.handle('remove-folder', (event, { rootId } = {}) => confirmAndRemoveFolder(rootId));
+
 ipcMain.handle('retry-port', async (event, { rootId } = {}) => {
-  if (!(settings.roots || []).some((root) => root.id === rootId)) return { ok: false, error: 'unknown' };
+  const check = requireRoot(settings.roots, rootId);
+  if (!check.ok) return check;
+
   const result = await pool.retry(rootId);
   await afterRootsChanged();
   return result;
 });
 
-ipcMain.handle('change-port', (event, { rootId } = {}) => changePort(rootId));
+ipcMain.handle('change-port', (event, { rootId } = {}) => confirmAndChangePort(rootId));
+ipcMain.handle('open-in-browser', (event, { rootId } = {}) => openRootInBrowser(rootId));
+ipcMain.handle('reveal-folder', (event, { rootId } = {}) => revealRoot(rootId));
 ipcMain.handle('open-backups', (event, { rootId } = {}) => openBackups(rootId));
+ipcMain.handle('open-web', (event, { accountId } = {}) => openTeamWeb(accountId));
+ipcMain.handle('show-card-menu', (event, { rootId } = {}) => showCardMenu(event, rootId));
 
-// Sync IPC handlers
-ipcMain.handle('sync-start', async (event, { apiKey, username, syncFolder, serverUrl }) => {
-  return await handleSyncStart(apiKey, username, syncFolder, serverUrl);
-});
+ipcMain.handle('resolve-conflict', (event, { sessionId, path: filePath, choice } = {}) => {
+  const check = requireSession(settings.syncSessions, sessionId);
+  if (!check.ok) return check;
+  if (!manager) return { ok: false, error: 'unavailable' };
 
-ipcMain.handle('sync-stop', async () => {
-  return await handleSyncStop();
-});
-
-ipcMain.handle('sync-resume', async (event, selectedFolder, username) => {
-  const folderToSync = selectedFolder || personalRootPath();
-  const usernameToUse = username || settings.syncUsername;
-
-  if (!settings.hasApiKey) {
-    return { error: 'no-api-key' };
-  }
-
-  if (!folderToSync) {
-    return { error: 'No folder selected for sync' };
-  }
-
-  const apiKey = getDecryptedApiKey();
-  if (!apiKey || !apiKey.startsWith('hcsk_')) {
-    delete settings.apiKey;
-    settings.hasApiKey = false;
-    saveSettings(settings);
-    return { error: 'no-api-key' };
-  }
-
-  return await handleSyncStart(
-    apiKey,
-    usernameToUse,
-    folderToSync,
-    settings.serverUrl
-  );
-});
-
-ipcMain.handle('sync-status', () => {
-  return personalSyncStatus();
-});
-
-ipcMain.handle('get-sync-stats', () => {
-  const status = personalSyncStatus();
-  return status.stats || null;
+  return manager.resolveConflict({ sessionId, path: filePath, choice });
 });
 
 // API key management IPC handlers
@@ -1313,49 +1501,6 @@ ipcMain.handle('remove-api-key', () => {
   return { success: true };
 });
 
-ipcMain.handle('toggle-sync', async (event, enabled) => {
-  const folderToSync = personalRootPath();
-
-  if (enabled && !folderToSync) {
-    return { error: 'Please select a folder before enabling sync' };
-  }
-
-  if (enabled && !settings.hasApiKey) {
-    return { error: 'no-api-key' };
-  }
-
-  if (enabled) {
-    const apiKey = getDecryptedApiKey();
-
-    if (!apiKey || !apiKey.startsWith('hcsk_')) {
-      // Key is corrupted or decryption failed — clear it so user can re-enter
-      delete settings.apiKey;
-      settings.hasApiKey = false;
-      saveSettings(settings);
-      return { error: 'no-api-key' };
-    }
-
-    const result = await handleSyncStart(
-      apiKey,
-      settings.syncUsername,
-      folderToSync,
-      settings.serverUrl
-    );
-
-    // If sync start fails due to invalid key, clear stored key
-    if (!result.success && result.error && /invalid|expired|unauthorized|api.key/i.test(result.error)) {
-      delete settings.apiKey;
-      settings.hasApiKey = false;
-      saveSettings(settings);
-      return { error: 'no-api-key' };
-    }
-
-    return result;
-  } else {
-    return await handleSyncStop();
-  }
-});
-
 ipcMain.handle('quit-app', () => {
   app.quit();
 });
@@ -1365,23 +1510,8 @@ ipcMain.handle('show-options-menu', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   const template = [
     {
-      label: 'Select Folder...',
+      label: 'Change Personal Folder…',
       click: () => handleSelectFolder(event)
-    },
-    {
-      label: 'Open Folder',
-      enabled: !!personalRootPath(),
-      click: () => {
-        const folder = personalRootPath();
-        if (folder) shell.openPath(folder);
-      }
-    },
-    {
-      label: 'Open in Browser',
-      enabled: serverRunning(),
-      click: () => {
-        if (serverRunning()) shell.openExternal(`http://localhost:${PERSONAL_PORT}`);
-      }
     },
     { type: 'separator' },
     {
@@ -1422,9 +1552,15 @@ ipcMain.handle('show-options-menu', (event) => {
     },
     { type: 'separator' },
     {
-      label: 'Enter API Key for Sync',
+      label: 'Sync Key…',
       click: () => {
         sendToPopover('show-credentials', {});
+      }
+    },
+    {
+      label: 'Refresh Teams',
+      click: () => {
+        handleRefreshAccounts();
       }
     },
     {

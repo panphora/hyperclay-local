@@ -1,0 +1,111 @@
+/**
+ * The pure half of the main process's IPC surface (C4 §5.2): which id names a
+ * root, a session or a discovered account, what each native dialog says (§4.9),
+ * which URLs `open-browser` may point at and what the card's `⋯` menu holds
+ * (§4). No `electron` import, no filesystem: jest exercises every branch in the
+ * node environment.
+ */
+
+const EXTERNAL_URL_PREFIXES = ['https://hyperclay.com/', 'https://hyperclaylocal.com/'];
+
+const CARD_MENU_ACTIONS = ['open', 'reveal', 'backups', 'disconnect', 'remove'];
+const CARD_MENU_LABELS = {
+  open: 'Open in Browser',
+  reveal: 'Reveal Folder',
+  backups: 'Backups',
+  disconnect: 'Disconnect…',
+  remove: 'Remove Folder…',
+};
+const MENU_SEPARATOR_BEFORE = ['disconnect', 'remove'];
+
+function unknownId() {
+  return { ok: false, error: 'unknown' };
+}
+
+/** C4 §5.2: the update banner, `Get API key` and the shared-documents link, nothing else. */
+function isAllowedExternalUrl(url) {
+  if (typeof url !== 'string') return false;
+  return EXTERNAL_URL_PREFIXES.some((prefix) => url.startsWith(prefix));
+}
+
+function requireRoot(roots, rootId) {
+  const root = (roots || []).find((candidate) => candidate.id === rootId) || null;
+  return root ? { ok: true, root } : unknownId();
+}
+
+function requireSession(sessions, sessionId) {
+  const session = (sessions || []).find((candidate) => candidate.id === sessionId) || null;
+  return session ? { ok: true, session } : unknownId();
+}
+
+function requireAccount(accounts, accountId) {
+  const account = (accounts || []).find((candidate) => candidate.id === accountId) || null;
+  return account ? { ok: true, account } : unknownId();
+}
+
+function questionDialog({ message, detail, action }) {
+  return {
+    type: 'question',
+    message,
+    detail,
+    buttons: [action, 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+  };
+}
+
+/** C4 §4.9: sync stops; the folder stays and still serves. Cancel is the default. */
+function disconnectDialog({ team, folder, port }) {
+  return questionDialog({
+    message: `Disconnect ${team}?`,
+    detail: `Sync stops. The folder ${folder} stays on your computer and is still served at localhost:${port}.`,
+    action: 'Disconnect',
+  });
+}
+
+/** C4 §4.9: the folder and its files stay on disk, the port stops answering. */
+function removeFolderDialog({ folder, port }) {
+  return questionDialog({
+    message: `Remove ${folder}?`,
+    detail: `Sync stops and localhost:${port} stops answering. The folder and its files stay on your computer.`,
+    action: 'Remove',
+  });
+}
+
+/** C4 §4.9: main picks the next port, so this is the only place that names it. */
+function movePortDialog({ title, port, nextPort }) {
+  return questionDialog({
+    message: `Move ${title} to localhost:${nextPort}?`,
+    detail: `Links and bookmarks to localhost:${port} will stop working. The htmlclay wire command finds the new port by itself.`,
+    action: 'Move',
+  });
+}
+
+/** C4 §4: open, reveal, backups, then the two that change what this computer does. */
+function cardMenuModel(card) {
+  const actions = (card && card.actions) || [];
+  const items = [];
+  let separated = false;
+  for (const action of CARD_MENU_ACTIONS) {
+    if (!actions.includes(action)) continue;
+    if (MENU_SEPARATOR_BEFORE.includes(action) && items.length && !separated) {
+      items.push({ type: 'separator' });
+      separated = true;
+    }
+    items.push({ label: CARD_MENU_LABELS[action], action });
+  }
+  return items;
+}
+
+module.exports = {
+  EXTERNAL_URL_PREFIXES,
+  unknownId,
+  isAllowedExternalUrl,
+  requireRoot,
+  requireSession,
+  requireAccount,
+  disconnectDialog,
+  removeFolderDialog,
+  movePortDialog,
+  cardMenuModel,
+};
