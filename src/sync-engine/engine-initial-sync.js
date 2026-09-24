@@ -838,7 +838,9 @@ module.exports = {
     } catch (error) {
       console.error('[SYNC] Initial upload sync failed:', error);
       this.stats.errors.push(formatErrorForLog(error, { action: 'initial-upload-sync' }));
-      // Don't throw - allow sync to continue even if upload sync fails
+      // A failure about the session (auth, server down, offline) ends the pass like the
+      // site pass does; anything else is logged and the session carries on.
+      if (SESSION_KINDS.has(classifySyncError(error).kind)) throw error;
     }
   },
 

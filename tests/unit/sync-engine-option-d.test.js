@@ -210,6 +210,39 @@ describe('Folder safety — a failed local create never deletes the live server 
   });
 });
 
+describe('upload pass failures', () => {
+  const newServerUpload = () => [
+    { id: 7001, type: 'upload', name: '1.json', path: 'qa/records', size: 10, checksum: 'c1', modifiedAt: '2024-06-01T00:00:00Z' }
+  ];
+
+  test('a 503 downloading an upload ends the pass', async () => {
+    apiClient.listNodes.mockResolvedValue(newServerUpload());
+    fileOps.getLocalUploads.mockResolvedValue(new Map());
+    apiClient.getNodeContent.mockRejectedValue(Object.assign(new Error('down'), { statusCode: 503 }));
+
+    await expect(syncEngine.performInitialUploadSync()).rejects.toMatchObject({ statusCode: 503 });
+  });
+
+  test('a 401 downloading an upload ends the pass', async () => {
+    apiClient.listNodes.mockResolvedValue(newServerUpload());
+    fileOps.getLocalUploads.mockResolvedValue(new Map());
+    apiClient.getNodeContent.mockRejectedValue(Object.assign(new Error('down'), { statusCode: 401 }));
+
+    await expect(syncEngine.performInitialUploadSync()).rejects.toMatchObject({ statusCode: 401 });
+  });
+
+  test('a 412 downloading an upload is logged and the pass resolves', async () => {
+    apiClient.listNodes.mockResolvedValue(newServerUpload());
+    fileOps.getLocalUploads.mockResolvedValue(new Map());
+    apiClient.getNodeContent.mockRejectedValue(Object.assign(new Error('rejected'), { statusCode: 412 }));
+    const errorsBefore = syncEngine.stats.errors.length;
+
+    await syncEngine.performInitialUploadSync();
+
+    expect(syncEngine.stats.errors.length).toBeGreaterThan(errorsBefore);
+  });
+});
+
 describe('Option D — server-edit wins on delete conflict (uploads)', () => {
   test('upload deleted locally but edited on the server is re-downloaded, not deleted', async () => {
     // The baseline is explicit: the remote etag moved off it, so the teammate's
