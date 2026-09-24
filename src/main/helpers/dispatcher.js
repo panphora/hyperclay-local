@@ -348,81 +348,88 @@ function createHelperDispatcher({ baseDir, helpers, backupBaseline, logger = con
       payload: { mode: 'jsonl', budgetMs },
     });
 
-    const account = accountOf();
-    const resolved = resolveHelper(helpers.settings(), {
-      document: filePath,
-      name,
-      accountId: account.accountId,
-    });
-    if (resolved.decided && !resolved.allowed) {
-      refuse(publish, env, 'helper_not_granted', DENIED_TEXT);
-      return;
-    }
-
-    let program = resolved.program;
-    if (!resolved.decided) {
-      publishFrame(publish, env, { type: 'wire/status', text: WAITING_TEXT });
-      const answer = await sharedApproval(
-        `${filePath}\n${name}`,
-        () => askForApproval(filePath, name, resolved.program, account),
-      );
-      // Another call for the same document and name may have recorded the
-      // answer while this one was still waiting on the shared dialog. The
-      // recorded decision wins: without this, two concurrent allows register
-      // the same program twice.
-      const settled = resolveHelper(helpers.settings(), {
+    // Registered before the approval wait: a root that closes, or a page that cancels, while
+    // the dialog is open must reach this request too.
+    const controller = new AbortController();
+    live.set(liveKey, controller);
+    onCancel(env.id, () => controller.abort());
+    try {
+      const account = accountOf();
+      const resolved = resolveHelper(helpers.settings(), {
         document: filePath,
         name,
         accountId: account.accountId,
       });
-      if (settled.decided && !settled.allowed) {
+      if (resolved.decided && !resolved.allowed) {
         refuse(publish, env, 'helper_not_granted', DENIED_TEXT);
         return;
       }
-      if (settled.decided) {
-        program = settled.program;
-      } else {
-        const granted = await grant(filePath, name, resolved, account, answer);
-        if (granted.refused) {
-          refuse(publish, env, 'helper_not_granted', granted.refused);
+
+      let program = resolved.program;
+      if (!resolved.decided) {
+        publishFrame(publish, env, { type: 'wire/status', text: WAITING_TEXT });
+        const answer = await sharedApproval(
+          `${filePath}\n${name}`,
+          () => askForApproval(filePath, name, resolved.program, account),
+        );
+        // Another call for the same document and name may have recorded the
+        // answer while this one was still waiting on the shared dialog. The
+        // recorded decision wins: without this, two concurrent allows register
+        // the same program twice.
+        const settled = resolveHelper(helpers.settings(), {
+          document: filePath,
+          name,
+          accountId: account.accountId,
+        });
+        if (settled.decided && !settled.allowed) {
+          refuse(publish, env, 'helper_not_granted', DENIED_TEXT);
           return;
         }
-        program = granted.program;
+        if (settled.decided) {
+          program = settled.program;
+        } else {
+          const granted = await grant(filePath, name, resolved, account, answer);
+          if (granted.refused) {
+            refuse(publish, env, 'helper_not_granted', granted.refused);
+            return;
+          }
+          program = granted.program;
+        }
       }
-    }
 
-    if (document === 'edit') {
-      try {
-        await backupBaseline(file);
-      } catch (err) {
-        log(`could not prepare document history for ${filePath}: ${err.message}`);
-        refuse(publish, env, 'helper_start_failed', `could not prepare document history: ${err.message}`);
+      if (controller.signal.aborted) {
+        refuse(publish, env, 'helper_cancelled', 'helper cancelled');
         return;
       }
-    }
 
-    // The budget covers the approval wait, so a request whose budget ran out
-    // while someone was deciding must not start at all.
-    const remaining = budgetAt - Date.now();
-    if (remaining <= 0) {
-      refuse(publish, env, 'helper_timeout', 'helper timed out');
-      return;
-    }
+      if (document === 'edit') {
+        try {
+          await backupBaseline(file);
+        } catch (err) {
+          log(`could not prepare document history for ${filePath}: ${err.message}`);
+          refuse(publish, env, 'helper_start_failed', `could not prepare document history: ${err.message}`);
+          return;
+        }
+      }
 
-    const controller = new AbortController();
-    live.set(liveKey, controller);
-    onCancel(env.id, () => controller.abort());
-    const stdio = {
-      v: env.v,
-      type: env.type,
-      id: env.id,
-      file: filePath,
-      helper: name,
-      document,
-      text: env.text || undefined,
-      payload: env.payload,
-    };
-    try {
+      // The budget covers the approval wait, so a request whose budget ran out
+      // while someone was deciding must not start at all.
+      const remaining = budgetAt - Date.now();
+      if (remaining <= 0) {
+        refuse(publish, env, 'helper_timeout', 'helper timed out');
+        return;
+      }
+
+      const stdio = {
+        v: env.v,
+        type: env.type,
+        id: env.id,
+        file: filePath,
+        helper: name,
+        document,
+        text: env.text || undefined,
+        payload: env.payload,
+      };
       await run({
         argv: [program.path],
         cwd: path.dirname(filePath),

@@ -22,6 +22,7 @@ const { servedRootsPath, writeServedRoots, removeServedRoots } = require('./serv
 const { extractOpenPaths, handleOpenPath, htmlClayLauncher } = require('./open-path');
 const { removeProgram, forgetDecisions } = require('./helpers/store');
 const { runAiEdit } = require('./helpers/ai-edit');
+const { rootAccountFor } = require('./helpers/root-account');
 const { buildCards, worstState, trayIconVariant, trayTooltip, switchSublines, toLine, trayMenuModel } = require('./ui/card-model');
 const { createNewTeamNotifier } = require('./new-team-notifier');
 const { isAllowedExternalUrl, requireRoot, requireSession, requireAccount, cardMenuModel, disconnectDialog, removeFolderDialog, movePortDialog, flattenConflicts, ACTIVITY_THROTTLE_MS, createThrottle } = require('./ui/main-ipc');
@@ -394,13 +395,6 @@ function saveSettings(settings) {
 // HELPER PROGRAMS
 // =============================================================================
 
-function rootAccountFor(root) {
-  const session = (settings.syncSessions || []).find((s) => s.rootId === root.id);
-  const accountId = session?.accountId ?? null;
-  if (accountId === null) return { accountId: null, teamName: null };
-  return { accountId, teamName: session?.cached?.displayName || session?.cached?.username || null };
-}
-
 let approvalQueue = Promise.resolve();
 
 function approveHelperQueued(request) {
@@ -436,7 +430,7 @@ async function approveHelper({ displayName, name, program, teamName, allowBroad 
 
 function helpersFor(root) {
   return {
-    rootAccount: () => rootAccountFor(root),
+    rootAccount: () => rootAccountFor(root, settings),
     settings: () => settings,
     saveSettings: () => saveSettings(settings),
     approve: approveHelperQueued,

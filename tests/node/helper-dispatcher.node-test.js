@@ -328,6 +328,64 @@ test('a cancel aborts the run: helper_cancelled, and the child is gone', async (
   });
 });
 
+test('stopAll during the approval wait cancels the request and the program never runs', async () => {
+  let release = () => {};
+  const held = new Promise((resolve) => { release = resolve; });
+  const pidFile = (state) => path.join(state.dir, 'pid');
+
+  await withHelperApp({
+    html: documentHTML({ helpers: ['search'] }),
+    env: (state) => ({ HTMLCLAY_TEST_PID_FILE: pidFile(state) }),
+    approve: async (info, state) => {
+      await held;
+      return { choice: 'allow', programPath: state.program };
+    },
+  }, async (h) => {
+    const stream = await h.page.subscribe();
+
+    await h.page.send(request('a1', 'search'));
+    await awaitFrame(stream, (frame) => frame.id === 'a1' && frame.type === 'wire/status');
+
+    h.app.locals.helperDispatcher.stopAll();
+    release();
+
+    const frames = await awaitRequest(stream, 'a1');
+    assert.equal(frames.at(-1).type, 'wire/error');
+    assert.equal(frames.at(-1).payload.code, 'helper_cancelled');
+    assert.equal(frames.at(-1).payload.source, 'host');
+    assert.equal(fs.existsSync(pidFile(h)), false, 'the program waiting for approval never ran');
+  });
+});
+
+test('a page cancel during the approval wait cancels the request', async () => {
+  let release = () => {};
+  const held = new Promise((resolve) => { release = resolve; });
+  const pidFile = (state) => path.join(state.dir, 'pid');
+
+  await withHelperApp({
+    html: documentHTML({ helpers: ['search'] }),
+    env: (state) => ({ HTMLCLAY_TEST_PID_FILE: pidFile(state) }),
+    approve: async (info, state) => {
+      await held;
+      return { choice: 'allow', programPath: state.program };
+    },
+  }, async (h) => {
+    const stream = await h.page.subscribe();
+
+    await h.page.send(request('a1', 'search'));
+    await awaitFrame(stream, (frame) => frame.id === 'a1' && frame.type === 'wire/status');
+
+    const cancelled = await h.page.send({ type: 'wire/cancel', id: 'a1' });
+    assert.equal(cancelled.reply.ok, true);
+    release();
+
+    const frames = await awaitRequest(stream, 'a1');
+    assert.equal(frames.at(-1).type, 'wire/error');
+    assert.equal(frames.at(-1).payload.code, 'helper_cancelled');
+    assert.equal(fs.existsSync(pidFile(h)), false, 'the program waiting for approval never ran');
+  });
+});
+
 test('stopping a root server ends the helper child its document started', async () => {
   await withHelperRootServer({
     html: documentHTML({ helpers: ['search'] }),
