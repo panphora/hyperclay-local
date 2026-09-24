@@ -22,11 +22,13 @@ jest.mock('../../src/sync-engine/api-client', () => ({
 const { renameNode, moveNode, deleteNode } = require('../../src/sync-engine/api-client');
 const NodeRepository = require('../../src/sync-engine/state/node-repository');
 const mutations = require('../../src/sync-engine/engine-mutations');
+const sessionMethods = require('../../src/sync-engine/engine-session');
 
 const SV_OLD = 'sv-old';
 const ETAG = 'etag-1';
 
 let metaDir;
+let rootDir;
 
 function fileEntry(overrides = {}) {
   return {
@@ -52,18 +54,19 @@ function folderEntry(overrides = {}) {
   };
 }
 
-function makeEngine({ protocol = 2, entries = [], nodes = [] } = {}) {
+function makeEngine({ protocol = 2, entries = [], nodes = [], syncFolder = rootDir } = {}) {
   const repo = new NodeRepository();
   repo.attach(metaDir);
   repo.seed(entries);
 
-  return Object.assign({}, mutations, {
+  return Object.assign({}, mutations, sessionMethods, {
     protocol,
     generation: 1,
     conn: {},
     outbox: { markInFlight: jest.fn() },
     invalidateServerNodesCache: jest.fn(),
     fetchAndCacheServerNodes: jest.fn(async () => nodes),
+    syncFolder,
     repo
   });
 }
@@ -71,6 +74,7 @@ function makeEngine({ protocol = 2, entries = [], nodes = [] } = {}) {
 beforeEach(() => {
   jest.clearAllMocks();
   metaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'structure-version-'));
+  rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'structure-version-root-'));
   renameNode.mockResolvedValue({ nodeId: 901, oldName: 'a.html', newName: 'b.html' });
   moveNode.mockResolvedValue({ nodeId: 901, fromPath: 'a.html', toPath: 'b.html' });
   deleteNode.mockResolvedValue({ success: true });
@@ -78,6 +82,7 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(metaDir, { recursive: true, force: true });
+  fs.rmSync(rootDir, { recursive: true, force: true });
 });
 
 describe('_expectedVersion — one read per structural change', () => {
@@ -148,6 +153,21 @@ describe('_expectedVersion — one read per structural change', () => {
     expect(renameNode.mock.calls[0][3]).toBeUndefined();
     expect(moveNode.mock.calls[0][3]).toBeUndefined();
     expect(deleteNode.mock.calls[0][2].expectedVersion).toBeUndefined();
+  });
+
+  test('_apiDeleteNode refuses and pauses when the root is missing', async () => {
+    const runner = { pause: jest.fn() };
+    const engine = makeEngine({
+      entries: [['901', fileEntry({ structureVersion: SV_OLD })]],
+      nodes: [{ id: 901, type: 'site', etag: ETAG, structureVersion: 'sv-fresh' }],
+      syncFolder: path.join(rootDir, 'gone')
+    });
+    engine.runner = runner;
+
+    await expect(engine._apiDeleteNode('901')).rejects.toMatchObject({ code: 'folder-missing' });
+
+    expect(deleteNode).not.toHaveBeenCalled();
+    expect(runner.pause).toHaveBeenCalledWith('folder-missing');
   });
 
   test('a rename and a move both drop the baseline version they just spent', async () => {

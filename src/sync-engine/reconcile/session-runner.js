@@ -46,6 +46,8 @@ class SessionRunner extends EventEmitter {
 
   async start() {
     const gen = this.#bump('starting');
+    // A resume, a rediscover or a backoff restart never reconciles into a missing folder.
+    if (!this.engine.rootPresent()) return this.pause('folder-missing');
     // C3.11: every path into a live session comes through here — a resume, a
     // rediscover, the restart a backoff ends in, and the first start of a
     // session whose init ran no passes (paused at launch, or offline). A

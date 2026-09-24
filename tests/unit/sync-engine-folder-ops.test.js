@@ -32,6 +32,7 @@ jest.mock('../../src/sync-engine/file-operations');
 jest.mock('../../src/sync-engine/node-map');
 
 const nodeMapModule = require('../../src/sync-engine/node-map');
+const fileOps = require('../../src/sync-engine/file-operations');
 const Outbox = require('../../src/sync-engine/state/outbox');
 const CascadeSuppression = require('../../src/sync-engine/state/cascade-suppression');
 const {
@@ -64,6 +65,7 @@ beforeEach(() => {
   syncEngine.metaDir = '/tmp/test-meta';
   syncEngine.serverNodesCache = null;
 
+  fileOps.fileExists.mockReturnValue(true);
   nodeMapModule.save.mockResolvedValue();
   nodeMapModule.getInode.mockResolvedValue(null);
   createNode.mockClear();

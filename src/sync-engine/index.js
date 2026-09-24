@@ -218,8 +218,10 @@ class SyncEngine extends EventEmitter {
 
     try {
       // Ensure sync folder exists
-      console.log(`[SYNC] Ensuring sync folder exists: ${syncFolder}`);
-      await ensureDirectory(syncFolder);
+      if (opts.createFolder !== false) {
+        console.log(`[SYNC] Ensuring sync folder exists: ${syncFolder}`);
+        await ensureDirectory(syncFolder);
+      }
 
       // Prove the key works and the server answers before anything syncs. C3
       // §5.5.5: the offset it reports is not used by the session engine any

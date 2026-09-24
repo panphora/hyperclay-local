@@ -62,6 +62,7 @@ module.exports = {
   },
 
   async _apiDeleteNode(nodeId, { cascade = false } = {}) {
+    this.assertRootPresent();
     const gen = this.generation;
     const expectedVersion = await this._expectedVersion(nodeId);
     if (gen !== this.generation) return;

@@ -66,6 +66,14 @@ const CARD_COPY = {
       detail: 'paused: waiting for hyperclay.com',
       detailLong: "hyperclay.com needs an update before this folder can sync. It's still served.",
     },
+    'folder-missing': {
+      detail: 'paused: folder missing',
+      detailLong: "This folder isn't there any more, so nothing syncs and nothing was deleted on hyperclay.com. Put it back, or Disconnect.",
+    },
+    'identity-mismatch': {
+      detail: 'paused: set up again',
+      detailLong: "This folder's sync records belong to a different account or folder, so nothing syncs. Disconnect, then set it up again.",
+    },
   },
 };
 

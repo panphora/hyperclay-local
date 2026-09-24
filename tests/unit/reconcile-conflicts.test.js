@@ -61,6 +61,7 @@ const fileOps = require('../../src/sync-engine/file-operations');
 const { SyncEngine } = require('../../src/sync-engine/index');
 const store = require('../../src/sync-engine/reconcile/conflicts');
 const { executeDecision, resolveConflict } = require('../../src/sync-engine/reconcile/execute');
+const { withFileLock } = require('../../src/main/utils/write-queue');
 const { A } = require('../../src/sync-engine/reconcile/decide');
 
 const checksum = (content) => crypto.createHash('sha256').update(content).digest('hex').substring(0, 16);
@@ -607,5 +608,104 @@ describe('an uncertain outcome refetches before it is judged', () => {
 
     await expect(executeDecision(engine, '901', { action: A.UPLOAD })).rejects.toThrow('socket hang up');
     expect(engine.repo.getBaseline('901').remoteEtag).toBe(REMOTE_ETAG);
+  });
+});
+
+describe('a download never overwrites an edit made while it was fetching', () => {
+  const EDITED = '<h1>saved during the fetch</h1>';
+
+  it('a local save during the download GET is kept and recorded as a both-edited conflict', async () => {
+    await seedSite({ content: LOCAL_BYTES, remoteEtag: REMOTE_ETAG, localChecksum: LOCAL_SUM });
+    api.getNodeContent.mockImplementationOnce(async () => {
+      await writeLocalFile('board.html', EDITED);
+      return remoteContent();
+    });
+
+    const result = await executeDecision(engine, '901', { action: A.DOWNLOAD });
+
+    expect(result.action).toBe(A.CONFLICT);
+    expect(result.kind).toBe('both-edited');
+    expect(await readLocalFile('board.html')).toBe(EDITED);
+    expect(backup.createBackupIfExists).not.toHaveBeenCalled();
+    expect(engine.repo.getBaseline('901')).toEqual({
+      remoteEtag: REMOTE_ETAG,
+      localChecksum: LOCAL_SUM,
+      structureVersion: SV_1,
+      uploadBlocked: false
+    });
+
+    const records = await readRecords();
+    expect(records['901']).toMatchObject({
+      kind: 'both-edited',
+      path: 'board.html',
+      localChecksum: checksum(EDITED),
+      remoteEtag: REMOTE_ETAG
+    });
+    expect(await readLocalFile(records['901'].remoteCopy)).toBe(REMOTE_BYTES);
+  });
+
+  it('a file created at the path during the download GET is kept as an unbound conflict', async () => {
+    engine.repo.seed([['901', {
+      type: 'site',
+      path: 'board.html',
+      inode: 11,
+      remoteEtag: REMOTE_ETAG,
+      localChecksum: LOCAL_SUM,
+      structureVersion: SV_1,
+      checksum: LOCAL_SUM,
+      syncedAt: 1
+    }]]);
+    expect(await exists('board.html')).toBe(false);
+
+    api.getNodeContent.mockImplementationOnce(async () => {
+      await writeLocalFile('board.html', EDITED);
+      return remoteContent();
+    });
+
+    const result = await executeDecision(engine, '901', { action: A.DOWNLOAD });
+
+    expect(result.action).toBe(A.CONFLICT);
+    expect(result.kind).toBe('unbound');
+    expect(await readLocalFile('board.html')).toBe(EDITED);
+    expect(backup.createBackupIfExists).not.toHaveBeenCalled();
+    expect(engine.repo.getBaseline('901').localChecksum).toBe(LOCAL_SUM);
+    expect((await readRecords())['901']).toMatchObject({
+      kind: 'unbound',
+      path: 'board.html',
+      localChecksum: checksum(EDITED)
+    });
+  });
+
+  it('a download whose generation ends while it waits for the file lock writes nothing', async () => {
+    await seedSite({ content: LOCAL_BYTES, remoteEtag: REMOTE_ETAG, localChecksum: LOCAL_SUM });
+
+    let releaseLock;
+    const held = new Promise((resolve) => { releaseLock = resolve; });
+    const holding = withFileLock(path.join(root, 'board.html'), () => held);
+
+    // The lock is held, the GET has answered, and `writeLocal` has just read the
+    // local checksum: everything left is the wait for the lock.
+    let atWrite;
+    const reachedWrite = new Promise((resolve) => { atWrite = resolve; });
+    const contained = engine.resolveContainedPath.bind(engine);
+    let reads = 0;
+    engine.resolveContainedPath = (rel) => {
+      if (++reads === 2) atWrite();
+      return contained(rel);
+    };
+
+    api.getNodeContent.mockResolvedValue(remoteContent());
+    const pending = executeDecision(engine, '901', { action: A.DOWNLOAD });
+    await reachedWrite;
+
+    engine.generation += 1;
+    releaseLock();
+    await holding;
+
+    expect(await pending).toEqual({ action: A.DOWNLOAD, stale: true });
+    expect(await readLocalFile('board.html')).toBe(LOCAL_BYTES);
+    expect(backup.createBackupIfExists).not.toHaveBeenCalled();
+    expect(engine.repo.getBaseline('901').localChecksum).toBe(LOCAL_SUM);
+    expect(await readRecords()).toEqual({});
   });
 });

@@ -92,15 +92,39 @@ async function writeBytes(filePath, content) {
   await atomicWriteFile(filePath, Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8'), null);
 }
 
+const STALE = 'stale';
+const CHANGED = 'changed';
+
 /**
  * Backup, atomic write and the data-loss guard around one local overwrite —
  * the sequence `downloadFile` runs for a synced-down file.
+ *
+ * `gen` and `expectLocal` are checked under the file lock, after any save queued ahead of this
+ * write: a generation that ended, or local bytes that changed since the caller read them
+ * (`null` = the file was absent), refuse the write. Returns `{ localPath, refused }`.
  */
-async function writeLocal(engine, rel, content, { modifiedAt = null } = {}) {
+async function writeLocal(engine, rel, content, { modifiedAt = null, gen, expectLocal } = {}) {
   const isSite = SITE_PATTERN.test(rel);
   const localPath = await localPathFor(engine, rel);
 
+  let refused = null;
   const previous = await withFileLock(localPath, async () => {
+    if (gen !== undefined && gen !== engine.generation) {
+      refused = STALE;
+      return null;
+    }
+    if (expectLocal !== undefined) {
+      let now = null;
+      try {
+        now = (await readLocalBytes(localPath)).checksum;
+      } catch {
+        now = null;
+      }
+      if (now !== expectLocal) {
+        refused = CHANGED;
+        return null;
+      }
+    }
     let prev = null;
     if (isSite) {
       try {
@@ -131,6 +155,8 @@ async function writeLocal(engine, rel, content, { modifiedAt = null } = {}) {
     return prev;
   });
 
+  if (refused) return { localPath, refused };
+
   if (isSite && typeof content === 'string') {
     dataGuard.runDataLossGuard({
       baseDir: engine.syncFolder,
@@ -141,7 +167,7 @@ async function writeLocal(engine, rel, content, { modifiedAt = null } = {}) {
     }).catch((err) => console.error('[data-guard] reconcile guard error:', err && err.message ? err.message : err));
   }
 
-  return localPath;
+  return { localPath, refused: null };
 }
 
 /** Merge baseline fields into an entry (or a brand-new one) and persist. */
@@ -293,10 +319,18 @@ async function download(engine, nodeId, entry, context, gen) {
   const open = await openConflict(engine, nodeId, rel);
   if (open) return refreshRemoteCopy(engine, nodeId, rel, open, gen);
 
+  const expectLocal = await localChecksumOf(engine, rel);
   const response = await getNodeContent(engine.conn, idOf(nodeId));
   if (gen !== engine.generation) return { action: A.DOWNLOAD, stale: true };
 
-  const localPath = await writeLocal(engine, rel, response.content, { modifiedAt: response.modifiedAt });
+  const written = await writeLocal(engine, rel, response.content, { modifiedAt: response.modifiedAt, gen, expectLocal });
+  if (written.refused === STALE) return { action: A.DOWNLOAD, stale: true };
+  if (written.refused === CHANGED) {
+    return conflicted(engine, nodeId, entry, context, {
+      conflictKind: expectLocal === null ? store.KINDS.UNBOUND : store.KINDS.BOTH_EDITED,
+    });
+  }
+  const localPath = written.localPath;
   const localChecksum = (await readLocalBytes(localPath)).checksum;
   const type = typeOf(entry, context, rel);
   const parentId = entry ? entry.parentId : context.parentId;
@@ -342,6 +376,7 @@ async function trashLocal(engine, nodeId, entry, context) {
 }
 
 async function deleteRemote(engine, nodeId, entry, context) {
+  engine.assertRootPresent();
   const rel = relPathOf(entry, context, nodeId);
   const type = typeOf(entry, context, rel);
   const id = idOf(nodeId);

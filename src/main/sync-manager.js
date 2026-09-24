@@ -125,6 +125,13 @@ class SyncManager extends EventEmitter {
     const metaDir = this.metaDirFor(session);
     const setup = firstBind === true;
     const resumed = setup ? null : await this.firstPassFor(session);
+    // CONTRACTS §6-7: a missing folder or another identity's metadata pauses the session before
+    // anything reads its baseline or its disk; a folder that came back clears its own pause.
+    if (!setup) {
+      const refusal = await this.localRefusal(session, root, resumed);
+      if (refusal) this.persistPaused(session.id, refusal);
+      else if (this.pausedReasonFor(session) === 'folder-missing') this.persistPaused(session.id, null);
+    }
     // A bind and an import own the session's first pass, so init runs no passes
     // and opens no stream of its own. Both read the complete inventory only
     // protocol 2 lists, and the import works in the session's v2 directory
@@ -183,6 +190,7 @@ class SyncManager extends EventEmitter {
         this.deviceId, resumed === 'import' ? this.v2MetaDir(session) : metaDir, {
           sessionId: session.id, accountId: session.accountId,
           syncBase, protocol: ownsFirstPass ? 2 : protocol, firstBind: noInitPasses,
+          createFolder: setup,
           live: createRootLive(root),
           snapshots: { take: (rel) => this.takeSnapshot(rel, root.id) },
           observer,
@@ -211,6 +219,29 @@ class SyncManager extends EventEmitter {
     } finally {
       this._releaseInitialSlot();
     }
+  }
+
+  async localRefusal(session, root, resumed) {
+    if (!(await pathExists(root.path))) return 'folder-missing';
+    if (resumed === 'import') return null;
+    let identity;
+    try {
+      identity = JSON.parse(await fs.readFile(path.join(this.metaDirFor(session), 'identity.json'), 'utf8'));
+    } catch {
+      return null;
+    }
+    const expected = {
+      serverUrl: this.serverUrl,
+      actorId: this.settingsStore.get().actor?.id,
+      accountId: session.accountId,
+      rootId: root.id,
+      rootRealpath: await fs.realpath(root.path),
+    };
+    for (const [field, value] of Object.entries(expected)) {
+      if (value == null || identity[field] == null) continue;
+      if (String(identity[field]) !== String(value)) return 'identity-mismatch';
+    }
+    return null;
   }
 
   /**
@@ -576,6 +607,8 @@ class SyncManager extends EventEmitter {
       if (!entry.runner || entry.runner.state !== 'paused') continue;
       const reason = entry.session.paused?.reason;
       if (reason === 'key-revoked' || reason === 'port-taken') continue;
+      if (reason === 'identity-mismatch') continue;
+      if (reason === 'folder-missing' && !entry.engine.rootPresent()) continue;
       if (reason === 'server-update-required' && !allFeaturesOn(discovery)) continue;
       const account = discovery.accounts.find((a) => a.id === entry.session.accountId);
       if (account?.sync.enabled) { this.rebind(entry, account); entry.runner.resume(); }

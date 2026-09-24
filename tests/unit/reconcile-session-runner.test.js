@@ -84,6 +84,7 @@ function makeEngine(overrides = {}) {
     dropPendingWork: jest.fn(),
     whenQueueEmpty: jest.fn().mockResolvedValue(),
     _applyFileDelete: jest.fn(),
+    rootPresent: () => true,
     ...overrides
   };
 }
@@ -142,6 +143,17 @@ describe('sync-ready and the first reconcile', () => {
     expect(engine.dropPendingWork).toHaveBeenCalled();
     expect(manager.persistPaused).toHaveBeenCalledWith(SESSION_ID, 'viewer');
     expect(api.listNodes).not.toHaveBeenCalled();
+    expect(engine.reconcileAll).not.toHaveBeenCalled();
+  });
+
+  it('start pauses with folder-missing when the root is gone and opens no stream', async () => {
+    const { runner, engine, manager, stream } = session({ engine: { rootPresent: () => false } });
+
+    await runner.start();
+
+    expect(runner.state).toBe('paused');
+    expect(stream.open).not.toHaveBeenCalled();
+    expect(manager.persistPaused).toHaveBeenCalledWith(SESSION_ID, 'folder-missing');
     expect(engine.reconcileAll).not.toHaveBeenCalled();
   });
 

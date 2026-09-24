@@ -14,6 +14,21 @@ const { fileExists } = require('./file-operations');
 const { decidePath } = require('./reconcile/decide');
 
 module.exports = {
+  /** The session's folder is still on disk. A missing root is never recreated (CONTRACTS §6). */
+  rootPresent() {
+    return fileExists(this.syncFolder);
+  },
+
+  /**
+   * Refuse a remote delete while the root is gone: an unmounted or deleted folder looks like
+   * every file was deleted. The session pauses instead, and the delete is not sent.
+   */
+  assertRootPresent() {
+    if (this.rootPresent()) return;
+    if (this.runner) this.runner.pause('folder-missing');
+    throw Object.assign(new Error('The sync folder is missing'), { code: 'folder-missing' });
+  },
+
   /**
    * Reconcile the whole disk against one inventory the session already listed
    * (`complete: true`, or a legacy list that proves nothing). The inventory is

@@ -205,6 +205,14 @@ describe('buildCards', () => {
       detail: 'paused: waiting for hyperclay.com',
       detailLong: "hyperclay.com needs an update before this folder can sync. It's still served.",
     },
+    'folder-missing': {
+      detail: 'paused: folder missing',
+      detailLong: "This folder isn't there any more, so nothing syncs and nothing was deleted on hyperclay.com. Put it back, or Disconnect.",
+    },
+    'identity-mismatch': {
+      detail: 'paused: set up again',
+      detailLong: "This folder's sync records belong to a different account or folder, so nothing syncs. Disconnect, then set it up again.",
+    },
   };
 
   for (const [reason, copy] of Object.entries(PAUSED_COPY)) {
@@ -239,6 +247,28 @@ describe('buildCards', () => {
     expect(cards[0].state).toBe('paused');
     expect(cards[0].detail).toBe('paused: plan inactive');
     expect(cards[0].detailLong).toBe("your hyperclay.com plan isn't active. Your files are still here and still served. Sync resumes when the plan is active again.");
+  });
+
+  test('personal folder-missing and identity-mismatch reach the same copy', () => {
+    for (const reason of ['folder-missing', 'identity-mismatch']) {
+      const cards = buildCards(snapshot({
+        roots: [personalRoot()],
+        sessions: [session({
+          id: 'session-personal',
+          rootId: 'root-personal',
+          accountId: 17,
+          kind: 'personal',
+          cached: { username: 'alex', displayName: 'alex', role: 'owner' },
+          status: 'paused',
+          paused: { reason, since: '2026-09-23T12:00:00.000Z' },
+        })],
+      }));
+
+      expect(cards[0].state).toBe('paused');
+      expect(cards[0].detail).toBe(PAUSED_COPY[reason].detail);
+      expect(cards[0].detailLong).toBe(PAUSED_COPY[reason].detailLong);
+      expect(cards[0].actions).toContain('disconnect');
+    }
   });
 
   test('port-taken: the root wins over a paused session and offers both actions', () => {
