@@ -1,21 +1,25 @@
 #!/usr/bin/env node
-// Capture retina marketing screenshots of the REAL tray popover UI.
+// Capture retina screenshots of the REAL tray popover UI.
 //
 // It loads the actual src/renderer/popover.html (real bundle, CSS, fonts) in
 // headless Chromium, injects a stubbed window.electronAPI seeded to a named
-// state, and screenshots #root at the real window size x deviceScaleFactor.
-// Nothing about the shipping UI is duplicated, so the shots can't drift.
+// scenario's state payload, and screenshots #root at the real window size x
+// deviceScaleFactor. Nothing about the shipping UI is duplicated, so the shots
+// can't drift.
 //
-//   npm run screenshot:popover              # all marketing states -> website/assets
-//   node scripts/screenshot-popover.js --scenario on-on
+//   npm run screenshot:popover                 # the five marketing states -> website/assets
+//   node scripts/screenshot-popover.js --scenario teams
 //   node scripts/screenshot-popover.js --scenario all --outdir /tmp --scale 2
+//
+// The development states (scripts/popover-scenarios.js entries with `dev: true`, one
+// per C4 §4 mockup) are captured by name only: `--scenario all` skips them.
 //
 // First run needs the browser: npm run screenshot:setup  (playwright install chromium)
 
 const path = require('path');
 const fs = require('fs');
 const { PANEL_WIDTH, PANEL_HEIGHT } = require('../src/main/popover-dimensions');
-const { FOLDER, USERNAME, APP_VERSION, SCENARIOS } = require('./popover-scenarios');
+const { SCENARIOS } = require('./popover-scenarios');
 
 const REPO = path.resolve(__dirname, '..');
 const POPOVER_HTML = 'file://' + path.join(REPO, 'src/renderer/popover.html');
@@ -45,56 +49,73 @@ function preloadMethodNames() {
   return names;
 }
 
-// Runs IN THE PAGE before the bundle. Builds window.electronAPI + a seeded state
-// from cfg, and exposes window.__emit so the engine can drive events after mount.
+// Runs IN THE PAGE before the bundle. Builds window.electronAPI from cfg (a scenario:
+// the state payload main sends, plus that view's hints) and exposes window.__emit so
+// the engine can drive events the way Electron would after mount.
 function installStub(cfg) {
   try { localStorage.clear(); } catch (e) { /* file:// can throw */ }
   const now = Date.now();
-  const S = {
-    selectedFolder: cfg.folder,
-    serverRunning: cfg.server,
-    serverPort: 4321,
-    syncEnabled: cfg.sync,
-    syncStatus: cfg.sync
-      ? { isRunning: true, username: cfg.username, stats: { lastSync: now - (cfg.syncAgoMs || 120000) } }
-      : { isRunning: false, username: null, stats: { lastSync: null } },
+  // Scenarios say how long ago a sync happened; the payload carries a timestamp.
+  const cards = (cfg.cards || []).map(({ syncAgoMs, ...card }) => (
+    syncAgoMs == null ? card : { ...card, lastSyncAt: now - syncAgoMs }
+  ));
+  const activity = (cfg.activity || []).map(({ agoMs, ...line }) => ({ ...line, time: now - (agoMs || 0) }));
+  const setup = cfg.setup || null;
+  const profile = (cfg.actor && cfg.actor.username) || null;
+  const statePayload = () => ({
+    serverEnabled: cfg.serverEnabled,
+    syncEnabled: cfg.syncEnabled,
+    hasApiKey: cfg.hasApiKey,
+    actor: cfg.actor || null,
+    banner: cfg.banner || null,
+    cards,
+    sublines: cfg.sublines,
+    conflicts: cfg.conflicts || [],
+    home: cfg.home,
+    activity,
     availableUpdate: null,
-    appVersion: cfg.appVersion,
-    hasApiKey: true,
-    username: cfg.username,
-  };
+    appVersion: cfg.appVersion || null,
+  });
+
   const listeners = {};
   const on = (ch) => (cb) => { (listeners[ch] = listeners[ch] || []).push(cb); };
   const emit = (ch, data) => (listeners[ch] || []).forEach((cb) => cb(data));
-  const statePayload = () => ({
-    selectedFolder: S.selectedFolder,
-    serverRunning: S.serverRunning,
-    serverPort: S.serverPort,
-    syncEnabled: S.syncEnabled,
-    syncStatus: S.syncStatus,
-    availableUpdate: S.availableUpdate,
-    appVersion: S.appVersion,
-  });
   const noop = async () => {};
+  const ok = async () => ({ ok: true });
+
   window.electronAPI = {
-    selectFolder: async () => ({ success: true, folder: S.selectedFolder }),
-    startServer: noop,
-    stopServer: noop,
+    selectFolder: async () => ({ success: true, folder: cfg.personalFolder || null }),
     getState: async () => statePayload(),
-    openFolder: noop,
     openLogs: noop,
     openBrowser: noop,
     copyText: noop,
-    syncStart: async () => ({ success: true }),
-    syncStop: async () => ({ success: true }),
-    syncResume: async () => ({ success: true }),
-    setApiKey: async () => ({ success: true, username: S.username }),
-    getApiKeyInfo: async () => (S.hasApiKey ? { hasApiKey: true, username: S.username } : null),
-    removeApiKey: async () => ({ success: true }),
-    toggleSync: async () => ({ success: true }),
-    getSyncStats: async () => S.syncStatus.stats,
+
+    setApiKey: async () => ({ success: true, username: profile }),
+    getApiKeyInfo: async () => (cfg.hasApiKey ? { hasApiKey: true, username: profile } : null),
+    removeApiKey: ok,
+
+    setServerEnabled: noop,
+    setSyncEnabled: noop,
+    refreshAccounts: noop,
+    getTeamSetup: async (accountId) => (setup && setup.accountId === accountId ? { ...setup, ok: true } : { ok: false }),
+    chooseTeamFolder: async () => (setup
+      ? { ok: true, folder: cfg.setupNotEmpty ? setup.chosenFolder : setup.suggestedFolder, empty: !cfg.setupNotEmpty }
+      : { ok: false }),
+    setupTeam: ok,
+    resolveConflict: ok,
+    disconnect: ok,
+    removeFolder: ok,
+    retryPort: ok,
+    changePort: ok,
+    openInBrowser: noop,
+    revealFolder: noop,
+    openBackups: noop,
+    openWeb: noop,
+    showCardMenu: noop,
+
     showOptionsMenu: noop,
     quitApp: noop,
+
     onStateUpdate: on('update-state'),
     onSyncUpdate: on('sync-update'),
     onFileSynced: on('file-synced'),
@@ -105,6 +126,7 @@ function installStub(cfg) {
     onArrowX: on('popover-arrow-x'),
     onArrowPosition: on('popover-arrow-position'),
     onShowCredentials: on('show-credentials'),
+    onShowTeamSetup: on('show-team-setup'),
     removeAllListeners: (ch) => { listeners[ch] = []; },
   };
   window.__emit = emit;
@@ -138,34 +160,31 @@ async function capture(browser, sc, args) {
   });
   const page = await context.newPage();
 
-  const cfg = {
-    folder: FOLDER,
-    username: USERNAME,
-    appVersion: APP_VERSION,
-    server: !!sc.server,
-    sync: !!sc.sync,
-    syncAgoMs: sc.syncAgoMs || 120000,
-    activity: sc.activity || [],
-    notices: sc.notices || [],
-  };
-
-  await page.addInitScript(installStub, cfg);
+  await page.addInitScript(installStub, sc);
   await page.goto(POPOVER_HTML, { waitUntil: 'load' });
 
-  // Wait for React to mount, then drive events the way Electron would.
+  // Wait for React to mount, then drive the events main and Electron would send.
   await page.waitForFunction(() => document.querySelector('#root') && document.querySelector('#root').childElementCount > 0);
-  await page.evaluate((c) => {
+  await page.evaluate((s) => {
     window.__emit('popover-arrow-position', 'bottom'); // clean rounded rect, no arrow/top pad
-    (c.activity || []).forEach((a) => window.__emit('file-synced', a));
+    if (s.gotoSetup != null) window.__emit('show-team-setup', { accountId: s.gotoSetup });
     const now = Date.now();
-    (c.notices || []).forEach((n) => window.__emit('sync-update', {
+    (s.notices || []).forEach((n) => window.__emit('sync-update', {
       error: n.error, priority: n.priority, dismissable: n.dismissable, file: n.file,
       timestamp: now - (n.agoMs || 0),
     }));
-  }, cfg);
+  }, sc);
 
   if (sc.gotoNotices) {
     await page.locator('button[aria-label^="Notices"]').click();
+  }
+  if (sc.gotoSetup != null) {
+    await page.getByText('FOLDER', { exact: true }).waitFor(); // the setup view has replaced the home view
+  }
+  if (sc.setupNotEmpty) {
+    // §4.8: the native picker answered with a folder that already has files.
+    await page.getByText('Choose another folder…').click();
+    await page.getByText("This folder isn't empty. A team folder has to start empty.").waitFor();
   }
 
   // Determinism: real fonts loaded, and the expected content actually painted.
@@ -180,8 +199,8 @@ async function capture(browser, sc, args) {
     const t = document.body.innerText || '';
     return t.includes('Options') && t.includes('Quit');
   });
-  if (sc.activity && sc.activity.length) {
-    await page.getByText(sc.activity[0].file, { exact: false }).first().waitFor();
+  if (!sc.gotoNotices && sc.gotoSetup == null && sc.cards && sc.cards.length) {
+    await page.getByText(sc.cards[0].title, { exact: false }).first().waitFor();
   }
   if (sc.gotoNotices && sc.notices && sc.notices.length) {
     await page.getByText(sc.notices[0].error).waitFor();
@@ -209,7 +228,7 @@ async function main() {
   assertStubCoversPreload();
 
   const list = args.scenario === 'all'
-    ? SCENARIOS
+    ? SCENARIOS.filter((s) => !s.dev)
     : SCENARIOS.filter((s) => s.name === args.scenario);
   if (!list.length) {
     throw new Error(`No scenario named "${args.scenario}". Known: ${SCENARIOS.map((s) => s.name).join(', ')}`);
@@ -244,4 +263,6 @@ async function main() {
   console.log(`Done → ${args.outdir}`);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+if (require.main === module) main().catch((e) => { console.error(e); process.exit(1); });
+
+module.exports = { installStub, assertStubCoversPreload, preloadMethodNames };

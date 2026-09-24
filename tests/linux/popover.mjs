@@ -69,7 +69,7 @@ note('buttons: ' + labels.map((l) => JSON.stringify(l)).join(' '));
 let clicked = 0;
 let gone = 0;
 for (const label of labels) {
-  if (!label || /quit|stop server|open in browser|open folder|choose|select|change/i.test(label)) continue;
+  if (!label || /quit|stop server|open in browser|open folder|choose|select|change|disconnect|remove|more|⋯|use port|set up|hyperclay\.com/i.test(label)) continue;
   const b = win.locator('button:visible', { hasText: label }).first();
   if (!(await b.count())) { gone++; continue; }
   await b.click({ timeout: 3000 }).catch((e) => errors.push(label + ': ' + e.message));
