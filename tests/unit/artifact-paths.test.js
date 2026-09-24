@@ -76,7 +76,7 @@ describe('C1.4: derived artifacts live under .hyperclay/', () => {
 
     const pinned = await dataGuard._captureRecoverPath(dir, 'index.html', null);
 
-    expect(pinned).toContain(path.join('.hyperclay', 'guard'));
+    expect(pinned).toContain('.hyperclay/guard');
     expect(await fs.readFile(pinned, 'utf8')).toBe('<html><body>LEGACY GOOD</body></html>');
   });
 

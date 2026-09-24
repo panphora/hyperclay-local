@@ -84,7 +84,7 @@ let observers = null;
 let userData = null;
 
 function tmpDir(prefix) {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   dirs.push(dir);
   return dir;
 }
@@ -132,7 +132,7 @@ function matchingIdentity(session, root) {
     actorId: 17,
     accountId: session.accountId,
     rootId: root.id,
-    rootRealpath: fs.realpathSync(root.path),
+    rootRealpath: fs.realpathSync.native(root.path),
   };
 }
 

@@ -10,10 +10,10 @@ const upath = require('upath');
 const { extractOpenPaths, handleOpenPath, rootForAbsPath, htmlClayLauncher } = require('../../src/main/open-path');
 
 // macOS resolves /var to /private/var, so roots must be built from the real tmpdir.
-const TMP = fsSync.realpathSync(os.tmpdir());
+const TMP = fsSync.realpathSync.native(os.tmpdir());
 
 async function makeDir(name) {
-  return fsSync.realpathSync(await fs.mkdtemp(path.join(TMP, `open-path-${name}-`)));
+  return fsSync.realpathSync.native(await fs.mkdtemp(path.join(TMP, `open-path-${name}-`)));
 }
 
 async function writeFile(dir, name, body = '<html><body>page</body></html>') {
@@ -236,7 +236,7 @@ describe('handleOpenPath', () => {
     expect(result).toEqual({ outcome: 'htmlclay' });
     expect(deps.showMessage.mock.calls[0][0].buttons[0]).toBe('Open in HTML Clay');
     expect(htmlClay.open).toHaveBeenCalledTimes(1);
-    expect(htmlClay.open).toHaveBeenCalledWith(file);
+    expect(htmlClay.open).toHaveBeenCalledWith(upath.normalize(file));
     expect(deps.startServer).not.toHaveBeenCalled();
     expect(deps.openExternal).not.toHaveBeenCalled();
     expect(deps.revealFolder).not.toHaveBeenCalled();
@@ -356,7 +356,7 @@ describe('htmlClayLauncher', () => {
     await expect(missingExe.available()).resolves.toBe(false);
   });
 
-  test('linux: finds htmlclay on PATH and spawns it detached', async () => {
+  (process.platform === 'win32' ? test.skip : test)('linux: finds htmlclay on PATH and spawns it detached', async () => {
     const exe = '/usr/local/bin/htmlclay';
     const exists = jest.fn((p) => p === exe);
     const child = { unref: jest.fn() };

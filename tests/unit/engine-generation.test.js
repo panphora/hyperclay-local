@@ -169,7 +169,7 @@ describe('generation counter', () => {
     });
 
     expect(fileOps.writeFileBuffer).toHaveBeenCalledWith(
-      path.join(syncFolder, 'photo.png'),
+      require('upath').join(syncFolder, 'photo.png'),
       '<html>remote</html>',
       '2026-04-08T12:00:00Z'
     );

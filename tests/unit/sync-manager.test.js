@@ -228,8 +228,8 @@ describe('SyncManager sessions', () => {
     expect(engineUtils.calibrateClock.mock.calls[1][0]).toMatchObject({
       syncBase: '/_/team/acme/sync', protocol: 1, accountId: 22, apiKey: 'hcsk_test'
     });
-    expect(manager.get(sessionA.id).metaDir).toBe(path.join(userData, 'sync-meta', 'v2', sessionA.id));
-    expect(manager.get(sessionB.id).metaDir).toBe(path.join(userData, 'sync-meta', 'v2', sessionB.id));
+    expect(manager.get(sessionA.id).metaDir).toBe(require('upath').join(userData, 'sync-meta', 'v2', sessionA.id));
+    expect(manager.get(sessionB.id).metaDir).toBe(require('upath').join(userData, 'sync-meta', 'v2', sessionB.id));
   });
 
   it('stops one session without touching the other session or its root observer', async () => {
