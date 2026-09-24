@@ -629,6 +629,7 @@ const PopoverApp = () => {
           {currentView === 'setup' && (
             <TeamSetupView
               accountId={setupAccountId}
+              home={state.home}
               onDone={navigateHome}
               onCancel={navigateHome}
             />
@@ -1084,7 +1085,7 @@ const ActivityView = ({ lines }) => {
 // TEAM SETUP VIEW
 // =============================================================================
 
-const TeamSetupView = ({ accountId, onDone, onCancel }) => {
+const TeamSetupView = ({ accountId, home, onDone, onCancel }) => {
   const [setup, setSetup] = useState(null);
   const [folder, setFolder] = useState(null);
   const [alternative, setAlternative] = useState(null);
@@ -1146,7 +1147,7 @@ const TeamSetupView = ({ accountId, onDone, onCancel }) => {
       <div className="mt-3 text-[10px] tracking-[0.22em] text-[#6B7194]">FOLDER</div>
       <div className="mt-1 flex items-center gap-2 px-2.5 py-2" style={{ background: C.well, ...bevelIn() }}>
         <span className={`text-[12px] whitespace-nowrap overflow-hidden text-ellipsis ${folder ? 'text-[#E8EAF6]' : 'text-[#454A68]'}`}>
-          {folder || ''}
+          {shortenHome(folder, home)}
         </span>
         <span className="ml-auto shrink-0 text-[11px] text-[#6B7194]">
           {setup && setup.folderIsNew ? '(new)' : ''}
@@ -1160,7 +1161,7 @@ const TeamSetupView = ({ accountId, onDone, onCancel }) => {
           onClick={() => { setFolder(alternative); setFolderError(null); setAlternative(null); }}
           className={`${linkClass} mt-1 text-[#69AEFE] block`}
         >
-          Use {alternative} instead
+          Use {shortenHome(alternative, home)} instead
         </button>
       )}
       <button
@@ -1367,6 +1368,15 @@ function formatBytes(bytes) {
   const kb = bytes / 1024;
   if (kb < 1024) return `${Math.round(kb)} KB`;
   return `${(kb / 1024).toFixed(1)} MB`;
+}
+
+function shortenHome(folder, home) {
+  if (!folder) return '';
+  const base = String(home || '').replace(/[\\/]+$/, '');
+  if (base && (folder === base || folder.startsWith(`${base}/`) || folder.startsWith(`${base}\\`))) {
+    return `~${folder.slice(base.length)}`;
+  }
+  return folder;
 }
 
 function subfolderPath(folder, name) {

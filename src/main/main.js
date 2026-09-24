@@ -3,6 +3,7 @@ const path = require('upath');
 const fs = require('fs');
 const fsPromises = require('fs').promises;
 const crypto = require('crypto');
+const os = require('os');
 const syncLogger = require('../sync-engine/logger');
 const errorLogger = require('./error-logger');
 const { getServerBaseUrl } = require('./utils/utils');
@@ -23,7 +24,7 @@ const { removeProgram, forgetDecisions } = require('./helpers/store');
 const { runAiEdit } = require('./helpers/ai-edit');
 const { buildCards, worstState, trayIconVariant, trayTooltip, switchSublines, toLine, trayMenuModel } = require('./ui/card-model');
 const { createNewTeamNotifier } = require('./new-team-notifier');
-const { isAllowedExternalUrl, requireRoot, requireSession, requireAccount, cardMenuModel, disconnectDialog, removeFolderDialog, movePortDialog } = require('./ui/main-ipc');
+const { isAllowedExternalUrl, requireRoot, requireSession, requireAccount, cardMenuModel, disconnectDialog, removeFolderDialog, movePortDialog, flattenConflicts, ACTIVITY_THROTTLE_MS, createThrottle } = require('./ui/main-ipc');
 
 let manager = null;
 const observers = new Map();
@@ -84,6 +85,7 @@ const ACTIVITY_LIMIT = 100;
 const DISCOVERY_STALE_MS = 30_000;
 let activity = [];
 let lastCards = [];
+let lastPayload = null;
 let trayIconName = null;
 let firstDiscoveryForKey = true;
 let notifyNewTeam = null;
@@ -731,7 +733,7 @@ async function buildStatePayload() {
   const snapshot = await buildSnapshot();
   lastCards = buildCards(snapshot);
 
-  return {
+  lastPayload = {
     serverEnabled: snapshot.serverEnabled,
     syncEnabled: snapshot.syncEnabled,
     hasApiKey: snapshot.hasApiKey,
@@ -739,9 +741,23 @@ async function buildStatePayload() {
     banner: bannerFor(snapshot),
     cards: lastCards,
     sublines: switchSublines(snapshot, lastCards),
+    conflicts: flattenConflicts(manager ? manager.statuses() : []),
+    home: os.homedir(),
     activity: [...activity]
   };
+
+  return lastPayload;
 }
+
+/**
+ * The feed updates on every synced file, but `updateUI()` rebuilds the cards and
+ * probes ports for a taken one, so this resends the payload it already has with
+ * only the activity replaced.
+ */
+const sendActivityUpdate = createThrottle(() => {
+  if (!lastPayload) return;
+  sendToPopover('update-state', { ...lastPayload, activity: [...activity] });
+}, ACTIVITY_THROTTLE_MS);
 
 function applyTrayState(cards) {
   if (!tray) return;
@@ -1047,6 +1063,7 @@ function setupSyncEventHandlers() {
     const line = toLine({ ...data, timestamp: new Date().toISOString() }, sessionsById, personalUsername());
     if (line) activity = [line, ...activity].slice(0, ACTIVITY_LIMIT);
     sendToPopover('file-synced', data);
+    sendActivityUpdate();
   });
 
   manager.on('accounts', discovery => {
@@ -1818,6 +1835,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', async (event) => {
   isQuitting = true;
+  sendActivityUpdate.cancel();
   if (manager) manager.stopDiscoveryTimer();
   removeServedRoots(servedRootsPath(app.getPath('userData')));
   popover.destroyPopover();

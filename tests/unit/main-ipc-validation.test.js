@@ -7,6 +7,8 @@ const {
   removeFolderDialog,
   movePortDialog,
   cardMenuModel,
+  flattenConflicts,
+  createThrottle,
 } = require('../../src/main/ui/main-ipc');
 
 const HOME = '/Users/alex';
@@ -137,5 +139,63 @@ describe('card menu model', () => {
       { label: 'Reveal Folder', action: 'reveal' },
       { label: 'Backups', action: 'backups' },
     ]);
+  });
+});
+
+describe('state payload (C4 §5.4)', () => {
+  test('flattens conflicts from every session with their sessionId', () => {
+    const statuses = [
+      { sessionId: 'session-personal', conflicts: [{ path: 'index.html', kind: 'both-edited' }] },
+      { sessionId: 'session-acme', conflicts: [] },
+      { sessionId: 'session-west', conflicts: [{ path: 'notes/a.md', kind: 'both-edited' }, { path: 'b.md', kind: 'remote-deleted' }] },
+      { sessionId: 'session-north' },
+    ];
+
+    expect(flattenConflicts(statuses)).toEqual([
+      { sessionId: 'session-personal', path: 'index.html', kind: 'both-edited' },
+      { sessionId: 'session-west', path: 'notes/a.md', kind: 'both-edited' },
+      { sessionId: 'session-west', path: 'b.md', kind: 'remote-deleted' },
+    ]);
+    expect(flattenConflicts([])).toEqual([]);
+    expect(flattenConflicts(undefined)).toEqual([]);
+  });
+
+  test('throttle sends at most once per 250 ms and always sends the trailing call', () => {
+    jest.useFakeTimers();
+
+    try {
+      const sends = [];
+      const throttled = createThrottle(() => sends.push(Date.now()));
+
+      throttled();
+      expect(sends).toHaveLength(1);
+      const first = sends[0];
+
+      for (let i = 0; i < 5; i += 1) {
+        jest.advanceTimersByTime(20);
+        throttled();
+      }
+
+      expect(sends).toHaveLength(1);
+      expect(Date.now() - first).toBe(100);
+
+      jest.advanceTimersByTime(200);
+      expect(sends).toHaveLength(2);
+      expect(sends[1] - first).toBe(250);
+
+      jest.advanceTimersByTime(5000);
+      expect(sends).toHaveLength(2);
+
+      jest.advanceTimersByTime(250);
+      throttled();
+      expect(sends).toHaveLength(3);
+      expect(sends[2] - sends[1]).toBe(5300);
+
+      throttled.cancel();
+      jest.advanceTimersByTime(1000);
+      expect(sends).toHaveLength(3);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

@@ -97,6 +97,52 @@ function cardMenuModel(card) {
   return items;
 }
 
+/** C4 §5.4: one notice row per open conflict, each carrying its session's id. */
+function flattenConflicts(statuses = []) {
+  const conflicts = [];
+  for (const status of statuses || []) {
+    if (!status) continue;
+    for (const conflict of status.conflicts || []) {
+      conflicts.push({ sessionId: status.sessionId, path: conflict.path, kind: conflict.kind });
+    }
+  }
+  return conflicts;
+}
+
+const ACTIVITY_THROTTLE_MS = 250;
+
+/**
+ * C4 §5.4: at most one call per `wait`, the trailing call always made, so the
+ * feed's newest line is never dropped. One timer at a time; `cancel` clears it.
+ */
+function createThrottle(fn, wait = ACTIVITY_THROTTLE_MS) {
+  let timer = null;
+  let lastRunAt = -Infinity;
+
+  const run = () => {
+    timer = null;
+    lastRunAt = Date.now();
+    fn();
+  };
+
+  const throttled = () => {
+    if (timer) return;
+    const elapsed = Date.now() - lastRunAt;
+    if (elapsed >= wait) {
+      run();
+      return;
+    }
+    timer = setTimeout(run, wait - elapsed);
+  };
+
+  throttled.cancel = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+  };
+
+  return throttled;
+}
+
 module.exports = {
   EXTERNAL_URL_PREFIXES,
   unknownId,
@@ -108,4 +154,7 @@ module.exports = {
   removeFolderDialog,
   movePortDialog,
   cardMenuModel,
+  flattenConflicts,
+  ACTIVITY_THROTTLE_MS,
+  createThrottle,
 };
