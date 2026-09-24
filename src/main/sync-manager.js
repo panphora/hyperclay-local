@@ -12,10 +12,12 @@ const { validateRootPath, defaultTeamFolder, allocateTeamPort } = require('./roo
 const { realpathNearestParent } = require('./utils/path-resolver');
 const { createRootLive } = require('./utils/root-live');
 const { RootObserver } = require('./root-observer');
+const { load: loadConflicts, list: listConflicts } = require('../sync-engine/reconcile/conflicts');
 
 const FORWARDED = ['sync-start', 'sync-complete', 'sync-error', 'file-synced', 'sync-stats',
   'backup-created', 'sync-retry', 'sync-failed'];
 const MAX_CONCURRENT_INITIAL = 2;
+const DISCOVERY_INTERVAL_MS = 5 * 60 * 1000;
 
 async function pathExists(dir) {
   try {
@@ -44,6 +46,13 @@ function allFeaturesOn(discovery) {
   return REQUIRED_FEATURES.every((name) => features[name] === true);
 }
 
+/** The engine stamps `lastSyncedAt` as milliseconds; a snapshot carries ISO. */
+function isoOrNull(value) {
+  if (value === null || value === undefined) return null;
+  const at = new Date(typeof value === 'number' ? value : String(value));
+  return Number.isNaN(at.getTime()) ? null : at.toISOString();
+}
+
 class SyncManager extends EventEmitter {
   constructor({ userData, deviceId, serverUrl, getApiKey, settingsStore, observerFor = null, takeSnapshot = () => null }) {
     super();
@@ -53,6 +62,8 @@ class SyncManager extends EventEmitter {
     this.sessions = new Map();
     this.initialRunning = 0;
     this.initialWaiters = [];
+    this.discoveryTimer = null;
+    this.lastDiscoveryAt = null;
   }
 
   /** The session's own metadata directory, once its legacy one is behind it. */
@@ -114,8 +125,19 @@ class SyncManager extends EventEmitter {
     });
     const observer = this.observerFor(root.id);
     observer.setRemoteApplyCheck((rel) => engine.isRecentRemoteApply(rel));
-    const entry = { session, root, engine, logger, listeners, observer, runner: null };
+    const entry = { session, root, engine, logger, listeners, observer, runner: null, conflicts: [] };
     this.sessions.set(session.id, entry);
+    await this._refreshConflicts(entry);
+    // The executor emits `file-synced { action: 'conflict' }` when it records a
+    // conflict (C3 §5.6); the cache follows that event, so the cards do too.
+    const conflictListener = (data) => {
+      if (!data || data.action !== 'conflict') return;
+      this._refreshConflicts(entry).catch((error) => {
+        if (entry.logger) entry.logger.error('SYNC', 'Could not refresh conflict records', { error: error.message });
+      });
+    };
+    engine.on('file-synced', conflictListener);
+    listeners.push(['file-synced', conflictListener]);
     // The session's stream belongs to its runner (C3.7), so it is attached
     // before init: init opens the legacy transport only when no runner exists.
     this.attachRunner(entry);
@@ -185,6 +207,10 @@ class SyncManager extends EventEmitter {
     });
     entry.runner = runner;
     engine.runner = runner;
+    // C3 §5.6: every state the runner reaches is a card the popover redraws.
+    runner.on('state', (state) => this.emit('status-changed', {
+      sessionId: entry.session.id, rootId: entry.root.id, accountId: entry.session.accountId, state,
+    }));
     return runner;
   }
 
@@ -234,11 +260,74 @@ class SyncManager extends EventEmitter {
     for (const entry of this.sessions.values()) if (entry.root.id === rootId) return entry.engine;
     return null;
   }
+  /**
+   * C3 §5.6: one status per session for the popover's cards. Synchronous by
+   * contract, so the open conflicts come from the entry's cache, not the disk.
+   */
   statuses() {
-    return [...this.sessions.values()].map(({ session, root, engine }) => ({
-      sessionId: session.id, rootId: root.id, accountId: session.accountId,
-      running: engine.isRunning, lastSync: engine.lastSyncedAt, stats: engine.stats,
-    }));
+    return [...this.sessions.values()].map((entry) => {
+      const { session, root, engine } = entry;
+      return {
+        sessionId: session.id, rootId: root.id, accountId: session.accountId,
+        running: engine.isRunning, lastSync: engine.lastSyncedAt, stats: engine.stats,
+        status: this._statusFor(entry),
+        paused: session.paused ?? null,
+        pendingCount: engine.syncQueue ? engine.syncQueue.length() : 0,
+        conflicts: entry.conflicts || [],
+        lastSyncAt: isoOrNull(engine.lastSyncedAt),
+        lastError: (entry.runner && entry.runner.lastError) || null,
+      };
+    });
+  }
+
+  /**
+   * C3 §5.6: an open conflict record outranks the runner; a live session with
+   * an empty queue is idle, any other work is syncing, and every other state is
+   * the runner's own.
+   */
+  _statusFor(entry) {
+    if (entry.conflicts && entry.conflicts.length > 0) return 'conflict';
+    const state = entry.runner ? entry.runner.state : 'stopped';
+    if (state === 'live') {
+      const queued = entry.engine.syncQueue ? entry.engine.syncQueue.length() : 0;
+      return queued > 0 ? 'syncing' : 'idle';
+    }
+    if (state === 'starting' || state === 'reconciling') return 'syncing';
+    if (state === 'paused' || state === 'offline' || state === 'error') return state;
+    return 'idle';
+  }
+
+  /**
+   * C3 §5.6: the conflict records behind `statuses()`, in memory because
+   * `statuses()` is synchronous. Read at start, and again whenever the executor
+   * records a conflict or the user resolves one.
+   */
+  async _refreshConflicts(entry) {
+    let records;
+    try {
+      records = await loadConflicts(this.metaDirFor(entry.session));
+    } catch (error) {
+      if (entry.logger) entry.logger.error('SYNC', 'Could not read conflict records', { error: error.message });
+      return;
+    }
+    const next = listConflicts(records).map(({ path, kind }) => ({ path, kind }));
+    const changed = JSON.stringify(next) !== JSON.stringify(entry.conflicts || []);
+    entry.conflicts = next;
+    if (changed) {
+      this.emit('status-changed', {
+        sessionId: entry.session.id, rootId: entry.root.id, accountId: entry.session.accountId,
+      });
+    }
+  }
+
+  /** C3 §5.7: `resolve-conflict` goes through here, so the cache follows the choice. */
+  async resolveConflict({ sessionId, path, choice } = {}) {
+    const entry = this.sessions.get(sessionId);
+    if (!entry) return { ok: false, error: 'unknown' };
+    const { resolveConflict: resolve } = require('../sync-engine/reconcile/execute');
+    const result = await resolve(entry.engine, { path, choice });
+    await this._refreshConflicts(entry);
+    return result;
   }
 
   /**
@@ -248,9 +337,41 @@ class SyncManager extends EventEmitter {
   async refreshAccounts() {
     const res = await getAccounts({ serverUrl: this.serverUrl, apiKey: this.getApiKey() });
     this.discovery = res;
+    this.lastDiscoveryAt = Date.now();
     this.emit('accounts', res);
     this.onDiscovery(res);
     return res;
+  }
+
+  /**
+   * C3 §5.8: the popover's own trigger. A refresh inside the last thirty
+   * seconds already answers, so opening the popover costs no request of its own.
+   */
+  async refreshAccountsIfStale(maxAgeMs = 30_000) {
+    if (Date.now() - (this.lastDiscoveryAt || 0) < maxAgeMs) return this.discovery;
+    return this.refreshAccounts();
+  }
+
+  /**
+   * C3 §5.8: discovery every five minutes while sync is on, so a paused
+   * session resumes or a new team appears without a keystroke. Unref'd: a timer
+   * never holds the app open.
+   */
+  startDiscoveryTimer() {
+    if (this.discoveryTimer) return;
+    if (this.settingsStore.get().syncEnabled !== true || !this.getApiKey()) return;
+    this.discoveryTimer = setInterval(() => {
+      this.refreshAccounts().catch((error) => {
+        console.error('[SYNC] Discovery refresh failed:', error.message);
+      });
+    }, DISCOVERY_INTERVAL_MS);
+    this.discoveryTimer.unref?.();
+  }
+
+  stopDiscoveryTimer() {
+    if (!this.discoveryTimer) return;
+    clearInterval(this.discoveryTimer);
+    this.discoveryTimer = null;
   }
 
   persistPaused(sessionId, reason) {

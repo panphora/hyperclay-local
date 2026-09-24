@@ -41,6 +41,7 @@ class SessionRunner extends EventEmitter {
     this.backoffIndex = 0;
     this.invalidations = Promise.resolve();
     this.pendingNodes = new Map();
+    this.lastError = null;
   }
 
   async start() {
@@ -186,6 +187,9 @@ class SessionRunner extends EventEmitter {
   #onError(gen, error) {
     if (gen !== this.generation) return;
     const c = classifyError(error);
+    // C3 §5.6: the last error the runner classified, for the card's own detail
+    // line. The transitions below stay exactly as they are.
+    this.lastError = (error && error.message) || null;
     if (c.kind === 'pause') return this.pause(c.reason);
     if (c.kind === 'pause-all') return this.manager.pauseAll(c.reason);
     if (c.kind === 'rediscover') return this.manager.rediscover({ reason: c.reason, sessionId: this.engine.sessionId });

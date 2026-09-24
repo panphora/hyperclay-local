@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, shell, Menu, Tray, Notification, nativeImage, ipcMain, safeStorage, clipboard } = require('electron');
+const { app, BrowserWindow, dialog, shell, Menu, Tray, Notification, nativeImage, ipcMain, powerMonitor, safeStorage, clipboard } = require('electron');
 const path = require('upath');
 const fs = require('fs');
 const fsPromises = require('fs').promises;
@@ -81,6 +81,7 @@ let isQuitting = false;
 let availableUpdate = null;
 
 const ACTIVITY_LIMIT = 100;
+const DISCOVERY_STALE_MS = 30_000;
 let activity = [];
 let lastCards = [];
 let trayIconName = null;
@@ -853,6 +854,7 @@ function createTray() {
   tray.setToolTip(trayTooltip(lastCards));
 
   tray.on('click', (event, bounds) => {
+    refreshDiscovery({ stale: true });
     popover.togglePopover(bounds || tray.getBounds());
   });
 
@@ -1055,11 +1057,36 @@ function setupSyncEventHandlers() {
   manager.on('sync-failed', data => {
     sendToPopover('sync-failed', data);
   });
+
+  manager.on('status-changed', () => {
+    updateUI().catch(error => console.error('[SYNC] Failed to update the UI:', error.message));
+  });
 }
 
 // =============================================================================
 // SYNC HANDLERS
 // =============================================================================
+
+/**
+ * C3 §5.8: discovery runs at launch, on wake, every five minutes and when the
+ * popover opens. `stale` is the popover's throttle. Offline is logged, never
+ * thrown into Electron.
+ */
+function refreshDiscovery({ stale = false } = {}) {
+  if (!manager || settings.syncEnabled !== true || !settings.hasApiKey) return Promise.resolve();
+  const refresh = stale ? manager.refreshAccountsIfStale(DISCOVERY_STALE_MS) : manager.refreshAccounts();
+  return refresh.catch(error => {
+    console.error('[SYNC] Discovery refresh failed:', error.message);
+    errorLogger.error('Sync', 'Discovery refresh failed', error);
+  });
+}
+
+/** The five minute timer follows sync: it runs while sync is on and stops with it. */
+function syncDiscoveryTimer() {
+  if (!manager) return;
+  if (settings.syncEnabled === true && settings.hasApiKey) manager.startDiscoveryTimer();
+  else manager.stopDiscoveryTimer();
+}
 
 async function handleSyncStart(apiKey, username, syncFolder, serverUrl) {
   let session = null;
@@ -1081,6 +1108,7 @@ async function handleSyncStart(apiKey, username, syncFolder, serverUrl) {
       settings.syncUsername = username;
       settings.serverUrl = serverUrl;
       saveSettings(settings);
+      syncDiscoveryTimer();
     }
 
     await updateUI();
@@ -1101,6 +1129,7 @@ async function handleSyncStop() {
 
     settings.syncEnabled = false;
     saveSettings(settings);
+    syncDiscoveryTimer();
 
     syncObservers();
 
@@ -1280,6 +1309,7 @@ ipcMain.handle('remove-api-key', () => {
   delete settings.serverUrl;
   settings.syncEnabled = false;
   saveSettings(settings);
+  syncDiscoveryTimer();
   return { success: true };
 });
 
@@ -1537,6 +1567,9 @@ app.whenReady().then(async () => {
   });
   setupSyncEventHandlers();
 
+  // C3 §5.8: a laptop that wakes up refreshes discovery without a keystroke.
+  powerMonitor.on('resume', () => refreshDiscovery());
+
   if (!isDev) {
     setAutostart(settings.autoStartEnabled || false);
   }
@@ -1590,6 +1623,10 @@ app.whenReady().then(async () => {
       }
     }
 
+    // C3 §5.8: the sessions are up, so discovery runs once and the timer starts.
+    syncDiscoveryTimer();
+    refreshDiscovery();
+
     if (settings.serverEnabled && personalRootPath()) {
       console.log('[APP] Auto-restarting server from previous session...');
       try {
@@ -1636,6 +1673,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', async (event) => {
   isQuitting = true;
+  if (manager) manager.stopDiscoveryTimer();
   removeServedRoots(servedRootsPath(app.getPath('userData')));
   popover.destroyPopover();
 
