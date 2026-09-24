@@ -89,6 +89,24 @@ class SyncManager extends EventEmitter {
   }
 
   /**
+   * C3 §5.9 step 1: the account id a protocol 2 session has to name on every
+   * request, resolved from discovery for a session whose engine has none yet (a
+   * migrated personal session, until its import persists one). Nothing is
+   * written here: the import's own step 5 is what makes the id durable. A
+   * refresh that fails propagates as-is — the runner classifies it as offline
+   * and backs off — and a discovery that names no such account is `not-found`.
+   */
+  async resolveAccountId(entry) {
+    if (entry.session.accountId != null) return entry.session.accountId;
+    const discovery = await this.refreshAccounts();
+    const personal = entry.session.kind === 'personal'
+      ? discovery.accounts.find((a) => a.kind === 'personal')
+      : null;
+    if (!personal) throw Object.assign(new Error('personal account not in discovery'), { statusCode: 404, code: 'not-found' });
+    return personal.id;
+  }
+
+  /**
    * C3.8: what this session's first pass is. A migrated personal session whose
    * legacy metadata is not imported yet imports it (C3 §5.9); a team session
    * whose bind was interrupted by a quit resumes that bind (C3 §5.8); every
@@ -270,6 +288,9 @@ class SyncManager extends EventEmitter {
       api: { listNodes: (options) => listNodes(engine.conn, options) },
       stream: engine.stream,
       manager: this,
+      // C3.12: the runner resolves a session's account id from discovery before
+      // it opens a protocol 2 stream, and it resolves it through the entry.
+      entry,
     });
     entry.runner = runner;
     engine.runner = runner;

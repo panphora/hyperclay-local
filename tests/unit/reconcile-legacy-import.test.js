@@ -411,6 +411,9 @@ describe('the manager', () => {
     expect(personal.legacyMetaDir).toBe(legacyName);
     expect(first.engine.metaDir).toBe(v2);
 
+    // C3.12: the runner names the account discovery finds before it opens the
+    // stream, so the stream is open by the time the first frame arrives.
+    await waitFor(() => stream.open.mock.calls.length === 1);
     stream.push(READY);
     await waitFor(() => first.runner.state === 'live');
 
@@ -418,7 +421,9 @@ describe('the manager', () => {
     expect(personal.legacyMetaDir).toBeNull();
     expect(settingsStore.save).toHaveBeenCalled();
     expect(first.engine.legacyImport).toBeNull();
-    expect(api.getAccounts).toHaveBeenCalledTimes(1);
+    // Two discoveries named the account: the runner's own, before its stream
+    // opened (C3.12), and the import's step 1.
+    expect(api.getAccounts).toHaveBeenCalledTimes(2);
     expect(api.deleteNode).not.toHaveBeenCalled();
     expect(await readJson(path.join(v2, IDENTITY_FILE))).toMatchObject({ accountId: ACCOUNT_ID, rootId: ROOT_ID });
     await manager.stop(SESSION_ID);
@@ -435,7 +440,9 @@ describe('the manager', () => {
     stream.push(READY);
     await waitFor(() => second.runner.state === 'live');
 
-    expect(api.getAccounts).toHaveBeenCalledTimes(1);
+    // The session is identified: neither the runner nor the import asks
+    // discovery again.
+    expect(api.getAccounts).toHaveBeenCalledTimes(2);
     expect(Object.keys(await readJson(path.join(v2, 'node-map.json')))).toEqual(['901']);
     await manager.stop(SESSION_ID);
   });

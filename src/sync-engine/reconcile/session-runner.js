@@ -32,9 +32,9 @@ function withTimeout(promise, ms, message) {
 }
 
 class SessionRunner extends EventEmitter {
-  constructor({ engine, api, stream, manager, clock = Date }) {
+  constructor({ engine, api, stream, manager, entry = null, clock = Date }) {
     super();
-    Object.assign(this, { engine, api, stream, manager, clock });
+    Object.assign(this, { engine, api, stream, manager, entry, clock });
     this.state = 'stopped';
     this.generation = 0;
     this.abort = null;
@@ -55,20 +55,29 @@ class SessionRunner extends EventEmitter {
     let ready;
     const readyFrame = new Promise((resolve, reject) => { ready = { resolve, reject }; });
 
-    this.stream.open({
-      signal: this.abort.signal,
-      onFrame: (frame) => {
-        if (gen !== this.generation) return;
-        if (frame.data?.type === 'sync-ready') return ready.resolve(frame.data);
-        if (frame.data?.type === 'account-changed') return this.#onAccountChanged(gen, frame.data);
-        if (frame.data?.type === 'live-sync') return this.engine.relayLiveFrame(frame.data);
-        if (this.state === 'live') return this.#enqueueInvalidation(gen, frame.data);
-        if (frame.data?.nodeId != null) invalidated.add(String(frame.data.nodeId));
-      },
-      onError: (error) => this.#onError(gen, error),
-    });
-
     try {
+      // C3 \u00a75.9 step 1: a protocol 2 session names its account on every request,
+      // and discovery names the personal account a migrated session cannot name
+      // yet. Identifying it before the stream opens is what keeps the connect
+      // from being refused (428, CONTRACTS \u00a72); offline, the failure below goes
+      // to the backoff, exactly as a failed connect would.
+      if (this.engine.protocol === 2 && this.engine.accountId == null) {
+        this.engine.accountId = await this.manager.resolveAccountId(this.entry);
+      }
+
+      this.stream.open({
+        signal: this.abort.signal,
+        onFrame: (frame) => {
+          if (gen !== this.generation) return;
+          if (frame.data?.type === 'sync-ready') return ready.resolve(frame.data);
+          if (frame.data?.type === 'account-changed') return this.#onAccountChanged(gen, frame.data);
+          if (frame.data?.type === 'live-sync') return this.engine.relayLiveFrame(frame.data);
+          if (this.state === 'live') return this.#enqueueInvalidation(gen, frame.data);
+          if (frame.data?.nodeId != null) invalidated.add(String(frame.data.nodeId));
+        },
+        onError: (error) => this.#onError(gen, error),
+      });
+
       // A legacy (protocol 1) stream never sends sync-ready; its adapter hands
       // the connect itself over as the ready signal.
       const readyData = await withTimeout(readyFrame, READY_TIMEOUT_MS, 'sync-ready timeout');

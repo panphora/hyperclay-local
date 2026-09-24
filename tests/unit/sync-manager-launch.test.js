@@ -116,9 +116,14 @@ function tmpDir(prefix) {
   return dir;
 }
 
-function makeStream() {
+// The fake stream records the account id the engine's connection carried at the
+// moment the stream opened: that is the `X-Sync-Account-ID` the connect sends.
+function makeStream(engine) {
   const stream = {
-    open: jest.fn((options) => { stream.options = options; }),
+    open: jest.fn((options) => {
+      stream.options = options;
+      stream.accountIdAtOpen = engine.conn.accountId;
+    }),
     close: jest.fn(),
     push(data) { stream.options.onFrame({ data }); }
   };
@@ -170,8 +175,8 @@ beforeEach(() => {
 
   // One fake stream per engine: the runner opens it, a test pushes its frames.
   streams = [];
-  jest.spyOn(SyncEngine.prototype, 'sessionStream').mockImplementation(() => {
-    const stream = makeStream();
+  jest.spyOn(SyncEngine.prototype, 'sessionStream').mockImplementation(function () {
+    const stream = makeStream(this);
     streams.push(stream);
     return stream;
   });
@@ -287,6 +292,101 @@ describe('SyncManager.startEnabledSessions', () => {
     expect(statuses[0].status).not.toBe('paused');
     expect(connections()).toEqual([[2, '/_/sync', null]]);
     expect(manager.sessions.get(personal.id).engine.syncBase).toBe('/_/sync');
+  });
+
+  it('a migrated personal session opens its protocol 2 stream with the personal account id from discovery', async () => {
+    personal.accountId = null;
+    personal.legacyMetaDir = 'legacy-personal';
+    settings.syncSessions = [personal];
+    apiClient.getAccounts.mockResolvedValue(discovery([personalAccount(), teamAccount()]));
+    apiClient.listNodes.mockResolvedValue(completeList([]));
+
+    await manager.startEnabledSessions();
+    const entry = manager.sessions.get(personal.id);
+    const stream = streamFor(personal.id);
+    await waitFor(() => stream.open.mock.calls.length === 1);
+
+    // The session's own account id is still the import's to persist, but the
+    // connection the stream opens on names the account discovery found: without
+    // it the connect is refused with 428 and the session never leaves `error`.
+    expect(personal.accountId).toBeNull();
+    expect(stream.accountIdAtOpen).toBe(PERSONAL_ACCOUNT_ID);
+    expect(entry.engine.conn).toMatchObject({ protocol: 2, accountId: PERSONAL_ACCOUNT_ID });
+
+    stream.push(READY);
+    await waitFor(() => entry.runner.state === 'live');
+
+    // The listing the session reconciles carries the same id.
+    expect(apiClient.listNodes.mock.calls[0][0]).toMatchObject({
+      protocol: 2, syncBase: '/_/sync', accountId: PERSONAL_ACCOUNT_ID
+    });
+  });
+
+  it('offline discovery keeps a migrated personal session offline and it retries', async () => {
+    jest.useFakeTimers();
+    try {
+      personal.accountId = null;
+      personal.legacyMetaDir = 'legacy-personal';
+      settings.syncSessions = [personal];
+      const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
+      apiClient.getAccounts.mockRejectedValue(new Error('fetch failed'));
+
+      await manager.startEnabledSessions();
+
+      // The launch has its entry, and nothing is opened or listed: the resolve
+      // itself failed, so the session backs off instead of opening a stream it
+      // cannot identify on.
+      const entry = manager.sessions.get(personal.id);
+      const stream = streamFor(personal.id);
+      await flush();
+      expect(entry.runner.state).toBe('offline');
+      expect(stream.open).not.toHaveBeenCalled();
+      expect(apiClient.listNodes).not.toHaveBeenCalled();
+      expect(logged).toHaveBeenCalled();
+
+      // The network is back: the backoff restarts the session, which identifies
+      // itself before it opens its stream.
+      apiClient.getAccounts.mockResolvedValue(discovery([personalAccount()]));
+      apiClient.listNodes.mockResolvedValue(completeList([]));
+      await jest.advanceTimersByTimeAsync(5000);
+      await flush();
+
+      expect(entry.runner.state).toBe('starting');
+      expect(stream.open).toHaveBeenCalledTimes(1);
+      expect(stream.accountIdAtOpen).toBe(PERSONAL_ACCOUNT_ID);
+      expect(entry.engine.conn.accountId).toBe(PERSONAL_ACCOUNT_ID);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('the account id is persisted only by the import, not by the resolve', async () => {
+    personal.accountId = null;
+    personal.legacyMetaDir = 'legacy-personal';
+    settings.syncSessions = [personal];
+    apiClient.getAccounts.mockResolvedValue(discovery([personalAccount(), teamAccount()]));
+    apiClient.listNodes.mockResolvedValue(completeList([]));
+
+    await manager.startEnabledSessions();
+    const entry = manager.sessions.get(personal.id);
+    const stream = streamFor(personal.id);
+    await waitFor(() => stream.open.mock.calls.length === 1);
+
+    // Resolving named the account to the engine; the session is not identified
+    // and nothing about it is durable yet.
+    expect(entry.engine.accountId).toBe(PERSONAL_ACCOUNT_ID);
+    expect(personal.accountId).toBeNull();
+    expect(personal.legacyMetaDir).toBe('legacy-personal');
+    expect(settingsStore.save).not.toHaveBeenCalled();
+
+    // The import's step 5 is what writes the id and moves the session off the
+    // legacy directory.
+    stream.push(READY);
+    await waitFor(() => entry.runner.state === 'live');
+
+    expect(personal.accountId).toBe(PERSONAL_ACCOUNT_ID);
+    expect(personal.legacyMetaDir).toBeNull();
+    expect(settingsStore.save).toHaveBeenCalled();
   });
 
   it('offline discovery starts sessions with the fallback syncBase', async () => {
