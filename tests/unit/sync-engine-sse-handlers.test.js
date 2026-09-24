@@ -57,6 +57,7 @@ const EchoWindow = require('../../src/sync-engine/state/echo-window');
 
 let syncEngine;
 let liveSyncMock;
+let sseMock;
 
 // The sync folder as path-resolver canonicalizes it: the folder itself does not
 // exist, so resolution runs through its nearest existing ancestor. The ancestor has
@@ -78,10 +79,13 @@ beforeEach(() => {
   jest.clearAllMocks();
 
   jest.isolateModules(() => {
-    syncEngine = require('../../src/sync-engine/index');
+    const { SyncEngine } = require('../../src/sync-engine/index');
+    syncEngine = new SyncEngine();
     // Same-registry instance of the livesync mock — the engine's copy, not
     // the outer test registry's.
     liveSyncMock = require('livesync-hyperclay').liveSync;
+    // Same for the EventSource mock: the stream adapter is built around it.
+    sseMock = require('eventsource').EventSource;
   });
 
   syncEngine.syncFolder = SYNC_ROOT;
@@ -212,7 +216,7 @@ describe('handleNodeSaved', () => {
         size: 3
       });
 
-      expect(apiClient.getNodeContent).toHaveBeenCalledWith('http://test', 'test-key', 50);
+      expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.objectContaining({ serverUrl: 'http://test', apiKey: 'test-key' }), 50);
       expect(fileOps.writeFileBuffer).toHaveBeenCalled();
       expect(syncEngine.repo.get('50')).toEqual(expect.objectContaining({
         type: 'upload',
@@ -512,5 +516,93 @@ describe('handleNodeDeleted', () => {
     expect(calledWithPaths).toContain('projects/a.html');
 
     spy.mockRestore();
+  });
+});
+
+describe('the session stream adapter', () => {
+  it('hands a refused connect to onError with its status and body code', async () => {
+    syncEngine.protocol = 2;
+    const frames = [];
+    const refusals = [];
+    syncEngine.openStream({
+      onFrame: (frame) => frames.push(frame.data),
+      onError: (error) => refusals.push(error)
+    });
+    syncEngine.sseConnection.close = jest.fn();
+
+    const streamFetch = sseMock.mock.calls[0][1].fetch;
+    const originalFetch = global.fetch;
+    global.fetch = jest.fn(async () => ({
+      ok: false,
+      status: 402,
+      clone: () => ({ json: async () => ({ msg: 'payer below the needed plan', msgType: 'error', code: 'payment-required' }) })
+    }));
+    try {
+      await streamFetch('http://test/_/sync/stream', { headers: {} });
+    } finally {
+      global.fetch = originalFetch;
+    }
+
+    syncEngine.sseConnection.onerror(new Error('Non-200 status code (402)'));
+
+    expect(refusals).toEqual([{ statusCode: 402, code: 'payment-required' }]);
+    expect(frames).toEqual([]);
+    syncEngine.closeStream();
+  });
+
+  it('hands a status-less network error over unchanged, so it means offline', () => {
+    syncEngine.protocol = 2;
+    const refusals = [];
+    syncEngine.openStream({ onFrame: jest.fn(), onError: (error) => refusals.push(error) });
+    syncEngine.sseConnection.close = jest.fn();
+
+    const failure = new Error('socket hang up');
+    syncEngine.sseConnection.onerror(failure);
+
+    expect(refusals).toEqual([failure]);
+    syncEngine.closeStream();
+  });
+
+  it('treats a protocol 1 connect as its ready signal and stamps syncReadyAt', () => {
+    syncEngine.protocol = 1;
+    const frames = [];
+    syncEngine.openStream({ onFrame: (frame) => frames.push(frame.data), onError: jest.fn() });
+    syncEngine.sseConnection.close = jest.fn();
+
+    syncEngine.sseConnection.onopen();
+
+    expect(frames).toEqual([{ type: 'sync-ready', sync: { enabled: true, reason: null } }]);
+    expect(syncEngine.syncReadyAt).toEqual(expect.any(Number));
+    syncEngine.closeStream();
+  });
+
+  it('stamps syncReadyAt from a protocol 2 sync-ready frame and ignores frames for no one', () => {
+    syncEngine.protocol = 2;
+    expect(syncEngine.syncReadyAt).toBeNull();
+
+    syncEngine.openStream({ onFrame: jest.fn(), onError: jest.fn() });
+    syncEngine.sseConnection.close = jest.fn();
+    syncEngine.sseConnection.onmessage({
+      data: JSON.stringify({ type: 'sync-ready', accountId: 42, sync: { enabled: true, reason: null } })
+    });
+
+    expect(syncEngine.syncReadyAt).toEqual(expect.any(Number));
+    syncEngine.closeStream();
+  });
+});
+
+describe('the SSE watchdog', () => {
+  it('restarts the whole generation instead of checking for remote changes', () => {
+    syncEngine.checkForRemoteChanges = jest.fn().mockResolvedValue();
+    syncEngine.runner = { start: jest.fn() };
+    syncEngine.lastSseActivity = Date.now() - 6 * 60 * 1000;
+
+    syncEngine.startSseWatchdog();
+    jest.advanceTimersByTime(60 * 1000);
+
+    expect(syncEngine.runner.start).toHaveBeenCalledTimes(1);
+    expect(syncEngine.checkForRemoteChanges).not.toHaveBeenCalled();
+
+    syncEngine.disconnectStream();
   });
 });

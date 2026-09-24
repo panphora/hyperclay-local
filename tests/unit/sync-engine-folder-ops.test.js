@@ -49,7 +49,8 @@ beforeEach(() => {
   jest.clearAllMocks();
 
   jest.isolateModules(() => {
-    syncEngine = require('../../src/sync-engine/index');
+    const { SyncEngine } = require('../../src/sync-engine/index');
+    syncEngine = new SyncEngine();
   });
 
   syncEngine.isRunning = true;
@@ -77,8 +78,7 @@ describe('folder create', () => {
     await syncEngine.createFolderOnServer('projects');
 
     expect(createNode).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.any(String),
+      expect.objectContaining({ serverUrl: 'http://test', apiKey: 'test-key' }),
       { type: 'folder', name: 'projects', parentId: 0 }
     );
     expect(syncEngine.repo.get('42')).toEqual(expect.objectContaining({
@@ -94,8 +94,7 @@ describe('folder create', () => {
     await syncEngine.createFolderOnServer('projects/assets');
 
     expect(createNode).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.any(String),
+      expect.objectContaining({ serverUrl: 'http://test', apiKey: 'test-key' }),
       { type: 'folder', name: 'assets', parentId: 10 }
     );
   });
@@ -163,7 +162,7 @@ describe('folder delete cleans up descendants in nodeMap', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(deleteNode).toHaveBeenCalledWith(expect.any(String), expect.any(String), 10, { cascade: true });
+    expect(deleteNode).toHaveBeenCalledWith(expect.objectContaining({ serverUrl: 'http://test', apiKey: 'test-key' }), 10, { cascade: true });
     expect(syncEngine.repo.size).toBe(0);
 
     jest.useRealTimers();

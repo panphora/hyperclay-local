@@ -102,6 +102,15 @@ class NodeRepository {
   }
 
   /**
+   * The reconciliation baseline for a node: { remoteEtag, localChecksum,
+   * structureVersion, uploadBlocked }, or null when the node has no entry.
+   * Old entries carry only `checksum`; it is read as both checksums.
+   */
+  getBaseline(nodeId) {
+    return nodeMapPersistence.readBaseline(this._map.get(String(nodeId)));
+  }
+
+  /**
    * Linear scan to find an entry by its local path. Returns { nodeId, entry }
    * or null. Prefer this over walking all entries in callers.
    */
@@ -133,6 +142,22 @@ class NodeRepository {
   async delete(nodeId) {
     this._map.delete(String(nodeId));
     await this._save();
+  }
+
+  /**
+   * Merge baseline fields into an existing entry and persist. Fields left out
+   * keep their current value; `checksum` is kept equal to `localChecksum` for
+   * the engine code that still reads it. Returns the new entry, or null when
+   * the node has no entry.
+   */
+  async updateBaseline(nodeId, fields) {
+    const key = String(nodeId);
+    const entry = this._map.get(key);
+    if (!entry) return null;
+    const next = nodeMapPersistence.applyBaseline(entry, fields);
+    this._map.set(key, next);
+    await this._save();
+    return next;
   }
 
   /**

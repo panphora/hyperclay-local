@@ -160,10 +160,10 @@ describe('Origin validation on the mutating surface', () => {
     expect(await body()).toBe('<html>written</html>');
   });
 
-  test('a loopback origin on another port passes — that is code already on this machine', async () => {
+  test('a loopback origin on another port is refused: that is another folder\'s page', async () => {
     const res = await save({ Origin: 'http://127.0.0.1:9999' });
-    expect(res.status).toBe(200);
-    expect(await body()).toBe('<html>written</html>');
+    expect(res.status).toBe(403);
+    expect(await body()).toBe('<html>original</html>');
   });
 
   test('a non-browser client with no Origin passes: curl, the sync engine, a script', async () => {

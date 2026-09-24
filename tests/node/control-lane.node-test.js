@@ -85,13 +85,13 @@ test('postControlMessage resolves on 200 / 4xx / 5xx / network error, never thro
   const origFetch = global.fetch;
   try {
     global.fetch = async () => ({ ok: true });
-    assert.deepEqual(await apiClient.postControlMessage('http://x', 'k', { type: 'a', v: 1, payload: {} }), { delivered: true });
+    assert.deepEqual(await apiClient.postControlMessage({ serverUrl: 'http://x', apiKey: 'k' }, { type: 'a', v: 1, payload: {} }), { delivered: true });
     global.fetch = async () => ({ ok: false, status: 404 });
-    assert.deepEqual(await apiClient.postControlMessage('http://x', 'k', {}), { delivered: false });
+    assert.deepEqual(await apiClient.postControlMessage({ serverUrl: 'http://x', apiKey: 'k' }, {}), { delivered: false });
     global.fetch = async () => ({ ok: false, status: 500 });
-    assert.deepEqual(await apiClient.postControlMessage('http://x', 'k', {}), { delivered: false });
+    assert.deepEqual(await apiClient.postControlMessage({ serverUrl: 'http://x', apiKey: 'k' }, {}), { delivered: false });
     global.fetch = async () => { throw new Error('ECONNREFUSED'); };
-    assert.deepEqual(await apiClient.postControlMessage('http://x', 'k', {}), { delivered: false });
+    assert.deepEqual(await apiClient.postControlMessage({ serverUrl: 'http://x', apiKey: 'k' }, {}), { delivered: false });
   } finally {
     global.fetch = origFetch;
   }

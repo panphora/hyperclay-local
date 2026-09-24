@@ -44,7 +44,8 @@ beforeEach(() => {
   jest.clearAllMocks();
 
   jest.isolateModules(() => {
-    syncEngine = require('../../src/sync-engine/index');
+    const { SyncEngine } = require('../../src/sync-engine/index');
+    syncEngine = new SyncEngine();
   });
 
   syncEngine.isRunning = true;
@@ -160,8 +161,7 @@ describe('unified watcher — _correlateFileUnlinkAdd move+rename', () => {
     // Single atomic call — no separate rename leg.
     expect(moveNode).toHaveBeenCalledTimes(1);
     expect(moveNode).toHaveBeenCalledWith(
-      'http://test',
-      'test-key',
+      expect.objectContaining({ serverUrl: 'http://test', apiKey: 'test-key' }),
       42,
       200, // target parent id for 'dest' folder
       'bar.html' // new basename passed as the fifth arg
@@ -275,8 +275,7 @@ describe('unified watcher — _correlateFolderUnlinkAdd move+rename', () => {
 
     expect(moveNode).toHaveBeenCalledTimes(1);
     expect(moveNode).toHaveBeenCalledWith(
-      'http://test',
-      'test-key',
+      expect.objectContaining({ serverUrl: 'http://test', apiKey: 'test-key' }),
       50,
       10, // target parent id of 'archive'
       'new-name'

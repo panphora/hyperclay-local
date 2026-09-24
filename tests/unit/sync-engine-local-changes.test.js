@@ -45,7 +45,20 @@ const Outbox = require('../../src/sync-engine/state/outbox');
 
 jest.mock('../../src/sync-engine/file-operations');
 jest.mock('../../src/sync-engine/api-client');
-jest.mock('../../src/sync-engine/node-map');
+jest.mock('../../src/sync-engine/node-map', () => {
+  const actual = jest.requireActual('../../src/sync-engine/node-map');
+  return {
+    ...actual,
+    load: jest.fn(),
+    save: jest.fn(),
+    loadState: jest.fn(),
+    saveState: jest.fn(),
+    loadTombstones: jest.fn(),
+    saveTombstones: jest.fn(),
+    getInode: jest.fn(),
+    walkDescendants: jest.fn(actual.walkDescendants)
+  };
+});
 
 const crypto = require('crypto');
 function checksum(content) {
@@ -56,13 +69,17 @@ function entry(p, cs, ino) {
   return { path: p, checksum: cs || null, inode: ino || null };
 }
 
+const realBufferChecksum = jest.requireActual('../../src/sync-engine/file-operations').calculateBufferChecksum;
+const STUB_STAT = { mtime: new Date('2024-01-01'), mtimeMs: 1704067200000, size: 100, mode: 0o644 };
+
 let syncEngine;
 
 beforeEach(() => {
   jest.clearAllMocks();
 
   jest.isolateModules(() => {
-    syncEngine = require('../../src/sync-engine/index');
+    const { SyncEngine } = require('../../src/sync-engine/index');
+    syncEngine = new SyncEngine();
   });
 
   syncEngine.syncFolder = '/test/sync';
@@ -112,6 +129,13 @@ beforeEach(() => {
   nodeMapModule.loadState.mockResolvedValue({});
   nodeMapModule.saveState.mockResolvedValue();
   nodeMapModule.getInode.mockResolvedValue(12345);
+
+  // Everything that reads or writes local bytes goes through file-operations,
+  // which this suite mocks; the executor also stat()s the file for the
+  // modifiedAt it stamps on a server write, so that is mocked with the rest.
+  fileOps.readFileBuffer.mockImplementation(async (filePath) => Buffer.from(await fileOps.readFile(filePath)));
+  fileOps.calculateBufferChecksum.mockImplementation(realBufferChecksum);
+  jest.spyOn(require('fs').promises, 'stat').mockResolvedValue(STUB_STAT);
 });
 
 describe('detectLocalChanges — local delete', () => {
@@ -127,17 +151,21 @@ describe('detectLocalChanges — local delete', () => {
     await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(apiClient.deleteNode).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test', 42, { cascade: false }
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 42,
+      expect.objectContaining({ expectedVersion: null })
     );
     expect(syncEngine.repo.has('42')).toBe(false);
   });
 
-  test('re-downloads file on delete conflict (server modified after lastSyncedAt)', async () => {
-    syncEngine.lastSyncedAt = new Date('2024-06-01').getTime();
-    syncEngine.repo.seed([['42', entry('my-site.html', 'abc', 111)]]);
+  test('re-downloads file when the remote changed after the local delete', async () => {
+    // The baseline is explicit now: the remote etag moved off it, so the local
+    // delete must not win.
+    syncEngine.repo.seed([['42', {
+      path: 'my-site.html', inode: 111, remoteEtag: 'abc', localChecksum: 'abc'
+    }]]);
 
     const allServerNodes = [
-      { id: 42, type: 'site', name: 'my-site.html', path: '', checksum: 'abc', modifiedAt: '2024-07-01T00:00:00Z' }
+      { id: 42, type: 'site', name: 'my-site.html', path: '', checksum: 'def', modifiedAt: '2024-07-01T00:00:00Z' }
     ];
     const localFiles = new Map();
 
@@ -145,7 +173,7 @@ describe('detectLocalChanges — local delete', () => {
 
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
     expect(apiClient.getNodeContent).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test', 42
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 42
     );
     expect(syncEngine.repo.has('42')).toBe(true);
   });
@@ -161,13 +189,10 @@ describe('detectLocalChanges — local delete', () => {
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
   });
 
-  test('deletes when entry.syncedAt is newer than server modifiedAt', async () => {
-    // The watcher uploaded this file recently; entry.syncedAt reflects that.
-    // The global lastSyncedAt is stale (initial sync timestamp).
-    // Without per-file syncedAt this would false-positive as a server conflict.
-    syncEngine.lastSyncedAt = new Date('2024-06-01').getTime();
-    const recentSync = new Date('2024-07-15').getTime();
-    syncEngine.repo.seed([['42', { path: 'my-site.html', checksum: 'abc', inode: 111, syncedAt: recentSync }]]);
+  test('deletes when the remote is unchanged and the file is gone locally', async () => {
+    syncEngine.repo.seed([['42', {
+      path: 'my-site.html', checksum: 'abc', inode: 111, syncedAt: new Date('2024-07-15').getTime()
+    }]]);
 
     const allServerNodes = [
       { id: 42, type: 'site', name: 'my-site.html', path: '', checksum: 'abc', modifiedAt: '2024-07-01T00:00:00Z' }
@@ -177,24 +202,21 @@ describe('detectLocalChanges — local delete', () => {
     await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(apiClient.deleteNode).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test', 42, { cascade: false }
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 42,
+      expect.objectContaining({ expectedVersion: null })
     );
     expect(apiClient.getNodeContent).not.toHaveBeenCalled();
     expect(syncEngine.repo.has('42')).toBe(false);
   });
 
-  test('re-downloads when entry.syncedAt is older than server modifiedAt', async () => {
-    // Entry has syncedAt, but server was modified after that.
-    // Conflict fires correctly: server change must win.
-    syncEngine.lastSyncedAt = new Date('2024-01-01').getTime();
-    const oldSync = new Date('2024-06-01').getTime();
-    syncEngine.repo.seed([['42', { path: 'my-site.html', checksum: 'abc', inode: 111, syncedAt: oldSync }]]);
-    syncEngine.serverFilesCache = [
-      { nodeId: 42, filename: 'my-site.html', path: 'my-site.html', checksum: 'abc', modifiedAt: '2024-07-01T00:00:00Z' }
-    ];
+  test('re-downloads when the remote etag changed since the baseline', async () => {
+    // The remote moved on since the baseline: the server change must win.
+    syncEngine.repo.seed([['42', {
+      path: 'my-site.html', inode: 111, remoteEtag: 'abc', localChecksum: 'abc'
+    }]]);
 
     const allServerNodes = [
-      { id: 42, type: 'site', name: 'my-site.html', path: '', checksum: 'abc', modifiedAt: '2024-07-01T00:00:00Z' }
+      { id: 42, type: 'site', name: 'my-site.html', path: '', checksum: 'def', modifiedAt: '2024-07-01T00:00:00Z' }
     ];
     const localFiles = new Map();
 
@@ -202,21 +224,18 @@ describe('detectLocalChanges — local delete', () => {
 
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
     expect(apiClient.getNodeContent).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test', 42
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 42
     );
     expect(syncEngine.repo.has('42')).toBe(true);
   });
 
-  test('falls back to lastSyncedAt when entry has no syncedAt (legacy entry)', async () => {
-    // Legacy entry without a syncedAt field — should fall back to global lastSyncedAt for comparison.
-    syncEngine.lastSyncedAt = new Date('2024-06-01').getTime();
-    syncEngine.repo.seed([['42', entry('my-site.html', 'abc', 111)]]); // no syncedAt
-    syncEngine.serverFilesCache = [
-      { nodeId: 42, filename: 'my-site.html', path: 'my-site.html', checksum: 'abc', modifiedAt: '2024-07-01T00:00:00Z' }
-    ];
+  test('a legacy entry reads its checksum as the baseline', async () => {
+    // Legacy entries carry one checksum for both halves: the remote etag
+    // differing from it is the same conflict signal as a v2 baseline.
+    syncEngine.repo.seed([['42', entry('my-site.html', 'abc', 111)]]);
 
     const allServerNodes = [
-      { id: 42, type: 'site', name: 'my-site.html', path: '', checksum: 'abc', modifiedAt: '2024-07-01T00:00:00Z' }
+      { id: 42, type: 'site', name: 'my-site.html', path: '', checksum: 'def', modifiedAt: '2024-07-01T00:00:00Z' }
     ];
     const localFiles = new Map();
 
@@ -246,7 +265,7 @@ describe('detectLocalChanges — local move', () => {
     await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(apiClient.moveNode).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test', 42, 100
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 42, 100
     );
     expect(syncEngine.repo.get('42').path).toBe('blog/my-site.html');
   });
@@ -266,7 +285,7 @@ describe('detectLocalChanges — local move', () => {
     await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(apiClient.moveNode).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test', 42, 0
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 42, 0
     );
   });
 });
@@ -288,7 +307,7 @@ describe('detectLocalChanges — local rename (inode match)', () => {
     await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(apiClient.renameNode).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test', 42, 'new-name.html'
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 42, 'new-name.html'
     );
     expect(syncEngine.repo.get('42').path).toBe('new-name.html');
   });
@@ -313,7 +332,7 @@ describe('detectLocalChanges — local rename (checksum match)', () => {
     await syncEngine.detectLocalChanges(allServerNodes, localFiles);
 
     expect(apiClient.renameNode).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test', 42, 'renamed.html'
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 42, 'renamed.html'
     );
   });
 });

@@ -13,7 +13,7 @@
   "scripts": {
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:node": "node --test tests/node/data-extractor.node-test.js tests/node/data-loss-guard.node-test.js tests/node/control-lane.node-test.js tests/node/control-rider.node-test.js tests/node/message-bus.node-test.js tests/node/ai-edit-plugin.node-test.js",
+    "test:node": "node --test tests/node/data-extractor.node-test.js tests/node/data-loss-guard.node-test.js tests/node/control-lane.node-test.js tests/node/control-rider.node-test.js tests/node/helper-jsonl.node-test.js tests/node/helper-runner.node-test.js tests/node/helper-dispatcher.node-test.js tests/node/ai-edit-helper.node-test.js",
     "start": "npm run build-react && cross-env NODE_ENV=production electron .",
     "dev": "concurrently \"npm run dev-css\" \"npm run dev-react\" \"npm run electron-dev\"",
     "electron-dev": "wait-on dist/popover-bundle.js && cross-env NODE_ENV=development electronmon . --dev",
@@ -43,6 +43,10 @@
     "appId": "com.hyperclay.local-server",
     "productName": "HyperclayLocal",
     "npmRebuild": false,
+    "fileAssociations": [
+      { "ext": "html", "name": "HTML Document", "role": "Viewer", "rank": "Alternate" },
+      { "ext": "htmlclay", "name": "HTML Clay Document", "role": "Editor", "rank": "Alternate" }
+    ],
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -171,13 +175,13 @@
     "webpack-cli": "^6.0.1"
   },
   "dependencies": {
-    "@panphora/hyper-wire": "^0.3.0",
     "busboy": "^1.6.0",
     "cheerio": "1.2.0",
     "chokidar": "^3.6.0",
     "eta": "^3.5.0",
     "eventsource": "^3.0.6",
     "express": "^4.22.2",
+    "htmlparser2": "10.1.0",
     "hyper-html-api": "^0.8.1",
     "js-beautify": "^1.15.4",
     "lightningcss": "^1.30.1",

@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const request = require('supertest');
 
-const { createApp, getAndClearSnapshot, startServer, stopServer } = require('../../src/main/server.js');
+const { createApp, getAndClearSnapshot } = require('../../src/main/server.js');
 const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 
 // Spec §3: /_/save takes the document as text, and this route has exactly one body

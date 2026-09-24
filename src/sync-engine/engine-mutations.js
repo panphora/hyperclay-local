@@ -15,21 +15,27 @@ const {
 
 module.exports = {
   async _apiRenameNode(nodeId, newName) {
+    const gen = this.generation;
     this.outbox.markInFlight('rename', parseInt(nodeId));
-    await renameNode(this.serverUrl, this.apiKey, parseInt(nodeId), newName);
+    await renameNode(this.conn, parseInt(nodeId), newName);
+    if (gen !== this.generation) return;
     this.invalidateServerNodesCache();
   },
 
   async _apiMoveNode(nodeId, parentId, newName) {
+    const gen = this.generation;
     this.outbox.markInFlight('move', parseInt(nodeId));
     const extraArgs = newName !== undefined ? [newName] : [];
-    await moveNode(this.serverUrl, this.apiKey, parseInt(nodeId), parentId, ...extraArgs);
+    await moveNode(this.conn, parseInt(nodeId), parentId, ...extraArgs);
+    if (gen !== this.generation) return;
     this.invalidateServerNodesCache();
   },
 
   async _apiDeleteNode(nodeId, { cascade = false } = {}) {
+    const gen = this.generation;
     this.outbox.markInFlight('delete', parseInt(nodeId));
-    await deleteNode(this.serverUrl, this.apiKey, parseInt(nodeId), { cascade });
+    await deleteNode(this.conn, parseInt(nodeId), { cascade });
+    if (gen !== this.generation) return;
     this.invalidateServerNodesCache();
   }
 };

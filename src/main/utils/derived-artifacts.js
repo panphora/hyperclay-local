@@ -15,6 +15,7 @@ const { compileTailwind, getTailwindCssName } = require('tailwind-hyperclay');
 const { getConsentRegistry, resolveWritePath, validateSegments } = require('./path-resolver');
 const { atomicWriteFile } = require('./write-queue');
 const { writeApiSidecar } = require('./api-sidecar');
+const { TAILWIND_DIR } = require('./artifact-paths');
 
 /**
  * Refresh every derived artifact for `name` from the bytes just published.
@@ -36,10 +37,10 @@ async function refreshDerivedArtifacts(baseDir, name, content) {
     const tailwindName = getTailwindCssName(content);
     if (!tailwindName) return;
     // Same phase-2 + phase-4 pass as user files, so a crafted site name can't
-    // steer a generated stylesheet out of the served folder.
-    const relPath = `tailwindcss/${tailwindName}.css`;
-    validateSegments(relPath);
-    const cssPath = await resolveWritePath(getConsentRegistry(baseDir), relPath);
+    // steer a generated stylesheet out of the served folder. The `.hyperclay/`
+    // prefix is added after validation, which would refuse its leading dot.
+    validateSegments(`${tailwindName}.css`);
+    const cssPath = await resolveWritePath(getConsentRegistry(baseDir), `${TAILWIND_DIR}/${tailwindName}.css`);
     await atomicWriteFile(cssPath, await compileTailwind(content));
   } catch (error) {
     console.error('[derived] tailwind refresh failed (non-fatal):', error && error.message ? error.message : error);

@@ -71,7 +71,8 @@ beforeEach(() => {
   jest.useFakeTimers();
 
   jest.isolateModules(() => {
-    syncEngine = require('../../src/sync-engine/index');
+    const { SyncEngine } = require('../../src/sync-engine/index');
+    syncEngine = new SyncEngine();
   });
 
   syncEngine.isRunning = true;
@@ -352,7 +353,7 @@ describe('chokidar burst: file rename', () => {
       await settle();
 
       expect(renameNode).toHaveBeenCalledTimes(1);
-      expect(renameNode).toHaveBeenCalledWith('http://test', 'test-key', 42, 'bar.html');
+      expect(renameNode).toHaveBeenCalledWith(expect.objectContaining({ serverUrl: 'http://test', apiKey: 'test-key' }), 42, 'bar.html');
       expectNoDeleteCalls();
       expect(syncEngine.pendingUnlinks.size).toBe(0);
       expect(syncEngine.repo.get('42').path).toBe(newPath);
@@ -411,8 +412,8 @@ describe('chokidar burst: file move+rename', () => {
 
       expect(moveNode).toHaveBeenCalledTimes(1);
       const callArgs = moveNode.mock.calls[0];
-      expect(callArgs[2]).toBe(42);
-      expect(callArgs[4]).toBe('bar.html');
+      expect(callArgs[1]).toBe(42);
+      expect(callArgs[3]).toBe('bar.html');
       expect(renameNode).not.toHaveBeenCalled();
       expectNoDeleteCalls();
     });
@@ -437,7 +438,7 @@ describe('chokidar burst: file delete', () => {
       await settle();
 
       expect(deleteNode).toHaveBeenCalledTimes(1);
-      expect(deleteNode).toHaveBeenCalledWith('http://test', 'test-key', 42, { cascade: false });
+      expect(deleteNode).toHaveBeenCalledWith(expect.objectContaining({ serverUrl: 'http://test', apiKey: 'test-key' }), 42, { cascade: false });
       expect(syncEngine.pendingUnlinks.size).toBe(0);
       expect(syncEngine.repo.has('42')).toBe(false);
     });
@@ -468,7 +469,7 @@ describe('chokidar burst: empty folder rename', () => {
 
       expect(renameNode).toHaveBeenCalledTimes(1);
       expect(renameNode).toHaveBeenCalledWith(
-        'http://test', 'test-key', 100, newPath.split('/').pop()
+        expect.objectContaining({ serverUrl: 'http://test', apiKey: 'test-key' }), 100, newPath.split('/').pop()
       );
       expectNoDeleteCalls();
       expect(syncEngine.pendingUnlinks.size).toBe(0);
@@ -594,7 +595,7 @@ describe('chokidar burst: folder with deep subtree — move+rename', () => {
 
       expect(moveNode).toHaveBeenCalledTimes(1);
       // move+rename passes the new basename as the 5th arg.
-      expect(moveNode.mock.calls[0][4]).toBe(newAnchor.split('/').pop());
+      expect(moveNode.mock.calls[0][3]).toBe(newAnchor.split('/').pop());
       expect(renameNode).not.toHaveBeenCalled();
       expectNoDeleteCalls();
       expect(syncEngine.pendingUnlinks.size).toBe(0);
@@ -702,7 +703,7 @@ describe('chokidar burst: folder with deep subtree — move+rename (late descend
       await settle();
 
       expect(moveNode).toHaveBeenCalledTimes(1);
-      expect(moveNode.mock.calls[0][4]).toBe(newAnchor.split('/').pop());
+      expect(moveNode.mock.calls[0][3]).toBe(newAnchor.split('/').pop());
       expect(renameNode).not.toHaveBeenCalled();
       expectNoDeleteCalls();
       expect(syncEngine.pendingUnlinks.size).toBe(0);
@@ -748,7 +749,7 @@ describe('chokidar burst: folder delete', () => {
       // The server-side cascade soft-deletes every descendant before removing
       // the folder, so the client never issues per-descendant DELETEs.
       expect(deleteNode).toHaveBeenCalledTimes(1);
-      expect(deleteNode).toHaveBeenCalledWith('http://test', 'test-key', 100, { cascade: true });
+      expect(deleteNode).toHaveBeenCalledWith(expect.objectContaining({ serverUrl: 'http://test', apiKey: 'test-key' }), 100, { cascade: true });
 
       // All pending-unlink timers must have drained.
       expect(syncEngine.pendingUnlinks.size).toBe(0);
@@ -874,7 +875,7 @@ describe('folder delete: descendant pending-unlinks are cancelled (no 404 spam)'
     // Exactly one server-side delete — the folder with cascade=true.
     // Descendant pending-unlinks were cancelled before their timers could fire.
     expect(deleteNode).toHaveBeenCalledTimes(1);
-    expect(deleteNode).toHaveBeenCalledWith('http://test', 'test-key', 100, { cascade: true });
+    expect(deleteNode).toHaveBeenCalledWith(expect.objectContaining({ serverUrl: 'http://test', apiKey: 'test-key' }), 100, { cascade: true });
 
     // Repo fully cleaned up.
     expect(syncEngine.pendingUnlinks.size).toBe(0);
@@ -903,10 +904,10 @@ describe('folder delete: descendant pending-unlinks are cancelled (no 404 spam)'
 
     // One delete per top-level folder (cascade=true), no descendant deletes.
     expect(deleteNode).toHaveBeenCalledTimes(2);
-    const deletedIds = deleteNode.mock.calls.map(c => c[2]).sort();
+    const deletedIds = deleteNode.mock.calls.map(c => c[1]).sort();
     expect(deletedIds).toEqual([100, 200]);
     for (const call of deleteNode.mock.calls) {
-      expect(call[3]).toEqual({ cascade: true });
+      expect(call[2]).toEqual({ cascade: true });
     }
   });
 });

@@ -45,7 +45,20 @@ const { liveSync } = require('livesync-hyperclay');
 
 jest.mock('../../src/sync-engine/file-operations');
 jest.mock('../../src/sync-engine/api-client');
-jest.mock('../../src/sync-engine/node-map');
+jest.mock('../../src/sync-engine/node-map', () => {
+  const actual = jest.requireActual('../../src/sync-engine/node-map');
+  return {
+    ...actual,
+    load: jest.fn(),
+    save: jest.fn(),
+    loadState: jest.fn(),
+    saveState: jest.fn(),
+    loadTombstones: jest.fn(),
+    saveTombstones: jest.fn(),
+    getInode: jest.fn(),
+    walkDescendants: jest.fn(actual.walkDescendants)
+  };
+});
 
 const crypto = require('crypto');
 function checksum(content) {
@@ -63,13 +76,18 @@ let syncEngine;
 // before it calls fileOps. Derive every expectation from the same resolved value.
 const SYNC_ROOT = require('upath').resolve('/test/sync');
 
+const realBufferChecksum = jest.requireActual('../../src/sync-engine/file-operations').calculateBufferChecksum;
+
+const STUB_STAT = { mtime: new Date('2024-01-01'), mtimeMs: 1704067200000, size: 100, mode: 0o644 };
+
 beforeEach(() => {
   jest.useFakeTimers();
   jest.clearAllMocks();
 
   // Re-require to get a fresh singleton
   jest.isolateModules(() => {
-    syncEngine = require('../../src/sync-engine/index');
+    const { SyncEngine } = require('../../src/sync-engine/index');
+    syncEngine = new SyncEngine();
   });
 
   // Set up minimal state so performInitialSync can run
@@ -100,6 +118,8 @@ beforeEach(() => {
   fileOps.writeFile.mockResolvedValue();
   fileOps.moveFile.mockResolvedValue();
   fileOps.readFile.mockResolvedValue('<html>content</html>');
+  fileOps.readFileBuffer.mockImplementation(async (filePath) => Buffer.from(await fileOps.readFile(filePath)));
+  fileOps.calculateBufferChecksum.mockImplementation(realBufferChecksum);
   fileOps.getFileStats.mockResolvedValue({ mtime: new Date('2024-01-01'), size: 100 });
   fileOps.fileExists.mockReturnValue(true);
   apiClient.getNodeContent.mockResolvedValue({
@@ -120,6 +140,11 @@ beforeEach(() => {
   nodeMapModule.loadState.mockResolvedValue({});
   nodeMapModule.saveState.mockResolvedValue();
   nodeMapModule.getInode.mockResolvedValue(12345);
+
+  // The executor stat()s the local file for the modifiedAt it stamps on the
+  // server write, and reads its bytes through file-operations. Both have to be
+  // mocked with the rest of the disk, like downloadFile's getFileStats was.
+  jest.spyOn(require('fs').promises, 'stat').mockResolvedValue(STUB_STAT);
 });
 
 afterEach(() => {
@@ -171,8 +196,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
     expect(apiClient.getNodeContent).toHaveBeenCalledWith(
-      'http://localhyperclay.com',
-      'hcsk_test',
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }),
       1
     );
   });
@@ -224,6 +248,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
   test('moved file with local newer preserves content', async () => {
     const localContent = '<html>local newer</html>';
     const serverContent = '<html>server older</html>';
+    const agreedContent = '<html>what the baseline last saw</html>';
 
     apiClient.listNodes.mockResolvedValue([
       { id: 1, type: 'site', name: 'my-site.html', path: 'blog', checksum: checksum(serverContent), modifiedAt: '2024-01-01T00:00:00Z' }
@@ -233,10 +258,16 @@ describe('performInitialSync — nodeId-based move detection', () => {
       ['my-site.html', { path: `${SYNC_ROOT}/my-site.html`, relativePath: 'my-site.html', mtime: new Date('2024-06-01'), size: 100 }]
     ]));
 
-    syncEngine.repo.seed([['1', entry('my-site.html')]]);
+    // The baseline is explicit now: the disk has moved off it, the remote has not.
+    syncEngine.repo.seed([['1', {
+      type: 'site',
+      path: 'my-site.html',
+      inode: null,
+      remoteEtag: checksum(serverContent),
+      localChecksum: checksum(agreedContent)
+    }]]);
 
     fileOps.readFile.mockResolvedValue(localContent);
-    // Return a date newer than server's modifiedAt
     fileOps.getFileStats.mockResolvedValue({ mtime: new Date('2024-06-01'), size: 100 });
 
     await syncEngine.performInitialSync();
@@ -244,9 +275,15 @@ describe('performInitialSync — nodeId-based move detection', () => {
     // File was moved to match server organization
     expect(fileOps.moveFile).toHaveBeenCalled();
 
-    // But local is newer so content is preserved (no download)
+    // The local bytes changed since the baseline and the remote did not, so the
+    // edit is uploaded: the server copy never overwrites it.
     expect(apiClient.getNodeContent).not.toHaveBeenCalled();
-    expect(syncEngine.stats.filesProtected).toBe(1);
+    expect(apiClient.putNodeContent).toHaveBeenCalledWith(
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }),
+      1,
+      localContent,
+      expect.objectContaining({ ifMatch: checksum(serverContent) })
+    );
   });
 
   test('handles move failure gracefully by falling back to download', async () => {
@@ -266,8 +303,7 @@ describe('performInitialSync — nodeId-based move detection', () => {
 
     // Move failed, should fall back to downloading
     expect(apiClient.getNodeContent).toHaveBeenCalledWith(
-      'http://localhyperclay.com',
-      'hcsk_test',
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }),
       1
     );
   });
@@ -342,11 +378,11 @@ describe('performInitialSync — duplicate filename handling', () => {
     // drafts/ folder is created first, then drafts/blog.html is uploaded
     expect(apiClient.createNode).toHaveBeenCalledTimes(2);
     expect(apiClient.createNode).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test',
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }),
       expect.objectContaining({ type: 'folder', name: 'drafts', parentId: 0 })
     );
     expect(apiClient.createNode).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test',
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }),
       expect.objectContaining({ type: 'site', name: 'blog.html' })
     );
   });
@@ -422,8 +458,7 @@ describe('performInitialSync — duplicate filename handling', () => {
     );
     // Move failed, should fall back to downloading
     expect(apiClient.getNodeContent).toHaveBeenCalledWith(
-      'http://localhyperclay.com',
-      'hcsk_test',
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }),
       1
     );
   });
@@ -477,19 +512,19 @@ describe('performInitialSync — duplicate filename handling', () => {
     // Local-only files (old/blog.html, misc/about.html) get uploaded with their folders created first
     expect(apiClient.createNode).toHaveBeenCalledTimes(4);
     expect(apiClient.createNode).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test',
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }),
       expect.objectContaining({ type: 'folder', name: 'old', parentId: 0 })
     );
     expect(apiClient.createNode).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test',
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }),
       expect.objectContaining({ type: 'folder', name: 'misc', parentId: 0 })
     );
     expect(apiClient.createNode).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test',
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }),
       expect.objectContaining({ type: 'site', name: 'blog.html' })
     );
     expect(apiClient.createNode).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test',
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }),
       expect.objectContaining({ type: 'site', name: 'about.html' })
     );
   });

@@ -10,20 +10,26 @@ const {
   decodeOnce,
   validateSegments,
   resolveReadPath,
-  resolveWritePath
+  resolveWritePath,
+  realpathNearestParent
 } = require('./utils/path-resolver.js');
 const { withFileLock, atomicWriteFile } = require('./utils/write-queue.js');
 const crypto = require('crypto');
 const busboy = require('busboy');
-const { pruneAllVersions } = require('./utils/prune-versions.js');
 const { scopeTailwindLink } = require('./utils/tailwind-scoping.js');
 const { stripSaveToken } = require('./utils/root-attrs.js');
+const { createRootLive } = require('./utils/root-live.js');
+const { replayStore } = require('./sync-replay.js');
+const { VERSIONS_DIR, TAILWIND_DIR } = require('./utils/artifact-paths.js');
+const { canonicalizeBase, rebaseOntoCanonical, assertRealDirChain } = require('./utils/real-dir-chain.js');
+const { VERSION_NAME, sortKey, collisionSuffix, compareNewestFirst } = require('./utils/prune-versions.js');
 const {
   compileTailwind,
   getTailwindCssName
 } = require('tailwind-hyperclay');
-const { liveSync } = require('livesync-hyperclay');
-const { messageBus, isValidChannel } = require('@panphora/hyper-wire');
+const { WireHub } = require('./wire-hub');
+const { mountWire } = require('./wire-routes');
+const { createHelperDispatcher } = require('./helpers/dispatcher');
 const errorLogger = require('./error-logger');
 const formatHtml = require('./format-html');
 const { hasHtmlRoot } = formatHtml;
@@ -31,7 +37,6 @@ const { serveSiteApiLocal, extractSiteDataLocal } = require('./utils/data-api');
 const { writeApiSidecar } = require('./utils/api-sidecar');
 const dataGuard = require('./data-loss-guard');
 const { documentEtag, ifMatchSatisfied } = require('./spec-wire');
-const syncEngine = require('../sync-engine');
 const { buildEnvelope } = require('../sync-engine/control-lane-core.cjs');
 
 // Initialize Eta
@@ -61,14 +66,35 @@ function documentUrlHeader(req) {
   return (req && req.headers && (req.headers['document-url'] || req.headers['page-url'])) || null;
 }
 
-// What each open file owes the platform on its next sync upload, keyed by
-// filename. Two lanes fill it: /live-sync/save contributes the unstripped
-// snapshot, /save contributes the provenance bit. Either half can arrive without
-// the other, so both are optional and neither lane clears the other's.
-const pendingSnapshots = new Map();
-let snapshotCleanupTimer = null;
+// What each open file owes the platform on its next sync upload, keyed by filename
+// within its own root's store: the same relative path in two roots is two different
+// files, and one root's snapshot must never be uploaded as the other's. Two lanes
+// fill it: /live-sync/save contributes the unstripped snapshot, /save contributes
+// the provenance bit. Either half can arrive without the other, so both are optional
+// and neither lane clears the other's.
+const rootStores = new Map();
 
-// The etag of the last document a browser save wrote through this process, keyed by
+function snapshotStoreFor(rootId) {
+  let store = rootStores.get(rootId);
+  if (!store) {
+    store = { snapshots: new Map(), etags: new Map() };
+    rootStores.set(rootId, store);
+  }
+  return store;
+}
+
+// One sweep over every served root's store, run on the pool's interval
+// (root-servers.js).
+function sweepExpiredSnapshots(now = Date.now()) {
+  const fiveMinutesAgo = now - 5 * 60 * 1000;
+  for (const store of rootStores.values()) {
+    for (const [key, entry] of store.snapshots) {
+      if (entry.timestamp < fiveMinutesAgo) store.snapshots.delete(key);
+    }
+  }
+}
+
+// The etag of the last document a browser save wrote through this root, keyed by
 // filename. Its only reader is the `changedBy` on a conflict refusal (spec §6), and
 // its only job is to keep that attribution honest.
 //
@@ -81,8 +107,6 @@ let snapshotCleanupTimer = null;
 // calls the common and fully conforming case. Inferring "another tab" from the file
 // merely having changed would name the person's own tab for an edit made in vim while
 // the app was closed, and a confident wrong attribution is worse than none.
-const lastBrowserSaveEtags = new Map();
-
 // §6's receipt cap. The id is remembered per open file, so an unbounded header
 // would be free memory to hand away. Overlong is DROPPED rather than truncated:
 // a truncated id could collide with a different client's id and hand somebody
@@ -107,12 +131,13 @@ const MAX_SAVE_ID_LEN = 128;
  * true, and §6 lets a client adopt a stamp for bytes byte-equivalent to what its
  * own save produced.
  *
+ * @param {{etags: Map}} store - the served root's store
  * @param {string} filePath - canonical path, the same key the write queue uses
  * @param {string} currentEtag - stamp of the bytes on disk right now
  * @returns {string|null}
  */
-function saveReceiptFor(filePath, currentEtag) {
-  const ours = lastBrowserSaveEtags.get(filePath);
+function saveReceiptFor(store, filePath, currentEtag) {
+  const ours = store.etags.get(filePath);
   if (!ours || !ours.saveId || ours.etag !== currentEtag) return null;
   return ours.saveId;
 }
@@ -127,20 +152,24 @@ function saveReceiptFor(filePath, currentEtag) {
  * its saves would have reached the platform guard as ui-unknown.
  *
  * @param {string} filename - Filename including extension
+ * @param {string} rootId - served root whose store to read; the legacy app's by default
  * @returns {{html: (string|null), userDriven: (boolean|undefined)}|null}
  */
-function getAndClearSnapshot(filename) {
-  const entry = pendingSnapshots.get(filename);
-  pendingSnapshots.delete(filename);
+function getAndClearSnapshot(filename, rootId = LEGACY_ROOT.id) {
+  const snapshots = snapshotStoreFor(rootId).snapshots;
+  const entry = snapshots.get(filename);
+  snapshots.delete(filename);
   if (!entry) return null;
   if (!entry.html && entry.userDriven === undefined) return null;
   return { html: entry.html || null, userDriven: entry.userDriven };
 }
 
-let server = null;
-let app = null;
 const PORT = 4321;
-let connections = new Set();
+
+// The root an app built from the string form serves. Its id is what keeps the
+// snapshot store of every `createApp(dir)` call shared, as it was when the two maps
+// were module state and a folder switch had to clear them.
+const LEGACY_ROOT = Object.freeze({ id: 'legacy', kind: 'personal', port: PORT });
 
 // Local file-serving validation. Deliberately NOT the sync engine's
 // validateFileName (sync-engine/validation.js), which enforces a lowercase-ASCII
@@ -345,7 +374,19 @@ function stripSystemRouteMarker(url) {
 
 // Known `/_/` system routes on this host. Anything else under the marker is reserved
 // and 404s, so `/_/foo.html` can never reach the static catch-all and serve a document.
-const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'sync', 'bus', 'data-loss', 'api', 'meta', 'upload']);
+const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'sync', 'wire', 'data-loss', 'api', 'meta', 'upload', 'versions', 'version', 'restore']);
+
+// Spec §3's code registry, keyed by the status this host answers with, so a
+// status and its code can never drift apart. A status the registry does not name
+// carries no code at all: a client branches on the value, so a name nobody else
+// uses is a branch nobody else takes.
+const SPEC_ERROR_CODES = {
+  403: 'forbidden',
+  404: 'not-found',
+  413: 'too-large',
+  415: 'unsupported-type',
+  422: 'invalid-document'
+};
 
 // True when a hostname (already parsed out of a URL or a Host header) names this
 // machine's loopback interface. The whole 127/8 block counts, as does every
@@ -363,15 +404,37 @@ function isLoopbackHostname(hostname) {
 }
 
 // True when an Origin header value points at this machine's loopback interface.
-// Any port is accepted: the served port varies (tests bind ephemeral ports), and
-// a page on another loopback port is code already running on the user's machine,
-// which can reach the bus directly anyway. Remote origins are what this blocks.
+// Loopbackness alone is not enough to let a request through: every folder is its
+// own port, so the port is compared separately below. Remote origins are what
+// this blocks.
 function isLoopbackOrigin(origin) {
   try {
     return isLoopbackHostname(new URL(origin).hostname);
   } catch {
     return false;
   }
+}
+
+// The port an Origin header names, or NaN when it names no parseable one. An
+// origin with no port is spelled out (`http://localhost` is port 80) rather than
+// read as "no port", so it can never equal a server's own TCP port by accident.
+function originPort(origin) {
+  try {
+    const u = new URL(origin);
+    return Number(u.port || (u.protocol === 'https:' ? 443 : 80));
+  } catch {
+    return NaN;
+  }
+}
+
+// True when an Origin header names the exact port this app is served on. Two
+// ports answer that, because the ctx form is built with the port its root was
+// given while the legacy string form is built before anything has listened on it:
+// `req.socket.localPort` — the port this connection arrived on — is then the only
+// truthful statement of the app's own origin.
+function isOwnOrigin(origin, req, ctx) {
+  const port = originPort(origin);
+  return port === ctx.root.port || port === (req.socket && req.socket.localPort);
 }
 
 // True when a Host header addresses this server legitimately. Parsed through
@@ -388,22 +451,201 @@ function isLoopbackHostHeader(hostHeader) {
   }
 }
 
-// Build and return the configured Express app without listening. Split out of
-// startServer so tests can drive the real route wiring (ordering + the marker gate)
-// via supertest against an ephemeral port instead of the hardcoded 4321.
-function createApp(baseDir, devHooks = null, isKnownPath = null) {
-  // The map describes what the CURRENTLY served folder owes the platform, but it is
-  // module state keyed by a path relative to that folder's root, so it would
-  // otherwise outlive a folder switch. Two folders each holding an index.html then
-  // share one entry: folder A's snapshot gets uploaded as folder B's, and the
-  // platform broadcasts it verbatim into B's edit-mode tabs, where hyper-morph
-  // merges A's document into B's page. The five-minute sweep in startServer is not
-  // a substitute, since it is not even running while the server is stopped.
-  pendingSnapshots.clear();
+// ------------------------------------------------- shared stream (spec §10, C5.3)
+
+// The list form is `GET /_/sync?s=lane:since:url&s=...`: one connection carrying
+// several subscriptions, each frame named after the entry it belongs to, so a
+// SharedWorker can demultiplex one stream into one subscription per page. The
+// caps are htmlclay's, because the client that opens this stream is the same one.
+const MAX_SHARED_SUBS = 256;
+const SSE_KEEPALIVE_MS = 25 * 1000;
+
+// The SharedWorker script, read once. A worker script must be same-origin with
+// the page that starts it, so the client library cannot bring its own: every host
+// that announces `sync-worker` serves this file.
+const SYNC_WORKER_JS = require('fs').readFileSync(path.join(__dirname, 'assets', 'sync-worker.js'));
+
+// One `s` value: lane:since:document-url. Split on the first two colons only, so
+// a document URL carrying a colon (a port, most often) survives.
+function parseSharedEntry(raw) {
+  if (typeof raw !== 'string') return null;
+  const first = raw.indexOf(':');
+  const second = first < 0 ? -1 : raw.indexOf(':', first + 1);
+  if (second < 0) return null;
+  const lane = raw.slice(0, first);
+  if (lane !== 'live' && lane !== 'saved') return null;
+  const sinceText = raw.slice(first + 1, second);
+  if (!/^\d+$/.test(sinceText)) return null;
+  const since = Number(sinceText);
+  if (!Number.isSafeInteger(since)) return null;
+  return { lane, since, href: raw.slice(second + 1) };
+}
+
+// The client's resume point. EventSource sends the header itself on reconnect;
+// both hyperclay clients also accept the query form.
+function parseLastEventId(req) {
+  const raw = req.headers['last-event-id'] || req.query.lastEventId || '';
+  const v = Number(String(raw).trim());
+  return Number.isSafeInteger(v) && v > 0 ? v : 0;
+}
+
+// The resume baseline as a named event, carrying an id so a native EventSource
+// records a position as early as possible. It never reaches onmessage, so it
+// never looks like data.
+function cursorFrame(seq, resync) {
+  const data = resync ? { seq, resync: true } : { seq };
+  return `event: cursor\nid: ${seq}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+// The cursor of one subscription on a shared stream. No id: one id for many
+// subscriptions would name a position for none of them.
+function sharedCursorFrame(i, seq, resync) {
+  const data = resync ? { sub: i, seq, resync: true } : { sub: i, seq };
+  return `event: cursor\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+// One entry the host will not serve is answered inside a stream that goes on
+// serving the others: refusing the whole connection over one entry would cut
+// every open page off because a single one closed its document.
+function notFoundCursorFrame(i) {
+  return `event: cursor\ndata: ${JSON.stringify({ sub: i, error: 'not-found' })}\n\n`;
+}
+
+// The subscriber record of one entry. The library writes `id: N\ndata: ...\n\n`,
+// so prefixing the name yields `event: s<i>\nid: N\ndata: ...\n\n` — the exact
+// shape htmlclay writes.
+function taggedSink(res, i) {
+  const tag = `event: s${i}\n`;
+  return { write: (message) => res.write(tag + message) };
+}
+
+// The list form joins the same gate as htmlclay's stream: a stream is opened by a
+// page on this origin, and nothing else has a reason to hold one open.
+function sameOriginStream(req) {
+  if (req.headers['sec-fetch-site'] !== 'same-origin') return false;
+  const origin = req.headers.origin;
+  return origin === undefined || origin === `http://${req.headers.host}`;
+}
+
+// A path is this host by construction; an absolute URL must name this host, or a
+// page could subscribe a stream to somebody else's document.
+function hrefIsThisOrigin(req, href) {
+  let url;
+  try {
+    url = new URL(href);
+  } catch {
+    return Boolean(href);
+  }
+  return url.host === req.headers.host;
+}
+
+// The key the rest of the server uses: the relative path, which replay calls then
+// run through ctx.live.key so team roots never share a bucket.
+async function resolveSharedFile(paths, req, href) {
+  if (!hrefIsThisOrigin(req, href)) return null;
+  const name = resolveResourceFromHref(href);
+  if (!name) return null;
+  let realPath;
+  try {
+    realPath = await resolveReadPath(paths, name);
+  } catch {
+    return null;
+  }
+  const stats = await fs.stat(realPath).catch(() => null);
+  return stats && stats.isFile() ? name : null;
+}
+
+async function handleSharedSyncStream(ctx, paths, req, res, raw) {
+  if (!sameOriginStream(req)) return res.status(403).type('text/plain').send('Forbidden');
+  if (raw.length === 0 || raw.length > MAX_SHARED_SUBS) return res.status(400).type('text/plain').send('Bad Request');
+  const entries = raw.map(parseSharedEntry);
+  if (entries.some((e) => e === null)) return res.status(400).type('text/plain').send('Bad Request');
+
+  // Every entry is resolved before a byte is written, and the resume-then-subscribe
+  // pairs below run with no await among them: Node runs the rest of this handler to
+  // completion, so a frame published while it runs cannot fall between the replay
+  // and the subscription.
+  const files = await Promise.all(entries.map((e) => resolveSharedFile(paths, req, e.href)));
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const opened = [];
+  entries.forEach((e, i) => {
+    const file = files[i];
+    if (!file) {
+      res.write(notFoundCursorFrame(i));
+      return;
+    }
+    const { baseline, replay, resync } = replayStore.resume(ctx.live.key(file), e.lane, e.since);
+    const sink = taggedSink(res, i);
+    res.write(sharedCursorFrame(i, baseline, resync));
+    for (const message of replay) sink.write(message);
+    ctx.live.subscribe(file, sink, { lane: e.lane });
+    opened.push({ file, sink });
+  });
+
+  const keepAlive = setInterval(() => {
+    try { res.write(': keepalive\n\n'); } catch { clearInterval(keepAlive); }
+  }, SSE_KEEPALIVE_MS);
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    for (const { file, sink } of opened) ctx.live.unsubscribe(file, sink);
+  });
+}
+
+// The observer is shared with the session and createApp has no stop hook to
+// unhook from, so the listeners are registered once per observer rather than once
+// per app: a second app on the same observer cannot double-reset, and a stopped
+// root's observer stays collectable.
+const replayResetHooked = new WeakSet();
+
+// Build and return the configured Express app without listening; RootServer in
+// root-servers.js wraps it. Tests drive the real route wiring (ordering + the marker
+// gate) via supertest against an ephemeral port instead of the hardcoded 4321.
+function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
+  // Additive ctx form: { root, devHooks, isKnownPath, live?, observer? }.
+  // The string form is the legacy personal app and stays exactly what it was.
+  const ctx = typeof ctxOrDir === 'string'
+    ? { root: { ...LEGACY_ROOT, path: ctxOrDir }, devHooks, isKnownPath }
+    : ctxOrDir;
+  const baseDir = ctx.root.path;
+  // Both callers can arrive without a live object: the string form here builds a
+  // legacy root, and C1's ctx form leaves `ctx.live` to this function. Normalized
+  // back onto ctx because the key scheme is what every `ctx.live.*` call site in
+  // this file shares, and two of them (replay resume, the observer reset) run
+  // outside the request that has the local binding in scope.
+  const live = ctx.live || createRootLive(ctx.root);
+  ctx.live = live;
+  const store = snapshotStoreFor(ctx.root.id);
+
+  // The store describes what the CURRENTLY served folder owes the platform, keyed by
+  // a path relative to that folder's root, so it would otherwise outlive a folder
+  // switch. Two folders each holding an index.html then share one entry: folder A's
+  // snapshot gets uploaded as folder B's, and the platform broadcasts it verbatim
+  // into B's edit-mode tabs, where hyper-morph merges A's document into B's page.
+  // The five-minute sweep in RootServer (root-servers.js) is not a substitute, since
+  // it is not even running while the server is stopped.
+  store.snapshots.clear();
   // Cleared for the same reason and with more force: this map answers "was that my
   // own other tab?", and folder B's index.html sharing folder A's entry would answer
   // yes about a tab that was never open on it.
-  lastBrowserSaveEtags.clear();
+  store.etags.clear();
+
+  // C5.3: a file replaced or removed on disk invalidates every position a client
+  // could resume from, so both lanes forget and the next stream is told to resync
+  // (CONTRACTS §9a). `kind === 'external'` is what keeps the host's own writes out
+  // of it: a save this process made is a new frame, not a new document.
+  // An observer without `on` is a stub that answers emptyPending alone (C1.1's
+  // tests), and it has no events to hook.
+  if (ctx.observer && typeof ctx.observer.on === 'function' && !replayResetHooked.has(ctx.observer)) {
+    replayResetHooked.add(ctx.observer);
+    ctx.observer.on('change', (e) => e.kind === 'external' && replayStore.reset(ctx.live.key(e.rel)));
+    ctx.observer.on('remove', (e) => replayStore.reset(ctx.live.key(e.rel)));
+  }
 
     const app = express();
 
@@ -422,7 +664,16 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       return await resolveWritePath(paths, relPath);
     };
 
-    // DNS-rebinding hardening for the WHOLE origin, not just /bus. Binding to
+    // The generated stylesheet lives under the reserved `.hyperclay/` directory,
+    // whose leading dot a phase-2 validation would refuse. Only the NAME comes
+    // from the document or the URL, so the name is what gets validated; the
+    // directory is prepended afterwards.
+    const resolveTailwindWrite = async (name) => {
+      validateSegments(`${name}.css`);
+      return await resolveWritePath(paths, `${TAILWIND_DIR}/${name}.css`);
+    };
+
+    // DNS-rebinding hardening for the WHOLE origin. Binding to
     // localhost does not help: a rebound hostname resolves to 127.0.0.1 and the
     // request arrives here carrying the attacker's Host header. A loopback Host
     // is the only legitimate way to address this server.
@@ -455,23 +706,26 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     //     or a redirect chain, it is forgeable, and this host mints no tokens, so
     //     nothing here can carry authority in place of an origin. Local serves no
     //     document sandboxed (it sets no CSP), so no legitimate save is null.
-    //   - Any other Origin must be loopback. Any port: the served port varies,
-    //     and code on another loopback port is already running on this machine.
+    //   - Any other Origin must be loopback AND on this app's own port. A page
+    //     on localhost:5432 posting to localhost:4321 is a different folder's page,
+    //     and browsers call it `same-site` (ports are not part of a "site"), so
+    //     both signals have to carry the port.
     //   - Sec-Fetch-Site is checked when present, as a second signal that costs
     //     nothing and does not depend on Origin being sent.
     const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
     app.use((req, res, next) => {
       if (!UNSAFE_METHODS.has(req.method)) return next();
 
+      const refuse = () => res.status(403).json({ msg: 'Cross-origin requests are not allowed.', msgType: 'error' });
+
       const site = req.headers['sec-fetch-site'];
-      if (site === 'cross-site') {
-        return res.status(403).json({ msg: 'Cross-origin requests are not allowed.', msgType: 'error' });
-      }
+      if (site !== undefined && site !== 'same-origin' && site !== 'none') return refuse();
 
       const origin = req.headers.origin;
       if (origin === undefined) return next();
-      if (origin !== 'null' && isLoopbackOrigin(origin)) return next();
-      return res.status(403).json({ msg: 'Cross-origin requests are not allowed.', msgType: 'error' });
+      if (origin === 'null' || !isLoopbackOrigin(origin)) return refuse();
+      if (!isOwnOrigin(origin, req, ctx)) return refuse();
+      next();
     });
 
     // Nothing below may run before the open-time walk lands. Until it does,
@@ -555,11 +809,29 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     // path and the spec §10 address.
     app.use(['/live-sync', '/sync'], express.json({ limit: '10mb' }));
 
+    // The SharedWorker script of spec §10. Registered before `/sync` and gated on
+    // the marker, so a user folder that happens to be called `sync` keeps serving
+    // its own worker.js through the static catch-all.
+    app.get('/sync/worker.js', (req, res, next) => {
+      if (!req.originalUrl.startsWith('/_/sync/worker.js')) return next();
+      res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.end(SYNC_WORKER_JS);
+    });
+
     // Live-sync SSE stream endpoint. Spec §10 puts both halves on `/_/sync`; the
     // legacy `/live-sync/stream` stays forever because hyperclayjs hardcodes it, and
     // so does the inline script in every Collection dashboard ever minted, neither of
     // which any library update can reach.
-    app.get(['/live-sync/stream', '/sync'], (req, res) => {
+    app.get(['/live-sync/stream', '/sync'], async (req, res) => {
+      // Spec §10's list form shares the `/_/sync` address with the single-document
+      // form and is told apart by `s`. The marker prefix is part of the address:
+      // a bare `/sync?s=` is not the list form, so a user document named `sync`
+      // keeps this route to itself.
+      if (req.query.s !== undefined && req.originalUrl.startsWith('/_/sync')) {
+        return handleSharedSyncStream(ctx, paths, req, res, [].concat(req.query.s));
+      }
       // `document-url` is the spec spelling and wins; `page-url` is the pre-spec one.
       const pageUrl = req.query['document-url'] || req.query['page-url'];
       if (!pageUrl) {
@@ -583,8 +855,17 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       res.setHeader('X-Accel-Buffering', 'no');
       res.flushHeaders();
 
+      // Resume before subscribing. Node runs the rest of this handler to
+      // completion, so no frame can fall between the replay and the subscription.
+      // The three writes a consumer of this route can see are additive: the cursor
+      // is a named event, so it never reaches onmessage, and the ids ride lines the
+      // legacy client already ignores.
+      const { baseline, replay, resync } = replayStore.resume(ctx.live.key(file), lane, parseLastEventId(req));
+      res.write(cursorFrame(baseline, resync));
+      for (const message of replay) res.write(message);
+
       // Register client (channel key = full path with extension, e.g. "blog/post.html")
-      liveSync.subscribe(file, res, { lane });
+      live.subscribe(file, res, { lane });
       console.log(`[LiveSync] Client connected: ${file} (lane=${lane})`);
 
       // Keep-alive ping every 30 seconds
@@ -599,7 +880,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       // Cleanup on disconnect
       req.on('close', () => {
         clearInterval(keepAlive);
-        liveSync.unsubscribe(file, res);
+        live.unsubscribe(file, res);
         console.log(`[LiveSync] Client disconnected: ${file}`);
       });
 
@@ -722,7 +1003,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
           // snapshot, so it must not reach the platform-sync cache below, which
           // exists to upload the unstripped working state. §10: /_/sync never
           // writes to disk, whichever field it carries.
-          liveSync.broadcast(file, { html: documentHtml, sender }, { lane: 'saved' });
+          live.broadcast(file, { html: documentHtml, sender }, { lane: 'saved' });
           console.log(`[LiveSync] Relayed a document to viewers: ${file} (from: ${sender})`);
           return res.json({ success: true });
         }
@@ -731,8 +1012,8 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         // Preserve any userDriven bit a prior /save cached for this file: the peer
         // live-sync body doesn't carry it, so overwriting blindly would drop the
         // human-gesture provenance and make a clean save read as ui-unknown.
-        const prevSnap = pendingSnapshots.get(file);
-        pendingSnapshots.set(file, { html: snapshotHtml, userDriven: prevSnap ? prevSnap.userDriven : undefined, timestamp: Date.now() });
+        const prevSnap = store.snapshots.get(file);
+        store.snapshots.set(file, { html: snapshotHtml, userDriven: prevSnap ? prevSnap.userDriven : undefined, timestamp: Date.now() });
 
         // Broadcast to other local browsers on the same channel as /live-sync/stream.
         //
@@ -744,7 +1025,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         // receiver the version its next save is answering, and it is on this lane because
         // only an editor saves. A viewer has neither working state to preserve nor a save
         // to make, so the document lane above carries neither.
-        liveSync.broadcast(file, { html: snapshotHtml, sender, identityMap, etag }, { lane: 'live' });
+        live.broadcast(file, { html: snapshotHtml, sender, identityMap, etag }, { lane: 'live' });
 
         console.log(`[LiveSync] Broadcast: ${file} (from: ${sender})`);
 
@@ -756,105 +1037,124 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       }
     });
 
-    // `/_/bus` — local message bus (hyper-wire). Pages and user-run handler
-    // scripts publish/subscribe opaque JSON envelopes on named channels. The
-    // bus adds no capability: it executes nothing, stores nothing, and knows
-    // nothing about payloads; anything sharp lives in handlers the user runs
-    // in their own terminal. Gated on req.originalUrl like the data API so a
-    // bare `/bus/...` URL still falls through to a user's real bus/ folder.
+    // `/_/wire` — htmlclay's wire (CONTRACTS §11). A page asks, a process answers
+    // with status frames and one terminal frame, and the process edits the FILE;
+    // the edit reaches the page through the ordinary external-change path, never
+    // over this socket. One hub per app, named on `app.locals` so RootServer can
+    // shut it down when its root closes and W2 can put the helper dispatcher on it.
+    // Gated on `req.originalUrl` like the data API, so a user folder
+    // actually named `wire/` still falls through to the static catch-all.
+    const wireHub = new WireHub();
+    app.locals.wireHub = wireHub;
 
-    // DNS-rebinding hardening for both lanes: a rebound hostname reaches this
-    // localhost-bound server carrying the attacker's Host header, and a
-    // same-origin EventSource sends no Origin, so the Origin check on send
-    // can't protect subscribe. A loopback Host is the only legitimate way to
-    // address this server.
-    // (The global Host gate above already rejects a rebound hostname; this stays
-    // as the bus's own explicit, JSON-shaped statement of the same rule.)
-    app.use('/bus', (req, res, next) => {
-      if (!req.originalUrl.startsWith('/_/bus/')) return next();
-      if (!isLoopbackHostHeader(req.headers.host)) {
-        return res.status(403).json({ error: 'Bus is localhost-only' });
+    // W2.3: the host answers every named request itself (decision 1), so a
+    // file's handler slot keeps serving unnamed ones alone. Built only when the
+    // app was given a helpers context, which is what keeps the string form and
+    // every app created without one exactly what they were. `backupBaseline` is
+    // the same backup the handler-attach path takes, for the same reason: a
+    // program about to rewrite the file must leave the version the user was
+    // looking at recoverable (helper.go:284-297).
+    const helperDispatcher = ctx.helpers
+      ? createHelperDispatcher({
+        baseDir,
+        helpers: ctx.helpers,
+        backupBaseline: async (key) => {
+          const abs = path.join(paths.baseReal, key);
+          let content = null;
+          try {
+            content = await fs.readFile(abs, 'utf8');
+          } catch (err) {
+            if (err.code !== 'ENOENT') throw err;
+          }
+          if (content !== null) await createBackup(paths.baseReal, key, content, () => {}, null);
+        },
+        logger: console,
+      })
+      : null;
+    if (helperDispatcher) {
+      wireHub.setNamedRequestHandler(helperDispatcher.onNamedRequest);
+      app.locals.helperDispatcher = helperDispatcher;
+    }
+
+    // A page NEVER names a path: its file comes from the page's own URL, through
+    // the same funnel /_/save uses, and any supplied file field is discarded.
+    // Document-URL first, Page-URL after it, then the two query spellings
+    // (wire.go:684-700): the older spellings stay because a document that opened
+    // a wire before the rename hardcoded one in its own inline script. An absolute
+    // URL must name this host, or a page could drive another origin's wire.
+    // Synchronous on purpose — it reads headers, never the disk, and a page that
+    // exists is a file that exists.
+    const resolveBrowserTarget = (req) => {
+      const href = req.headers['document-url'] || req.headers['page-url'] ||
+        req.query['document-url'] || req.query['page-url'];
+      if (!href || !hrefIsThisOrigin(req, String(href))) return null;
+      return resolveResourceFromHref(String(href));
+    };
+
+    // A local process has no page, so it names an absolute path, which is then
+    // validated. Containment and hidden/internal refusal happen FIRST, as string
+    // and memory work, so an out-of-scope path is refused identically whether or
+    // not anything exists at it. The nearest existing parent is realpath'd for the
+    // same reason phase 4 does it: a file that is about to be created has no
+    // realpath of its own, and an agent rewriting a document no tab has open is
+    // exactly the case the wire exists for.
+    const resolveProcessTarget = async (raw) => {
+      if (typeof raw !== 'string' || raw === '' || raw.includes('\0') || !path.isAbsolute(raw)) return null;
+      let rel;
+      try {
+        const parentReal = await realpathNearestParent(path.dirname(raw));
+        rel = path.relative(paths.baseReal, path.join(parentReal, path.basename(raw)));
+      } catch {
+        return null;
       }
-      next();
-    });
-
-    // 10mb matches /live-sync: ai-edit/request can carry full page HTML (@page).
-    app.use('/bus', express.json({ limit: '10mb' }));
-
-    // Body-parser failures on the bus get their truthful status (413 too large,
-    // 400 bad JSON) instead of falling into the generic 500 catch-all below.
-    app.use('/bus', (err, req, res, next) => {
-      if (!req.originalUrl.startsWith('/_/bus/')) return next(err);
-      res.status(err.status || 400).json({
-        error: err.type === 'entity.too.large' ? 'Payload too large (10mb limit)' : 'Invalid JSON body'
-      });
-    });
-
-    app.get('/bus/subscribe', (req, res, next) => {
-      if (!req.originalUrl.startsWith('/_/bus/')) return next();
-      const requested = [...new Set([].concat(req.query.channel || []))];
-      if (!requested.length) {
-        return res.status(400).json({ error: 'channel parameter required' });
+      if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+      try {
+        validateSegments(rel);
+      } catch {
+        return null;
       }
-      for (const channel of requested) {
-        if (!isValidChannel(channel)) {
-          return res.status(400).json({ error: `Invalid channel name: ${channel}` });
-        }
+      if (!/\.html?(clay)?$/i.test(rel)) return null;
+      try {
+        await resolveWritePath(paths, rel);
+      } catch {
+        return null;
       }
+      return path.normalize(rel);
+    };
 
-      // SSE headers (same shape as /live-sync/stream)
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-      res.setHeader('X-Accel-Buffering', 'no');
-      res.flushHeaders();
-
-      requested.forEach(channel => messageBus.subscribe(channel, res));
-
-      const keepAlive = setInterval(() => {
-        try {
-          res.write(': ping\n\n');
-        } catch (e) {
-          clearInterval(keepAlive);
-        }
-      }, 30000);
-
-      req.on('close', () => {
-        clearInterval(keepAlive);
-        requested.forEach(channel => messageBus.unsubscribe(channel, res));
-      });
-
-      res.write(': connected\n\n');
-    });
-
-    app.post('/bus/send', (req, res, next) => {
-      if (!req.originalUrl.startsWith('/_/bus/')) return next();
-      // Cross-origin hardening: a browser page always sends Origin on POST, so
-      // reject anything non-loopback. Handlers (curl, node) send no Origin and
-      // pass. The JSON body requirement above already forces a CORS preflight
-      // (which we never approve) for cross-origin browser senders; this check
-      // is defense in depth.
-      const requestOrigin = req.headers.origin;
-      if (requestOrigin && !isLoopbackOrigin(requestOrigin)) {
-        return res.status(403).json({ error: 'Cross-origin senders are not allowed' });
+    // A handler attaching takes a watch lease on the file before it answers
+    // anything: an agent editing a document no tab has open must still reach the
+    // pages, as an external change, and be versioned. The lease keeps the
+    // observer alive for as long as the handler holds the file (CONTRACTS 9a).
+    // The baseline backup comes first and is taken from what is on disk NOW, so
+    // the version the user was looking at survives the first agent write
+    // (wire.go:732-790, :872-887). A file that does not exist yet is admitted
+    // with nothing to back up: an agent creating a document is exactly the case
+    // the wire exists for.
+    const onHandlerAttach = async (key) => {
+      const abs = path.join(paths.baseReal, key);
+      let content = null;
+      try {
+        content = await fs.readFile(abs, 'utf8');
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
       }
-      const body = req.body;
-      if (!body || typeof body !== 'object' || Array.isArray(body)) {
-        return res.status(400).json({ error: 'JSON body required (Content-Type: application/json)' });
-      }
-      const { channel, type, v, payload, sender } = body;
-      if (!isValidChannel(channel)) {
-        return res.status(400).json({ error: `Invalid channel name: ${channel}` });
-      }
-      if (typeof type !== 'string' || type.length === 0) {
-        return res.status(400).json({ error: 'type must be a non-empty string' });
-      }
-      // `origin` is advisory transport metadata (a local page could forge the
-      // header): handlers treat channel + type + payload shape as the contract.
-      const pageUrl = documentUrlHeader(req);
-      const origin = pageUrl ? resolveResourceFromHref(String(pageUrl)) : 'process';
-      const delivered = messageBus.send({ channel, type, v, payload, sender, origin });
-      res.json({ delivered });
+      if (content !== null) await createBackup(paths.baseReal, key, content, () => {}, null);
+      return ctx.observer ? ctx.observer.lease(key) : () => {};
+    };
+
+    // A process's terminal frame means the write is on disk, so that one file is
+    // stat-and-compared at once rather than after the watcher's debounce.
+    const onTerminalFromProcess = (key) => {
+      ctx.observer?.poke(key);
+    };
+
+    mountWire(app, {
+      hub: wireHub,
+      resolveBrowserTarget,
+      resolveProcessTarget,
+      onHandlerAttach,
+      onTerminalFromProcess,
     });
 
     // Note: File watcher for live-sync broadcast has been removed.
@@ -942,7 +1242,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         });
       }
 
-      if (isKnownPath && !isKnownPath(name, filePath)) {
+      if (ctx.isKnownPath && !ctx.isKnownPath(name, filePath, ctx.root.id)) {
         return res.status(409).json({
           msg: 'This file has been moved or deleted. Please refresh the page.',
           msgType: 'error'
@@ -972,7 +1272,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         await fs.mkdir(path.dirname(filePath), { recursive: true });
 
         // ANCILLARY DISK CONVENTION: versions dir and backups use baseName without
-        // extension (matches platform's sites-versions/{baseName}/ layout).
+        // extension (matches platform's versions/{baseName}/ layout).
         // Do NOT reuse `backupName` as a liveSync channel key — liveSync keys must
         // carry the extension (Rule 1).
         const backupName = name.replace(/\.(html|htmlclay)$/, '');
@@ -997,6 +1297,17 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
           if (e.code !== 'ENOENT') unreadable = e;
         }
         const dataLossPrev = storedBytes === null ? null : storedBytes.toString('utf8');
+
+        // A zero-byte file that something is still emptying is not a document, and
+        // writing over it loses what the page is about to be told is there.
+        if (storedBytes !== null && storedBytes.length === 0 && ctx.observer && ctx.observer.emptyPending(name)) {
+          conflict = {
+            status: 409,
+            msg: `${path.basename(name)} was just emptied on disk; retry once that change reaches the page.`,
+            code: 'truncation-pending',
+          };
+          return;
+        }
 
         // Spec §6, and the reason the whole check sits INSIDE the lock: a stamp
         // compared against bytes read outside it is a stamp compared against bytes
@@ -1025,7 +1336,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
             // to agree — the bytes on disk are the ones this process last wrote, AND
             // nothing has rewritten the file since — or the field is omitted, because
             // the wrong answer available here is the reassuring one.
-            const ours = lastBrowserSaveEtags.get(filePath);
+            const ours = store.etags.get(filePath);
             const now = await fs.stat(filePath, { bigint: true }).catch(() => null);
             const untouchedSinceOurWrite =
               !!ours && ours.mtimeNs !== null && !!now && now.mtimeNs === ours.mtimeNs;
@@ -1041,14 +1352,14 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
               // being told its own earlier save is what moved the document, which is
               // not a conflict with anybody: it adopts this stamp and re-sends rather
               // than alarming somebody about themselves.
-              saveId: saveReceiptFor(filePath, currentEtag)
+              saveId: saveReceiptFor(store, filePath, currentEtag)
             };
             return;
           }
         }
 
         // Check if this is the first save (no versions exist yet)
-        const siteVersionsDir = path.join(baseDir, 'sites-versions', backupName);
+        const siteVersionsDir = path.join(baseDir, VERSIONS_DIR, backupName);
         let isFirstSave = false;
         try {
           const versionFiles = await fs.readdir(siteVersionsDir);
@@ -1083,7 +1394,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
 
         // Mark as browser save so file watcher doesn't send redundant notification.
         // Key is full path with extension so it matches engine-watcher's wasBrowserSave check.
-        liveSync.markBrowserSave(name);
+        live.markBrowserSave(name);
 
         // Recorded from the bytes actually written, so a later conflict can tell a
         // second tab of this person's from a text editor. Set after the write, since
@@ -1098,7 +1409,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         // exactly like another of this person's tabs. The mtime moved for both of those
         // writes and does not come back.
         const wroteAt = await fs.stat(filePath, { bigint: true }).catch(() => null);
-        lastBrowserSaveEtags.set(filePath, {
+        store.etags.set(filePath, {
           etag: documentEtag(content),
           mtimeNs: wroteAt ? wroteAt.mtimeNs : null,
           // §6's receipt, bound here and nowhere else: this is the one moment this
@@ -1111,7 +1422,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
 
         // Morph view-mode tabs with the persisted on-disk HTML. Edit-mode tabs
         // are untouched — they sync via /live-sync/save on the live lane.
-        liveSync.broadcast(name, { html: content, sender: 'server-save' }, { lane: 'saved' });
+        live.broadcast(name, { html: content, sender: 'server-save' }, { lane: 'saved' });
 
         // Refresh the per-site API data sidecar BEFORE the fallible Tailwind compile,
         // so a Tailwind failure can't skip it and leave stale API data on disk
@@ -1128,7 +1439,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         {
           const dataLossProv = dataGuard.provenanceForLocalSave(userDriven);
           dataGuard.runDataLossGuard({
-            baseDir, name, newHtml: content, prevContent: dataLossPrev, prov: dataLossProv,
+            baseDir, name, newHtml: content, prevContent: dataLossPrev, prov: dataLossProv, live,
           }).catch(err => console.error('[data-guard] /save guard error:', err && err.message ? err.message : err));
         }
 
@@ -1146,9 +1457,9 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         if (tailwindName) {
           try {
             const css = await compileTailwind(content);
-            const cssPath = await resolveDerivedWrite(`tailwindcss/${tailwindName}.css`);
+            const cssPath = await resolveTailwindWrite(tailwindName);
             await atomicWriteFile(cssPath, css);
-            console.log(`Generated Tailwind CSS: tailwindcss/${tailwindName}.css`);
+            console.log(`Generated Tailwind CSS: ${TAILWIND_DIR}/${tailwindName}.css`);
           } catch (e) {
             console.error('compileTailwind failed (non-fatal):', e && e.message ? e.message : e);
           }
@@ -1160,8 +1471,8 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         // /live-sync/save, which is why this merges rather than replaces: the two
         // lanes contribute different halves of the same entry.
         {
-          const prev = pendingSnapshots.get(name);
-          pendingSnapshots.set(name, {
+          const prev = store.snapshots.get(name);
+          store.snapshots.set(name, {
             html: prev ? prev.html : null,
             userDriven,
             timestamp: Date.now()
@@ -1172,6 +1483,11 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         if (conflict && conflict.status === 500) {
           console.error(`Could not judge a conditional save of ${name}: the stored bytes are unreadable`);
           return res.status(500).json({ msg: conflict.msg, msgType: 'error' });
+        }
+
+        if (conflict && conflict.status === 409) {
+          console.log(`Refused a save of ${name}: ${conflict.code}`);
+          return res.status(409).json({ msg: conflict.msg, msgType: 'error', code: conflict.code });
         }
 
         if (conflict) {
@@ -1236,8 +1552,39 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       }
     };
 
+    // The one publish sequence for a write this app makes to a live document — the
+    // data-loss guard's writeBack and F1's restore both call it, so the two cannot
+    // drift. Format as the save path does, version the new bytes, write atomically,
+    // mark the write as ours so the watcher does not re-run the guard on it, morph
+    // view-mode tabs, then refresh everything derived from the bytes. Non-fatal on
+    // the derived artifacts, for the same reason the save route is: the document is
+    // already written, backed up and broadcast by that point.
+    // Returns the bytes stored on disk.
+    const publishHostWrite = async ({ name, filePath, html }) => {
+      const backupName = name.replace(/\.(html|htmlclay)$/, '');
+      const formatted = formatHtml(scopeTailwindLink(name, html));
+      await createBackup(baseDir, backupName, formatted);
+      await atomicWriteFile(filePath, formatted);
+      // A write through this app, not an external editor. Marked so the file
+      // watcher doesn't treat it as a fresh change and re-run the guard (which
+      // would raise a spurious new event).
+      live.markBrowserSave(name);
+      // Morph view-mode tabs with the persisted on-disk HTML.
+      live.broadcast(name, { html: formatted, sender: 'server-save' }, { lane: 'saved' });
+      try { await writeApiSidecar(baseDir, name, formatted); } catch {}
+      const tailwindName = getTailwindCssName(formatted);
+      if (tailwindName) {
+        try {
+          const css = await compileTailwind(formatted);
+          const cssPath = await resolveTailwindWrite(tailwindName);
+          await atomicWriteFile(cssPath, css);
+        } catch {}
+      }
+      return formatted;
+    };
+
     // GET /_/meta — discovery (spec §5). Both lanes require the `/_/` prefix, the
-    // same way /bus/send does, so a user folder actually named `meta` or `upload`
+    // same way the other system routes do, so a user folder actually named `meta` or `upload`
     // keeps being served as a folder.
     app.get('/meta', async (req, res, next) => {
       if (!req.originalUrl.startsWith('/_/meta')) return next();
@@ -1270,7 +1617,13 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       // is announced only alongside `conditional`, which §9 requires: a receipt can
       // prove an earlier save ran, but only If-Match makes the send that follows a
       // MISSING receipt safe.
-      const body = { spec: 1, extensions: ['conditional', 'format', 'receipts', 'scoped-stylesheet', 'sync', 'upload'] };
+      // `sync-worker` because this host serves the SharedWorker script that §10's
+      // list form needs. It is the whole invitation: a client that sees it and
+      // `sync` opens one stream per origin through the worker, and one that does
+      // not keeps the per-tab stream it has always used.
+      // `wire` because this host serves §11's two routes, so `clay.wire` pages and
+      // the `htmlclay wire` CLI can drive a local process from a document here.
+      const body = { spec: 1, extensions: ['conditional', 'format', 'receipts', 'scoped-stylesheet', 'sync', 'sync-worker', 'upload', 'wire'] };
       const href = documentUrlHeader(req);
       if (href) {
         try {
@@ -1299,8 +1652,12 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
             // §6: the id of the save that produced exactly these bytes, when this
             // host can still prove the pairing. This is the surface a client asks
             // after a save whose outcome it never learned.
-            const receipt = saveReceiptFor(filePath, body.document.etag);
+            const receipt = saveReceiptFor(store, filePath, body.document.etag);
             if (receipt) body.document.saveId = receipt;
+            // W2.3: the document's own discovery, beside the stamp that
+            // describes it (CONTRACTS §11). Every declared name with the state
+            // the user's decisions give it, and ai-edit after them.
+            if (helperDispatcher) body.document.helpers = await helperDispatcher.describe(filePath);
           }
         } catch { /* omission, never a different answer */ }
       }
@@ -1364,7 +1721,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       if (!resolved) return res.json({ event: null });
       let currentHtml = '';
       try { currentHtml = await fs.readFile(resolved.filePath, 'utf8'); } catch {}
-      const event = await dataGuard.getGuardEvent(baseDir, resolved.name, currentHtml);
+      const event = await dataGuard.getGuardEvent(baseDir, resolved.name, currentHtml, live);
       return res.json({ event: event || null });
     });
 
@@ -1378,25 +1735,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       }
 
       const writeBack = async (html) => {
-        const backupName = resolved.name.replace(/\.(html|htmlclay)$/, '');
-        const formatted = formatHtml(scopeTailwindLink(resolved.name, html));
-        await createBackup(baseDir, backupName, formatted);
-        await atomicWriteFile(resolved.filePath, formatted);
-        // Resolving the guard writes through this app, not an external editor.
-        // Mark it so the file watcher doesn't treat the revert/restore as a fresh
-        // change and re-run the guard (which would raise a spurious new event).
-        liveSync.markBrowserSave(resolved.name);
-        // Revert/restore changed the on-disk file — morph view-mode tabs.
-        liveSync.broadcast(resolved.name, { html: formatted, sender: 'server-save' }, { lane: 'saved' });
-        try { await writeApiSidecar(baseDir, resolved.name, formatted); } catch {}
-        const tailwindName = getTailwindCssName(formatted);
-        if (tailwindName) {
-          try {
-            const css = await compileTailwind(formatted);
-            const cssPath = await resolveDerivedWrite(`tailwindcss/${tailwindName}.css`);
-            await atomicWriteFile(cssPath, css);
-          } catch {}
-        }
+        await publishHostWrite({ name: resolved.name, filePath: resolved.filePath, html });
       };
 
       // A1: the restore region is read-modify-write too — the current body is
@@ -1406,7 +1745,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         let currentHtml = '';
         try { currentHtml = await fs.readFile(resolved.filePath, 'utf8'); } catch {}
         return await dataGuard.resolveGuard({
-          baseDir, name: resolved.name, id, choice, currentHtml, writeBack,
+          baseDir, name: resolved.name, id, choice, currentHtml, writeBack, live,
         });
       });
       if (!result.ok) return res.status(result.statusCode || 400).json({ error: result.error });
@@ -1414,9 +1753,10 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
       // other devices) to clear the same incident. nodeId from the node map is an
       // optional rename-resilience accelerator. Fire-and-forget: the local UI has
       // already cleared, so the POST must not delay this response.
-      if (result.control && syncEngine.serverUrl && syncEngine.apiKey) {
-        const nodeId = syncEngine.repo?.getByPath?.(resolved.name)?.nodeId;
-        syncEngine
+      const engine = ctx.syncEngineFor?.();
+      if (result.control && engine?.serverUrl && engine.apiKey) {
+        const nodeId = engine.repo?.getByPath?.(resolved.name)?.nodeId;
+        engine
           .sendControlMessage(buildEnvelope('data-loss/dismiss', 1, {
             ...result.control,
             ...(nodeId ? { nodeId } : {}),
@@ -1424,6 +1764,194 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
           .catch(() => {});
       }
       return res.json({ ok: true, choice: result.choice, status: result.status });
+    });
+
+    // F1: the three version-history routes htmlclay serves, addressed by the
+    // document's path under the served folder. This host mints no tokens, so the
+    // path is the identity -- the same way the static route and Document-URL name
+    // a document. The store is the one the save path writes,
+    // `.hyperclay/versions/<rootRel without extension>/`.
+    //
+    // Each route answers ONLY through the `/_/` marker, so a user folder actually
+    // named `versions` keeps serving normally, and `restore` is covered by the
+    // Origin and Sec-Fetch-Site guard on unsafe methods above.
+    const DOC_TAIL = /^(.+\.(?:html|htmlclay))$/i;
+    const DOC_AND_VERSION = /^(.+\.(?:html|htmlclay))\/([^/]+)$/i;
+
+    // The document's versions directory. The name is the document's path under the
+    // folder without its extension, which is what the save path backs up under.
+    const versionsDirFor = (rel) =>
+      path.join(baseDir, VERSIONS_DIR, rel.replace(/\.(html|htmlclay)$/i, ''));
+
+    // Exactly one generated filename, and a document: anything else is refused
+    // rather than resolved, so no name can address something outside the store.
+    const isVersionName = (name) =>
+      VERSION_NAME.test(name) && name.toLowerCase().endsWith('.html');
+
+    // The refusal shape: both spellings of the message that clients read, and a
+    // code only where the spec's registry names one for the status.
+    const versionError = (res, status, message) => {
+      res.set('Cache-Control', 'no-store');
+      const body = { ok: false, error: message, msg: message, msgType: 'error' };
+      if (SPEC_ERROR_CODES[status]) body.code = SPEC_ERROR_CODES[status];
+      return res.status(status).json(body);
+    };
+
+    // The versions directory as a real directory chain, so a directory symlink
+    // planted under `.hyperclay` cannot redirect a restore read out of tree.
+    const versionsDirReal = async (rel) => {
+      const canonicalBase = await canonicalizeBase(baseDir);
+      const dir = rebaseOntoCanonical(canonicalBase, baseDir, versionsDirFor(rel));
+      await assertRealDirChain(canonicalBase, dir);
+      return dir;
+    };
+
+    // The history of one document, newest first, in htmlclay's entry shape. The
+    // instant is parsed rather than read off the name (a name carries a zone), so
+    // two versions written either side of a DST fall-back still order correctly.
+    const listVersionEntries = async (dir) => {
+      let names;
+      try { names = await fs.readdir(dir); } catch { return []; }
+      const entries = [];
+      for (const name of names) {
+        if (!isVersionName(name)) continue;
+        try {
+          const st = await fs.stat(path.join(dir, name));
+          if (st.isFile()) entries.push({ name, mtimeMs: st.mtimeMs, size: st.size });
+        } catch {}
+      }
+      entries.sort(compareNewestFirst);
+      return entries.map((entry) => ({
+        name: entry.name,
+        time: new Date(sortKey(entry)).toISOString(),
+        seq: collisionSuffix(entry.name),
+        size: entry.size,
+      }));
+    };
+
+    // GET /_/versions/<rootRel> — `{ ok, name, versions: [{ name, time, seq, size }] }`.
+    app.get(/^\/versions\/(.+)$/, async (req, res, next) => {
+      if (!req.fromSystemRoute) return next();
+      const match = DOC_TAIL.exec(req.params[0]);
+      if (!match) return versionError(res, 400, 'not an HTML document');
+      let filePath;
+      try {
+        filePath = await resolveWriteTarget(paths, match[1]);
+      } catch (error) {
+        return versionError(res, error.status || 404, 'document not found');
+      }
+      const versions = await listVersionEntries(versionsDirFor(match[1]));
+      res.set('Cache-Control', 'no-store');
+      return res.json({ ok: true, name: path.basename(filePath), versions });
+    });
+
+    // GET /_/version/<rootRel>/<versionName> — the version's own bytes, as a document.
+    app.get(/^\/version\/(.+)$/, async (req, res, next) => {
+      if (!req.fromSystemRoute) return next();
+      const match = DOC_AND_VERSION.exec(req.params[0]);
+      if (!match) return versionError(res, 400, 'not an HTML document');
+      if (!isVersionName(match[2])) return versionError(res, 400, 'invalid version name');
+      try {
+        await resolveWriteTarget(paths, match[1]);
+      } catch (error) {
+        return versionError(res, error.status || 404, 'document not found');
+      }
+      let data;
+      try {
+        data = await fs.readFile(path.join(await versionsDirReal(match[1]), match[2]));
+      } catch {
+        return versionError(res, 404, 'version not found');
+      }
+      res.set('Content-Type', 'text/html; charset=utf-8');
+      res.set('Cache-Control', 'no-store');
+      return res.send(data);
+    });
+
+    // POST /_/restore/<rootRel>/<versionName> — put one version back.
+    app.post(/^\/restore\/(.+)$/, async (req, res, next) => {
+      if (!req.fromSystemRoute) return next();
+      const match = DOC_AND_VERSION.exec(req.params[0]);
+      if (!match) return versionError(res, 400, 'not an HTML document');
+      if (!isVersionName(match[2])) return versionError(res, 400, 'invalid version name');
+      const rel = match[1];
+      const versionName = match[2];
+
+      let filePath;
+      try {
+        filePath = await resolveWriteTarget(paths, rel);
+      } catch (error) {
+        return versionError(res, error.status || 404, 'document not found');
+      }
+
+      // The whole read-decide-write region holds the same canonical-path queue
+      // slot a concurrent /save would need (A1).
+      let refusal = null;
+      try {
+        await withFileLock(filePath, async () => {
+        // The safety backup is mandatory, so a live file that exists but cannot be
+        // read is a hard refusal rather than a skipped backup: proceeding would
+        // destroy the bytes with no recovery copy, which is the one thing a
+        // restore must never do. A file that is simply absent has nothing to lose.
+        let current = null;
+        try {
+          current = await fs.readFile(filePath);
+        } catch (error) {
+          if (error.code !== 'ENOENT') {
+            console.error(`Refusing to restore ${rel}: current file cannot be read`);
+            refusal = { status: 500, message: 'current file cannot be read, so no safety backup is possible' };
+            return;
+          }
+        }
+
+        let data = null;
+        try {
+          data = await fs.readFile(path.join(await versionsDirReal(rel), versionName));
+        } catch {
+          refusal = { status: 404, message: 'version not found' };
+          return;
+        }
+        if (data.length > SAVE_MAX_BYTES) {
+          refusal = { status: 413, message: 'version is too large to restore' };
+          return;
+        }
+        // Stripped rather than trusted: a restore must never write a save token to
+        // disk, wherever the version's bytes came from.
+        const html = stripSaveToken(data.toString('utf8'));
+        if (!hasHtmlRoot(html)) {
+          console.error(`Refusing to restore ${versionName} of ${rel}: not a complete HTML document`);
+          refusal = { status: 422, message: 'version is not a complete HTML document' };
+          return;
+        }
+
+        // Mandatory and before anything is written: a read-only versions directory
+        // must not allow a destructive restore with no way back.
+        if (current !== null) {
+          const backupName = rel.replace(/\.(html|htmlclay)$/i, '');
+          const safety = await createBackup(baseDir, backupName, current.toString('utf8'));
+          if (!safety) {
+            console.error(`Refusing to restore ${rel}: safety backup failed`);
+            refusal = { status: 500, message: 'could not create a safety backup' };
+            return;
+          }
+        }
+
+        const published = await publishHostWrite({ name: rel, filePath, html });
+        // publishHostWrite morphs view-mode tabs on the saved lane, but an
+        // edit-mode tab is not listening there, so the restore is announced the
+        // way any other host-side write is (CONTRACTS 9a).
+        ctx.observer?.publishExternal(rel, Buffer.from(published, 'utf8'), `${path.basename(rel)} was restored from a backup`);
+        });
+      } catch (error) {
+        // Express 4 does not consume a rejected async handler's promise, so an
+        // escaping failure would hang the request rather than answer it.
+        console.error(`Error restoring ${rel}:`, error && error.message ? error.message : error);
+        return versionError(res, 500, 'write error');
+      }
+
+      if (refusal) return versionError(res, refusal.status, refusal.message);
+      console.log(`Restored ${rel} from version ${versionName}`);
+      res.set('Cache-Control', 'no-store');
+      return res.json({ ok: true, msg: `Restored ${versionName}`, msgType: 'success' });
     });
 
     // Tailwind CSS — serve from disk or auto-generate on first request.
@@ -1441,7 +1969,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
         // Express already decodes regex-route captures (router/layer.js decode_param),
         // so decoding here again would 400 on "50% off" and mis-resolve "a%20b".
         name = req.params[0]; // may contain slashes, e.g. "blog/post"
-        cssPath = await resolveDerivedWrite(`tailwindcss/${name}.css`);
+        cssPath = await resolveTailwindWrite(name);
         htmlPath = await resolveDerivedWrite(`${name}.html`);
       } catch (error) {
         return res.status(error.status === 400 ? 400 : 403).send('');
@@ -1468,7 +1996,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
           const html = await fs.readFile(htmlPath, 'utf8');
           const compiled = await compileTailwind(html);
           await atomicWriteFile(cssPath, compiled);
-          console.log(`Auto-generated Tailwind CSS: tailwindcss/${name}.css`);
+          console.log(`Auto-generated Tailwind CSS: ${TAILWIND_DIR}/${name}.css`);
           return compiled;
         });
         return res.send(css);
@@ -1546,10 +2074,10 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     // Dev-only popover control endpoints (only registered when devHooks are passed in)
     // Must be registered BEFORE the catch-all static file middleware below, otherwise
     // the catch-all intercepts every request (including POSTs) and returns 404.
-    if (devHooks) {
+    if (ctx.devHooks) {
       app.post('/__dev/popover/show', (req, res) => {
         try {
-          devHooks.showSticky();
+          ctx.devHooks.showSticky();
           res.json({ ok: true, sticky: true });
         } catch (err) {
           res.status(500).json({ ok: false, error: err.message });
@@ -1558,7 +2086,7 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
 
       app.post('/__dev/popover/hide', (req, res) => {
         try {
-          devHooks.hideAndClear();
+          ctx.devHooks.hideAndClear();
           res.json({ ok: true, sticky: false });
         } catch (err) {
           res.status(500).json({ ok: false, error: err.message });
@@ -1654,103 +2182,6 @@ function createApp(baseDir, devHooks = null, isKnownPath = null) {
     });
 
   return app;
-}
-
-function startServer(baseDir, devHooks = null, isKnownPath = null) {
-  return new Promise((resolve, reject) => {
-    if (server) {
-      return reject(new Error('Server is already running'));
-    }
-
-    if (!snapshotCleanupTimer) {
-      snapshotCleanupTimer = setInterval(() => {
-        const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-        for (const [key, entry] of pendingSnapshots) {
-          if (entry.timestamp < fiveMinutesAgo) pendingSnapshots.delete(key);
-        }
-      }, 60 * 1000);
-    }
-
-    app = createApp(baseDir, devHooks, isKnownPath);
-
-    // The literal, not 'localhost': that name binds only the address the resolver
-    // lists first (::1 on macOS and Windows), and a 127.0.0.1 client is then refused.
-    // A browser opening http://localhost:4321 falls through to 127.0.0.1 on its own.
-    server = app.listen(PORT, '127.0.0.1', (err) => {
-      if (err) {
-        server = null;
-        return reject(err);
-      }
-      console.log(`Hyperclay Local Server running on http://localhost:${PORT}`);
-      console.log(`Serving files from: ${baseDir}`);
-
-      // A5: one retention sweep at startup, so a folder that has been accumulating
-      // versions for months gets trimmed even if nothing is saved this session.
-      pruneAllVersions(baseDir)
-        .then(({ sites, deleted }) => {
-          if (deleted) console.log(`[BACKUP] Startup prune: removed ${deleted} version(s) across ${sites} site(s)`);
-        })
-        .catch(err => console.error('[BACKUP] Startup prune failed (non-fatal):', err && err.message ? err.message : err));
-
-      resolve();
-    });
-
-    // Track connections for proper cleanup
-    server.on('connection', (connection) => {
-      connections.add(connection);
-      connection.on('close', () => {
-        connections.delete(connection);
-      });
-    });
-
-    server.on('error', (err) => {
-      errorLogger.error('Server', 'Server error', err);
-      server = null;
-      connections.clear();
-      reject(err);
-    });
-  });
-}
-
-function stopServer() {
-  return new Promise((resolve) => {
-    if (server) {
-      console.log('Stopping server...');
-
-      if (snapshotCleanupTimer) {
-        clearInterval(snapshotCleanupTimer);
-        snapshotCleanupTimer = null;
-      }
-
-      // Force close all active connections
-      for (const connection of connections) {
-        connection.destroy();
-      }
-      connections.clear();
-
-      server.close(() => {
-        server = null;
-        app = null;
-        console.log('Server stopped');
-        resolve();
-      });
-
-      // Fallback: Use built-in closeAllConnections if available (Node.js 18.2+)
-      if (server.closeAllConnections) {
-        server.closeAllConnections();
-      }
-    } else {
-      resolve();
-    }
-  });
-}
-
-function getServerPort() {
-  return PORT;
-}
-
-function isServerRunning() {
-  return server !== null;
 }
 
 // A0. The listing emits displayName through Eta's RAW tag (`<%~`) so the <wbr>
@@ -1863,11 +2294,8 @@ async function serveDirListing(res, dirPath, baseDir) {
 }
 
 module.exports = {
-  startServer,
-  stopServer,
-  getServerPort,
-  isServerRunning,
   getAndClearSnapshot,  // For sync engine to get cached snapshot HTML for platform sync
+  sweepExpiredSnapshots,
   // Exported for testing
   createApp,
   resolveResourceFromHref,

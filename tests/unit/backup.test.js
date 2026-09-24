@@ -80,7 +80,7 @@ describe('createBackup', () => {
     const backupPath = await createBackup(tempDir, siteName, content);
 
     expect(backupPath).toBeTruthy();
-    expect(backupPath).toContain('sites-versions');
+    expect(backupPath).toContain(path.join('.hyperclay', 'versions'));
     expect(backupPath).toContain(siteName);
     expect(backupPath).toEndWith('.html');
 

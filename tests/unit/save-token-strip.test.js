@@ -97,7 +97,7 @@ describe('a relay never hands one tab another tab credential', () => {
     const frames = [];
     const res = {
       write(msg) {
-        const m = msg.match(/^data: (.+)\n\n$/);
+        const m = msg.match(/^(?:id: \d+\n)?data: (.+)\n\n$/);
         if (m) frames.push(JSON.parse(m[1]));
       },
     };

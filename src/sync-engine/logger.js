@@ -1,4 +1,5 @@
 const fs = require('fs').promises;
+const os = require('os');
 const path = require('upath');
 const { app } = require('electron');
 
@@ -55,10 +56,10 @@ class SyncLogger {
   }
 
   // Initialize logger with log directory
-  async init(baseDir = null) {
+  async init(baseDir = null, { subdir = null, logsDir = null } = {}) {
     try {
-      const logsPath = app.getPath('logs');
-      this.logDir = path.join(logsPath, 'sync');
+      const logsPath = logsDir ?? app?.getPath?.('logs') ?? path.join(os.tmpdir(), 'hyperclay-local-logs');
+      this.logDir = subdir ? path.join(logsPath, 'sync', subdir) : path.join(logsPath, 'sync');
       this.baseDir = baseDir; // Store for sanitizing paths
       await fs.mkdir(this.logDir, { recursive: true });
 
@@ -168,3 +169,4 @@ class SyncLogger {
 
 // Export singleton instance
 module.exports = new SyncLogger();
+module.exports.SyncLogger = SyncLogger;

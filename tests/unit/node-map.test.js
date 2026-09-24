@@ -1,7 +1,18 @@
 const fs = require('fs/promises');
 const path = require('path');
 const os = require('os');
-const { load, save, loadState, saveState, getInode, loadTombstones, saveTombstones } = require('../../src/sync-engine/node-map');
+const {
+  load,
+  save,
+  loadState,
+  saveState,
+  getInode,
+  loadTombstones,
+  saveTombstones,
+  readBaseline,
+  applyBaseline
+} = require('../../src/sync-engine/node-map');
+const NodeRepository = require('../../src/sync-engine/state/node-repository');
 
 let tmpDir;
 
@@ -187,5 +198,195 @@ describe('tombstone load/save', () => {
     const loaded = await loadTombstones(tmpDir);
     expect(loaded.has('a.html')).toBe(false);
     expect(loaded.has('b.html')).toBe(true);
+  });
+});
+
+describe('baseline entry format v2', () => {
+  const V2_ENTRY = {
+    type: 'site',
+    path: 'board.html',
+    parentId: null,
+    inode: 1234567,
+    remoteEtag: '3f9a0c1d2b4e5f60',
+    localChecksum: '3f9a0c1d2b4e5f60',
+    structureVersion: '9c1e',
+    uploadBlocked: false,
+    syncedAt: 1790000000000
+  };
+
+  test('an old checksum-only entry reads as etag and local checksum alike', () => {
+    const baseline = readBaseline({ type: 'site', path: 'board.html', checksum: 'abc123', inode: 1 });
+    expect(baseline).toEqual({
+      remoteEtag: 'abc123',
+      localChecksum: 'abc123',
+      structureVersion: null,
+      uploadBlocked: false
+    });
+  });
+
+  test('an entry without a checksum reads as an unknown baseline', () => {
+    expect(readBaseline({ type: 'folder', path: 'blog', parentId: null, inode: 7 })).toEqual({
+      remoteEtag: null,
+      localChecksum: null,
+      structureVersion: null,
+      uploadBlocked: false
+    });
+    expect(readBaseline({ type: 'site', path: 'board.html', checksum: null, inode: 1 }).remoteEtag).toBeNull();
+  });
+
+  test('a node with no entry has no baseline', () => {
+    expect(readBaseline(undefined)).toBeNull();
+    expect(readBaseline(null)).toBeNull();
+  });
+
+  test('a v2 entry reads back every field decide needs', () => {
+    expect(readBaseline(V2_ENTRY)).toEqual({
+      remoteEtag: '3f9a0c1d2b4e5f60',
+      localChecksum: '3f9a0c1d2b4e5f60',
+      structureVersion: '9c1e',
+      uploadBlocked: false
+    });
+    expect(readBaseline({ ...V2_ENTRY, uploadBlocked: true }).uploadBlocked).toBe(true);
+  });
+
+  test('a map saved in the old shape loads and maps', async () => {
+    await fs.mkdir(tmpDir, { recursive: true });
+    await fs.writeFile(
+      path.join(tmpDir, 'node-map.json'),
+      JSON.stringify({
+        '901': { type: 'site', path: 'board.html', inode: 1234567, checksum: 'abc123', syncedAt: 1790000000000 }
+      })
+    );
+
+    const loaded = await load(tmpDir);
+    const entry = loaded.get('901');
+
+    expect(entry.checksum).toBe('abc123');
+    expect(readBaseline(entry)).toEqual({
+      remoteEtag: 'abc123',
+      localChecksum: 'abc123',
+      structureVersion: null,
+      uploadBlocked: false
+    });
+  });
+
+  test('a v2 entry round-trips through save and load', async () => {
+    await save(tmpDir, new Map([['901', { ...V2_ENTRY }]]));
+
+    const loaded = await load(tmpDir);
+    expect(loaded.get('901')).toEqual(V2_ENTRY);
+    expect(readBaseline(loaded.get('901'))).toEqual({
+      remoteEtag: '3f9a0c1d2b4e5f60',
+      localChecksum: '3f9a0c1d2b4e5f60',
+      structureVersion: '9c1e',
+      uploadBlocked: false
+    });
+  });
+
+  test('an update that sets only some new fields keeps the others', () => {
+    const next = applyBaseline({ ...V2_ENTRY, checksum: '3f9a0c1d2b4e5f60' }, { remoteEtag: 'etag-2' });
+
+    expect(next).toEqual({ ...V2_ENTRY, checksum: '3f9a0c1d2b4e5f60', remoteEtag: 'etag-2' });
+    expect(readBaseline(next)).toEqual({
+      remoteEtag: 'etag-2',
+      localChecksum: '3f9a0c1d2b4e5f60',
+      structureVersion: '9c1e',
+      uploadBlocked: false
+    });
+  });
+
+  test('writing localChecksum keeps checksum equal to it', () => {
+    const next = applyBaseline(
+      { type: 'site', path: 'board.html', checksum: 'old-sum', inode: 1 },
+      { remoteEtag: 'etag-2', localChecksum: 'sum-2' }
+    );
+
+    expect(next.checksum).toBe('sum-2');
+    expect(next.localChecksum).toBe('sum-2');
+    expect(next.remoteEtag).toBe('etag-2');
+  });
+
+  test('the first update of a legacy entry takes its etag from the old checksum', () => {
+    const next = applyBaseline(
+      { type: 'site', path: 'board.html', inode: 1, checksum: 'legacy-sum', syncedAt: 1 },
+      { localChecksum: 'sum-2' }
+    );
+
+    expect(next).toEqual({
+      type: 'site',
+      path: 'board.html',
+      inode: 1,
+      syncedAt: 1,
+      remoteEtag: 'legacy-sum',
+      localChecksum: 'sum-2',
+      structureVersion: null,
+      uploadBlocked: false,
+      checksum: 'sum-2'
+    });
+  });
+
+  test('a partial update round-trips through save and load', async () => {
+    const entry = applyBaseline(
+      { type: 'site', path: 'board.html', inode: 1, checksum: 'legacy-sum', syncedAt: 1 },
+      { localChecksum: 'sum-2' }
+    );
+    await save(tmpDir, new Map([['901', entry]]));
+
+    const loaded = await load(tmpDir);
+    expect(readBaseline(loaded.get('901'))).toEqual({
+      remoteEtag: 'legacy-sum',
+      localChecksum: 'sum-2',
+      structureVersion: null,
+      uploadBlocked: false
+    });
+    expect(loaded.get('901').checksum).toBe('sum-2');
+    expect(loaded.get('901').path).toBe('board.html');
+  });
+});
+
+describe('NodeRepository baseline API', () => {
+  test('updateBaseline merges fields, mirrors checksum and persists', async () => {
+    const repo = new NodeRepository();
+    repo.attach(tmpDir);
+    repo.seed([['901', { type: 'site', path: 'board.html', inode: 1234567, checksum: 'legacy-sum', syncedAt: 1 }]]);
+
+    expect(repo.getBaseline('901')).toEqual({
+      remoteEtag: 'legacy-sum',
+      localChecksum: 'legacy-sum',
+      structureVersion: null,
+      uploadBlocked: false
+    });
+
+    await repo.updateBaseline('901', { remoteEtag: 'etag-2', localChecksum: 'sum-2' });
+
+    const reloaded = new NodeRepository();
+    reloaded.attach(tmpDir);
+    await reloaded.load();
+
+    expect(reloaded.getBaseline('901')).toEqual({
+      remoteEtag: 'etag-2',
+      localChecksum: 'sum-2',
+      structureVersion: null,
+      uploadBlocked: false
+    });
+    expect(reloaded.get('901').checksum).toBe('sum-2');
+    expect(reloaded.get('901').path).toBe('board.html');
+    expect(reloaded.get('901').inode).toBe(1234567);
+  });
+
+  test('getBaseline is null for a node with no entry', () => {
+    const repo = new NodeRepository();
+    repo.attach(tmpDir);
+    expect(repo.getBaseline('404')).toBeNull();
+    expect(repo.getBaseline(null)).toBeNull();
+  });
+
+  test('updateBaseline on a missing entry changes nothing', async () => {
+    const repo = new NodeRepository();
+    repo.attach(tmpDir);
+
+    expect(await repo.updateBaseline('404', { remoteEtag: 'etag-2' })).toBeNull();
+    expect(repo.size).toBe(0);
+    await expect(fs.readFile(path.join(tmpDir, 'node-map.json'), 'utf8')).rejects.toThrow();
   });
 });

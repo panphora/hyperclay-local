@@ -58,6 +58,35 @@ async function load(metaDir, logger = null) {
   return map;
 }
 
+function readBaseline(entry) {
+  if (!entry) return null;
+  const checksum = entry.checksum === undefined ? null : entry.checksum;
+  return {
+    remoteEtag: entry.remoteEtag === undefined ? checksum : entry.remoteEtag,
+    localChecksum: entry.localChecksum === undefined ? checksum : entry.localChecksum,
+    structureVersion: entry.structureVersion === undefined ? null : entry.structureVersion,
+    uploadBlocked: entry.uploadBlocked === true
+  };
+}
+
+function applyBaseline(entry, fields = {}) {
+  const current = readBaseline(entry) || {
+    remoteEtag: null,
+    localChecksum: null,
+    structureVersion: null,
+    uploadBlocked: false
+  };
+  const localChecksum = fields.localChecksum === undefined ? current.localChecksum : fields.localChecksum;
+  return {
+    ...entry,
+    remoteEtag: fields.remoteEtag === undefined ? current.remoteEtag : fields.remoteEtag,
+    localChecksum,
+    structureVersion: fields.structureVersion === undefined ? current.structureVersion : fields.structureVersion,
+    uploadBlocked: fields.uploadBlocked === undefined ? current.uploadBlocked : fields.uploadBlocked,
+    checksum: localChecksum
+  };
+}
+
 async function save(metaDir, map, logger = null) {
   await fs.mkdir(metaDir, { recursive: true });
   const obj = Object.fromEntries(map);
@@ -152,4 +181,15 @@ async function saveTombstones(metaDir, map) {
   await atomicWrite(path.join(metaDir, TOMBSTONES_FILE), JSON.stringify(obj, null, 2));
 }
 
-module.exports = { load, save, loadState, saveState, getInode, walkDescendants, loadTombstones, saveTombstones };
+module.exports = {
+  load,
+  save,
+  loadState,
+  saveState,
+  getInode,
+  walkDescendants,
+  loadTombstones,
+  saveTombstones,
+  readBaseline,
+  applyBaseline
+};

@@ -8,7 +8,7 @@
  *   {baseDir}/.hyperclay/guard/<base>.json
  * (mirrors the .hyperclay/api/ sidecar pattern — already excluded by every sync
  * scan). Whole-file Revert backups live beside it as <base>.recover.html, or
- * fall back to the newest sites-versions/<base>/*.html for raw external writes.
+ * fall back to the newest .hyperclay/versions/<base>/*.html for raw external writes.
  *
  * Everything here is NON-FATAL to the write: a guard failure logs and returns.
  * See plans/hyperclay-local/data-clobber-guard-plan.md.
@@ -16,11 +16,12 @@
 const fs = require('fs').promises;
 const path = require('upath');
 const cheerio = require('cheerio');
-const { liveSync } = require('livesync-hyperclay');
+const { createRootLive } = require('./utils/root-live');
 const core = require('./data-loss-core.cjs');
 const { extractViaTag } = require('./utils/data-extractor');
 const { compareNewestFirst } = require('./utils/prune-versions');
 const { canonicalizeBase, rebaseOntoCanonical, assertRealDirChain } = require('./utils/real-dir-chain');
+const { GUARD_DIR, VERSIONS_DIR, LEGACY_VERSIONS_DIR } = require('./utils/artifact-paths');
 
 const {
   classifyDestruction,
@@ -33,7 +34,6 @@ const {
 } = core;
 
 const RULES_NAME = 'api';
-const GUARD_DIR = '.hyperclay/guard';
 
 // Cached dynamic import of the ESM engine (apply/findRulesIn/errors) — same
 // bridge pattern as utils/data-extractor.js. cheerio is a plain require.
@@ -138,14 +138,24 @@ function emptyGuard() {
   return { baseline: null, uiWorkPending: false, event: null, status: 'none' };
 }
 
-// Newest sites-versions/<base>/*.html (the last-good full file for a raw write).
+// Newest <versions>/<base>/*.html (the last-good full file for a raw write).
 // Ranked by parsed instant, NOT by filename: legacy backup names are local wall
 // time, which repeats across a DST fall-back, so a lexical sort could hand back
 // the older of the two as "newest" and silently revert to stale content.
 async function newestVersionPath(baseDir, name) {
+  const base = name.replace(/\.(html|htmlclay)$/, '');
+  // .hyperclay/versions first; sites-versions is the pre-.hyperclay location and
+  // stays readable, so a file whose last backup predates the move still recovers.
+  for (const versionsDir of [VERSIONS_DIR, LEGACY_VERSIONS_DIR]) {
+    const found = await newestVersionIn(baseDir, versionsDir, base);
+    if (found) return found;
+  }
+  return null;
+}
+
+async function newestVersionIn(baseDir, versionsDir, base) {
   try {
-    const base = name.replace(/\.(html|htmlclay)$/, '');
-    const dir = path.join(baseDir, 'sites-versions', base);
+    const dir = path.join(baseDir, versionsDir, base);
     // Refuse a symlinked chain: the path this returns feeds a Revert that
     // overwrites the live file, so it must not resolve out of the served tree.
     const canonicalBase = await canonicalizeBase(baseDir);
@@ -180,9 +190,11 @@ async function newestVersionPath(baseDir, name) {
 // prevContent   : pre-write body (string) or null (raw watcher has only a hash)
 // prov          : 'external' | 'ui-background' | 'ui-gestured'
 //
+// live          : the served root's live transport; the personal one by default
+//
 // Returns the client-safe event when a loss is raised, else null. Never throws.
 // ---------------------------------------------------------------------------
-async function runDataLossGuard({ baseDir, name, newHtml, prevContent, prov }) {
+async function runDataLossGuard({ baseDir, name, newHtml, prevContent, prov, live = createRootLive(null) }) {
   try {
     const inc = await safeExtractIsland(newHtml);
     if (!inc.ok) return null; // parse/version skew -> fail open
@@ -274,12 +286,12 @@ async function runDataLossGuard({ baseDir, name, newHtml, prevContent, prov }) {
     });
 
     if (autoResolvedId) {
-      notifyResolved(name, autoResolvedId);
+      notifyResolved(name, autoResolvedId, live);
       return null;
     }
     if (raised) {
       const clientEvent = await toClientEvent(raised, newHtml);
-      notifyRaised(name, clientEvent);
+      notifyRaised(name, clientEvent, live);
       return clientEvent;
     }
     return null;
@@ -297,9 +309,9 @@ async function seedBlind(guard, island) {
 }
 
 // The whole last-good file for Revert, always COPIED INTO THE GUARD'S OWN
-// STORAGE. Prefer the pre-write body; else the newest sites-versions entry.
+// STORAGE. Prefer the pre-write body; else the newest version entry.
 //
-// Returning a sites-versions path directly (as this used to for raw writes)
+// Returning a versions path directly (as this used to for raw writes)
 // would pin a file the retention pruner is free to delete. The alternative —
 // teaching the pruner an exemption list — would need that list consulted under
 // a lock the pruner does not hold, which is a race. Copying the bytes here
@@ -357,16 +369,16 @@ function provenanceForLocalSave(userDriven) {
 // ---------------------------------------------------------------------------
 // Live transport.
 // ---------------------------------------------------------------------------
-function notifyRaised(name, clientEvent) {
+function notifyRaised(name, clientEvent, live = createRootLive(null)) {
   try {
-    liveSync.notify(name, { msgType: 'data-loss', action: 'raised', msg: 'Saved data overwritten', data: clientEvent });
+    live.notify(name, { msgType: 'data-loss', action: 'raised', msg: 'Saved data overwritten', data: clientEvent });
   } catch (e) {
     console.error('[data-guard] notifyRaised failed:', e && e.message ? e.message : e);
   }
 }
-function notifyResolved(name, eventId) {
+function notifyResolved(name, eventId, live = createRootLive(null)) {
   try {
-    liveSync.notify(name, { msgType: 'data-loss', action: 'resolved', msg: 'Data guard resolved', data: { id: eventId } });
+    live.notify(name, { msgType: 'data-loss', action: 'resolved', msg: 'Data guard resolved', data: { id: eventId } });
   } catch (e) {
     console.error('[data-guard] notifyResolved failed:', e && e.message ? e.message : e);
   }
@@ -484,7 +496,7 @@ function truncate(s, n = 80) {
 // Page-load read. Seeds the baseline from the current disk island on first
 // sight (external-blessed) so an already-open file is covered.
 // ---------------------------------------------------------------------------
-async function getGuardEvent(baseDir, name, currentHtml) {
+async function getGuardEvent(baseDir, name, currentHtml, live = createRootLive(null)) {
   try {
     const guard = await readGuard(baseDir, name);
     if (guard && guard.event) {
@@ -495,7 +507,7 @@ async function getGuardEvent(baseDir, name, currentHtml) {
       if (cur.ok && cur.island && lossUndone(classify(guard.event.recoverableData, cur.island))) {
         const resolvedId = guard.event.id;
         await clearEvent(baseDir, name, cur.island, 'restored');
-        notifyResolved(name, resolvedId);
+        notifyResolved(name, resolvedId, live);
         return null;
       }
       return await toClientEvent(guard.event, currentHtml != null ? currentHtml : '');
@@ -524,7 +536,7 @@ async function getGuardEvent(baseDir, name, currentHtml) {
 // Resolve (dismiss / revert / restore). writeBack performs the actual save
 // through the caller's backup-then-write helper so resolution is versioned.
 // ---------------------------------------------------------------------------
-async function resolveGuard({ baseDir, name, id, choice, currentHtml, writeBack }) {
+async function resolveGuard({ baseDir, name, id, choice, currentHtml, writeBack, live = createRootLive(null) }) {
   const guard = await readGuard(baseDir, name);
   if (!guard || !guard.event) return { ok: false, statusCode: 404, error: 'No pending data-loss event' };
   if (id && guard.event.id !== id) return { ok: false, statusCode: 409, error: 'Event id mismatch (already resolved?)' };
@@ -535,7 +547,7 @@ async function resolveGuard({ baseDir, name, id, choice, currentHtml, writeBack 
     // forceBaseline: Dismiss accepts current even when the clobber emptied the
     // island, else the old baseline stays and the next write re-fires.
     await clearEvent(baseDir, name, cur.ok ? cur.island : null, 'dismissed', true);
-    notifyResolved(name, event.id);
+    notifyResolved(name, event.id, live);
     // rider 1: return the control payload so server.js can nudge the platform
     // (and thence the owner's other devices). resolveGuard stays transport-pure.
     return {
@@ -550,14 +562,14 @@ async function resolveGuard({ baseDir, name, id, choice, currentHtml, writeBack 
     await writeBack(merged.html);
     const after = await safeExtractIsland(merged.html);
     await clearEvent(baseDir, name, after.ok ? after.island : event.recoverableData, 'restored');
-    notifyResolved(name, event.id);
+    notifyResolved(name, event.id, live);
     return { ok: true, choice, status: 'restored' };
   }
 
   if (choice === 'revert') {
     if (!event.recoverableHtmlBackup) return { ok: false, statusCode: 422, error: 'No whole-file backup is available to revert to.' };
     // Containment guard: the recover path is always under baseDir
-    // (.hyperclay/guard or sites-versions); reject anything else in case a
+    // (.hyperclay/guard or .hyperclay/versions); reject anything else in case a
     // tampered/corrupt guard file points the read elsewhere.
     const recoverAbs = path.resolve(event.recoverableHtmlBackup);
     if (!recoverAbs.startsWith(path.resolve(baseDir) + path.sep)) {
@@ -572,7 +584,7 @@ async function resolveGuard({ baseDir, name, id, choice, currentHtml, writeBack 
     await writeBack(html);
     const after = await safeExtractIsland(html);
     await clearEvent(baseDir, name, after.ok ? after.island : null, 'reverted');
-    notifyResolved(name, event.id);
+    notifyResolved(name, event.id, live);
     return { ok: true, choice, status: 'reverted' };
   }
 

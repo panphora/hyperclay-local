@@ -45,8 +45,23 @@ const { liveSync } = require('livesync-hyperclay');
 
 jest.mock('../../src/sync-engine/file-operations');
 jest.mock('../../src/sync-engine/api-client');
-jest.mock('../../src/sync-engine/node-map');
+jest.mock('../../src/sync-engine/node-map', () => {
+  const actual = jest.requireActual('../../src/sync-engine/node-map');
+  return {
+    ...actual,
+    load: jest.fn(),
+    save: jest.fn(),
+    loadState: jest.fn(),
+    saveState: jest.fn(),
+    loadTombstones: jest.fn(),
+    saveTombstones: jest.fn(),
+    getInode: jest.fn(),
+    walkDescendants: jest.fn(actual.walkDescendants)
+  };
+});
 
+const fsp = require('fs').promises;
+const os = require('os');
 const crypto = require('crypto');
 function checksum(content) {
   return crypto.createHash('sha256').update(content).digest('hex').substring(0, 16);
@@ -56,6 +71,9 @@ function entry(p, cs, ino, type = 'site') {
   return { type, path: p, checksum: cs || null, inode: ino || null };
 }
 
+const realBufferChecksum = jest.requireActual('../../src/sync-engine/file-operations').calculateBufferChecksum;
+const STUB_STAT = { mtime: new Date('2024-01-01'), mtimeMs: 1704067200000, size: 100, mode: 0o644 };
+
 let syncEngine;
 
 beforeEach(() => {
@@ -63,7 +81,8 @@ beforeEach(() => {
   jest.clearAllMocks();
 
   jest.isolateModules(() => {
-    syncEngine = require('../../src/sync-engine/index');
+    const { SyncEngine } = require('../../src/sync-engine/index');
+    syncEngine = new SyncEngine();
   });
 
   syncEngine.syncFolder = '/test/sync';
@@ -114,6 +133,13 @@ beforeEach(() => {
   nodeMapModule.loadState.mockResolvedValue({});
   nodeMapModule.saveState.mockResolvedValue();
   nodeMapModule.getInode.mockResolvedValue(12345);
+
+  // Everything that reads or writes local bytes goes through file-operations,
+  // which this suite mocks; the executor also stat()s the file for the
+  // modifiedAt it stamps on a server write, so that is mocked with the rest.
+  fileOps.readFileBuffer.mockImplementation(async (filePath) => Buffer.from(await fileOps.readFile(filePath)));
+  fileOps.calculateBufferChecksum.mockImplementation(realBufferChecksum);
+  jest.spyOn(require('fs').promises, 'stat').mockResolvedValue(STUB_STAT);
 });
 
 afterEach(() => {
@@ -121,7 +147,7 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
-describe('reconcileServerFile — nodeId move detection', () => {
+describe('performInitialSync — nodeId move detection', () => {
   test('moves file when nodeId maps to a different local path', async () => {
     const content = '<html>my site</html>';
     const cs = checksum(content);
@@ -158,8 +184,7 @@ describe('reconcileServerFile — nodeId move detection', () => {
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
     expect(apiClient.getNodeContent).toHaveBeenCalledWith(
-      'http://localhyperclay.com',
-      'hcsk_test',
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }),
       42
     );
   });
@@ -189,7 +214,7 @@ describe('reconcileServerFile — nodeId move detection', () => {
   });
 });
 
-describe('reconcileServerFile — offline rename', () => {
+describe('performInitialSync — offline rename', () => {
   test('defers download and detects rename via inode match (no duplicate node)', async () => {
     const content = '<html>renamed offline</html>';
     const cs = checksum(content);
@@ -216,7 +241,7 @@ describe('reconcileServerFile — offline rename', () => {
 
     expect(apiClient.getNodeContent).not.toHaveBeenCalled();
     expect(apiClient.renameNode).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test', 42, 'new-name.html'
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 42, 'new-name.html'
     );
     expect(apiClient.createNode).not.toHaveBeenCalled();
     expect(syncEngine.repo.get('42').path).toBe('new-name.html');
@@ -247,7 +272,7 @@ describe('reconcileServerFile — offline rename', () => {
 
     expect(apiClient.getNodeContent).not.toHaveBeenCalled();
     expect(apiClient.renameNode).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test', 42, 'new-name.html'
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 42, 'new-name.html'
     );
   });
 
@@ -271,10 +296,17 @@ describe('reconcileServerFile — offline rename', () => {
 
     expect(apiClient.getNodeContent).not.toHaveBeenCalled();
     expect(apiClient.deleteNode).toHaveBeenCalledWith(
-      'http://localhyperclay.com', 'hcsk_test', 42, { cascade: false }
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 42,
+      expect.objectContaining({ expectedVersion: null })
     );
   });
 });
+
+// A list carrying `complete: true` is the server's promise that it is the whole
+// inventory; only such a list may ever justify a local delete (protocol 2).
+function completeList(nodes = []) {
+  return Object.assign(nodes, { complete: true });
+}
 
 describe('offline delete reconciliation', () => {
   test('skips entirely on first-ever sync (no lastSyncedAt)', async () => {
@@ -291,11 +323,14 @@ describe('offline delete reconciliation', () => {
     expect(fileOps.moveFile).not.toHaveBeenCalled();
   });
 
-  test('trashes stale local file when nodeId missing from server', async () => {
-    syncEngine.repo.seed([['99', entry('old-site.html')]]);
+  test('trashes an unchanged local file the server no longer lists', async () => {
+    const cs = checksum('<html>content</html>');
+    syncEngine.repo.seed([['99', {
+      path: 'old-site.html', inode: 111, remoteEtag: cs, localChecksum: cs
+    }]]);
     syncEngine.lastSyncedAt = Date.now();
 
-    apiClient.listNodes.mockResolvedValue([]);
+    apiClient.listNodes.mockResolvedValue(completeList());
     fileOps.getLocalFiles.mockResolvedValue(new Map([
       ['old-site.html', { path: '/test/sync/old-site.html', relativePath: 'old-site.html', mtime: new Date('2024-01-01'), size: 100 }]
     ]));
@@ -311,12 +346,16 @@ describe('offline delete reconciliation', () => {
     expect(syncEngine.repo.has('99')).toBe(false);
   });
 
-  test('preserves locally-edited file when mtime is newer than lastSyncedAt', async () => {
-    const lastSync = new Date('2024-06-01').getTime();
-    syncEngine.repo.seed([['99', entry('edited-locally.html')]]);
-    syncEngine.lastSyncedAt = lastSync;
+  test('keeps a locally edited file when the server copy is gone', async () => {
+    // The baseline is explicit: the disk moved off it while the node vanished
+    // from a complete inventory, so the bytes are kept and a conflict recorded.
+    syncEngine.repo.seed([['99', {
+      path: 'edited-locally.html', inode: 111, remoteEtag: 'agreed', localChecksum: 'agreed'
+    }]]);
+    syncEngine.lastSyncedAt = new Date('2024-06-01').getTime();
+    syncEngine.metaDir = await fsp.mkdtemp(`${os.tmpdir()}/nodeids-meta-`);
 
-    apiClient.listNodes.mockResolvedValue([]);
+    apiClient.listNodes.mockResolvedValue(completeList());
     fileOps.getLocalFiles.mockResolvedValue(new Map([
       ['edited-locally.html', { path: '/test/sync/edited-locally.html', relativePath: 'edited-locally.html', mtime: new Date('2024-07-01'), size: 200 }]
     ]));
@@ -326,14 +365,18 @@ describe('offline delete reconciliation', () => {
     await syncEngine.performInitialSync();
 
     expect(fileOps.moveFile).not.toHaveBeenCalled();
-    expect(syncEngine.repo.has('99')).toBe(false);
+    expect(apiClient.deleteNode).not.toHaveBeenCalled();
+    expect(syncEngine.repo.has('99')).toBe(true);
   });
 
-  test('trashed paths are removed from localFiles before upload pass', async () => {
-    syncEngine.repo.seed([['99', entry('trashed.html')]]);
+  test('a trashed path is never re-created as a new file in the same pass', async () => {
+    const cs = checksum('<html>content</html>');
+    syncEngine.repo.seed([['99', {
+      path: 'trashed.html', inode: 111, remoteEtag: cs, localChecksum: cs
+    }]]);
     syncEngine.lastSyncedAt = Date.now();
 
-    apiClient.listNodes.mockResolvedValue([]);
+    apiClient.listNodes.mockResolvedValue(completeList());
     const localFiles = new Map([
       ['trashed.html', { path: '/test/sync/trashed.html', relativePath: 'trashed.html', mtime: new Date('2024-01-01'), size: 100 }]
     ]);
@@ -343,6 +386,10 @@ describe('offline delete reconciliation', () => {
 
     await syncEngine.performInitialSync();
 
+    expect(fileOps.moveFile).toHaveBeenCalledWith(
+      '/test/sync/trashed.html',
+      '/test/sync/.trash/trashed.html'
+    );
     expect(apiClient.createNode).not.toHaveBeenCalled();
   });
 

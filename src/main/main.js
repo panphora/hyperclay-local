@@ -3,16 +3,31 @@ const path = require('upath');
 const fs = require('fs');
 const fsPromises = require('fs').promises;
 const crypto = require('crypto');
-const { startServer, stopServer, getServerPort, isServerRunning } = require('./server');
-const { startPlugins, stopPlugins } = require('./plugins');
-const syncEngine = require('../sync-engine');
 const syncLogger = require('../sync-engine/logger');
 const errorLogger = require('./error-logger');
 const { getServerBaseUrl } = require('./utils/utils');
 const { makeIsKnownPath } = require('./utils/known-path');
 const popover = require('./popover');
+const { PERSONAL_PORT, personalRoot, validateRootPath, allocateTeamPort } = require('./roots');
+const { migrateSettings, legacyMetaDirName } = require('./settings-v2');
+const { RootServerPool } = require('./root-servers');
+const { SyncManager } = require('./sync-manager');
+const { RootObserver } = require('./root-observer');
+const { createRootLive } = require('./utils/root-live');
+const { getAndClearSnapshot } = require('./server');
+const { realpathNearestParent } = require('./utils/path-resolver');
+const { VERSIONS_DIR } = require('./utils/artifact-paths');
+const { servedRootsPath, writeServedRoots, removeServedRoots } = require('./served-roots-file');
+const { extractOpenPaths, handleOpenPath, htmlClayLauncher } = require('./open-path');
+const { removeProgram, forgetDecisions } = require('./helpers/store');
+const { runAiEdit } = require('./helpers/ai-edit');
 
-const isKnownPath = makeIsKnownPath(syncEngine, fs);
+let manager = null;
+let lastPersonalStatus = null;
+const observers = new Map();
+
+const engineRegistry = { forRoot: (rootId) => (manager ? manager.forRoot(rootId) : null) };
+const isKnownPath = makeIsKnownPath(engineRegistry, fs);
 
 process.on('uncaughtException', (error) => {
   console.error('[FATAL] Uncaught exception:', error);
@@ -59,11 +74,17 @@ if (process.platform === 'darwin') {
 // =============================================================================
 
 let tray = null;
-let serverRunning = false;
-let selectedFolder = null;
 let settings = {};
 let isQuitting = false;
 let availableUpdate = null;
+
+const pool = new RootServerPool({
+  devHooks: getDevHooks(),
+  isKnownPath,
+  observerFor,
+  helpersFor,
+  syncEngineForRoot: (rootId) => engineRegistry.forRoot(rootId),
+});
 
 const userData = app.getPath('userData');
 const settingsPath = path.join(userData, 'settings.json');
@@ -144,6 +165,130 @@ function getDecryptedApiKey() {
   return decryptApiKey(settings.apiKey);
 }
 
+function personalRootPath() {
+  const root = personalRoot(settings.roots || []);
+  return root ? root.path : null;
+}
+
+function rootsSnapshot() {
+  return (settings.roots || []).map((root) => ({ ...root }));
+}
+
+function serverRunning() {
+  const root = personalRoot(settings.roots || []);
+  const server = root ? pool.get(root.id) : null;
+  return !!server && server.state === 'running';
+}
+
+function rootsState() {
+  const states = new Map(pool.states().map((state) => [state.rootId, state]));
+  return (settings.roots || []).map((root) => {
+    const state = states.get(root.id) || { state: 'stopped', error: null };
+    return { id: root.id, kind: root.kind, path: root.path, port: root.port, state: state.state, error: state.error };
+  });
+}
+
+const IDLE_SYNC_STATUS = {
+  isRunning: false,
+  syncFolder: null,
+  username: null,
+  stats: { lastSync: null, errors: [] },
+  queueStatus: { queueLength: 0, isProcessing: false, retryItems: [] }
+};
+
+function personalSession() {
+  const root = personalRoot(settings.roots || []);
+  if (!root) return null;
+  return (settings.syncSessions || []).find((session) => session.rootId === root.id) || null;
+}
+
+function ensurePersonalSession(username) {
+  const root = personalRoot(settings.roots || []);
+  if (!root) return null;
+
+  let session = personalSession();
+  if (!session) {
+    session = {
+      id: crypto.randomUUID(),
+      rootId: root.id,
+      accountId: null,
+      kind: 'personal',
+      cached: {
+        username: username || settings.syncUsername || null,
+        displayName: username || settings.syncUsername || null,
+        role: 'owner'
+      },
+      paused: null,
+      legacyMetaDir: legacyMetaDirName(root.path)
+    };
+    settings.syncSessions = [...(settings.syncSessions || []), session];
+  } else if (username && session.cached?.username !== username) {
+    session.cached = { ...session.cached, username, displayName: username };
+  }
+  return session;
+}
+
+function personalEngine() {
+  const session = personalSession();
+  return session && manager ? manager.get(session.id) : null;
+}
+
+function personalSyncStatus() {
+  const engine = personalEngine();
+  if (engine) {
+    lastPersonalStatus = engine.getStatus();
+    return lastPersonalStatus;
+  }
+  return { ...(lastPersonalStatus || IDLE_SYNC_STATUS), isRunning: false };
+}
+
+function observerFor(rootId) {
+  let observer = observers.get(rootId);
+  if (!observer) {
+    const root = (settings.roots || []).find((r) => r.id === rootId);
+    if (!root) return null;
+    observer = new RootObserver(root, { live: createRootLive(root) });
+    observer.on('lease-released', () => releaseObserver(rootId));
+    observers.set(rootId, observer);
+  }
+  return observer;
+}
+
+function observerHeld(rootId) {
+  const server = pool.get(rootId);
+  if (server && server.state === 'running') return true;
+  return !!(manager && manager.forRoot(rootId));
+}
+
+function releaseObserver(rootId) {
+  const observer = observers.get(rootId);
+  if (!observer) return;
+  if (observer.leases) return;
+  if (observerHeld(rootId)) return;
+  observers.delete(rootId);
+  observer.stop();
+}
+
+function syncObservers() {
+  for (const root of settings.roots || []) {
+    if (observerHeld(root.id)) observerFor(root.id)?.start();
+  }
+  for (const rootId of [...observers.keys()]) releaseObserver(rootId);
+}
+
+async function stopObservers() {
+  for (const observer of observers.values()) await observer.stop();
+  observers.clear();
+}
+
+function folderRefusal(check) {
+  if (check.reason === 'overlaps') {
+    const other = (settings.roots || []).find((root) => root.id === check.rootId);
+    return `That folder overlaps ${other ? other.path : 'another served folder'}.`;
+  }
+  return 'Choose a folder inside your home folder.';
+}
+
 function linuxAutostartEntry() {
   const configHome = process.env.XDG_CONFIG_HOME || path.join(app.getPath('home'), '.config');
   return path.join(configHome, 'autostart', 'hyperclay-local.desktop');
@@ -188,6 +333,16 @@ function loadSettings() {
       }
     }
 
+    if (loaded.settingsVersion !== 2) {
+      const backupPath = path.join(userData, 'settings.v1.json');
+      if (!fs.existsSync(backupPath) && fs.existsSync(settingsPath)) {
+        fs.copyFileSync(settingsPath, backupPath);
+      }
+      loaded = migrateSettings(loaded).settings;
+      loaded.hasApiKey = !!loaded.apiKey;
+      needsSave = true;
+    }
+
     if (!loaded.deviceId) {
       loaded.deviceId = crypto.randomUUID();
       console.log(`[APP] Generated new device ID: ${loaded.deviceId}`);
@@ -196,6 +351,7 @@ function loadSettings() {
 
     if (needsSave) {
       const settingsToSave = { ...loaded };
+      delete settingsToSave.hasApiKey;
       fs.writeFileSync(settingsPath, JSON.stringify(settingsToSave, null, 2));
     }
 
@@ -218,20 +374,74 @@ function saveSettings(settings) {
 
     const settingsToSave = { ...settings };
 
-    if (settingsToSave.apiKey) {
-      // Only encrypt if the key is plaintext — avoid double-encrypting
-      if (settingsToSave.apiKey.startsWith('hcsk_')) {
-        settingsToSave.apiKey = encryptApiKey(settingsToSave.apiKey);
-      }
-      settingsToSave.hasApiKey = true;
-    } else {
-      settingsToSave.hasApiKey = false;
+    // Only encrypt if the key is plaintext — avoid double-encrypting
+    if (settingsToSave.apiKey && settingsToSave.apiKey.startsWith('hcsk_')) {
+      settingsToSave.apiKey = encryptApiKey(settingsToSave.apiKey);
     }
+
+    delete settingsToSave.hasApiKey;
 
     fs.writeFileSync(settingsPath, JSON.stringify(settingsToSave, null, 2));
   } catch (error) {
     console.error('Failed to save settings:', error);
   }
+}
+
+// =============================================================================
+// HELPER PROGRAMS
+// =============================================================================
+
+function rootAccountFor(root) {
+  const session = (settings.syncSessions || []).find((s) => s.rootId === root.id);
+  const accountId = session?.accountId ?? null;
+  if (accountId === null) return { accountId: null, teamName: null };
+  return { accountId, teamName: session?.cached?.displayName || session?.cached?.username || null };
+}
+
+let approvalQueue = Promise.resolve();
+
+function approveHelperQueued(request) {
+  const answer = approvalQueue.then(() => approveHelper(request));
+  approvalQueue = answer.catch(() => {});
+  return answer;
+}
+
+async function approveHelper({ displayName, name, program, teamName, allowBroad }) {
+  const programLine = program ? `the program ${name} (${program.path})` : `a program called ${name}`;
+  const message = teamName
+    ? `${teamName}'s document ${displayName} wants to run ${programLine}.`
+    : `${displayName} wants to run ${programLine}.`;
+  const detail = (teamName ? `Editors on ${teamName} can change this document later. ` : '') +
+    'The program runs as you and can read or change any file your account can access.' +
+    (program ? '' : ' You will choose which program to use.');
+  const buttons = allowBroad
+    ? ['Allow for This Document', 'Allow for Any Document', 'Deny', 'Not Now']
+    : ['Allow for This Document', 'Deny', 'Not Now'];
+  const { response } = await dialog.showMessageBox({
+    type: 'warning', title: 'Allow document program?', message, detail, buttons,
+    cancelId: buttons.length - 1, defaultId: buttons.length - 1, noLink: true,
+    signal: AbortSignal.timeout(120000),
+  });
+  const choice = ['allow', ...(allowBroad ? ['allow-any'] : []), 'deny', 'not-now'][response];
+  if ((choice === 'allow' || choice === 'allow-any') && !program) {
+    const picked = await dialog.showOpenDialog({ title: `Choose the program for ${name}`, properties: ['openFile'] });
+    if (picked.canceled || !picked.filePaths[0]) return { choice: 'not-now' };
+    return { choice, programPath: picked.filePaths[0] };
+  }
+  return { choice };
+}
+
+function helpersFor(root) {
+  return {
+    rootAccount: () => rootAccountFor(root),
+    settings: () => settings,
+    saveSettings: () => saveSettings(settings),
+    approve: approveHelperQueued,
+    aiEdit: {
+      enabled: () => settings.aiEdit?.enabled === true,
+      run: runAiEdit,
+    },
+  };
 }
 
 // =============================================================================
@@ -293,7 +503,7 @@ function getTrayMenuTemplate() {
       { type: 'separator' }
     ] : []),
     {
-      label: `Server: ${serverRunning ? 'On' : 'Off'}`,
+      label: `Server: ${serverRunning() ? 'On' : 'Off'}`,
       enabled: false
     },
     {
@@ -301,14 +511,14 @@ function getTrayMenuTemplate() {
       enabled: false
     },
     {
-      label: `AI Editing: ${settings.aiEdit?.enabled !== false ? 'On' : 'Off'}`,
+      label: `AI Editing: ${settings.aiEdit?.enabled === true ? 'On' : 'Off'}`,
       enabled: false
     },
     { type: 'separator' },
     {
-      label: serverRunning ? 'Stop Server' : 'Start Server',
+      label: serverRunning() ? 'Stop Server' : 'Start Server',
       click: () => {
-        if (serverRunning) {
+        if (serverRunning()) {
           handleStopServer();
         } else {
           handleStartServer();
@@ -317,18 +527,18 @@ function getTrayMenuTemplate() {
     },
     {
       label: settings.syncEnabled ? 'Disable Sync' : 'Enable Sync',
-      enabled: !!(settings.hasApiKey && settings.syncFolder),
+      enabled: !!(settings.hasApiKey && personalRootPath()),
       click: async () => {
         if (settings.syncEnabled) {
           await handleSyncStop();
         } else {
-          if (settings.hasApiKey && settings.syncFolder) {
+          if (settings.hasApiKey && personalRootPath()) {
             const apiKey = getDecryptedApiKey();
             if (apiKey) {
               await handleSyncStart(
                 apiKey,
                 settings.syncUsername,
-                settings.syncFolder,
+                personalRootPath(),
                 settings.serverUrl
               );
             }
@@ -337,44 +547,38 @@ function getTrayMenuTemplate() {
       }
     },
     {
-      label: settings.aiEdit?.enabled !== false ? 'Disable AI Editing' : 'Enable AI Editing',
+      label: settings.aiEdit?.enabled === true ? 'Disable AI Editing' : 'Enable AI Editing',
       click: () => {
-        settings.aiEdit = { ...settings.aiEdit, enabled: settings.aiEdit?.enabled === false };
+        settings.aiEdit = { ...settings.aiEdit, enabled: !(settings.aiEdit?.enabled === true) };
         saveSettings(settings);
-        if (serverRunning) {
-          startPlugins({ baseDir: selectedFolder, settings }); // re-serve with the new state
-        }
         updateTrayMenu();
       }
     },
     { type: 'separator' },
     {
       label: 'Open Folder',
-      enabled: !!selectedFolder,
+      enabled: !!personalRootPath(),
       click: () => {
-        if (selectedFolder) {
-          shell.openPath(selectedFolder);
+        const folder = personalRootPath();
+        if (folder) {
+          shell.openPath(folder);
         }
       }
     },
     {
       label: 'Backups',
-      enabled: !!selectedFolder,
+      enabled: !!personalRootPath(),
       click: async () => {
-        if (!selectedFolder) return;
-        const backupsPath = path.join(selectedFolder, 'sites-versions');
-        try {
-          await fsPromises.mkdir(backupsPath, { recursive: true });
-        } catch {}
-        shell.openPath(backupsPath);
+        const root = personalRoot(settings.roots || []);
+        if (root) await openBackups(root.id);
       }
     },
     {
       label: 'Open Browser',
-      enabled: serverRunning,
+      enabled: serverRunning(),
       click: () => {
-        if (serverRunning) {
-          shell.openExternal(`http://localhost:${getServerPort()}`);
+        if (serverRunning()) {
+          shell.openExternal(`http://localhost:${PERSONAL_PORT}`);
         }
       }
     },
@@ -441,19 +645,42 @@ function sendToPopover(channel, data) {
 }
 
 function updateUI() {
-  const syncStatus = syncEngine.getStatus();
+  const syncStatus = personalSyncStatus();
   const statePayload = {
-    selectedFolder,
-    serverRunning,
-    serverPort: getServerPort(),
+    selectedFolder: personalRootPath(),
+    serverRunning: serverRunning(),
+    serverPort: PERSONAL_PORT,
     syncEnabled: settings.syncEnabled,
     syncStatus: syncStatus,
     syncStats: syncStatus.stats,
     syncUsername: settings.syncUsername,
-    syncFolder: settings.syncFolder
+    syncFolder: personalRootPath(),
+    roots: rootsState()
   };
 
   sendToPopover('update-state', statePayload);
+}
+
+async function afterRootsChanged() {
+  syncObservers();
+  updateTrayMenu();
+  updateUI();
+  await publishServedRoots();
+}
+
+async function publishServedRoots() {
+  try {
+    const listeningRoots = pool.states()
+      .filter((state) => state.state === 'running')
+      .map((state) => {
+        const root = (settings.roots || []).find((candidate) => candidate.id === state.rootId);
+        return root ? { path: root.path, port: state.port } : null;
+      })
+      .filter(Boolean);
+    await writeServedRoots(servedRootsPath(app.getPath('userData')), listeningRoots);
+  } catch (error) {
+    console.error('[SERVED-ROOTS] Failed to write served-roots.json:', error);
+  }
 }
 
 // =============================================================================
@@ -534,37 +761,52 @@ async function handleSelectFolder(event) {
     title: 'Select folder containing your malleable HTML files'
   });
 
-  if (!result.canceled && result.filePaths.length > 0) {
-    selectedFolder = result.filePaths[0];
+  if (result.canceled || result.filePaths.length === 0) return { success: false };
 
-    settings.selectedFolder = selectedFolder;
-    saveSettings(settings);
+  const root = personalRoot(settings.roots || []);
+  const check = await validateRootPath(result.filePaths[0], settings.roots || [], {
+    realPathOf: realpathNearestParent,
+    ignoreRootId: root ? root.id : null
+  });
 
-    updateUI();
-    return { success: true, folder: selectedFolder };
+  if (!check.ok) {
+    dialog.showErrorBox('Folder not available', folderRefusal(check));
+    return { success: false };
   }
 
-  return { success: false };
+  const running = personalEngine();
+  if (running && running.isRunning) await handleSyncStop();
+
+  if (root) {
+    root.path = check.path;
+    const session = personalSession();
+    if (session) session.legacyMetaDir = legacyMetaDirName(check.path);
+  } else {
+    settings.roots = [...(settings.roots || []), {
+      id: crypto.randomUUID(),
+      kind: 'personal',
+      path: check.path,
+      port: PERSONAL_PORT,
+      trustedAt: null
+    }];
+  }
+  saveSettings(settings);
+
+  if (settings.serverEnabled) {
+    await pool.sync(rootsSnapshot(), { enabled: true });
+  }
+  await afterRootsChanged();
+
+  return { success: true, folder: check.path };
 }
 
 async function handleStartServer() {
-  if (!selectedFolder) {
-    await handleSelectFolder();
-    if (!selectedFolder) return;
-  }
+  settings.serverEnabled = true;
+  saveSettings(settings);
 
   try {
-    await startServer(selectedFolder, getDevHooks(), isKnownPath);
-    serverRunning = isServerRunning();
-    startPlugins({ baseDir: selectedFolder, settings });
-
-    settings.serverEnabled = true;
-    settings.serverFolder = selectedFolder;
-    saveSettings(settings);
-
-    updateUI();
-    updateTrayMenu();
-
+    await pool.sync(rootsSnapshot(), { enabled: true });
+    await afterRootsChanged();
   } catch (error) {
     errorLogger.error('App', 'Failed to start server', error);
     dialog.showErrorBox('Server Error', `Failed to start server: ${error.message}`);
@@ -573,23 +815,65 @@ async function handleStartServer() {
 
 async function handleStopServer() {
   try {
-    stopPlugins();
-    await stopServer();
-    serverRunning = isServerRunning();
-
     settings.serverEnabled = false;
     saveSettings(settings);
 
-    updateUI();
-    updateTrayMenu();
+    await pool.sync(rootsSnapshot(), { enabled: false });
+    await afterRootsChanged();
   } catch (error) {
     console.error('Error stopping server:', error);
     errorLogger.error('App', 'Failed to stop server', error);
-    serverRunning = isServerRunning();
-    updateUI();
-    updateTrayMenu();
+    await afterRootsChanged();
     dialog.showErrorBox('Server Error', `Failed to stop server: ${error.message}`);
   }
+}
+
+// The "Backups" action of a folder: show the version store C1 keeps for it. The
+// directory is created first, because a folder that has never been saved into has
+// no history yet and the OS would otherwise refuse to open a path that is not there.
+async function openBackups(rootId) {
+  const root = (settings.roots || []).find((r) => r.id === rootId);
+  if (!root) return { ok: false, error: 'unknown' };
+
+  const backupsPath = path.join(root.path, VERSIONS_DIR);
+  try {
+    await fsPromises.mkdir(backupsPath, { recursive: true });
+  } catch {}
+
+  const failure = await shell.openPath(backupsPath);
+  return failure ? { ok: false, error: 'open-failed' } : { ok: true };
+}
+
+async function changePort(rootId) {
+  const root = (settings.roots || []).find((r) => r.id === rootId);
+  if (!root) return { ok: false, error: 'unknown' };
+  if (root.kind === 'personal') return { ok: false, error: 'personal' };
+
+  let nextPort;
+  try {
+    nextPort = await allocateTeamPort((settings.roots || []).filter((r) => r.id !== rootId));
+  } catch (error) {
+    errorLogger.error('App', 'Failed to allocate a port', error);
+    return { ok: false, error: 'no-port' };
+  }
+
+  const { response } = await dialog.showMessageBox({
+    type: 'question',
+    message: `Move ${path.basename(root.path)} to localhost:${nextPort}?`,
+    detail: `Links and bookmarks to localhost:${root.port} will stop working. The htmlclay wire command finds the new port by itself.`,
+    buttons: ['Move', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1
+  });
+  if (response !== 0) return { ok: false, error: 'cancelled' };
+
+  root.port = nextPort;
+  saveSettings(settings);
+
+  await pool.sync(rootsSnapshot(), { enabled: settings.serverEnabled });
+  await afterRootsChanged();
+
+  return { ok: true, port: nextPort };
 }
 
 // =============================================================================
@@ -597,41 +881,44 @@ async function handleStopServer() {
 // =============================================================================
 
 function setupSyncEventHandlers() {
-  syncEngine.on('sync-start', data => {
+  manager.on('sync-start', data => {
     sendToPopover('sync-update', { syncing: true, ...data });
   });
 
-  syncEngine.on('sync-complete', data => {
+  manager.on('sync-complete', data => {
     sendToPopover('sync-update', { syncing: false, ...data });
   });
 
-  syncEngine.on('sync-error', data => {
+  manager.on('sync-error', data => {
     sendToPopover('sync-update', {
       error: data.userMessage || data.error || data.originalError,
       priority: data.priority,
       dismissable: data.dismissable,
       type: data.type,
-      file: data.file
+      file: data.file,
+      sessionId: data.sessionId,
+      rootId: data.rootId,
+      accountId: data.accountId
     });
   });
 
-  syncEngine.on('file-synced', data => {
+  manager.on('file-synced', data => {
     sendToPopover('file-synced', data);
   });
 
-  syncEngine.on('sync-stats', data => {
+  manager.on('sync-stats', data => {
     sendToPopover('sync-stats', data);
   });
 
-  syncEngine.on('backup-created', data => {
+  manager.on('backup-created', data => {
     sendToPopover('backup-created', data);
   });
 
-  syncEngine.on('sync-retry', data => {
+  manager.on('sync-retry', data => {
     sendToPopover('sync-retry', data);
   });
 
-  syncEngine.on('sync-failed', data => {
+  manager.on('sync-failed', data => {
     sendToPopover('sync-failed', data);
   });
 }
@@ -641,24 +928,23 @@ function setupSyncEventHandlers() {
 // =============================================================================
 
 async function handleSyncStart(apiKey, username, syncFolder, serverUrl) {
+  let session = null;
   try {
-    await syncLogger.init(syncFolder);
-    syncEngine.setLogger(syncLogger);
+    const root = personalRoot(settings.roots || []);
+    session = ensurePersonalSession(username);
+    if (!root || !session) return { success: false, error: 'No folder selected for sync' };
 
-    syncEngine.removeAllListeners();
-    setupSyncEventHandlers();
+    if (apiKey) settings.apiKey = apiKey;
+    observerFor(root.id)?.start();
 
-    const folderHash = crypto.createHash('sha256').update(syncFolder).digest('hex').slice(0, 12);
-    const metaDir = path.join(userData, 'sync-meta', folderHash);
-
-    const result = await syncEngine.init(apiKey, username, syncFolder, serverUrl, settings.deviceId, metaDir);
+    const result = await manager.start(session, root, { syncBase: '/_/sync', protocol: 1 });
+    syncObservers();
 
     if (result.success) {
       settings.syncEnabled = true;
       settings.apiKey = apiKey;
       settings.hasApiKey = true;
       settings.syncUsername = username;
-      settings.syncFolder = syncFolder;
       settings.serverUrl = serverUrl;
       saveSettings(settings);
     }
@@ -667,6 +953,7 @@ async function handleSyncStart(apiKey, username, syncFolder, serverUrl) {
     updateTrayMenu();
     return result;
   } catch (error) {
+    if (session) await manager.stop(session.id);
     return {
       success: false,
       error: error.message
@@ -676,13 +963,13 @@ async function handleSyncStart(apiKey, username, syncFolder, serverUrl) {
 
 async function handleSyncStop() {
   try {
-    const result = await syncEngine.stop();
+    const session = personalSession();
+    const result = session && manager ? await manager.stop(session.id) : { success: true };
 
     settings.syncEnabled = false;
     saveSettings(settings);
 
-    syncEngine.clearApiKey();
-    syncEngine.removeAllListeners();
+    syncObservers();
 
     updateUI();
     updateTrayMenu();
@@ -704,13 +991,14 @@ ipcMain.handle('start-server', handleStartServer);
 ipcMain.handle('stop-server', handleStopServer);
 
 ipcMain.handle('get-state', () => ({
-  selectedFolder,
-  serverRunning,
-  serverPort: getServerPort(),
+  selectedFolder: personalRootPath(),
+  serverRunning: serverRunning(),
+  serverPort: PERSONAL_PORT,
   syncEnabled: settings.syncEnabled,
-  syncStatus: syncEngine.getStatus(),
+  syncStatus: personalSyncStatus(),
   availableUpdate,
-  appVersion: app.getVersion()
+  appVersion: app.getVersion(),
+  roots: rootsState()
 }));
 
 ipcMain.handle('copy-text', (event, text) => {
@@ -718,8 +1006,9 @@ ipcMain.handle('copy-text', (event, text) => {
 });
 
 ipcMain.handle('open-folder', () => {
-  if (selectedFolder) {
-    shell.openPath(selectedFolder);
+  const folder = personalRootPath();
+  if (folder) {
+    shell.openPath(folder);
   }
 });
 
@@ -739,10 +1028,21 @@ ipcMain.handle('open-error-logs', async () => {
 ipcMain.handle('open-browser', (event, url) => {
   if (url) {
     shell.openExternal(url);
-  } else if (serverRunning) {
-    shell.openExternal(`http://localhost:${getServerPort()}`);
+  } else if (serverRunning()) {
+    shell.openExternal(`http://localhost:${PERSONAL_PORT}`);
   }
 });
+
+// Server IPC handlers
+ipcMain.handle('retry-port', async (event, { rootId } = {}) => {
+  if (!(settings.roots || []).some((root) => root.id === rootId)) return { ok: false, error: 'unknown' };
+  const result = await pool.retry(rootId);
+  await afterRootsChanged();
+  return result;
+});
+
+ipcMain.handle('change-port', (event, { rootId } = {}) => changePort(rootId));
+ipcMain.handle('open-backups', (event, { rootId } = {}) => openBackups(rootId));
 
 // Sync IPC handlers
 ipcMain.handle('sync-start', async (event, { apiKey, username, syncFolder, serverUrl }) => {
@@ -754,7 +1054,7 @@ ipcMain.handle('sync-stop', async () => {
 });
 
 ipcMain.handle('sync-resume', async (event, selectedFolder, username) => {
-  const folderToSync = selectedFolder || settings.syncFolder;
+  const folderToSync = selectedFolder || personalRootPath();
   const usernameToUse = username || settings.syncUsername;
 
   if (!settings.hasApiKey) {
@@ -782,11 +1082,11 @@ ipcMain.handle('sync-resume', async (event, selectedFolder, username) => {
 });
 
 ipcMain.handle('sync-status', () => {
-  return syncEngine.getStatus();
+  return personalSyncStatus();
 });
 
 ipcMain.handle('get-sync-stats', () => {
-  const status = syncEngine.getStatus();
+  const status = personalSyncStatus();
   return status.stats || null;
 });
 
@@ -814,6 +1114,7 @@ ipcMain.handle('set-api-key', async (event, key, serverUrl) => {
     settings.hasApiKey = true;
     settings.syncUsername = data.username;
     settings.serverUrl = baseUrl;
+    ensurePersonalSession(data.username);
     saveSettings(settings);
 
     return { success: true, username: data.username };
@@ -845,7 +1146,7 @@ ipcMain.handle('remove-api-key', () => {
 });
 
 ipcMain.handle('toggle-sync', async (event, enabled) => {
-  const folderToSync = selectedFolder || settings.syncFolder;
+  const folderToSync = personalRootPath();
 
   if (enabled && !folderToSync) {
     return { error: 'Please select a folder before enabling sync' };
@@ -901,31 +1202,55 @@ ipcMain.handle('show-options-menu', (event) => {
     },
     {
       label: 'Open Folder',
-      enabled: !!selectedFolder,
+      enabled: !!personalRootPath(),
       click: () => {
-        if (selectedFolder) shell.openPath(selectedFolder);
+        const folder = personalRootPath();
+        if (folder) shell.openPath(folder);
       }
     },
     {
       label: 'Open in Browser',
-      enabled: serverRunning,
+      enabled: serverRunning(),
       click: () => {
-        if (serverRunning) shell.openExternal(`http://localhost:${getServerPort()}`);
+        if (serverRunning()) shell.openExternal(`http://localhost:${PERSONAL_PORT}`);
       }
     },
     { type: 'separator' },
     {
       label: 'AI Editing',
       type: 'checkbox',
-      checked: settings.aiEdit?.enabled !== false,
+      checked: settings.aiEdit?.enabled === true,
       click: () => {
-        settings.aiEdit = { ...settings.aiEdit, enabled: settings.aiEdit?.enabled === false };
+        settings.aiEdit = { ...settings.aiEdit, enabled: !(settings.aiEdit?.enabled === true) };
         saveSettings(settings);
-        if (serverRunning) {
-          startPlugins({ baseDir: selectedFolder, settings });
-        }
         updateTrayMenu();
       }
+    },
+    {
+      label: 'Helper Programs',
+      submenu: [
+        ...(settings.helperPrograms || []).map((program) => ({
+          label: `${program.name} — ${program.path}`,
+          submenu: [
+            {
+              label: 'Remove',
+              click: () => {
+                removeProgram(settings, program.id);
+                saveSettings(settings);
+              }
+            }
+          ]
+        })),
+        {
+          label: 'Forget All Document Permissions',
+          click: () => {
+            for (const document of new Set((settings.helperDecisions || []).map((decision) => decision.document))) {
+              forgetDecisions(settings, document);
+            }
+            saveSettings(settings);
+          }
+        }
+      ]
     },
     { type: 'separator' },
     {
@@ -998,6 +1323,46 @@ ipcMain.handle('show-options-menu', (event) => {
 // APP LIFECYCLE
 // =============================================================================
 
+const htmlClay = htmlClayLauncher();
+
+function openPath(p) {
+  return handleOpenPath(p, {
+    roots: rootsState,
+    startServer: handleStartServer,
+    isServerRunning: serverRunning,
+    openExternal: (url) => shell.openExternal(url),
+    showMessage: (opts) => dialog.showMessageBox(opts),
+    revealFolder: (dir) => shell.openPath(dir),
+    personalRoot: () => personalRoot(settings.roots || []),
+    htmlClay
+  }).catch((error) => {
+    errorLogger.error('App', 'Failed to open path', error);
+  });
+}
+
+let openQueue = Promise.resolve();
+
+function queueOpenPath(p) {
+  openQueue = openQueue.then(() => openPath(p));
+}
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();          // second instance forwards argv via the lock and exits
+  return;              // and skips the rest of startup
+}
+
+const pendingOpenPaths = extractOpenPaths(process.argv);
+let openHandlerReady = false;
+
+app.on('open-file', (event, p) => {        // macOS Finder/Apple Events
+  event.preventDefault();
+  if (openHandlerReady) queueOpenPath(p); else pendingOpenPaths.push(p);
+});
+app.on('second-instance', (event, argv) => {  // Windows/Linux re-launch with file arg
+  extractOpenPaths(argv).forEach((p) => (openHandlerReady ? queueOpenPath(p) : pendingOpenPaths.push(p)));
+});
+
 app.whenReady().then(async () => {
   app.setName('Hyperclay Local');
 
@@ -1021,7 +1386,17 @@ app.whenReady().then(async () => {
   }
 
   settings = loadSettings();
-  selectedFolder = settings.selectedFolder || null;
+
+  manager = new SyncManager({
+    userData,
+    deviceId: settings.deviceId,
+    serverUrl: settings.serverUrl,
+    getApiKey: getDecryptedApiKey,
+    settingsStore: { get: () => settings, save: saveSettings },
+    observerFor,
+    takeSnapshot: (rel, rootId) => getAndClearSnapshot(rel, rootId)
+  });
+  setupSyncEventHandlers();
 
   if (!isDev) {
     setAutostart(settings.autoStartEnabled || false);
@@ -1046,7 +1421,7 @@ app.whenReady().then(async () => {
   // (safeStorage.decryptString can block for seconds on first call after a
   // code-signature change).
   setImmediate(async () => {
-    if (settings.syncEnabled && settings.hasApiKey && settings.syncFolder) {
+    if (settings.syncEnabled && settings.hasApiKey && personalRootPath()) {
       console.log('[APP] Auto-restarting sync from previous session...');
 
       const apiKey = getDecryptedApiKey();
@@ -1054,7 +1429,7 @@ app.whenReady().then(async () => {
         const result = await handleSyncStart(
           apiKey,
           settings.syncUsername,
-          settings.syncFolder,
+          personalRootPath(),
           settings.serverUrl
         );
 
@@ -1076,15 +1451,11 @@ app.whenReady().then(async () => {
       }
     }
 
-    if (settings.serverEnabled && settings.serverFolder) {
+    if (settings.serverEnabled && personalRootPath()) {
       console.log('[APP] Auto-restarting server from previous session...');
       try {
-        selectedFolder = settings.serverFolder;
-        await startServer(selectedFolder, getDevHooks(), isKnownPath);
-        serverRunning = isServerRunning();
-        startPlugins({ baseDir: selectedFolder, settings });
-        updateTrayMenu();
-        updateUI();
+        await pool.sync(rootsSnapshot(), { enabled: true });
+        await afterRootsChanged();
         console.log('[APP] Server auto-restart successful');
       } catch (err) {
         // Do not clobber settings.serverEnabled here — a transient port conflict (EADDRINUSE on restart) would otherwise silently disable the user's auto-start preference.
@@ -1092,10 +1463,13 @@ app.whenReady().then(async () => {
         errorLogger.error('App', 'Failed to auto-start server', err);
       }
     }
+
+    openHandlerReady = true;
+    for (const p of pendingOpenPaths.splice(0)) queueOpenPath(p);
   });
 
   // On first launch, auto-show popover so user isn't staring at an empty tray
-  if (!settings.selectedFolder && !settings.syncFolder) {
+  if (!personalRootPath()) {
     setTimeout(() => {
       if (tray) {
         popover.showPopover(tray.getBounds());
@@ -1121,24 +1495,26 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', async (event) => {
   isQuitting = true;
+  removeServedRoots(servedRootsPath(app.getPath('userData')));
   popover.destroyPopover();
 
-  if (isServerRunning() || syncEngine.isRunning) {
+  const sessions = manager ? manager.statuses().length : 0;
+  if (pool.states().length || sessions) {
     event.preventDefault();
 
     try {
-      if (syncEngine.isRunning) {
+      if (sessions) {
         console.log('[APP] Stopping sync engine before quit...');
-        await syncEngine.stop();
-        syncEngine.clearApiKey();
+        await manager.stopAll();
         await new Promise(resolve => setTimeout(resolve, 100));
       }
 
-      if (isServerRunning()) {
-        console.log('[APP] Stopping server before quit...');
-        await stopServer();
-        serverRunning = isServerRunning();
+      if (pool.states().length) {
+        console.log('[APP] Stopping servers before quit...');
+        await pool.stopAll();
       }
+
+      await stopObservers();
 
       app.quit();
     } catch (error) {

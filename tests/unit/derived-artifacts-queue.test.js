@@ -32,6 +32,8 @@ jest.mock('livesync-hyperclay', () => ({
     wasBrowserSave: jest.fn(() => false),
     notify: jest.fn(),
     broadcast: jest.fn(),
+    configure: jest.fn(),
+    onFrame: jest.fn(),
     subscribeUser: jest.fn(),
     unsubscribeUser: jest.fn(),
     broadcastFileSaved: jest.fn(),
@@ -97,7 +99,7 @@ describe('A1: the lazy Tailwind GET compiles inside the source file queue slot',
   test('a cache-miss compile waits for, and does not clobber, a concurrent publish', async () => {
     const registry = getConsentRegistry(dir);
     const htmlPath = await resolveWritePath(registry, 'page.html');
-    const cssPath = path.join(dir, 'tailwindcss', 'page.css');
+    const cssPath = path.join(dir, '.hyperclay', 'tailwindcss', 'page.css');
 
     // Stand in for a /save: hold the source file's queue slot, publish a fresh
     // stylesheet inside it, then release. This is exactly the ordering the race
@@ -131,7 +133,7 @@ describe('A1: the lazy Tailwind GET compiles inside the source file queue slot',
 
     expect(response.status).toBe(200);
     expect(response.text).toContain('.p-4');
-    const onDisk = await fs.readFile(path.join(dir, 'tailwindcss', 'page.css'), 'utf8');
+    const onDisk = await fs.readFile(path.join(dir, '.hyperclay', 'tailwindcss', 'page.css'), 'utf8');
     expect(onDisk).toContain('.p-4');
   });
 });
@@ -188,7 +190,8 @@ describe('A1: the remote writers refresh derived artifacts inside their critical
     jest.spyOn(console, 'error').mockImplementation(() => {});
 
     jest.isolateModules(() => {
-      engine = require('../../src/sync-engine/index');
+      const { SyncEngine } = require('../../src/sync-engine/index');
+      engine = new SyncEngine();
       apiClient = require('../../src/sync-engine/api-client');
     });
 

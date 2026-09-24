@@ -115,7 +115,7 @@ describe('DST fall-back with recorded offsets', () => {
     const { _newestVersionPath } = require('../../src/main/data-loss-guard');
 
     const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'guard-dst-')));
-    const siteDir = path.join(base, 'sites-versions', 'notes');
+    const siteDir = path.join(base, '.hyperclay', 'versions', 'notes');
     await fs.mkdir(siteDir, { recursive: true });
     for (const entry of [a, b, c]) {
       await fs.writeFile(path.join(siteDir, entry.name), entry.name);
@@ -380,7 +380,7 @@ describe('pruneAllVersions', () => {
   });
 
   async function seed(relDir, ageDays) {
-    const dir = path.join(base, 'sites-versions', relDir);
+    const dir = path.join(base, '.hyperclay', 'versions', relDir);
     await fs.mkdir(dir, { recursive: true });
     const at = now - ageDays * DAY;
     const d = new Date(at);
@@ -412,14 +412,14 @@ describe('pruneAllVersions', () => {
     await expect(fs.access(staleB)).resolves.toBeUndefined();
   });
 
-  test('a missing sites-versions directory is not an error', async () => {
+  test('a missing .hyperclay/versions directory is not an error', async () => {
     await expect(pruneAllVersions(base, now)).resolves.toEqual({ sites: 0, deleted: 0 });
   });
 });
 
 // C1: the pruner's containment used to be a lexical prefix check, then the
 // destructive readdir/unlink re-resolved the path through whatever symlinks
-// existed at use time. A directory symlink planted at sites-versions (or at a
+// existed at use time. A directory symlink planted at .hyperclay/versions (or at a
 // site subdirectory) therefore redirected the delete out of tree. The chain
 // check lstat's every directory component immediately before the delete and
 // refuses a symlinked one.
@@ -470,9 +470,10 @@ describe('C1: prune refuses a symlinked chain', () => {
     return names;
   }
 
-  symlinkTest('pruneAllVersions leaves a symlinked sites-versions target exactly unchanged', async () => {
+  symlinkTest('pruneAllVersions leaves a symlinked .hyperclay/versions target exactly unchanged', async () => {
     await seedOldVersions(outside, 25);
-    await fs.symlink(outside, path.join(base, 'sites-versions'));
+    await fs.mkdir(path.join(base, '.hyperclay'), { recursive: true });
+    await fs.symlink(outside, path.join(base, '.hyperclay', 'versions'));
 
     const before = (await fs.readdir(outside)).sort();
     expect(before).toHaveLength(25);
@@ -485,11 +486,11 @@ describe('C1: prune refuses a symlinked chain', () => {
   });
 
   symlinkTest('pruneSiteVersions refuses when the site subdirectory is the symlink (the maybePrune path)', async () => {
-    // A real sites-versions, but the per-site directory maybePrune targets is a
+    // A real .hyperclay/versions, but the per-site directory maybePrune targets is a
     // symlink out of tree — exactly the argument backup.js:maybePrune forwards.
-    await fs.mkdir(path.join(base, 'sites-versions'), { recursive: true });
+    await fs.mkdir(path.join(base, '.hyperclay', 'versions'), { recursive: true });
     await seedOldVersions(outside, 25);
-    const siteVersionsDir = path.join(base, 'sites-versions', 'notes');
+    const siteVersionsDir = path.join(base, '.hyperclay', 'versions', 'notes');
     await fs.symlink(outside, siteVersionsDir);
 
     const before = (await fs.readdir(outside)).sort();

@@ -1,0 +1,8 @@
+Copies, refreshed by copying from htmlclay. Do not edit in place.
+
+- sync-worker.js
+    copy of /Users/davidmiranda/Documents/GitHub/hyper/htmlclay/internal/server/sync-worker.js
+    to hyperclay-local/src/main/assets/sync-worker.js (byte-for-byte; `cmp` must say SAME)
+- harness.mjs
+    copy of /Users/davidmiranda/Documents/GitHub/hyper/htmlclay/testdata/sync-worker/harness.mjs
+    to hyperclay-local/tests/fixtures/sync-worker/harness.mjs (byte-for-byte)

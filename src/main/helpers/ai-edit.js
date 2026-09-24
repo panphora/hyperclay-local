@@ -1,13 +1,15 @@
 /**
- * ai-edit plugin — the built-in handler for comment-to-edit AI editing.
+ * ai-edit helper — the built-in handler for comment-to-edit AI editing.
  *
- * Served over the local bus by the plugin host (see ./index.js); the wire
- * protocol (ack, batched deltas, one terminal done/error, cancel, timeout)
- * lives in hyper-wire's serve(). This file supplies only the ai-edit
- * behavior: engine routing, agent adapters, and prompt building.
+ * Served as the named helper `ai-edit` by the helper dispatcher (see
+ * ./dispatcher.js): no declaration and no approval, because it is a program
+ * this app ships rather than one the user picked for a document. It is a
+ * STRUCTURED helper whose result is the edited element's HTML, and it always
+ * runs with `document: "none"`, so the page stays the only writer: the page
+ * morphs the result in and Keep saves through clay.save().
  *
  * Engines: a leading bare @word in the comment picks the agent — @claude
- * (Opus 4.8, the default), @fable (Fable 5), @codex, @agy, plus any engine
+ * (Opus 5.5, the default), @fable (Fable 5.1), @codex, @agy, plus any engine
  * the user defines in settings.aiEdit.engines. Tokens with a dot or slash
  * are context refs (root-jailed to the served folder), @page is a context
  * token, and mid-comment bare @words are prose. An unknown leading @word is
@@ -15,7 +17,7 @@
  *
  * Adapters:
  * - claude: headless Claude Code (`claude -p`), no tools, one turn,
- *   stream-json deltas, real stop-reason fidelity. No API key — rides the
+ *   stream-json output, real stop-reason fidelity. No API key — rides the
  *   machine's Claude Code login.
  * - codex: `codex exec` in a read-only sandbox, ephemeral, config-isolated;
  *   final-only via --output-last-message (no streaming).
@@ -23,13 +25,18 @@
  *   non-TTY runs; the prompt and the reply both travel through files in a
  *   scratch dir that doubles as the sandbox cwd. Final-only.
  * - generic (user-defined engines): prompt on stdin (or an argv-level
- *   {prompt} placeholder — never through a shell), streamed stdout as
- *   deltas, exit 0 = success. A shell script can be an agent.
+ *   {prompt} placeholder — never through a shell), stdout as progress,
+ *   exit 0 = success. A shell script can be an agent.
  *
- * The agent command comes ONLY from settings. Bus payloads never name a
- * command, a model flag, or a path outside contextRefs.
+ * The agent command comes ONLY from settings. Payloads never name a
+ * command, a model flag, or a path outside contextRefs, and every adapter
+ * spawns with the login shell's PATH (decision 7).
  *
- * MOCK_MODEL=1 streams a deterministic local edit instead of spawning
+ * Progress is throttled: the adapters hand raw output to `ctx.progress`,
+ * which counts bytes and publishes at most one wire/status every 250 ms.
+ * The streaming preview the bus version had is gone (decision 5).
+ *
+ * MOCK_MODEL=1 produces a deterministic local edit instead of spawning
  * anything (for tests); "[mock:<stop>]" in the comment fakes a stop reason.
  */
 const { spawn } = require('child_process');
@@ -37,9 +44,11 @@ const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
 
+const { loginPath, withPath } = require('./runner');
+
 const BUILTIN_ENGINES = {
-  claude: { adapter: 'claude', model: 'claude-opus-4-8' },
-  fable: { adapter: 'claude', model: 'claude-fable-5' },
+  claude: { adapter: 'claude', model: 'claude-opus-5-5' },
+  fable: { adapter: 'claude', model: 'claude-fable-5-1' },
   codex: { adapter: 'codex' },
   agy: { adapter: 'agy' }
 };
@@ -53,6 +62,12 @@ Do not add <script> tags or inline event handlers unless the request explicitly 
 const isMock = () => process.env.MOCK_MODEL === '1';
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const abortError = () => Object.assign(new Error('aborted'), { name: 'AbortError' });
+
+function coded(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
 
 function stripFences(text) {
   return text.trim().replace(/^```[a-z]*\s*/i, '').replace(/\s*```$/, '').trim();
@@ -91,24 +106,24 @@ function routeEngine(comment, engines, defaultEngine) {
 async function resolveContext(refs = [], baseDir) {
   const sections = [];
   for (const ref of refs) {
-    if (ref === 'page') continue; // handled via payload.pageHTML
+    if (ref === 'page') continue; // handled by the page: true flag, read from disk
     const resolved = path.resolve(baseDir, ref);
     if (resolved !== baseDir && !resolved.startsWith(baseDir + path.sep)) {
-      throw new Error(`@${ref} escapes the served folder`);
+      throw coded('invalid_context', `@${ref} escapes the served folder`);
     }
     const content = await fs.readFile(resolved, 'utf8').catch(() => {
-      throw new Error(`cannot read @${ref}`);
+      throw coded('invalid_context', `cannot read @${ref}`);
     });
     sections.push(`Context file @${ref}:\n\n${content}`);
   }
   return sections;
 }
 
-function buildUserPrompt(payload, comment, contextSections) {
+function buildUserPrompt(payload, comment, contextSections, pageText) {
   const parts = [`The element to edit:\n\n${payload.elementHTML}`];
   if (payload.quote) parts.push(`The user selected this text inside the element: "${payload.quote}"`);
   parts.push(...contextSections);
-  if (payload.pageHTML) parts.push(`The full page, for context (@page):\n\n${payload.pageHTML}`);
+  if (pageText) parts.push(`The full page, for context (@page):\n\n${pageText}`);
   parts.push(`Request: ${comment}`);
   return parts.join('\n\n');
 }
@@ -128,7 +143,7 @@ function claudeAdapter(engine, userPrompt, ctx) {
       '--output-format', 'stream-json',
       '--include-partial-messages',
       '--verbose'
-    ], { cwd: ctx.baseDir, stdio: ['pipe', 'pipe', 'pipe'], signal: ctx.signal });
+    ], { cwd: ctx.baseDir, env: ctx.env, stdio: ['pipe', 'pipe', 'pipe'], signal: ctx.signal });
     child.stdin.end(userPrompt);
 
     let result = null;
@@ -143,7 +158,7 @@ function claudeAdapter(engine, userPrompt, ctx) {
         let event;
         try { event = JSON.parse(line); } catch { continue; }
         if (event.type === 'stream_event' && event.event?.delta?.type === 'text_delta') {
-          ctx.reply.delta(event.event.delta.text);
+          ctx.progress(event.event.delta.text);
         } else if (event.type === 'system' && event.subtype === 'init') {
           modelSeen = event.model;
         } else if (event.type === 'result') {
@@ -183,7 +198,7 @@ async function codexAdapter(engine, userPrompt, ctx) {
         '-C', ctx.baseDir,
         '-o', outFile,
         SYSTEM + '\n\n' + userPrompt
-      ], { stdio: ['ignore', 'ignore', 'pipe'], signal: ctx.signal });
+      ], { env: ctx.env, stdio: ['ignore', 'ignore', 'pipe'], signal: ctx.signal });
       let stderrTail = '';
       child.stderr.on('data', chunk => { stderrTail = (stderrTail + chunk).slice(-400); });
       child.on('error', reject);
@@ -216,7 +231,7 @@ async function agyAdapter(engine, userPrompt, ctx) {
       ? ['script', '-qec', `agy -p ${JSON.stringify(instruction)} --sandbox --dangerously-skip-permissions`, '/dev/null']
       : ['script', '-q', '/dev/null', 'agy', '-p', instruction, '--sandbox', '--dangerously-skip-permissions'];
     await new Promise((resolve, reject) => {
-      const child = spawn(argv[0], argv.slice(1), { cwd: scratch, stdio: ['ignore', 'ignore', 'pipe'], signal: ctx.signal });
+      const child = spawn(argv[0], argv.slice(1), { cwd: scratch, env: ctx.env, stdio: ['ignore', 'ignore', 'pipe'], signal: ctx.signal });
       let stderrTail = '';
       child.stderr.on('data', chunk => { stderrTail = (stderrTail + chunk).slice(-400); });
       child.on('error', reject);
@@ -248,7 +263,7 @@ function genericAdapter(engine, userPrompt, ctx) {
   });
   return new Promise((resolve, reject) => {
     const child = spawn(substituted[0], substituted.slice(1), {
-      cwd: ctx.baseDir, stdio: ['pipe', 'pipe', 'pipe'], signal: ctx.signal
+      cwd: ctx.baseDir, env: ctx.env, stdio: ['pipe', 'pipe', 'pipe'], signal: ctx.signal
     });
     child.stdin.on('error', () => {}); // agent may exit without reading stdin
     child.stdin.end(viaStdin ? prompt : '');
@@ -256,7 +271,7 @@ function genericAdapter(engine, userPrompt, ctx) {
     let stderrTail = '';
     child.stdout.on('data', chunk => {
       out += chunk;
-      ctx.reply.delta(String(chunk));
+      ctx.progress(String(chunk));
     });
     child.stderr.on('data', chunk => { stderrTail = (stderrTail + chunk).slice(-400); });
     child.on('error', reject);
@@ -271,7 +286,7 @@ function genericAdapter(engine, userPrompt, ctx) {
 
 const ADAPTERS = { claude: claudeAdapter, codex: codexAdapter, agy: agyAdapter, generic: genericAdapter };
 
-async function mockStream(payload, comment, label, reply, signal) {
+async function mockStream(payload, comment, label, progress, signal) {
   const stop = comment.match(/\[mock:(\w+)\]/);
   const note = comment.replace(/\[mock:\w+\]/g, '').trim()
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -279,63 +294,86 @@ async function mockStream(payload, comment, label, reply, signal) {
   const html = payload.elementHTML.replace(closing, `  <p class="mock-edit">mock edit: ${note}</p>\n</${payload.tag}>`);
   for (let i = 0; i < html.length; i += 48) {
     if (signal.aborted) throw abortError();
-    reply.delta(html.slice(i, i + 48));
+    progress(html.slice(i, i + 48));
     await sleep(30);
   }
   return { html, stopReason: stop ? stop[1] : 'end_turn', model: `mock(${label})` };
 }
 
-// ---------------------------------------------------------------- the plugin
+// ---------------------------------------------------------------- the helper
 
-function aiEditPlugin({ baseDir, settings }) {
+const log = (...args) => console.log('[ai-edit]', ...args);
+
+// runAiEdit, the dispatcher's built-in branch: the payload is a clay.wire
+// payload, the answer is { html, model, stopReason }, and every refusal the page
+// renders is a thrown Error whose `code` the dispatcher reports as the wire
+// error's application code.
+async function runAiEdit(payload, { file, baseDir, settings, signal, progress }) {
   const aiEdit = (settings && settings.aiEdit) || {};
   const engines = resolveEngines(aiEdit);
   const defaultEngine = String(aiEdit.default || 'claude').toLowerCase();
-  const log = (...args) => console.log('[ai-edit]', ...args);
+  const report = typeof progress === 'function' ? progress : () => {};
+  const abortSignal = signal || new AbortController().signal;
 
-  return {
-    name: 'ai-edit',
-    channel: 'ai-edit',
-    async onRequest(payload, reply, signal) {
-      const { id, editId, comment } = payload;
-      if (!payload.elementHTML || !comment) return reply.error('malformed ai-edit request');
-      if (!engines[defaultEngine]) return reply.error(`default engine "${defaultEngine}" is not configured`);
+  if (!payload || !payload.elementHTML || !payload.comment) throw coded('invalid_request', 'malformed ai-edit request');
+  if (!engines[defaultEngine]) throw coded('unknown_engine', `default engine "${defaultEngine}" is not configured`);
 
-      const { engine, comment: cleanComment } = routeEngine(comment, engines, defaultEngine); // throws on @unknown
-      const label = engine.model || engine.name;
-      log(`${id} → [${editId}] ${isMock() ? 'mock' : label}` +
-        (payload.contextRefs?.length ? ` context: ${payload.contextRefs.join(', ')}` : '') +
-        (payload.pageHTML ? ' +page' : ''));
+  let routed;
+  try {
+    routed = routeEngine(payload.comment, engines, defaultEngine);
+  } catch (err) {
+    throw coded('unknown_engine', err.message);
+  }
+  const { engine, comment: cleanComment } = routed;
+  const label = engine.model || engine.name;
+  log(`[${payload.editId}] ${isMock() ? 'mock' : label}` +
+    (payload.contextRefs?.length ? ` context: ${payload.contextRefs.join(', ')}` : '') +
+    (payload.page ? ' +page' : ''));
 
-      const contextSections = await resolveContext(payload.contextRefs, baseDir);
-      const userPrompt = buildUserPrompt(payload, cleanComment, contextSections);
-      const ctx = { baseDir, reply, signal };
-
-      let result;
-      try {
-        result = isMock()
-          ? await mockStream(payload, cleanComment, label, reply, signal)
-          : await ADAPTERS[engine.adapter](engine, userPrompt, ctx);
-      } catch (err) {
-        if (err.code === 'ENOENT') {
-          const binary = engine.adapter === 'generic' ? `its command` : `\`${engine.adapter === 'agy' ? 'agy' : engine.adapter}\``;
-          return reply.error(`@${engine.name} isn't available — ${binary} was not found on this machine`);
-        }
-        throw err; // serve() turns it into an error frame (or silence on abort)
-      }
-
-      if (result.stopReason === 'refusal') {
-        log(`${id} refused`);
-        return reply.error('the model declined this request');
-      }
-      if (result.stopReason !== 'end_turn') {
-        log(`${id} incomplete (${result.stopReason})`);
-        return reply.error(`reply incomplete (${result.stopReason}) — not applied`);
-      }
-      await reply.done({ html: result.html, stopReason: result.stopReason, model: result.model });
-      log(`${id} done (${result.model})`);
+  // Decision 6: @page reads the saved file from disk rather than a copy in the
+  // payload, which an envelope limit would otherwise refuse.
+  let pageText = '';
+  if (payload.page) {
+    try {
+      pageText = await fs.readFile(file, 'utf8');
+    } catch (err) {
+      throw coded('invalid_request', `cannot read the document at ${file}: ${err.message}`);
     }
-  };
+  }
+
+  let contextSections;
+  try {
+    contextSections = await resolveContext(payload.contextRefs, baseDir);
+  } catch (err) {
+    throw coded('invalid_context', err.message);
+  }
+  const userPrompt = buildUserPrompt(payload, cleanComment, contextSections, pageText);
+  const ctx = { baseDir, env: withPath(process.env, await loginPath()), progress: report, signal: abortSignal };
+
+  let result;
+  try {
+    result = isMock()
+      ? await mockStream(payload, cleanComment, label, report, abortSignal)
+      : await ADAPTERS[engine.adapter](engine, userPrompt, ctx);
+  } catch (err) {
+    if (err.name === 'AbortError') throw err;
+    if (err.code === 'ENOENT') {
+      const binary = engine.adapter === 'generic' ? `its command` : `\`${engine.adapter === 'agy' ? 'agy' : engine.adapter}\``;
+      throw coded('engine_unavailable', `@${engine.name} isn't available — ${binary} was not found on this machine`);
+    }
+    throw coded('engine_failed', err.message);
+  }
+
+  if (result.stopReason === 'refusal') {
+    log(`[${payload.editId}] refused`);
+    throw coded('declined', 'the model declined this request');
+  }
+  if (result.stopReason !== 'end_turn') {
+    log(`[${payload.editId}] incomplete (${result.stopReason})`);
+    throw coded('incomplete', `reply incomplete (${result.stopReason}) — not applied`);
+  }
+  log(`[${payload.editId}] done (${result.model})`);
+  return { html: result.html, stopReason: result.stopReason, model: result.model };
 }
 
-module.exports = { aiEditPlugin, resolveEngines, routeEngine };
+module.exports = { runAiEdit, resolveEngines, routeEngine };

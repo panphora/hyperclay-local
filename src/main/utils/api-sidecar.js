@@ -21,8 +21,9 @@ const { extractViaTag } = require('./data-extractor');
 const { realpathNearestParent, isContained } = require('./path-resolver');
 const { atomicWriteFile } = require('./write-queue');
 const { assertRealDirChain } = require('./real-dir-chain');
+const { API_DIR } = require('./artifact-paths');
 
-const SIDECAR_DIR = '.hyperclay/api';
+const SIDECAR_DIR = API_DIR;
 
 // The CANONICAL base, not the lexical one — on macOS the served folder commonly
 // sits under the /var -> /private/var symlink, so comparing a realpath'd target

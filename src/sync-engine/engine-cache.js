@@ -49,8 +49,12 @@ module.exports = {
     if (this.serverNodesCache && this.serverNodesCacheTime) {
       if (Date.now() - this.serverNodesCacheTime <= maxAgeMs) return this.serverNodesCache;
     }
-    this.serverNodesCache = await listNodes(this.serverUrl, this.apiKey);
+    const gen = this.generation;
+    const nodes = await listNodes(this.conn);
+    if (gen !== this.generation) return;
+    this.serverNodesCache = nodes;
     this.serverNodesCacheTime = Date.now();
+    this.serverNodesComplete = nodes.complete === true;
     return this.serverNodesCache;
   },
 
@@ -58,5 +62,6 @@ module.exports = {
     this.serverNodesCache = null;
     this.serverNodesCacheTime = null;
     this.serverFilesCache = null;
+    this.serverNodesComplete = false;
   }
 };

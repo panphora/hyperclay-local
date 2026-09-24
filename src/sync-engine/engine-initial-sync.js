@@ -5,109 +5,366 @@
  * downloads/uploads as needed, and detects structural changes (move, rename,
  * delete) that happened while offline. Methods here are installed onto
  * SyncEngine.prototype.
+ *
+ * C3: path correlation (which node a path belongs to) stays where it was. Once
+ * the node is known, the content decision is `decide`'s (reconcile/decide.js)
+ * and the write is `executeDecision`'s (reconcile/execute.js) — nothing here
+ * chooses content by mtime any more.
  */
 
 const path = require('upath');
-const { liveSync } = require('livesync-hyperclay');
 const { classifyError, formatErrorForLog } = require('./error-handler');
 const {
   getLocalFiles,
   getLocalFolders,
   readFile,
   fileExists,
-  getFileStats,
   ensureDirectory,
   moveFile,
   getLocalUploads,
   readFileBuffer,
   calculateBufferChecksum
 } = require('./file-operations');
-const { calculateChecksum, isLocalNewer, isFutureFile } = require('./utils');
+const { calculateChecksum } = require('./utils');
 const { ERROR_PRIORITY } = require('./constants');
+const { decide, A } = require('./reconcile/decide');
+const { executeDecision } = require('./reconcile/execute');
+const { classifyError: classifySyncError } = require('./reconcile/classify-error');
 const nodeMap = require('./node-map');
+
+const SITE_PATTERN = /\.(html|htmlclay)$/i;
+
+// The order one pass executes in (C3 §5.5): folders created, content, local
+// trashes, remote deletes, folders deleted.
+const CONTENT_RANK = 2;
+const RANK_BY_ACTION = Object.freeze({
+  [A.UPLOAD]: CONTENT_RANK,
+  [A.DOWNLOAD]: CONTENT_RANK,
+  [A.ADOPT]: CONTENT_RANK,
+  [A.CONFLICT]: CONTENT_RANK,
+  [A.NOOP]: CONTENT_RANK,
+  [A.DEFER]: CONTENT_RANK,
+  [A.TRASH_LOCAL]: 3,
+  [A.DELETE_REMOTE]: 4,
+  [A.FORGET]: 5
+});
+
+function rankOf(item) {
+  const action = item.decision.action;
+  if (action === A.CREATE_REMOTE) return item.type === 'folder' ? 0 : 1;
+  if (action === A.FORGET) return item.type === 'folder' ? 6 : 5;
+  return RANK_BY_ACTION[action] ?? 5;
+}
+
+function relPathOf(node) {
+  return node.path ? `${node.path}/${node.name}` : node.name;
+}
+
+function dirOf(rel) {
+  const dir = path.dirname(rel);
+  return dir === '.' ? '' : dir;
+}
+
+function typeFor(entry, rel) {
+  if (entry && entry.type) return entry.type;
+  return SITE_PATTERN.test(rel) ? 'site' : 'upload';
+}
 
 module.exports = {
   /**
-   * Perform initial sync - download files from server but preserve newer local files
+   * The remote view decide reads for a listed node: the etag (the server's etag
+   * and its checksum are the same digest) plus the structural fields the
+   * executor needs for a node the baseline does not know yet.
+   */
+  remoteViewOf(node) {
+    return {
+      etag: node.etag ?? node.checksum ?? null,
+      path: relPathOf(node),
+      type: node.type,
+      parentId: node.parentId ?? null,
+      structureVersion: node.structureVersion ?? null
+    };
+  },
+
+  /**
+   * The inventory is evidence only about what it lists. A legacy (protocol 1)
+   * list has no `complete` field, so decide turns every node it omits into
+   * `defer` and an unproven list can never trash a local file. A node with no
+   * baseline and no remote entry has nothing a delete could protect: it is a
+   * new local file, and deciding it as `complete` is what lets it be created
+   * instead of deferred on every pass.
+   */
+  completeForNode(remote, baseline) {
+    if (this.serverNodesComplete === true) return true;
+    if (remote) return false;
+    return !(baseline && baseline.localChecksum);
+  },
+
+  /** The bytes decide compares against the baseline. */
+  async localView(rel) {
+    const buffer = await readFileBuffer(path.join(this.syncFolder, rel));
+    return { checksum: calculateBufferChecksum(buffer) };
+  },
+
+  /**
+   * Build `{ baseline, local, remote, complete }` for one node, call `decide`,
+   * and return the item the pass executes: the decision plus the context the
+   * executor needs when the baseline has no entry for the node.
+   */
+  async decideNode({ nodeId, rel, entry, remote, localPresent, complete, type }) {
+    const nodeType = type || (remote && remote.type) || typeFor(entry, rel);
+    const baseline = nodeId === null || nodeId === undefined ? null : this.repo.getBaseline(nodeId);
+    const decision = decide({
+      baseline,
+      local: localPresent ? await this.localView(rel) : null,
+      remote: remote ? { etag: remote.etag } : null,
+      complete: complete === undefined ? this.completeForNode(remote, baseline) : complete,
+      // A bootstrap pass (a legacy import, a lost map) must not delete on the
+      // server: a node the local disk lost is downloaded instead.
+      bootstrap: this.bootstrapPass === true
+    });
+
+    return {
+      nodeId: nodeId === undefined ? null : nodeId,
+      type: nodeType,
+      path: rel,
+      decision,
+      context: {
+        path: rel,
+        type: nodeType,
+        parentId: remote && remote.parentId !== null && remote.parentId !== undefined
+          ? remote.parentId
+          : entry && entry.parentId !== undefined ? entry.parentId : undefined,
+        etag: remote ? remote.etag : undefined,
+        structureVersion: remote ? remote.structureVersion : undefined
+      }
+    };
+  },
+
+  /**
+   * Execute one pass's decisions in the fixed order. A failure is logged with
+   * the classifier's kind and the pass moves on with the next node: pausing,
+   * backoff and conflict records after a refusal belong to the session state
+   * machine (C3.6), not to the pass.
+   */
+  async runPlan(plan) {
+    const pass = { inventory: null, refreshed: new Set() };
+    const ordered = [...plan].sort((a, b) => rankOf(a) - rankOf(b));
+
+    for (const item of ordered) {
+      // A pause or a restart while the pass runs stops it before the next
+      // write; the executor's own generation check stops the one in flight.
+      if (this.sessionStale()) return;
+      await this.runPlanItem(item, pass);
+    }
+  },
+
+  async runPlanItem(item, pass, isRetry = false) {
+    this.countDecision(item);
+    if (item.decision.action === A.NOOP || item.decision.action === A.DEFER) return;
+
+    try {
+      if (item.decision.action === A.CREATE_REMOTE) await this.createMissingParentFolders(item.path);
+      await executeDecision(this, item.nodeId, item.decision, item.context);
+    } catch (error) {
+      const { kind } = classifySyncError(error);
+      console.error(`[SYNC] ${item.decision.action} failed for ${item.path} (${kind}):`, error.message);
+      if (this.logger) {
+        this.logger.error('SYNC', 'Reconcile action failed', {
+          file: item.path,
+          action: item.decision.action,
+          kind,
+          error: error.message
+        });
+      }
+      this.stats.errors.push(formatErrorForLog(error, { filename: item.path, action: 'reconcile' }));
+
+      // A stale view of that node: re-list once for the whole pass (coalesced)
+      // and decide it again. A second refusal for the same node is not retried.
+      if (kind === 'refresh-node' && !isRetry && !pass.refreshed.has(String(item.nodeId))) {
+        pass.refreshed.add(String(item.nodeId));
+        const inventory = await this.refreshInventory(pass);
+        const again = await this.decideAgain(item, inventory);
+        if (again) await this.runPlanItem(again, pass, true);
+      }
+    }
+  },
+
+  /**
+   * A local-only file whose folder is not on the server yet needs the folder
+   * created first ("folders created" before content). Folder creation stays on
+   * the engine's own helper: every executor action carries content.
+   */
+  async createMissingParentFolders(rel) {
+    const parent = dirOf(rel);
+    if (!parent || this.repo.getByPath(parent)) return;
+    await this.createFolderOnServer(parent);
+  },
+
+  /**
+   * One re-list per pass, shared by every node that asked for one (coalesced).
+   * The cache is dropped first: a list written in the same millisecond still
+   * answers a maxAge of 0 from the cache that just went stale.
+   */
+  async refreshInventory(pass) {
+    if (!pass.inventory) {
+      this.invalidateServerNodesCache();
+      pass.inventory = this.fetchAndCacheServerNodes(0);
+    }
+    return pass.inventory;
+  },
+
+  /** Decide a node again from the fresh inventory after a `refresh-node`. */
+  async decideAgain(item, inventory) {
+    const node = (inventory || []).find(n => String(n.id) === String(item.nodeId));
+    if (!node) return null;
+    const remote = this.remoteViewOf(node);
+    return this.decideNode({
+      nodeId: item.nodeId,
+      rel: remote.path,
+      entry: this.repo.get(item.nodeId) || null,
+      remote,
+      localPresent: await fileExists(path.join(this.syncFolder, remote.path)),
+      type: item.type
+    });
+  },
+
+  /**
+   * Keep the counters the popover reads meaningful in decide's vocabulary: a
+   * node already identical on both sides is a skip, and a conflict is counted
+   * by the emit the executor already makes.
+   */
+  countDecision(item) {
+    if (item.type === 'folder') return;
+    const upload = item.type === 'upload';
+    switch (item.decision.action) {
+      case A.DOWNLOAD:
+        if (upload) this.stats.uploadsDownloaded++; else this.stats.filesDownloaded++;
+        break;
+      case A.UPLOAD:
+      case A.CREATE_REMOTE:
+        if (upload) this.stats.uploadsUploaded++; else this.stats.filesUploaded++;
+        break;
+      case A.ADOPT:
+      case A.NOOP:
+        if (upload) this.stats.uploadsSkipped++; else this.stats.filesDownloadedSkipped++;
+        break;
+      default:
+        break;
+    }
+  },
+
+  /**
+   * Perform initial sync: correlate every listed site to its node, decide each
+   * one from the baseline, the disk and the inventory, then execute in the
+   * fixed order. A local edit made offline is uploaded, never overwritten.
    */
   async performInitialSync() {
+    const gen = this.generation;
+
     console.log('[SYNC] Starting initial sync...');
     this.emit('sync-start', { type: 'initial' });
 
     try {
-      // Fetch and cache server files — also warms serverNodesCache and serverFilesCache
-      // so that downloadFile() can resolve nodeId → path without a separate lookup.
+      // Fetch and cache server files — also warms serverNodesCache so a decision
+      // can read a node's etag without a separate lookup.
       const serverFiles = await this.fetchAndCacheServerFiles(30_000);
+      if (gen !== this.generation) return;
       const allServerNodes = this.serverNodesCache;
 
       const localFiles = await getLocalFiles(this.syncFolder, this.logger);
 
-      // Snapshot the nodeIds we already knew about BEFORE downloading. Files
-      // downloaded during this pass get added to the map below; the detect step
-      // uses this baseline to avoid treating a just-downloaded server file as a
-      // local delete, and reconcileServerFile uses it to avoid resurrecting a
-      // file the user deleted while offline.
+      // Snapshot the nodeIds we already knew about BEFORE anything is applied,
+      // so a node this pass created or downloaded never reads as a local delete
+      // later in the same pass.
       const knownNodeIdsAtStart = new Set([...this.repo].map(([nid]) => nid));
 
+      // Correlation only: which node a path belongs to. Server-side moves first,
+      // then the inode/checksum strategies that recognise an offline rename.
       await this.repo.apply(async (map) => {
         for (const serverFile of serverFiles) {
-          await this.reconcileServerFile(serverFile, localFiles, map, knownNodeIdsAtStart);
+          await this.correlateServerFile(serverFile, localFiles, map);
         }
       });
 
-      // Detect server-side deletes: nodeIds in our map but NOT in the server's node list.
-      // Skip entirely on first-ever sync (no baseline to compare against).
+      const plan = [];
+      let handled = new Set();
       if (this.lastSyncedAt) {
-        const serverNodeIds = new Set(allServerNodes.map(n => String(n.id)));
-        await this.repo.apply(async (map) => {
-          for (const [nid, entry] of map) {
-            if (serverNodeIds.has(nid)) continue;
+        handled = await this.detectLocalChanges(allServerNodes, localFiles, knownNodeIdsAtStart, plan);
+      }
 
-            if (entry.type === 'folder') {
-              // Folder deleted on server while offline.
-              // Don't trash the local directory — it may contain unsynced local content.
-              // Remove folder and all descendants from repo; watcher re-creates if still local.
-              const descendants = this.repo.walkDescendants(entry.path);
-              for (const { nodeId: descId } of descendants) {
-                map.delete(descId);
-              }
-              map.delete(nid);
-              console.log(`[SYNC] Folder removed from server while offline, cleared from nodeMap: ${entry.path} (nodeId ${nid})`);
-              continue;
-            }
+      // Every listed site, decided against the baseline and the disk.
+      const listed = new Set();
+      const listedPaths = new Set();
+      for (const node of allServerNodes) {
+        if (node.type !== 'site') continue;
+        const nid = String(node.id);
+        listed.add(nid);
+        const remote = this.remoteViewOf(node);
+        listedPaths.add(remote.path);
+        if (handled.has(nid)) continue;
 
-            const localRelPath = entry.path;
-            const fullPath = path.join(this.syncFolder, localRelPath);
-            const exists = await fileExists(fullPath);
-            if (exists) {
-              const stats = await getFileStats(fullPath);
-              const entrySyncedAt = entry.syncedAt ?? this.lastSyncedAt;
-              if (stats.mtime > entrySyncedAt) {
-                console.log(`[SYNC] Skipping trash for ${localRelPath} — local file is newer than last sync (edited while offline)`);
-                map.delete(nid);
-                continue;
-              }
+        plan.push(await this.decideNode({
+          nodeId: nid,
+          rel: remote.path,
+          entry: this.repo.get(nid) || null,
+          remote,
+          localPresent: localFiles.has(remote.path)
+        }));
+      }
 
-              const trashPath = path.join(this.syncFolder, '.trash', localRelPath);
-              await ensureDirectory(path.dirname(trashPath));
-              // Full path + extension — matches wasBrowserSave in engine-watcher.
-              liveSync.markBrowserSave(localRelPath);
-              await moveFile(fullPath, trashPath);
-              localFiles.delete(localRelPath);
-              console.log(`[SYNC] Trashed ${localRelPath} (deleted on server while offline, nodeId ${nid})`);
-              this.emit('file-synced', { file: localRelPath, action: 'trash', source: 'initial-sync' });
-            }
-            map.delete(nid);
+      // Every tracked node the inventory omitted: a file the server deleted
+      // while we were offline, or a folder to forget (never to trash).
+      if (this.lastSyncedAt) {
+        for (const [nid, entry] of [...this.repo]) {
+          if (listed.has(nid) || !entry.path) continue;
+
+          const type = typeFor(entry, entry.path);
+          if (type === 'upload') continue; // the upload pass owns this node
+
+          if (type === 'folder') {
+            // A folder absent from a complete inventory is forgotten, never
+            // trashed: its local directory stays until it is empty (C3 §9).
+            plan.push({
+              nodeId: nid,
+              type,
+              path: entry.path,
+              decision: decide({
+                baseline: null,
+                local: null,
+                remote: null,
+                complete: this.serverNodesComplete === true
+              }),
+              context: { path: entry.path, type }
+            });
+            continue;
           }
-        });
+
+          plan.push(await this.decideNode({
+            nodeId: nid,
+            rel: entry.path,
+            entry,
+            remote: null,
+            localPresent: localFiles.has(entry.path)
+          }));
+        }
       }
 
-      // Detect local structural changes (delete/move/rename) that happened while offline
-      if (this.lastSyncedAt) {
-        await this.detectLocalChanges(allServerNodes, localFiles, knownNodeIdsAtStart);
+      // Files on disk with no node id: a brand-new local file the inventory
+      // could not have named, so it is decided against a complete view.
+      for (const [rel] of localFiles) {
+        if (listedPaths.has(rel) || this.repo.getByPath(rel)) continue;
+        plan.push(await this.decideNode({
+          nodeId: null,
+          rel,
+          entry: null,
+          remote: null,
+          localPresent: true,
+          complete: true
+        }));
       }
 
-      await this.uploadLocalOnlyFiles(localFiles, serverFiles);
+      await this.runPlan(plan);
 
       this.lastSyncedAt = Date.now();
       await this.repo.saveState({ lastSyncedAt: this.lastSyncedAt });
@@ -151,205 +408,61 @@ module.exports = {
   },
 
   /**
-   * Reconcile a single server file against local state: move, download, or skip.
-   * Mutates localFiles map when a file is moved.
+   * Correlation for one listed file: a node whose baseline path is elsewhere on
+   * disk is moved to the path the server reports and re-pointed there, so the
+   * decision below reads the right path and the baseline keeps its checksums. A
+   * node whose file is missing entirely is left to detectLocalChanges (inode
+   * and checksum strategies) with the server's path as the expected one.
    */
-  async reconcileServerFile(serverFile, localFiles, map, knownNodeIdsAtStart) {
+  async correlateServerFile(serverFile, localFiles, map) {
     const relativePath = serverFile.path || serverFile.filename;
     this.resolveContainedPath(relativePath);
-    const localPath = path.join(this.syncFolder, relativePath);
-    let localExists = localFiles.has(relativePath);
+    if (!serverFile.nodeId) return;
 
-    if (!localExists && serverFile.nodeId) {
-      const knownEntry = map.get(String(serverFile.nodeId));
-      const knownPath = knownEntry?.path;
-      if (knownPath && knownPath !== relativePath && localFiles.has(knownPath)) {
-        const oldFullPath = path.join(this.syncFolder, knownPath);
-        try {
-          liveSync.markBrowserSave(relativePath);
-          await moveFile(oldFullPath, localPath);
+    const nid = String(serverFile.nodeId);
+    const entry = map.get(nid);
+    if (!entry || entry.path === relativePath) return;
 
-          const localInfo = localFiles.get(knownPath);
-          localFiles.delete(knownPath);
-          localFiles.set(relativePath, localInfo);
-          localExists = true;
-
-          console.log(`[SYNC] MOVED ${knownPath} → ${relativePath} (nodeId ${serverFile.nodeId})`);
-
-          if (this.logger) {
-            this.logger.info('SYNC', 'Moved file to match server path', {
-              from: knownPath,
-              to: relativePath
-            });
-          }
-        } catch (error) {
-          console.error(`[SYNC] Failed to move ${knownPath} → ${relativePath}:`, error.message);
-        }
-      }
-    }
-
-    const existingEntry = map.get(String(serverFile.nodeId)) || {};
-    map.set(String(serverFile.nodeId), { path: relativePath, checksum: existingEntry.checksum || null, inode: existingEntry.inode || null, syncedAt: existingEntry.syncedAt });
-
-    if (!localExists) {
-      // Known file missing at its (unchanged) server path: the app synced this
-      // before and it's now gone from disk — an offline delete or rename. Do NOT
-      // redownload it (that resurrects a file the user deleted); defer to
-      // detectLocalChanges, which renames/moves, deletes, or re-downloads on a
-      // server-edit conflict. A server-side move arrives with a *different*
-      // relativePath and is handled above / by the download fallback below, so it
-      // must NOT defer. (When no baseline is passed — legacy/tests — fall through.)
-      if (knownNodeIdsAtStart && knownNodeIdsAtStart.has(String(serverFile.nodeId)) && existingEntry.path === relativePath) {
-        return;
-      }
-
-      // Offline-rename pre-check: if the existing entry has an inode and a local
-      // file with that inode is present elsewhere on disk, the user renamed the
-      // file while offline. Skip the download and let detectLocalChanges correlate
-      // the rename against the preserved inode. Downloading first would overwrite
-      // the entry's inode with the new file's inode, breaking the inode-match
-      // strategy and producing a duplicate node + orphan file.
-      if (existingEntry.inode) {
-        let inodeMatchPath = null;
-        for (const [candidatePath] of localFiles) {
-          const candidateFullPath = path.join(this.syncFolder, candidatePath);
-          const candidateInode = await nodeMap.getInode(candidateFullPath);
-          if (candidateInode && candidateInode === existingEntry.inode) {
-            inodeMatchPath = candidatePath;
-            break;
-          }
-        }
-        if (inodeMatchPath) {
-          console.log(`[SYNC] Deferring download of ${relativePath} to detectLocalChanges — inode match at ${inodeMatchPath} (likely offline rename)`);
-          if (this.logger) {
-            this.logger.info('SYNC', 'Deferring download — inode match suggests offline rename', {
-              file: relativePath,
-              inodeMatchAt: inodeMatchPath,
-              inode: existingEntry.inode
-            });
-          }
-          return;
-        }
-      }
-
+    const knownPath = entry.path;
+    if (localFiles.has(knownPath)) {
+      const oldFullPath = path.join(this.syncFolder, knownPath);
+      const newFullPath = path.join(this.syncFolder, relativePath);
       try {
-        await this.downloadFile(serverFile.nodeId, relativePath);
-        this.stats.filesDownloaded++;
-        const inode = await nodeMap.getInode(localPath);
-        const content = await readFile(localPath).catch(() => null);
-        const cs = content ? await calculateChecksum(content) : null;
-        map.set(String(serverFile.nodeId), { path: relativePath, checksum: cs, inode, syncedAt: Date.now() });
+        this.live.markBrowserSave(relativePath);
+        await moveFile(oldFullPath, newFullPath);
+
+        const localInfo = localFiles.get(knownPath);
+        localFiles.delete(knownPath);
+        localFiles.set(relativePath, localInfo);
+
+        console.log(`[SYNC] MOVED ${knownPath} → ${relativePath} (nodeId ${nid})`);
+
+        if (this.logger) {
+          this.logger.info('SYNC', 'Moved file to match server path', {
+            from: knownPath,
+            to: relativePath
+          });
+        }
       } catch (error) {
-        console.error(`[SYNC] Failed to download ${relativePath} during initial sync:`, error.message);
-      }
-      return;
-    }
-
-    try {
-      const localStat = await getFileStats(localPath);
-      const localContent = await readFile(localPath);
-      const localChecksum = await calculateChecksum(localContent);
-      const inode = await nodeMap.getInode(localPath);
-      map.set(String(serverFile.nodeId), { path: relativePath, checksum: localChecksum, inode, syncedAt: Date.now() });
-
-      if (isFutureFile(localStat.mtime, this.clockOffset)) {
-        console.log(`[SYNC] PRESERVE ${relativePath} - future-dated file`);
-        this.stats.filesProtected++;
-        if (this.logger) {
-          this.logger.warn('SYNC', 'Site skipped - future-dated local file', {
-            file: relativePath,
-            localMtime: localStat.mtime,
-            clockOffset: this.clockOffset
-          });
-        }
-        return;
-      }
-
-      if (isLocalNewer(localStat.mtime, serverFile.modifiedAt, this.clockOffset)) {
-        console.log(`[SYNC] PRESERVE ${relativePath} - local is newer, uploading`);
-        this.stats.filesProtected++;
-        if (this.logger) {
-          this.logger.info('SYNC', 'Site local is newer than server - uploading', {
-            file: relativePath,
-            localMtime: localStat.mtime,
-            serverModifiedAt: serverFile.modifiedAt,
-            clockOffset: this.clockOffset
-          });
-        }
-        await this.uploadFile(relativePath);
-        return;
-      }
-
-      if (localChecksum === serverFile.checksum) {
-        console.log(`[SYNC] SKIP ${relativePath} - checksums match`);
-        this.stats.filesDownloadedSkipped++;
-        if (this.logger) {
-          this.logger.info('SYNC', 'Site skipped - checksums match', {
-            file: relativePath,
-            checksum: localChecksum
-          });
-        }
-        return;
-      }
-
-      await this.downloadFile(serverFile.nodeId, relativePath);
-      this.stats.filesDownloaded++;
-      const dlContent = await readFile(localPath).catch(() => null);
-      const dlChecksum = dlContent ? await calculateChecksum(dlContent) : null;
-      const dlInode = await nodeMap.getInode(localPath);
-      map.set(String(serverFile.nodeId), { path: relativePath, checksum: dlChecksum, inode: dlInode, syncedAt: Date.now() });
-    } catch (error) {
-      console.error(`[SYNC] Failed to process ${relativePath} during initial sync:`, error.message);
-      if (!error.message.includes('Failed to download')) {
-        this.stats.errors.push(formatErrorForLog(error, { filename: relativePath, action: 'initial-sync-check' }));
-        const errorInfo = classifyError(error, { filename: relativePath, action: 'check' });
-        this.emit('sync-error', errorInfo);
-
-        if (this.logger) {
-          this.logger.error('SYNC', 'Initial sync file processing failed', {
-            file: relativePath,
-            error
-          });
-        }
+        console.error(`[SYNC] Failed to move ${knownPath} → ${relativePath}:`, error.message);
       }
     }
+
+    map.set(nid, { ...entry, path: relativePath });
   },
 
   /**
-   * Upload local files that don't exist on the server.
+   * Detect local structural changes (delete/move/rename) that happened while
+   * offline, correlate each one to its node, then decide what is left: a node
+   * whose bytes are gone from disk is deleted remotely, or re-downloaded when a
+   * teammate edited it after the local delete.
+   *
+   * performInitialSync passes a `plan` to fill and executes it afterwards;
+   * called on its own it runs what it decided.
    */
-  async uploadLocalOnlyFiles(localFiles, serverFiles) {
-    for (const [relativePath, localInfo] of localFiles) {
-      const serverFile = serverFiles.find(f =>
-        (f.path === relativePath) || (f.filename === relativePath)
-      );
-
-      if (!serverFile) {
-        console.log(`[SYNC] LOCAL ONLY: ${relativePath} - uploading`);
-        try {
-          const parentFolder = relativePath.split('/').slice(0, -1).join('/');
-          if (parentFolder && !this.repo.getByPath(parentFolder)) {
-            await this.createFolderOnServer(parentFolder);
-          }
-          await this.uploadFile(relativePath);
-          this.stats.filesUploaded++;
-        } catch (error) {
-          console.error(`[SYNC] Failed to upload ${relativePath} during initial sync:`, error.message);
-          this.stats.errors.push(formatErrorForLog(error, { filename: relativePath, action: 'initial-upload' }));
-
-          const errorInfo = classifyError(error, { filename: relativePath, action: 'upload' });
-          this.emit('sync-error', errorInfo);
-        }
-      }
-    }
-  },
-
-  /**
-   * Detect local structural changes (delete/move/rename) that happened while offline.
-   * Runs during performInitialSync after server-side reconciliation.
-   */
-  async detectLocalChanges(allServerNodes, localFiles, knownNodeIdsAtStart) {
-    const serverNodeIds = new Set(allServerNodes.map(n => String(n.id)));
+  async detectLocalChanges(allServerNodes, localFiles, knownNodeIdsAtStart, plan = null) {
+    const items = [];
+    const correlated = new Set();
     const serverNodeById = new Map(allServerNodes.map(n => [String(n.id), n]));
     // Use server-declared type for routing — repo entries may not have a type field set.
     const serverSiteIds = new Set(
@@ -372,19 +485,15 @@ module.exports = {
 
     await this.repo.apply(async (map) => {
     for (const [nid, entry] of [...map]) {
-      if (!serverNodeIds.has(nid)) continue; // already handled by server-side delete reconciliation
-      if (!serverSiteIds.has(nid)) continue; // uploads/folders: handled by their own detect functions
-      if (knownNodeIdsAtStart && !knownNodeIdsAtStart.has(nid)) continue; // downloaded this pass — not a local-delete candidate
+      if (!serverSiteIds.has(nid)) continue;
+      if (knownNodeIdsAtStart && !knownNodeIdsAtStart.has(nid)) continue;
 
       const serverNode = serverNodeById.get(nid);
-      const serverPath = serverNode
-        ? (serverNode.path ? `${serverNode.path}/${serverNode.name}` : serverNode.name)
-        : entry.path;
+      const serverPath = relPathOf(serverNode);
 
       // Only run local change detection for nodeIds where the server hasn't changed the path
       // (server wins for move/rename conflicts)
       if (serverPath !== entry.path) continue;
-
       if (localFiles.has(entry.path)) continue; // file still at expected path
 
       // File is GONE from expected path but still exists on server — find where it went
@@ -463,47 +572,39 @@ module.exports = {
         }
         if (handled) break;
       }
-      if (handled) continue;
-
-      // 4. No match → LOCAL DELETE
-      // Check for delete conflict using per-entry syncedAt (falling back to the
-      // global lastSyncedAt for legacy entries). The global timestamp alone is
-      // stale for watcher-uploaded files and produces false-positive re-downloads
-      // when a file is deleted while offline.
-      const entrySyncedAt = entry.syncedAt ?? this.lastSyncedAt;
-      if (serverNode.modifiedAt && new Date(serverNode.modifiedAt).getTime() > entrySyncedAt) {
-        console.log(`[SYNC] Delete conflict: ${entry.path} deleted locally but modified on server — re-downloading`);
-        if (this.logger) {
-          this.logger.warn('SYNC', 'Delete conflict - local delete overridden by server change', {
-            file: entry.path,
-            serverModifiedAt: serverNode.modifiedAt,
-            entrySyncedAt: new Date(entrySyncedAt).toISOString(),
-            usedFallback: entry.syncedAt == null
-          });
-        }
-        try {
-          await this.downloadFile(serverNode.id, serverPath);
-        } catch (err) {
-          console.error(`[SYNC] Failed to re-download ${serverPath} after delete conflict:`, err.message);
-        }
+      if (handled) {
+        correlated.add(nid);
         continue;
       }
 
-      try {
-        console.log(`[SYNC] Local delete detected: ${entry.path} (nodeId ${nid})`);
-        await this._apiDeleteNode(nid);
-        map.delete(nid);
-      } catch (err) {
-        console.error(`[SYNC] Failed to sync local delete for nodeId ${nid}:`, err.message);
-      }
+      // No match: the bytes are gone from disk. decide says whether that is a
+      // delete (the remote is unchanged since the baseline) or a restore (a
+      // teammate edited the node after the local delete).
+      items.push(await this.decideNode({
+        nodeId: nid,
+        rel: serverPath,
+        entry,
+        remote: this.remoteViewOf(serverNode),
+        localPresent: false
+      }));
     }
     }); // end repo.apply
+
+    if (plan) {
+      plan.push(...items);
+    } else {
+      await this.runPlan(items);
+    }
+    return new Set([...correlated, ...items.map(item => String(item.nodeId))]);
   },
 
   /**
-   * Detect local structural changes (delete/move/rename) for uploads that happened while offline.
+   * Detect local structural changes (delete/move/rename) for uploads that
+   * happened while offline, then decide the rest the same way as sites.
    */
-  async detectLocalUploadChanges(allServerNodes, localUploads, knownNodeIdsAtStart) {
+  async detectLocalUploadChanges(allServerNodes, localUploads, knownNodeIdsAtStart, plan = null) {
+    const items = [];
+    const correlated = new Set();
     const serverNodeById = new Map(allServerNodes.map(n => [String(n.id), n]));
     // Route only upload nodes — use server-declared type, not local entry.type.
     const serverUploadIds = new Set(
@@ -523,12 +624,10 @@ module.exports = {
     await this.repo.apply(async (map) => {
       for (const [nid, entry] of [...map]) {
         if (!serverUploadIds.has(nid)) continue; // not an upload node (or not on server)
-        if (knownNodeIdsAtStart && !knownNodeIdsAtStart.has(nid)) continue; // downloaded this pass — not a local-delete candidate
+        if (knownNodeIdsAtStart && !knownNodeIdsAtStart.has(nid)) continue; // created this pass — not a local-delete candidate
 
         const serverNode = serverNodeById.get(nid);
-        const serverPath = serverNode
-          ? (serverNode.path ? `${serverNode.path}/${serverNode.name}` : serverNode.name)
-          : entry.path;
+        const serverPath = relPathOf(serverNode);
 
         if (serverPath !== entry.path) continue; // server changed path — server wins
         if (localUploads.has(entry.path)) continue; // still at expected path
@@ -620,57 +719,35 @@ module.exports = {
           }
           if (handled) break;
         }
-        if (handled) continue;
-
-        // Delete-conflict: the upload is gone locally, but the server changed it
-        // after our last sync. Server-edit wins (matches the sites path) — re-download
-        // instead of deleting, so a concurrent server-side edit is never lost.
-        const entrySyncedAt = entry.syncedAt ?? this.lastSyncedAt;
-        if (serverNode && serverNode.modifiedAt && new Date(serverNode.modifiedAt).getTime() > entrySyncedAt) {
-          console.log(`[SYNC] Upload delete conflict: ${entry.path} deleted locally but modified on server — re-downloading`);
-          if (this.logger) {
-            this.logger.warn('SYNC', 'Upload delete conflict - local delete overridden by server change', {
-              file: entry.path,
-              serverModifiedAt: serverNode.modifiedAt,
-              entrySyncedAt: new Date(entrySyncedAt).toISOString(),
-              usedFallback: entry.syncedAt == null
-            });
-          }
-          try {
-            await this.downloadUploadFile(entry.path, nid);
-          } catch (err) {
-            console.error(`[SYNC] Failed to re-download ${entry.path} after delete conflict:`, err.message);
-          }
+        if (handled) {
+          correlated.add(nid);
           continue;
         }
 
-        // No match — local delete
-        try {
-          console.log(`[SYNC] Local upload delete detected: ${entry.path} (nodeId ${nid})`);
-          await this._apiDeleteNode(nid);
-          map.delete(nid);
-          if (this.logger) {
-            this.logger.info('SYNC', 'Upload delete synced to server', {
-              file: entry.path,
-              nodeId: nid
-            });
-          }
-        } catch (err) {
-          console.error(`[SYNC] Failed to sync local upload delete for nodeId ${nid}:`, err.message);
-          if (this.logger) {
-            this.logger.error('SYNC', 'Failed to sync offline upload delete', {
-              file: entry.path,
-              nodeId: nid,
-              error: err.message
-            });
-          }
-        }
+        // The upload is gone locally: decide between deleting it and restoring a
+        // teammate's later edit instead of reading the remote's mtime.
+        items.push(await this.decideNode({
+          nodeId: nid,
+          rel: serverPath,
+          entry,
+          remote: this.remoteViewOf(serverNode),
+          localPresent: false,
+          type: 'upload'
+        }));
       }
     });
+
+    if (plan) {
+      plan.push(...items);
+    } else {
+      await this.runPlan(items);
+    }
+    return new Set([...correlated, ...items.map(item => String(item.nodeId))]);
   },
 
   /**
-   * Perform initial sync for uploads
+   * Perform initial sync for uploads: the same pass as sites, over the upload
+   * nodes and the upload scan of the disk.
    */
   async performInitialUploadSync() {
     console.log('[SYNC] Starting initial upload sync...');
@@ -678,133 +755,67 @@ module.exports = {
 
     try {
       const serverUploads = await this.fetchAndCacheServerUploads(30_000);
+      const allServerNodes = this.serverNodesCache;
       const localUploads = await getLocalUploads(this.syncFolder, this.logger);
 
-      // Snapshot known nodeIds before downloading (see performInitialSync for rationale).
       const knownNodeIdsAtStart = new Set([...this.repo].map(([nid]) => nid));
 
-      await this.repo.apply(async (map) => {
-        // Download server uploads not present locally
-        for (const serverUpload of serverUploads) {
-          const localPath = path.join(this.syncFolder, serverUpload.path);
-          const localExists = localUploads.has(serverUpload.path);
+      const plan = [];
+      const handled = this.lastSyncedAt
+        ? await this.detectLocalUploadChanges(allServerNodes, localUploads, knownNodeIdsAtStart, plan)
+        : new Set();
 
-          if (!localExists) {
-            // Known upload missing at its (unchanged) server path: an offline delete
-            // or rename. Do NOT redownload (that resurrects a deleted upload); defer
-            // to detectLocalUploadChanges (rename/delete/conflict-redownload). A
-            // server-side move arrives with a different path and still downloads.
-            const knownUploadEntry = map.get(String(serverUpload.nodeId));
-            if (knownNodeIdsAtStart.has(String(serverUpload.nodeId)) && knownUploadEntry && knownUploadEntry.path === serverUpload.path) {
-              continue;
-            }
-            try {
-              await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
-              this.stats.uploadsDownloaded++;
-              if (serverUpload.nodeId) {
-                map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null, syncedAt: Date.now() });
-              }
-            } catch (error) {
-              console.error(`[SYNC] Failed to download upload ${serverUpload.path}:`, error.message);
-              this.stats.errors.push(formatErrorForLog(error, { filename: serverUpload.path, action: 'initial-upload-download' }));
-            }
-          } else {
-            try {
-              const localInfo = localUploads.get(serverUpload.path);
+      const listed = new Set();
+      const listedPaths = new Set();
+      for (const node of allServerNodes) {
+        if (node.type !== 'upload') continue;
+        const nid = String(node.id);
+        listed.add(nid);
+        const remote = this.remoteViewOf(node);
+        listedPaths.add(remote.path);
+        if (handled.has(nid)) continue;
 
-              // Check if local is future-dated
-              if (isFutureFile(localInfo.mtime, this.clockOffset)) {
-                console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - future-dated`);
-                this.stats.uploadsProtected++;
-                if (this.logger) {
-                  this.logger.warn('SYNC', 'Upload skipped - future-dated local file', {
-                    file: serverUpload.path,
-                    localMtime: localInfo.mtime,
-                    clockOffset: this.clockOffset
-                  });
-                }
-                if (serverUpload.nodeId) {
-                  map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: null, inode: null });
-                }
-                continue;
-              }
-
-              // Check if local is newer
-              if (isLocalNewer(localInfo.mtime, serverUpload.modifiedAt, this.clockOffset)) {
-                console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - local is newer, uploading`);
-                this.stats.uploadsProtected++;
-                if (this.logger) {
-                  this.logger.info('SYNC', 'Upload local is newer than server - uploading', {
-                    file: serverUpload.path,
-                    localMtime: localInfo.mtime,
-                    serverModifiedAt: serverUpload.modifiedAt,
-                    clockOffset: this.clockOffset
-                  });
-                }
-                if (serverUpload.nodeId) {
-                  map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: null, inode: null });
-                }
-                await this.uploadUploadFile(serverUpload.path);
-                continue;
-              }
-
-              // Check checksums
-              const localContent = await readFileBuffer(localPath);
-              const localChecksum = calculateBufferChecksum(localContent);
-
-              if (localChecksum === serverUpload.checksum) {
-                console.log(`[SYNC] SKIP upload ${serverUpload.path} - checksums match`);
-                this.stats.uploadsSkipped++;
-                if (this.logger) {
-                  this.logger.info('SYNC', 'Upload skipped - checksums match', {
-                    file: serverUpload.path,
-                    checksum: localChecksum
-                  });
-                }
-                if (serverUpload.nodeId) {
-                  map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: localChecksum, inode: null, syncedAt: Date.now() });
-                }
-                continue;
-              }
-
-              // Server is newer, download it
-              await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
-              this.stats.uploadsDownloaded++;
-              if (serverUpload.nodeId) {
-                map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null, syncedAt: Date.now() });
-              }
-            } catch (error) {
-              console.error(`[SYNC] Failed to process upload ${serverUpload.path}:`, error.message);
-              this.stats.errors.push(formatErrorForLog(error, { filename: serverUpload.path, action: 'initial-upload-check' }));
-            }
-          }
-        }
-
-        // Upload local files not on server
-        for (const [relativePath] of localUploads) {
-          const serverUpload = serverUploads.find(u => u.path === relativePath);
-
-          if (!serverUpload) {
-            console.log(`[SYNC] LOCAL ONLY upload: ${relativePath} - uploading`);
-            try {
-              const parentFolder = relativePath.split('/').slice(0, -1).join('/');
-              if (parentFolder && !this.repo.getByPath(parentFolder)) {
-                await this.createFolderOnServer(parentFolder);
-              }
-              await this.uploadUploadFile(relativePath);
-              // Note: uploadsUploaded is incremented inside uploadUploadFile
-            } catch (error) {
-              console.error(`[SYNC] Failed to upload ${relativePath}:`, error.message);
-              this.stats.errors.push(formatErrorForLog(error, { filename: relativePath, action: 'initial-upload-upload' }));
-            }
-          }
-        }
-      });
+        plan.push(await this.decideNode({
+          nodeId: nid,
+          rel: remote.path,
+          entry: this.repo.get(nid) || null,
+          remote,
+          localPresent: localUploads.has(remote.path),
+          type: 'upload'
+        }));
+      }
 
       if (this.lastSyncedAt) {
-        const allServerNodes = await this.fetchAndCacheServerNodes(30_000); // reuse pipeline cache
-        await this.detectLocalUploadChanges(allServerNodes, localUploads, knownNodeIdsAtStart);
+        for (const [nid, entry] of [...this.repo]) {
+          if (listed.has(nid) || !entry.path) continue;
+          if (typeFor(entry, entry.path) !== 'upload') continue; // the site pass owns the rest
+
+          plan.push(await this.decideNode({
+            nodeId: nid,
+            rel: entry.path,
+            entry,
+            remote: null,
+            localPresent: localUploads.has(entry.path),
+            type: 'upload'
+          }));
+        }
       }
+
+      // Uploads on disk with no node id: new local files to create remotely.
+      for (const [rel] of localUploads) {
+        if (listedPaths.has(rel) || this.repo.getByPath(rel)) continue;
+        plan.push(await this.decideNode({
+          nodeId: null,
+          rel,
+          entry: null,
+          remote: null,
+          localPresent: true,
+          complete: true,
+          type: 'upload'
+        }));
+      }
+
+      await this.runPlan(plan);
 
       console.log('[SYNC] Initial upload sync complete');
       this.emit('sync-complete', { type: 'initial-uploads', stats: this.stats });
@@ -816,10 +827,12 @@ module.exports = {
     }
   },
 
-  async performInitialFolderSync() {
+  async performInitialFolderSync(inventory = null) {
     console.log('[SYNC] Starting initial folder sync...');
 
-    const allServerNodes = await this.fetchAndCacheServerNodes(0);
+    // A session reconcile hands its own inventory over (C3 §5.6): the list the
+    // runner already proved complete is the one this pass decides from.
+    const allServerNodes = inventory || await this.fetchAndCacheServerNodes(0);
     const serverFolders = allServerNodes.filter(n => n.type === 'folder');
     const serverNodeIds = new Set(allServerNodes.map(n => String(n.id)));
 

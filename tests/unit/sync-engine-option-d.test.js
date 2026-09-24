@@ -48,7 +48,23 @@ const nodeMapModule = require('../../src/sync-engine/node-map');
 
 jest.mock('../../src/sync-engine/file-operations');
 jest.mock('../../src/sync-engine/api-client');
-jest.mock('../../src/sync-engine/node-map');
+jest.mock('../../src/sync-engine/node-map', () => {
+  const actual = jest.requireActual('../../src/sync-engine/node-map');
+  return {
+    ...actual,
+    load: jest.fn(),
+    save: jest.fn(),
+    loadState: jest.fn(),
+    saveState: jest.fn(),
+    loadTombstones: jest.fn(),
+    saveTombstones: jest.fn(),
+    getInode: jest.fn(),
+    walkDescendants: jest.fn(actual.walkDescendants)
+  };
+});
+
+const realBufferChecksum = jest.requireActual('../../src/sync-engine/file-operations').calculateBufferChecksum;
+const STUB_STAT = { mtime: new Date('2024-01-01'), mtimeMs: 1704067200000, size: 100, mode: 0o644 };
 
 let syncEngine;
 
@@ -56,7 +72,8 @@ beforeEach(() => {
   jest.clearAllMocks();
 
   jest.isolateModules(() => {
-    syncEngine = require('../../src/sync-engine/index');
+    const { SyncEngine } = require('../../src/sync-engine/index');
+    syncEngine = new SyncEngine();
   });
 
   syncEngine.syncFolder = '/test/sync';
@@ -101,11 +118,12 @@ beforeEach(() => {
   nodeMapModule.saveState.mockResolvedValue();
   nodeMapModule.getInode.mockResolvedValue(12345);
 
-  // Spy the download/upload primitives so the tests assert intent without disk/network I/O.
-  syncEngine.downloadFile = jest.fn().mockResolvedValue();
-  syncEngine.downloadUploadFile = jest.fn().mockResolvedValue();
-  syncEngine.uploadUploadFile = jest.fn().mockResolvedValue();
-  syncEngine.uploadFile = jest.fn().mockResolvedValue();
+  // Everything that reads or writes local bytes goes through file-operations,
+  // which this suite mocks; the executor also stat()s the file for the
+  // modifiedAt it stamps on a server write, so that is mocked with the rest.
+  fileOps.readFileBuffer.mockImplementation(async (filePath) => Buffer.from(await fileOps.readFile(filePath)));
+  fileOps.calculateBufferChecksum.mockImplementation(realBufferChecksum);
+  jest.spyOn(require('fs').promises, 'stat').mockResolvedValue(STUB_STAT);
 });
 
 describe('Option D — new server files are downloaded, never deleted on restart', () => {
@@ -118,7 +136,10 @@ describe('Option D — new server files are downloaded, never deleted on restart
 
     await syncEngine.performInitialUploadSync();
 
-    expect(syncEngine.downloadUploadFile).toHaveBeenCalledWith('qa/records/1.json', 7001);
+    // The download runs through the executor now: one content GET for that node.
+    expect(apiClient.getNodeContent).toHaveBeenCalledWith(
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 7001
+    );
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
   });
 
@@ -130,7 +151,9 @@ describe('Option D — new server files are downloaded, never deleted on restart
 
     await syncEngine.performInitialSync();
 
-    expect(syncEngine.downloadFile).toHaveBeenCalledWith(8001, 'newpage.html');
+    expect(apiClient.getNodeContent).toHaveBeenCalledWith(
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 8001
+    );
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
   });
 
@@ -159,8 +182,11 @@ describe('Option D — offline deletes propagate (do not resurrect)', () => {
 
     await syncEngine.performInitialUploadSync();
 
-    expect(syncEngine.downloadUploadFile).not.toHaveBeenCalled();
-    expect(apiClient.deleteNode).toHaveBeenCalledWith('http://localhyperclay.com', 'hcsk_test', 7001, { cascade: false });
+    expect(apiClient.getNodeContent).not.toHaveBeenCalled();
+    expect(apiClient.deleteNode).toHaveBeenCalledWith(
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 7001,
+      expect.objectContaining({ expectedVersion: null })
+    );
   });
 });
 
@@ -186,19 +212,22 @@ describe('Folder safety — a failed local create never deletes the live server 
 
 describe('Option D — server-edit wins on delete conflict (uploads)', () => {
   test('upload deleted locally but edited on the server is re-downloaded, not deleted', async () => {
+    // The baseline is explicit: the remote etag moved off it, so the teammate's
+    // edit is restored instead of the local delete winning.
     syncEngine.lastSyncedAt = new Date('2024-01-01').getTime();
     syncEngine.repo.seed([
       ['7001', { type: 'upload', path: 'qa/records/1.json', checksum: 'c1', inode: 111, syncedAt: new Date('2024-01-01').getTime() }]
     ]);
-    // Server modifiedAt is AFTER our last sync of this record.
     apiClient.listNodes.mockResolvedValue([
-      { id: 7001, type: 'upload', name: '1.json', path: 'qa/records', checksum: 'c1', modifiedAt: '2024-07-01T00:00:00Z' }
+      { id: 7001, type: 'upload', name: '1.json', path: 'qa/records', checksum: 'c2', modifiedAt: '2024-07-01T00:00:00Z' }
     ]);
     fileOps.getLocalUploads.mockResolvedValue(new Map());
 
     await syncEngine.performInitialUploadSync();
 
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
-    expect(syncEngine.downloadUploadFile).toHaveBeenCalledWith('qa/records/1.json', '7001');
+    expect(apiClient.getNodeContent).toHaveBeenCalledWith(
+      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 7001
+    );
   });
 });

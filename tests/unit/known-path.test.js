@@ -1,5 +1,7 @@
 const { makeIsKnownPath } = require('../../src/main/utils/known-path');
 
+const ROOT_ID = 'root-1';
+
 function buildFs({ exists = true, throws = false } = {}) {
   return {
     existsSync: jest.fn((_p) => {
@@ -7,6 +9,10 @@ function buildFs({ exists = true, throws = false } = {}) {
       return exists;
     })
   };
+}
+
+function buildManager(sync) {
+  return { forRoot: jest.fn(() => sync) };
 }
 
 function buildSync({ isRunning = true, knownPaths = [], tombstones = [] } = {}) {
@@ -28,45 +34,55 @@ function buildSync({ isRunning = true, knownPaths = [], tombstones = [] } = {}) 
 
 describe('makeIsKnownPath', () => {
   test('allows save when sync engine is not running', () => {
-    const isKnown = makeIsKnownPath(buildSync({ isRunning: false }), buildFs({ exists: true }));
-    expect(isKnown('renamed.html', '/sync/renamed.html')).toBe(true);
+    const isKnown = makeIsKnownPath(
+      buildManager(buildSync({ isRunning: false })),
+      buildFs({ exists: true })
+    );
+    expect(isKnown('renamed.html', '/sync/renamed.html', ROOT_ID)).toBe(true);
   });
 
   test('allows save when file does not yet exist on disk (first write)', () => {
     const isKnown = makeIsKnownPath(
-      buildSync({ isRunning: true, knownPaths: [] }),
+      buildManager(buildSync({ isRunning: true, knownPaths: [] })),
       buildFs({ exists: false })
     );
-    expect(isKnown('new.html', '/sync/new.html')).toBe(true);
+    expect(isKnown('new.html', '/sync/new.html', ROOT_ID)).toBe(true);
   });
 
   test('allows save when path is tracked in repo', () => {
     const isKnown = makeIsKnownPath(
-      buildSync({ isRunning: true, knownPaths: ['site.html'] }),
+      buildManager(buildSync({ isRunning: true, knownPaths: ['site.html'] })),
       buildFs({ exists: true })
     );
-    expect(isKnown('site.html', '/sync/site.html')).toBe(true);
+    expect(isKnown('site.html', '/sync/site.html', ROOT_ID)).toBe(true);
   });
 
   test('blocks save when sync running, file exists on disk, but path not in repo (stale path)', () => {
     const isKnown = makeIsKnownPath(
-      buildSync({ isRunning: true, knownPaths: ['b/stale.html'] }),
+      buildManager(buildSync({ isRunning: true, knownPaths: ['b/stale.html'] })),
       buildFs({ exists: true })
     );
-    expect(isKnown('a/stale.html', '/sync/a/stale.html')).toBe(false);
+    expect(isKnown('a/stale.html', '/sync/a/stale.html', ROOT_ID)).toBe(false);
   });
 
   test('allows save when fs.existsSync throws (treat as new file)', () => {
     const isKnown = makeIsKnownPath(
-      buildSync({ isRunning: true, knownPaths: [] }),
+      buildManager(buildSync({ isRunning: true, knownPaths: [] })),
       buildFs({ throws: true })
     );
-    expect(isKnown('weird.html', '/sync/weird.html')).toBe(true);
+    expect(isKnown('weird.html', '/sync/weird.html', ROOT_ID)).toBe(true);
   });
 
   test('allows save when sync engine reference is missing', () => {
     const isKnown = makeIsKnownPath(null, buildFs({ exists: true }));
-    expect(isKnown('any.html', '/sync/any.html')).toBe(true);
+    expect(isKnown('any.html', '/sync/any.html', ROOT_ID)).toBe(true);
+  });
+
+  test('allows save when no engine is running for that root', () => {
+    const manager = { forRoot: jest.fn(() => null) };
+    const isKnown = makeIsKnownPath(manager, buildFs({ exists: true }));
+    expect(isKnown('a/stale.html', '/sync/a/stale.html', ROOT_ID)).toBe(true);
+    expect(manager.forRoot).toHaveBeenCalledWith(ROOT_ID);
   });
 
   // Stale tab after a real `mv`: the old path is gone from disk AND from the repo,
@@ -75,33 +91,33 @@ describe('makeIsKnownPath', () => {
   // creating a ghost node at the old URL.
   test('blocks save when path is tombstoned and file is gone from disk (stale tab after mv)', () => {
     const isKnown = makeIsKnownPath(
-      buildSync({ isRunning: true, knownPaths: ['b/stale.html'], tombstones: ['a/stale.html'] }),
+      buildManager(buildSync({ isRunning: true, knownPaths: ['b/stale.html'], tombstones: ['a/stale.html'] })),
       buildFs({ exists: false })
     );
-    expect(isKnown('a/stale.html', '/sync/a/stale.html')).toBe(false);
+    expect(isKnown('a/stale.html', '/sync/a/stale.html', ROOT_ID)).toBe(false);
   });
 
   test('blocks save when path is tombstoned even if a file still exists on disk', () => {
     const isKnown = makeIsKnownPath(
-      buildSync({ isRunning: true, knownPaths: ['b/stale.html'], tombstones: ['a/stale.html'] }),
+      buildManager(buildSync({ isRunning: true, knownPaths: ['b/stale.html'], tombstones: ['a/stale.html'] })),
       buildFs({ exists: true })
     );
-    expect(isKnown('a/stale.html', '/sync/a/stale.html')).toBe(false);
+    expect(isKnown('a/stale.html', '/sync/a/stale.html', ROOT_ID)).toBe(false);
   });
 
   test('allows save when tombstone absent and file not on disk (genuinely new file)', () => {
     const isKnown = makeIsKnownPath(
-      buildSync({ isRunning: true, knownPaths: [], tombstones: [] }),
+      buildManager(buildSync({ isRunning: true, knownPaths: [], tombstones: [] })),
       buildFs({ exists: false })
     );
-    expect(isKnown('new-page.html', '/sync/new-page.html')).toBe(true);
+    expect(isKnown('new-page.html', '/sync/new-page.html', ROOT_ID)).toBe(true);
   });
 
   test('tracked path wins over tombstone check (defensive — tombstone should have been cleared)', () => {
     const isKnown = makeIsKnownPath(
-      buildSync({ isRunning: true, knownPaths: ['x.html'], tombstones: ['x.html'] }),
+      buildManager(buildSync({ isRunning: true, knownPaths: ['x.html'], tombstones: ['x.html'] })),
       buildFs({ exists: true })
     );
-    expect(isKnown('x.html', '/sync/x.html')).toBe(true);
+    expect(isKnown('x.html', '/sync/x.html', ROOT_ID)).toBe(true);
   });
 });

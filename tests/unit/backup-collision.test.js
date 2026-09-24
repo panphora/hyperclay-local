@@ -49,12 +49,12 @@ describe('A7: backup filename collisions', () => {
       await createBackup(dir, 'my-site', `<html>version ${i}</html>`);
     }
 
-    const files = (await fs.readdir(path.join(dir, 'sites-versions', 'my-site'))).sort();
+    const files = (await fs.readdir(path.join(dir, '.hyperclay', 'versions', 'my-site'))).sort();
     expect(files).toHaveLength(11);
 
     // Every version survived, none overwrote another.
     const bodies = await Promise.all(
-      files.map((f) => fs.readFile(path.join(dir, 'sites-versions', 'my-site', f), 'utf8'))
+      files.map((f) => fs.readFile(path.join(dir, '.hyperclay', 'versions', 'my-site', f), 'utf8'))
     );
     expect(new Set(bodies).size).toBe(11);
   });
@@ -66,7 +66,7 @@ describe('A7: backup filename collisions', () => {
       Array.from({ length: 11 }, (_, i) => createBackup(dir, 'my-site', `<html>concurrent ${i}</html>`))
     );
 
-    const files = await fs.readdir(path.join(dir, 'sites-versions', 'my-site'));
+    const files = await fs.readdir(path.join(dir, '.hyperclay', 'versions', 'my-site'));
     expect(files).toHaveLength(11);
   });
 
@@ -80,7 +80,7 @@ describe('A7: backup filename collisions', () => {
     // Names are local time plus offset, so derive the stamp from the frozen
     // clock rather than hard-coding one machine's zone.
     const stamp = generateTimestamp();
-    const files = (await fs.readdir(path.join(dir, 'sites-versions', 'my-site'))).sort();
+    const files = (await fs.readdir(path.join(dir, '.hyperclay', 'versions', 'my-site'))).sort();
 
     expect(files).toContain(`${stamp}.html`);
     expect(files).toContain(`${stamp}-001.html`);
@@ -105,7 +105,7 @@ describe('A7: backup filename collisions', () => {
       await createBinaryBackup(dir, 'images/logo.png', Buffer.from([i]));
     }
 
-    const files = await fs.readdir(path.join(dir, 'sites-versions', 'images', 'logo'));
+    const files = await fs.readdir(path.join(dir, '.hyperclay', 'versions', 'images', 'logo'));
     expect(files).toHaveLength(5);
     expect(files.every((f) => f.endsWith('.png'))).toBe(true);
   });
@@ -146,7 +146,7 @@ describe('A7: the pruner handles collision-suffixed names', () => {
   });
 
   test('a same-millisecond burst is pruned down to the newest 20, keeping the newest', async () => {
-    const siteDir = path.join(dir, 'sites-versions', 'burst');
+    const siteDir = path.join(dir, '.hyperclay', 'versions', 'burst');
     await fs.mkdir(siteDir, { recursive: true });
 
     // 25 versions in one long-expired millisecond: past the 60-day window, so

@@ -13,6 +13,8 @@ jest.mock('livesync-hyperclay', () => ({
   liveSync: {
     subscribe: jest.fn(),
     unsubscribe: jest.fn(),
+    configure: jest.fn(),
+    onFrame: jest.fn(),
     broadcast: jest.fn(),
     notify: jest.fn(),
     markBrowserSave: jest.fn(),

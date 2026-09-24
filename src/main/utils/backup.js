@@ -15,6 +15,7 @@ const {
   compareNewestFirst
 } = require('./prune-versions');
 const { withFileLock } = require('./write-queue');
+const { VERSIONS_DIR } = require('./artifact-paths');
 const { canonicalizeBase, rebaseOntoCanonical, assertRealDirChain } = require('./real-dir-chain');
 
 /**
@@ -230,10 +231,10 @@ function maybePrune(baseDir, siteVersionsDir) {
  */
 async function createBackup(baseDir, siteName, content, emit, logger = null) {
   try {
-    const versionsDir = path.join(baseDir, 'sites-versions');
+    const versionsDir = path.join(baseDir, VERSIONS_DIR);
     const siteVersionsDir = path.join(versionsDir, siteName);
 
-    // Create sites-versions directory if it doesn't exist
+    // Create the versions directory if it doesn't exist
     await fs.mkdir(versionsDir, { recursive: true });
 
     // Create site-specific directory if it doesn't exist
@@ -248,7 +249,7 @@ async function createBackup(baseDir, siteName, content, emit, logger = null) {
     // rollback never mis-ranks the newest.
     const { filename: backupFilename, full: backupPath } =
       await publishVersion(siteVersionsDir, '.html', content, 'utf8');
-    console.log(`[BACKUP] Created: sites-versions/${siteName}/${backupFilename}`);
+    console.log(`[BACKUP] Created: ${VERSIONS_DIR}/${siteName}/${backupFilename}`);
 
     maybePrune(baseDir, siteVersionsDir);
 
@@ -316,7 +317,7 @@ async function createBackupIfExists(filePath, siteName, baseDir, emit, logger = 
  */
 async function createBinaryBackup(baseDir, uploadPath, content, emit, logger = null) {
   try {
-    const versionsDir = path.join(baseDir, 'sites-versions');
+    const versionsDir = path.join(baseDir, VERSIONS_DIR);
 
     // Get directory and filename from path
     const pathParts = uploadPath.split('/');
@@ -324,7 +325,7 @@ async function createBinaryBackup(baseDir, uploadPath, content, emit, logger = n
     const ext = path.extname(filename);
     const basename = path.basename(filename, ext);
 
-    // Build backup directory: sites-versions/uploads/<path>/<basename>/
+    // Build backup directory: <versions>/uploads/<path>/<basename>/
     const backupSubdir = pathParts.length > 0
       ? path.join(...pathParts, basename)
       : basename;
@@ -340,7 +341,7 @@ async function createBinaryBackup(baseDir, uploadPath, content, emit, logger = n
     // syncs collides on the instant just as easily as a burst of saves.
     const { filename: backupFilename, full: backupPath } =
       await publishVersion(uploadVersionsDir, ext, content, null);
-    console.log(`[BACKUP] Created: sites-versions/${backupSubdir}/${backupFilename}`);
+    console.log(`[BACKUP] Created: ${VERSIONS_DIR}/${backupSubdir}/${backupFilename}`);
 
     maybePrune(baseDir, uploadVersionsDir);
 

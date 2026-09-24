@@ -1,4 +1,4 @@
-// Retention for sites-versions/. Delete anything older than 60 days, always keep
+// Retention for .hyperclay/versions/. Delete anything older than 60 days, always keep
 // the newest 20 per site, and retain the UNION of those two sets.
 //
 // ORDERING IS A CORRECTNESS REQUIREMENT, NOT A NICETY. This is a delete path, so
@@ -22,6 +22,7 @@
 const fs = require('fs').promises;
 const path = require('upath');
 const { canonicalizeBase, rebaseOntoCanonical, assertRealDirChain } = require('./real-dir-chain');
+const { VERSIONS_DIR } = require('./artifact-paths');
 
 const MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000;
 const KEEP_NEWEST = 20;
@@ -100,9 +101,9 @@ function compareNewestFirst(a, b) {
  * Prune one site's versions directory.
  *
  * `baseDir` is the served folder; `siteVersionsDir` is its
- * sites-versions/<site> subtree. The chain from the served folder down to the
+ * .hyperclay/versions/<site> subtree. The chain from the served folder down to the
  * site directory is verified symlink-free on entry AND again immediately before
- * every unlink, so a directory symlink planted under sites-versions can never
+ * every unlink, so a directory symlink planted under .hyperclay can never
  * redirect a delete out of tree. A symlinked prefix refuses the prune (no-op
  * with a log line) — the accepted break.
  * @returns {{kept: number, deleted: string[]}}
@@ -166,23 +167,23 @@ async function pruneSiteVersions(baseDir, siteVersionsDir, now = Date.now()) {
   return { kept: keep.size, deleted };
 }
 
-/** Walk sites-versions/ and prune every site directory beneath it. */
+/** Walk .hyperclay/versions/ and prune every site directory beneath it. */
 async function pruneAllVersions(baseDir, now = Date.now()) {
   const results = { sites: 0, deleted: 0 };
 
-  // Verify the sites-versions root is a real directory before walking. A
-  // symlinked sites-versions refuses the whole sweep (the accepted break); a
-  // merely-absent one is a silent no-op.
+  // Verify the versions root is a real directory before walking. A
+  // symlinked .hyperclay/versions refuses the whole sweep (the accepted break);
+  // a merely-absent one is a silent no-op.
   let canonicalBase;
   try {
     canonicalBase = await canonicalizeBase(baseDir);
-    await assertRealDirChain(canonicalBase, path.join(canonicalBase, 'sites-versions'));
+    await assertRealDirChain(canonicalBase, path.join(canonicalBase, VERSIONS_DIR));
   } catch (error) {
-    console.warn(`[BACKUP] Refusing to prune sites-versions under ${baseDir} (non-fatal): ${error && error.message ? error.message : error}`);
+    console.warn(`[BACKUP] Refusing to prune ${VERSIONS_DIR} under ${baseDir} (non-fatal): ${error && error.message ? error.message : error}`);
     return results;
   }
 
-  const root = path.join(baseDir, 'sites-versions');
+  const root = path.join(baseDir, VERSIONS_DIR);
 
   async function walk(dir) {
     let entries;

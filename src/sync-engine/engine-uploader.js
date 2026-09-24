@@ -7,7 +7,6 @@
  */
 
 const path = require('upath');
-const { liveSync } = require('livesync-hyperclay');
 const { createBackupIfExists, createBinaryBackupIfExists } = require('../main/utils/backup');
 const { classifyError, formatErrorForLog } = require('./error-handler');
 const {
@@ -41,12 +40,13 @@ module.exports = {
    */
   // Path is passed in rather than looked up from serverFilesCache — uploadFile() invalidates that cache mid-loop, which used to break the next downloadFile in the same iteration.
   async downloadFile(nodeId, relativePath) {
+    const gen = this.generation;
     try {
       const { content, modifiedAt } = await getNodeContent(
-        this.serverUrl,
-        this.apiKey,
+        this.conn,
         nodeId
       );
+      if (gen !== this.generation) return;
 
       this.resolveContainedPath(relativePath);
       // A1/A3: canonical resolved path — the file to write AND the queue key.
@@ -80,7 +80,7 @@ module.exports = {
         await createBackupIfExists(localPath, siteName, this.syncFolder, this.emit.bind(this), this.logger);
 
         // liveSync channel key = full path with extension.
-        liveSync.markBrowserSave(relativePath);
+        this.live.markBrowserSave(relativePath);
 
         // Write file with server modification time (ensures directories exist)
         await writeFile(localPath, content, modifiedAt);
@@ -152,6 +152,7 @@ module.exports = {
    * @param {string} filename - Relative path WITH .html (may include folders)
    */
   async uploadFile(filename) {
+    const gen = this.generation;
     try {
       // Validate filename before uploading
       const validationResult = filename.includes('/')
@@ -223,21 +224,15 @@ module.exports = {
         }
       }
 
-      // Try to get cached snapshot (+ userDriven bit) for platform live sync.
-      // Lazy require — main/server.js may pull in Electron-only modules that
-      // can't load at top level during unit tests.
+      // Cached browser snapshot (+ userDriven bit) for platform live sync.
+      // The store is the engine's own: one per root, never the process-wide one.
       let snapshotHtml = null;
       let userDriven;
-      try {
-        const { getAndClearSnapshot } = require('../main/server.js');
-        const snap = getAndClearSnapshot(filename);
-        if (snap) {
-          snapshotHtml = snap.html;
-          userDriven = snap.userDriven;
-          console.log(`[SYNC] Including snapshot for platform live sync: ${filename}`);
-        }
-      } catch (err) {
-        // Server module not available or getAndClearSnapshot not exported
+      const snap = this.snapshots.take(filename);
+      if (snap) {
+        snapshotHtml = snap.html;
+        userDriven = snap.userDriven;
+        console.log(`[SYNC] Including snapshot for platform live sync: ${filename}`);
       }
 
       // Check repo for an existing nodeId for this file path
@@ -251,8 +246,7 @@ module.exports = {
       if (existingNodeId) {
         this.outbox.markInFlight('save', existingNodeId);
         result = await putNodeContent(
-          this.serverUrl,
-          this.apiKey,
+          this.conn,
           existingNodeId,
           content,
           {
@@ -262,6 +256,7 @@ module.exports = {
             userDriven
           }
         );
+        if (gen !== this.generation) return;
         result.nodeId = existingNodeId;
       } else {
         const pathParts = filename.split('/').filter(Boolean);
@@ -269,13 +264,14 @@ module.exports = {
         const folderPath = pathParts.slice(0, -1).join('/');
         const parentId = this.resolveParentIdByPath(folderPath);
 
-        const createdNode = await createNode(this.serverUrl, this.apiKey, {
+        const createdNode = await createNode(this.conn, {
           type: 'site',
           name,
           parentId,
           content,
           modifiedAt: stat.mtime
         });
+        if (gen !== this.generation) return;
         this.outbox.markInFlight('save', createdNode.id);
         result = { nodeId: createdNode.id };
       }
@@ -342,13 +338,14 @@ module.exports = {
    * Download an upload file from server
    */
   async downloadUploadFile(serverPath, nodeId) {
+    const gen = this.generation;
     this.resolveContainedPath(serverPath);
     try {
       const { content, modifiedAt } = await getNodeContent(
-        this.serverUrl,
-        this.apiKey,
+        this.conn,
         nodeId
       );
+      if (gen !== this.generation) return;
 
       const localPath = path.join(this.syncFolder, serverPath);
 
@@ -387,6 +384,7 @@ module.exports = {
    * Upload an upload file to server
    */
   async uploadUploadFile(relativePath) {
+    const gen = this.generation;
     try {
       // Validate path
       const validationResult = validateUploadPath(relativePath);
@@ -452,25 +450,26 @@ module.exports = {
       if (existingNodeId) {
         this.outbox.markInFlight('save', existingNodeId);
         await putNodeContent(
-          this.serverUrl,
-          this.apiKey,
+          this.conn,
           existingNodeId,
           content,
           { modifiedAt: stat.mtime }
         );
+        if (gen !== this.generation) return;
       } else {
         const pathParts = relativePath.split('/').filter(Boolean);
         const name = pathParts[pathParts.length - 1];
         const folderPath = pathParts.slice(0, -1).join('/');
         const parentId = this.resolveParentIdByPath(folderPath);
 
-        const createdNode = await createNode(this.serverUrl, this.apiKey, {
+        const createdNode = await createNode(this.conn, {
           type: 'upload',
           name,
           parentId,
           content,
           modifiedAt: stat.mtime
         });
+        if (gen !== this.generation) return;
         this.outbox.markInFlight('save', createdNode.id);
         resultNodeId = createdNode.id;
       }
@@ -502,6 +501,7 @@ module.exports = {
   },
 
   async createFolderOnServer(relativePath) {
+    const gen = this.generation;
     try {
       const pathParts = relativePath.split('/').filter(Boolean);
 
@@ -524,11 +524,12 @@ module.exports = {
       }
 
       console.log(`[SYNC] Creating folder on server: ${relativePath} (parentId=${parentId})`);
-      const createdNode = await createNode(this.serverUrl, this.apiKey, {
+      const createdNode = await createNode(this.conn, {
         type: 'folder',
         name,
         parentId
       });
+      if (gen !== this.generation) return;
 
       this.outbox.markInFlight('save', createdNode.id);
 

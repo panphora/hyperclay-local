@@ -47,7 +47,7 @@ describe('H4: a backup never publishes a partial version file', () => {
   test('a mid-write ENOSPC leaves no version file and the guard still returns the good backup', async () => {
     // A known-good version already exists.
     await createBackup(dir, 'notes', '<html>GOOD</html>');
-    const siteDir = path.join(dir, 'sites-versions', 'notes');
+    const siteDir = path.join(dir, '.hyperclay', 'versions', 'notes');
     const good = await versionsIn(siteDir);
     expect(good).toHaveLength(1);
 
@@ -57,7 +57,7 @@ describe('H4: a backup never publishes a partial version file', () => {
     // catches whichever name the publisher opens (the dot-prefixed temp today, a
     // direct final name in the old broken design).
     const realOpen = fs.open.bind(fs);
-    const siteNeedle = path.join('sites-versions', 'notes');
+    const siteNeedle = path.join('.hyperclay', 'versions', 'notes');
     jest.spyOn(fs, 'open').mockImplementation(async (p, ...rest) => {
       const handle = await realOpen(p, ...rest);
       if (String(p).includes(siteNeedle)) {
@@ -102,7 +102,7 @@ describe('H4: a backup never publishes a partial version file', () => {
 
     fs.link.mockRestore();
 
-    const siteDir = path.join(dir, 'sites-versions', 'notes');
+    const siteDir = path.join(dir, '.hyperclay', 'versions', 'notes');
     const versions = await versionsIn(siteDir);
     expect(versions).toHaveLength(1);
     // Rename moved the fully-written temp, so the published file is whole.
@@ -142,7 +142,7 @@ describe('H5: a clock rollback never mis-ranks the newest version', () => {
 
   test('a July->January rollback still ranks and keeps the actual newest write', async () => {
     useFrozenClock();
-    const siteDir = path.join(dir, 'sites-versions', 'notes');
+    const siteDir = path.join(dir, '.hyperclay', 'versions', 'notes');
 
     // 20 versions written in July.
     jest.setSystemTime(new Date('2026-07-15T12:00:00.000Z'));

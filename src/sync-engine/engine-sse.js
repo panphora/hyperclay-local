@@ -9,7 +9,6 @@
 
 const path = require('upath');
 const { EventSource } = require('eventsource');
-const { liveSync } = require('livesync-hyperclay');
 const { createBackupIfExists, createBinaryBackupIfExists } = require('../main/utils/backup');
 const dataGuard = require('../main/data-loss-guard');
 const { refreshDerivedArtifacts } = require('../main/utils/derived-artifacts');
@@ -27,12 +26,27 @@ const {
   writeFileBuffer,
   calculateBufferChecksum
 } = require('./file-operations');
-const { getNodeContent } = require('./api-client');
+const { syncUrl, authHeaders, getNodeContent } = require('./api-client');
 const { calculateChecksum, isLocalNewer } = require('./utils');
 const { SYNC_CONFIG } = require('./constants');
 const nodeMap = require('./node-map');
 const { getConsentRegistry, resolveWritePath } = require('../main/utils/path-resolver');
 const { withFileLock } = require('../main/utils/write-queue');
+
+/**
+ * The machine fields of a refused connect: the HTTP status, plus the `code` its
+ * JSON body carries (CONTRACTS §3). A body that is not JSON carries no code.
+ */
+async function readStreamRefusal(response) {
+  const refusal = { statusCode: response.status };
+  try {
+    const body = await response.clone().json();
+    if (body && body.code) refusal.code = body.code;
+  } catch {
+    // No parseable body: the status has to answer on its own.
+  }
+  return refusal;
+}
 
 module.exports = {
   async _applyRemoteFsChange(paths, fn) {
@@ -128,7 +142,7 @@ module.exports = {
       await ensureDirectory(path.dirname(localPath));
 
       // liveSync channel key = full path with extension (Rule 1 / Rule 2).
-      liveSync.markBrowserSave(localFilename);
+      this.live.markBrowserSave(localFilename);
 
       await writeFile(localPath, data.content, new Date(data.modifiedAt));
 
@@ -156,7 +170,7 @@ module.exports = {
 
     // Morph view-mode tabs with the just-persisted content. Edit-mode tabs get
     // the platform's live-sync relay (pre-strip snapshot) on the live lane.
-    liveSync.broadcast(localFilename, { html: data.content, sender: 'sync-engine' }, { lane: 'saved' });
+    this.live.broadcast(localFilename, { html: data.content, sender: 'sync-engine' }, { lane: 'saved' });
 
     console.log(`[SYNC] SSE node-saved: Wrote site ${localFilename}`);
     this.stats.filesDownloaded++;
@@ -182,6 +196,7 @@ module.exports = {
   },
 
   async _applyNodeSavedUpload(data) {
+    const gen = this.generation;
     const localFilename = data.path;
     this.resolveContainedPath(localFilename);
     const localPath = path.join(this.syncFolder, localFilename);
@@ -206,7 +221,8 @@ module.exports = {
     }
 
     console.log(`[SYNC] SSE node-saved: fetching upload content for nodeId ${data.nodeId}`);
-    const fetched = await getNodeContent(this.serverUrl, this.apiKey, data.nodeId);
+    const fetched = await getNodeContent(this.conn, data.nodeId);
+    if (gen !== this.generation) return;
 
     await createBinaryBackupIfExists(localPath, localFilename, this.syncFolder, this.emit.bind(this), this.logger);
 
@@ -525,31 +541,48 @@ module.exports = {
   },
 
   /**
-   * Connect to SSE stream for real-time sync notifications
+   * The session's stream adapter (C3 §5.6): one EventSource per session, frames
+   * parsed here and handed to `onFrame` as `{ data }`, failures handed to
+   * `onError`. A refused connect carries the refusal's HTTP status and the
+   * body's `code` (CONTRACTS §3), so a 402 or 403 at connect goes through the
+   * same classifier as a 402 or 403 on a request; a network error stays
+   * status-less and means offline.
+   *
+   * A protocol 1 stream never sends `sync-ready`, so its connect is the ready
+   * signal: the adapter hands over one synthetic frame on open.
    */
-  connectToStream() {
-    if (this.sseConnection) {
-      this.sseConnection.close();
-      this.sseConnection = null;
-    }
+  sessionStream() {
+    return {
+      open: (options) => this.openStream(options),
+      close: () => this.closeStream(),
+    };
+  },
 
-    if (this.sseReconnectTimer) {
-      clearTimeout(this.sseReconnectTimer);
-      this.sseReconnectTimer = null;
-    }
+  openStream({ signal, onFrame, onError } = {}) {
+    this.closeStream();
 
-    const url = `${this.serverUrl}/_/sync/stream`;
+    if (signal && signal.aborted) return;
+    if (signal) signal.addEventListener('abort', () => this.closeStream(), { once: true });
+
+    const url = syncUrl(this.conn, '/stream');
     console.log(`[SYNC] Connecting to SSE stream: ${url}`);
 
-    const apiKey = this.apiKey;
+    const headers = authHeaders(this.conn);
+    this.streamFrame = onFrame;
+    this.streamError = onError;
+
     this.sseConnection = new EventSource(url, {
-      fetch: (input, init) => fetch(input, {
-        ...init,
-        headers: {
-          ...init.headers,
-          'X-API-Key': apiKey
-        }
-      })
+      fetch: async (input, init) => {
+        const response = await fetch(input, {
+          ...init,
+          headers: {
+            ...init.headers,
+            ...headers
+          }
+        });
+        if (!response.ok) this.streamRefusal = await readStreamRefusal(response);
+        return response;
+      }
     });
 
     this.sseConnection.onopen = () => {
@@ -559,36 +592,19 @@ module.exports = {
       if (this.logger) {
         this.logger.info('SSE', 'Stream connected');
       }
+      if (this.protocol !== 2) {
+        this.deliverStreamFrame({ type: 'sync-ready', sync: { enabled: true, reason: null } });
+      }
     };
 
-    const sseDispatch = {
-      'live-sync': async (data) => {
-        const { file, html, sender } = data;
-        if (sender === this.deviceId) {
-          console.log(`[SYNC] SSE: Ignoring own live-sync for ${file}`);
-          return;
-        }
-        console.log(`[SYNC] SSE: Received live-sync for ${file} from ${sender}`);
-        liveSync.broadcast(file, { html, sender });
-        if (this.logger) this.logger.success('SSE', 'Relayed live-sync to local browsers', { file });
-      },
-      'node-saved':   async (data) => this.handleNodeSaved(data),
-      'node-renamed': async (data) => this.handleNodeRenamed(data),
-      'node-moved':   async (data) => this.handleNodeMoved(data),
-      'node-deleted': async (data) => this.handleNodeDeleted(data),
-      'control':      async (data) => this.handleControlFrame(data)
-    };
-
-    this.sseConnection.onmessage = async (event) => {
-      if (!this.isRunning) return;
+    this.sseConnection.onmessage = (event) => {
       this.lastSseActivity = Date.now();
 
       let parsedType = 'unknown';
       try {
         const data = JSON.parse(event.data);
         parsedType = data.type || 'live-sync';
-        const handler = sseDispatch[parsedType];
-        if (handler) await handler(data);
+        this.deliverStreamFrame(data);
       } catch (error) {
         console.error('[SYNC] SSE: Error processing message:', error.message);
         if (this.logger) {
@@ -602,32 +618,116 @@ module.exports = {
     };
 
     this.sseConnection.onerror = (error) => {
-      console.error('[SYNC] SSE stream error:', error.message || 'Connection error');
-      if (this.logger) {
-        this.logger.error('SSE', 'Stream error', {
-          error: error.message || 'Connection error',
-          willReconnect: this.isRunning && !this.sseReconnectTimer,
-          reconnectDelayMs: 5000
-        });
-      }
-
-      // Only attempt reconnect if we're still running
-      if (this.isRunning && !this.sseReconnectTimer) {
-        console.log('[SYNC] SSE: Will reconnect in 5 seconds...');
-        this.sseReconnectTimer = setTimeout(() => {
-          this.sseReconnectTimer = null;
-          if (this.isRunning) {
-            this.connectToStream();
-          }
-        }, 5000);
-      }
+      const refusal = this.streamRefusal;
+      this.streamRefusal = null;
+      if (this.streamError) return this.streamError(refusal || error);
+      return this.reconnectStream(error);
     };
   },
 
   /**
-   * Disconnect from SSE stream
+   * Hand one frame to the session runner. `sync-ready` is also when everything
+   * this session cached stops being newer than the stream, so the engine stamps
+   * it before the frame is delivered.
    */
-  disconnectStream() {
+  deliverStreamFrame(data) {
+    if (data && data.type === 'sync-ready') this.syncReadyAt = Date.now();
+    if (!this.streamFrame) return;
+
+    try {
+      const delivered = this.streamFrame({ data });
+      if (delivered && typeof delivered.catch === 'function') {
+        delivered.catch((error) => this.reportStreamFrameError(data, error));
+      }
+    } catch (error) {
+      this.reportStreamFrameError(data, error);
+    }
+  },
+
+  reportStreamFrameError(data, error) {
+    console.error('[SYNC] SSE: Error processing message:', error.message);
+    if (this.logger) {
+      this.logger.error('SSE', 'Error processing stream message', {
+        error,
+        messageType: data ? data.type : 'unknown',
+      });
+    }
+  },
+
+  /** The legacy frame dispatch: per-op handlers, still used without a runner. */
+  async handleStreamFrame(data) {
+    if (!this.isRunning) return;
+    if (data.type === 'sync-ready' || data.type === 'account-changed') return;
+
+    const sseDispatch = {
+      'live-sync': async (frame) => this.relayLiveFrame(frame),
+      'node-saved':   async (frame) => this.handleNodeSaved(frame),
+      'node-renamed': async (frame) => this.handleNodeRenamed(frame),
+      'node-moved':   async (frame) => this.handleNodeMoved(frame),
+      'node-deleted': async (frame) => this.handleNodeDeleted(frame),
+      'control':      async (frame) => this.handleControlFrame(frame)
+    };
+
+    const handler = sseDispatch[data.type || 'live-sync'];
+    if (handler) await handler(data);
+  },
+
+  /**
+   * Relay another device's live-sync frame to the browsers this root serves.
+   * Our own echo is dropped; the frame's body is only ever relayed, never
+   * written to disk.
+   */
+  relayLiveFrame(data) {
+    const { file, html, sender } = data || {};
+    if (sender === this.deviceId) {
+      console.log(`[SYNC] SSE: Ignoring own live-sync for ${file}`);
+      return;
+    }
+    console.log(`[SYNC] SSE: Received live-sync for ${file} from ${sender}`);
+    this.live.broadcast(file, { html, sender });
+    if (this.logger) this.logger.success('SSE', 'Relayed live-sync to local browsers', { file });
+  },
+
+  /**
+   * Retry the legacy connection after a failure. A session with a runner owns
+   * its stream through the adapter above instead: the runner's classifier
+   * decides between backoff, pause and rediscover.
+   */
+  reconnectStream(error) {
+    console.error('[SYNC] SSE stream error:', error.message || 'Connection error');
+    if (this.logger) {
+      this.logger.error('SSE', 'Stream error', {
+        error: error.message || 'Connection error',
+        willReconnect: this.isRunning && !this.sseReconnectTimer,
+        reconnectDelayMs: 5000
+      });
+    }
+
+    if (this.isRunning && !this.sseReconnectTimer) {
+      console.log('[SYNC] SSE: Will reconnect in 5 seconds...');
+      this.sseReconnectTimer = setTimeout(() => {
+        this.sseReconnectTimer = null;
+        if (this.isRunning) {
+          this.connectToStream();
+        }
+      }, 5000);
+    }
+  },
+
+  /** The legacy transport: the op handlers above consume the stream. */
+  connectToStream() {
+    this.openStream({
+      onFrame: (frame) => this.handleStreamFrame(frame.data),
+      onError: (error) => this.reconnectStream(error),
+    });
+  },
+
+  /**
+   * Close the session's stream: connection, watchdog and reconnect timer. The
+   * frames and error sink are dropped with it, so a late frame after a pause
+   * reaches nobody.
+   */
+  closeStream() {
     if (this.sseWatchdog) {
       clearInterval(this.sseWatchdog);
       this.sseWatchdog = null;
@@ -638,11 +738,22 @@ module.exports = {
       this.sseReconnectTimer = null;
     }
 
+    this.streamFrame = null;
+    this.streamError = null;
+    this.streamRefusal = null;
+
     if (this.sseConnection) {
       this.sseConnection.close();
       this.sseConnection = null;
       console.log('[SYNC] SSE stream disconnected');
     }
+  },
+
+  /**
+   * Disconnect from SSE stream
+   */
+  disconnectStream() {
+    this.closeStream();
   },
 
   /**
@@ -661,11 +772,14 @@ module.exports = {
 
       const elapsed = Date.now() - this.lastSseActivity;
       if (elapsed > WATCHDOG_TIMEOUT) {
-        console.log(`[SYNC] SSE watchdog: no activity for ${Math.round(elapsed / 1000)}s, checking for remote changes`);
+        console.log(`[SYNC] SSE watchdog: no activity for ${Math.round(elapsed / 1000)}s, restarting the session`);
         if (this.logger) {
           this.logger.info('SSE', 'Watchdog triggered - no activity', { elapsed });
         }
-        this.checkForRemoteChanges();
+        // A silent stream is no evidence of what changed: restart the whole
+        // generation (C3 §5.6), which reconciles everything from scratch.
+        if (this.runner) this.runner.start();
+        else this.checkForRemoteChanges();
         this.lastSseActivity = Date.now(); // Reset to avoid repeated triggers
       }
     }, CHECK_INTERVAL);
@@ -711,6 +825,8 @@ module.exports = {
       return;
     }
 
+    const gen = this.generation;
+
     try {
       // Log poll check start
       if (this.logger) {
@@ -720,7 +836,7 @@ module.exports = {
       const serverFiles = await this.fetchAndCacheServerFiles(0);
 
       // Check if sync was stopped during the fetch
-      if (!this.isRunning) {
+      if (!this.isRunning || gen !== this.generation) {
         return;
       }
 
@@ -778,6 +894,7 @@ module.exports = {
       if (!this.isRunning) return;
 
       const serverUploads = await this.fetchAndCacheServerUploads(10_000);
+      if (gen !== this.generation) return;
       const localUploads = await getLocalUploads(this.syncFolder);
 
       await this.repo.apply(async (map) => {

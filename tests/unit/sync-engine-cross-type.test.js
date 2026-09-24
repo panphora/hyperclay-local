@@ -30,13 +30,29 @@ jest.mock('../../src/main/utils/utils', () => ({
 
 jest.mock('../../src/sync-engine/api-client');
 jest.mock('../../src/sync-engine/file-operations');
-jest.mock('../../src/sync-engine/node-map');
+jest.mock('../../src/sync-engine/node-map', () => {
+  const actual = jest.requireActual('../../src/sync-engine/node-map');
+  return {
+    ...actual,
+    load: jest.fn(),
+    save: jest.fn(),
+    loadState: jest.fn(),
+    saveState: jest.fn(),
+    loadTombstones: jest.fn(),
+    saveTombstones: jest.fn(),
+    getInode: jest.fn(),
+    walkDescendants: jest.fn(actual.walkDescendants)
+  };
+});
 
 // upath, not path: every src/sync-engine module builds paths with upath, so an
 // expectation built with Node's path asserts backslashes on Windows against the
 // forward slashes the code actually produces.
 const path = require('upath');
+const realBufferChecksum = jest.requireActual('../../src/sync-engine/file-operations').calculateBufferChecksum;
+const STUB_STAT = { mtime: new Date('2024-01-01'), mtimeMs: 1704067200000, size: 100, mode: 0o644 };
 const fileOps = require('../../src/sync-engine/file-operations');
+const apiClient = require('../../src/sync-engine/api-client');
 const nodeMapModule = require('../../src/sync-engine/node-map');
 const Outbox = require('../../src/sync-engine/state/outbox');
 const CascadeSuppression = require('../../src/sync-engine/state/cascade-suppression');
@@ -47,7 +63,8 @@ beforeEach(() => {
   jest.clearAllMocks();
 
   jest.isolateModules(() => {
-    syncEngine = require('../../src/sync-engine/index');
+    const { SyncEngine } = require('../../src/sync-engine/index');
+    syncEngine = new SyncEngine();
   });
 
   syncEngine.syncFolder = '/tmp/test-sync';
@@ -59,7 +76,15 @@ beforeEach(() => {
   fileOps.moveFile.mockResolvedValue();
   fileOps.ensureDirectory.mockResolvedValue();
   fileOps.fileExists.mockResolvedValue(false);
+  fileOps.writeFile.mockResolvedValue();
+  fileOps.readFile.mockResolvedValue('<html>content</html>');
   nodeMapModule.getInode.mockResolvedValue(12345);
+
+  // Everything that reads or writes local bytes goes through file-operations,
+  // which this suite mocks; the executor also stat()s the file for the
+  // modifiedAt it stamps on a server write, so that is mocked with the rest.
+  fileOps.calculateBufferChecksum.mockImplementation(realBufferChecksum);
+  jest.spyOn(require('fs').promises, 'stat').mockResolvedValue(STUB_STAT);
   nodeMapModule.save.mockResolvedValue();
   nodeMapModule.load.mockResolvedValue(new Map());
   nodeMapModule.loadState.mockResolvedValue({});
@@ -193,11 +218,15 @@ describe('Cross-type: processQueue dispatches correctly for mixed nodeMap entrie
     createFolderSpy.mockRestore();
   });
 
-  it('routes a site add to uploadFile', async () => {
+  it('decides a site add into a site node', async () => {
+    syncEngine.repo._map.set('10', { type: 'folder', path: 'projects', parentId: 0 });
     syncEngine.repo._map.set('11', { type: 'site', path: 'projects/index.html' });
     syncEngine.isRunning = true;
 
-    const uploadFileSpy = jest.spyOn(syncEngine, 'uploadFile').mockResolvedValue();
+    fileOps.fileExists.mockResolvedValue(true);
+    fileOps.readFileBuffer.mockResolvedValue(Buffer.from('<html>index</html>'));
+    apiClient.listNodes.mockResolvedValue([]);
+    apiClient.createNode.mockResolvedValue({ id: 21, type: 'site', name: 'index.html', parentId: 10 });
 
     syncEngine.syncQueue = {
       isProcessingQueue: jest.fn().mockReturnValue(false),
@@ -212,15 +241,21 @@ describe('Cross-type: processQueue dispatches correctly for mixed nodeMap entrie
 
     await syncEngine.processQueue();
 
-    expect(uploadFileSpy).toHaveBeenCalledWith('projects/index.html');
-    uploadFileSpy.mockRestore();
+    expect(apiClient.createNode).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ type: 'site', name: 'index.html' })
+    );
   });
 
-  it('routes an upload add to uploadUploadFile', async () => {
+  it('decides an upload add into an upload node', async () => {
+    syncEngine.repo._map.set('10', { type: 'folder', path: 'projects', parentId: 0 });
     syncEngine.repo._map.set('12', { type: 'upload', path: 'projects/image.png' });
     syncEngine.isRunning = true;
 
-    const uploadUploadFileSpy = jest.spyOn(syncEngine, 'uploadUploadFile').mockResolvedValue();
+    fileOps.fileExists.mockResolvedValue(true);
+    fileOps.readFileBuffer.mockResolvedValue(Buffer.from('png-bytes'));
+    apiClient.listNodes.mockResolvedValue([]);
+    apiClient.createNode.mockResolvedValue({ id: 22, type: 'upload', name: 'image.png', parentId: 10 });
 
     syncEngine.syncQueue = {
       isProcessingQueue: jest.fn().mockReturnValue(false),
@@ -235,7 +270,9 @@ describe('Cross-type: processQueue dispatches correctly for mixed nodeMap entrie
 
     await syncEngine.processQueue();
 
-    expect(uploadUploadFileSpy).toHaveBeenCalledWith('projects/image.png');
-    uploadUploadFileSpy.mockRestore();
+    expect(apiClient.createNode).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ type: 'upload', name: 'image.png' })
+    );
   });
 });

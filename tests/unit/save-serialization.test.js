@@ -80,7 +80,7 @@ describe('A1: concurrent /save requests', () => {
   });
 
   test('the interleaved-read window is closed: the first-save branch runs once', async () => {
-    // THE bug this item exists to prevent. The handler reads sites-versions to
+    // THE bug this item exists to prevent. The handler reads .hyperclay/versions to
     // decide isFirstSave, then writes to it. Serializing only the write would
     // let both requests read "no versions yet", both take the isFirstSave
     // branch, and both back up the pre-existing body from the same stale base.
@@ -129,8 +129,8 @@ describe('A5: the guard pins its recovery body in its own storage', () => {
     jest.restoreAllMocks();
   });
 
-  test('the pinned path is under the guard directory, never sites-versions', async () => {
-    // With no pre-write body available, the guard used to pin a sites-versions
+  test('the pinned path is under the guard directory, never .hyperclay/versions', async () => {
+    // With no pre-write body available, the guard used to pin a versions
     // path — a file the retention pruner is free to delete out from under it.
     await createBackup(dir, 'index', '<html><body>LAST GOOD</body></html>');
 
@@ -146,7 +146,7 @@ describe('A5: the guard pins its recovery body in its own storage', () => {
     await createBackup(dir, 'index', '<html><body>LAST GOOD</body></html>');
     const pinned = await dataGuard._captureRecoverPath(dir, 'index.html', null);
 
-    await fs.rm(path.join(dir, 'sites-versions'), { recursive: true, force: true });
+    await fs.rm(path.join(dir, '.hyperclay', 'versions'), { recursive: true, force: true });
 
     expect(await fs.readFile(pinned, 'utf8')).toBe('<html><body>LAST GOOD</body></html>');
   });

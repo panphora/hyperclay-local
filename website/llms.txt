@@ -105,7 +105,7 @@ Paths are rejected before they touch the filesystem: no `\`, no `\0`, no absolut
 `.` or `..` segments, no segment longer than 255 characters, and any segment beginning with
 `.` returns 404. `sites-versions` is a reserved first segment and is never served.
 
-All system routes live under the `/_/` marker: `save`, `sync`, `live-sync`, `bus`,
+All system routes live under the `/_/` marker: `save`, `sync`, `live-sync`, `wire`,
 `data-loss`, `api`, `meta`, `upload`. Anything else under `/_/` returns 404, so `/_/foo.html`
 can never fall through and be served as a document.
 
@@ -623,30 +623,21 @@ named for the first 12 hex characters of the SHA-256 of the folder's absolute pa
 
 Tombstones expire after 7 days. All three are written temp file plus rename.
 
-## The local message bus
+## The wire
 
-An in-process publish and subscribe bus, provided by `@panphora/hyper-wire`, that lets a page
-talk to a handler process running on the same machine. It stores nothing and executes
-nothing itself.
+A page asks a program on this machine to edit the file it is running from, and watches the
+change arrive the same way any other file change does. No HTML travels on the wire in either
+direction; the file is the only thing the two sides share.
 
 ```
-GET  /_/bus/subscribe?channel=ai-edit         (Server-Sent Events)
-POST /_/bus/send                              {"channel","type","v","payload","sender"}
+GET  /_/wire/subscribe?file=notes.htmlclay   (Server-Sent Events; the program side adds ?role=handler)
+POST /_/wire/send                            {"v","type","id","file","text","payload"}
 ```
 
-`POST /_/bus/send` answers `{"delivered": <subscriber count>}`. A missing or invalid channel
-name returns 400. The body limit is 10 MB. Both lanes require the `/_/` prefix, so a real
-user folder named `bus` is still served as a folder, and both refuse a non-loopback `Host`
-header.
-
-The app ships one built-in bus handler, `ai-edit`, served on the channel `ai-edit` with at
-most 2 concurrent requests. It takes an element's HTML and a comment and streams back a
-revised element. The leading `@word` of the comment picks the agent: `@claude` (the
-default), `@fable`, `@codex`, `@agy`, or any engine you define under `settings.aiEdit.engines`
-as a command. `@page` is a context token, not an engine, and an unknown leading `@word` is an
-error rather than a silent fallback. An agent command comes only from settings; a bus payload
-can never name one. Toggle the whole plugin from the tray ("Disable AI Editing") or with
-`settings.aiEdit.enabled`.
+A frame's `type` starts with `wire/`, and a request ends with exactly one terminal frame
+(`wire/done` or `wire/error`). Both lanes require the `/_/` prefix, so a real user folder named
+`wire` is still served as a folder, and both refuse a non-loopback `Host` header. The full
+protocol is in htmlclay's `docs/wire.md`.
 
 ## Files the app writes
 
@@ -706,8 +697,8 @@ Right-click the tray icon, or use the popover's Options button:
 ## Offline behavior
 
 Everything except cloud sync works with no network at all: serving, saving, version
-backups, uploads, the data API, the data-clobber guard, the message bus, live sync between
-local tabs, and Tailwind compilation, which runs from bundled dependencies and never fetches
+backups, uploads, the data API, the data-clobber guard, the wire, live sync between local
+tabs, and Tailwind compilation, which runs from bundled dependencies and never fetches
 anything.
 
 Two things do reach the internet on their own. The update check hits jsDelivr on launch and,

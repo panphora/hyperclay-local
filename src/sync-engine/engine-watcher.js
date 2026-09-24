@@ -1,15 +1,15 @@
 /**
- * Local filesystem watcher and reaction to local changes.
+ * Local filesystem changes and reaction to them.
  *
- * Covers the chokidar setup, the raw event shims, rename/move correlation
- * via pending-unlink tracking, folder cascade suppression, content-based
- * folder identity resolution, and per-type handlers that forward into the
- * queue or folder create. Methods are installed onto SyncEngine.prototype.
+ * The chokidar watcher belongs to the root's RootObserver; this module
+ * subscribes to its `raw` feed (building a private observer when the caller
+ * passed none) and covers the raw event shims, rename/move correlation via
+ * pending-unlink tracking, folder cascade suppression, content-based folder
+ * identity resolution, and per-type handlers that forward into the queue or
+ * folder create. Methods are installed onto SyncEngine.prototype.
  */
 
 const path = require('upath');
-const chokidar = require('chokidar');
-const { liveSync } = require('livesync-hyperclay');
 const { formatErrorForLog } = require('./error-handler');
 const {
   readFile,
@@ -17,45 +17,31 @@ const {
   calculateBufferChecksum
 } = require('./file-operations');
 const { calculateChecksum } = require('./utils');
-const { SYNC_CONFIG } = require('./constants');
 const { classifyPath, ancestorPaths } = require('./path-helpers');
 const nodeMap = require('./node-map');
 const fs = require('fs/promises');
-const dataGuard = require('../main/data-loss-guard');
+const { RootObserver } = require('../main/root-observer');
 
 module.exports = {
   startUnifiedWatcher() {
-    this.watcher = chokidar.watch('**/*', {
-      cwd: this.syncFolder,
-      persistent: true,
-      ignoreInitial: true,
-      followSymlinks: false,
-      ignored: [
-        '**/node_modules/**',
-        '**/sites-versions/**',
-        '**/tailwindcss/**',
-        '**/.*',
-        '**/.*/**',
-        '**/.DS_Store',
-        '**/Thumbs.db',
-        '**/.trash/**'
-      ],
-      awaitWriteFinish: SYNC_CONFIG.FILE_STABILIZATION
-    });
+    let observer = this.observer;
+    if (!observer) {
+      observer = new RootObserver({ path: this.syncFolder }, { live: this.live });
+      observer.setRemoteApplyCheck((rel) => this.isRecentRemoteApply(rel));
+      observer.start();
+      this.privateObserver = observer;
+    }
 
-    this.watcher
-      .on('add',       (filename) => this._onAdd(filename))
-      .on('addDir',    (dirname)  => this._onAddDir(dirname))
-      .on('change',    (filename) => this._onChange(filename))
-      .on('unlink',    (filename) => this._onUnlink(filename))
-      .on('unlinkDir', (dirname)  => this._onUnlinkDir(dirname))
-      .on('error', (error) => {
-        console.error('[SYNC] Watcher error:', error);
-        this.stats.errors.push(formatErrorForLog(error, { action: 'watcher' }));
-        if (this.logger) {
-          this.logger.error('WATCHER', 'File watcher error', { error });
-        }
-      });
+    this._subscribedObserver = observer;
+    this._disposeObserver = observer.subscribe(({ event, rel }) => this._dispatchRaw(event, rel));
+    this._onObserverError = (error) => {
+      console.error('[SYNC] Watcher error:', error);
+      this.stats.errors.push(formatErrorForLog(error, { action: 'watcher' }));
+      if (this.logger) {
+        this.logger.error('WATCHER', 'File watcher error', { error });
+      }
+    };
+    observer.on('error', this._onObserverError);
 
     console.log('[SYNC] Unified watcher started (sites + uploads + folders)');
 
@@ -63,6 +49,18 @@ module.exports = {
       this.logger.info('WATCHER', 'Unified watcher started', {
         syncFolder: this.logger.sanitizePath(this.syncFolder)
       });
+    }
+  },
+
+  // --- Observer feed ---
+
+  _dispatchRaw(event, rel) {
+    switch (event) {
+      case 'add': return this._onAdd(rel);
+      case 'addDir': return this._onAddDir(rel);
+      case 'change': return this._onChange(rel);
+      case 'unlink': return this._onUnlink(rel);
+      case 'unlinkDir': return this._onUnlinkDir(rel);
     }
   },
 
@@ -823,36 +821,27 @@ module.exports = {
 
   // --- Type-specific handlers ---
 
+  // The root observer pushes external edits to tabs and runs the data-loss
+  // guard for every served root, with or without sync. These handlers only
+  // feed the sync queue.
   _handleSiteAdd(normalizedPath) {
     console.log(`[SYNC] Site added: ${normalizedPath}`);
     this.queueSync('add', normalizedPath);
-
-    if (!liveSync.wasBrowserSave(normalizedPath)) {
-      liveSync.notify(normalizedPath, {
-        msgType: 'info',
-        msg: 'New file created',
-        action: 'reload'
-      });
-    }
   },
 
   async _handleSiteChange(normalizedPath) {
-    // Walk repo once for both checksum comparison AND nodeId resolution
     let storedChecksum = null;
-    let foundNodeId = null;
-    for (const [nid, entry] of this.repo) {
+    for (const [, entry] of this.repo) {
       if (entry.path === normalizedPath && entry.type === 'site') {
         storedChecksum = entry.checksum;
-        foundNodeId = nid;
         break;
       }
     }
 
     // Content comparison: skip if file content hasn't actually changed
-    let newContent = null;
     try {
       const localPath = path.join(this.syncFolder, normalizedPath);
-      newContent = await readFile(localPath);
+      const newContent = await readFile(localPath);
       const newChecksum = await calculateChecksum(newContent);
 
       if (storedChecksum && storedChecksum === newChecksum) {
@@ -865,42 +854,6 @@ module.exports = {
 
     console.log(`[SYNC] Site changed: ${normalizedPath}`);
     this.queueSync('change', normalizedPath);
-
-    // Toast suppression: don't notify the browser if this change is the local
-    // observation of an SSE-driven save we just applied.
-    const recentSseSave = foundNodeId && this.echoWindow.isRecent('site', foundNodeId);
-    if (!liveSync.wasBrowserSave(normalizedPath) && !recentSseSave) {
-      liveSync.notify(normalizedPath, {
-        msgType: 'warning',
-        msg: 'File changed on disk',
-        action: 'reload',
-        persistent: true
-      });
-
-      // External edit (e.g. a code editor save): morph view-mode tabs with the
-      // new on-disk content. Edit-mode tabs keep the reload toast above — a
-      // silent morph there could clobber unsaved in-page work.
-      if (newContent != null) {
-        const externalHtml = typeof newContent === 'string' ? newContent : newContent.toString('utf8');
-        liveSync.broadcast(normalizedPath, { html: externalHtml, sender: 'file-watcher' }, { lane: 'saved' });
-      }
-
-      // Data-clobber guard: this is a genuine EXTERNAL raw write (not a browser
-      // save, not an SSE-applied save). The raw watcher has only the new bytes,
-      // not the old body, so detection runs against the private guard baseline.
-      if (newContent != null) {
-        const html = typeof newContent === 'string' ? newContent : newContent.toString('utf8');
-        dataGuard.runDataLossGuard({
-          baseDir: this.syncFolder,
-          name: normalizedPath,
-          newHtml: html,
-          prevContent: null,
-          prov: 'external',
-        }).catch(err => console.error('[data-guard] watcher guard error:', err && err.message ? err.message : err));
-      }
-    } else if (recentSseSave) {
-      console.log(`[SYNC] Suppressing toast for ${normalizedPath} (recent SSE node-saved)`);
-    }
   },
 
   _handleUploadAdd(normalizedPath) {

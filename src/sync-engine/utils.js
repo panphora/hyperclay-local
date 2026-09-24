@@ -4,6 +4,7 @@
 
 const crypto = require('crypto');
 const { SYNC_CONFIG } = require('./constants');
+const { syncUrl, authHeaders } = require('./api-client');
 
 /**
  * Calculate file checksum
@@ -60,12 +61,10 @@ function isFutureFile(mtime, clockOffset) {
 /**
  * Calibrate local clock with server
  */
-async function calibrateClock(serverUrl, apiKey, logger = null) {
+async function calibrateClock(conn, logger = null) {
   try {
-    const response = await fetch(`${serverUrl}/_/sync/status`, {
-      headers: {
-        'X-API-Key': apiKey
-      }
+    const response = await fetch(syncUrl(conn, '/status'), {
+      headers: authHeaders(conn)
     });
 
     if (!response.ok) {
@@ -92,10 +91,26 @@ async function calibrateClock(serverUrl, apiKey, logger = null) {
   }
 }
 
+/**
+ * Read (and clear) what this root's server owes the platform for a file: the
+ * live-sync snapshot from /live-sync/save, plus the userDriven bit from /save.
+ * Lazy require — main/server.js pulls in Electron-only modules that cannot
+ * load at the top level during unit tests, and a missing server is not an error.
+ */
+function getLegacySnapshot(rel) {
+  try {
+    const { getAndClearSnapshot } = require('../main/server.js');
+    return getAndClearSnapshot(rel);
+  } catch (err) {
+    return null;
+  }
+}
+
 module.exports = {
   calculateChecksum,
   generateTimestamp,
   isLocalNewer,
   isFutureFile,
-  calibrateClock
+  calibrateClock,
+  getLegacySnapshot
 };
