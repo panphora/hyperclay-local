@@ -373,6 +373,60 @@ class SyncManager extends EventEmitter {
   }
 
   /**
+   * C6: what a supervisor reads without reaching into the manager (the
+   * round-trip driver, C4's `buildSnapshot`). Discovery is reduced to the
+   * fields a caller may see, which is how the API key stays out of it.
+   */
+  snapshot() {
+    const { roots, syncSessions } = this.settingsStore.get();
+    return {
+      sessions: this.statuses(),
+      discovery: this.discovery ? {
+        accounts: (this.discovery.accounts || []).map(({ id, username, kind, role, sync }) => ({ id, username, kind, role, sync })),
+      } : null,
+      settings: { roots, syncSessions },
+    };
+  }
+
+  /**
+   * C6: every session at rest — idle, paused, or waiting on a conflict with
+   * nothing queued — and no initial pass still in flight, since a bind has no
+   * runner state of its own to say so. The caller gets `snapshot()`, so what it
+   * waited for and what it asserts on are the same thing.
+   */
+  whenAllIdle({ timeoutMs = 20_000 } = {}) {
+    return new Promise((resolve, reject) => {
+      let timer = null;
+      let poll = null;
+      const done = () => {
+        clearTimeout(timer);
+        clearInterval(poll);
+        this.off('status-changed', check);
+      };
+      const check = () => {
+        if (!this._allIdle()) return;
+        done();
+        resolve(this.snapshot());
+      };
+      timer = setTimeout(() => {
+        done();
+        reject(new Error('whenAllIdle timeout: ' + JSON.stringify(this.snapshot())));
+      }, timeoutMs);
+      poll = setInterval(check, 100);
+      this.on('status-changed', check);
+      check();
+    });
+  }
+
+  _allIdle() {
+    if (this.initialRunning > 0) return false;
+    return this.statuses().every((status) => {
+      if (status.pendingCount > 0) return false;
+      return status.status === 'idle' || status.status === 'paused' || status.status === 'conflict';
+    });
+  }
+
+  /**
    * C3 §5.6: the conflict records behind `statuses()`, in memory because
    * `statuses()` is synchronous. Read at start, and again whenever the executor
    * records a conflict or the user resolves one.
