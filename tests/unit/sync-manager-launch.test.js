@@ -593,16 +593,23 @@ describe('SyncManager.startEnabledSessions', () => {
       const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
       apiClient.getAccounts.mockRejectedValue(new Error('fetch failed'));
       // The key cannot be proved and the listing cannot be read: the network is
-      // gone, so `calibrateClock` rejects with what `classifyError` calls offline.
-      engineUtils.calibrateClock.mockRejectedValueOnce(new Error('fetch failed'));
+      // gone. The real `calibrateClock` is the one that sees it, through its own
+      // fetch, and it rejects with what `classifyError` calls offline.
+      engineUtils.calibrateClock.mockImplementationOnce(
+        jest.requireActual('../../src/sync-engine/utils').calibrateClock
+      );
+      global.fetch = jest.fn().mockRejectedValue(new Error('fetch failed'));
       apiClient.listNodes.mockRejectedValueOnce(new Error('fetch failed'));
 
       const statuses = await manager.startEnabledSessions();
 
-      // The launch succeeded: the session has its entry and its runner, and the
-      // runner is the one that fails and backs off from here.
+      // The launch succeeded: init returned success without running a pass, the
+      // session has its entry and its runner, and the runner is the one that
+      // fails and backs off from here.
       const entry = manager.sessions.get(team.id);
       expect(statuses.map((status) => status.sessionId)).toEqual([team.id]);
+      expect(global.fetch).toHaveBeenCalled();
+      expect(initialSync.performInitialSync).not.toHaveBeenCalled();
       expect(entry.engine.isRunning).toBe(true);
       expect(entry.runner.state).toBe('starting');
 
@@ -626,6 +633,7 @@ describe('SyncManager.startEnabledSessions', () => {
       expect(initialSync.performInitialSync).toHaveBeenCalled();
       expect(apiClient.listNodes).toHaveBeenCalledTimes(2);
     } finally {
+      delete global.fetch;
       jest.useRealTimers();
     }
   });

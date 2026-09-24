@@ -521,7 +521,7 @@ describe('detectLocalChanges — file still at expected path', () => {
 });
 
 describe('detectLocalChanges — API error handling', () => {
-  test('continues processing after delete API failure', async () => {
+  test('continues processing after a per-file delete refusal', async () => {
     const cs1 = checksum('<html>site1</html>');
     const cs2 = checksum('<html>site2</html>');
     syncEngine.repo.seed([
@@ -535,8 +535,11 @@ describe('detectLocalChanges — API error handling', () => {
     ];
     const localFiles = new Map();
 
+    // A per-file refusal: the etag this delete carried was rejected (412), which
+    // the pass records and moves past. A failure about the session itself (401,
+    // 503, offline) is the runner's instead, and ends the pass.
     apiClient.deleteNode
-      .mockRejectedValueOnce(new Error('Network error'))
+      .mockRejectedValueOnce(Object.assign(new Error('precondition failed'), { statusCode: 412 }))
       .mockResolvedValueOnce({ success: true });
 
     await syncEngine.detectLocalChanges(allServerNodes, localFiles);

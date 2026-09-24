@@ -6,7 +6,10 @@
  * executed through `executeDecision`. These cases pin the rules that used to
  * come from mtime comparisons or from an unproven list: a complete inventory
  * may trash a local file, a legacy one may not, a folder is forgotten and never
- * trashed, and a `node-changed` refusal re-lists once per pass.
+ * trashed, and a `node-changed` refusal re-lists once per pass. A failure that
+ * belongs to the session rather than to the file (C3.11) ends the pass instead
+ * of being swallowed: the runner is the one that pauses, backs off or goes
+ * offline for it.
  */
 
 jest.mock('electron', () => ({
@@ -39,9 +42,14 @@ jest.mock('../../src/main/utils/utils', () => ({
   getServerBaseUrl: (url) => url || 'http://localhyperclay.com'
 }));
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
 const fileOps = require('../../src/sync-engine/file-operations');
 const apiClient = require('../../src/sync-engine/api-client');
 const nodeMapModule = require('../../src/sync-engine/node-map');
+const store = require('../../src/sync-engine/reconcile/conflicts');
 
 jest.mock('../../src/sync-engine/file-operations');
 jest.mock('../../src/sync-engine/api-client');
@@ -201,5 +209,79 @@ describe('performInitialSync — the inventory decides, not mtime', () => {
 
     expect(apiClient.listNodes).toHaveBeenCalledTimes(2);
     expect(syncEngine.repo.get('901').remoteEtag).toBe(checksum(localBytes));
+  });
+});
+
+describe('runPlanItem — a session-level failure ends the pass', () => {
+  const site = (id, name) => ({ id, type: 'site', name, path: '', checksum: 'old', modifiedAt: '2024-01-01T00:00:00Z' });
+
+  // Two files decide to upload: the first one's failure is what the pass must
+  // react to, the second one's absence is the proof it stopped.
+  function seedTwoSites() {
+    syncEngine.repo.seed([
+      ['901', { type: 'site', path: 'board.html', inode: 1, remoteEtag: 'old', localChecksum: 'old' }],
+      ['902', { type: 'site', path: 'notes.html', inode: 2, remoteEtag: 'old', localChecksum: 'old' }]
+    ]);
+    syncEngine.lastSyncedAt = Date.now();
+
+    fileOps.readFile.mockResolvedValue('<html>mine v2</html>');
+    fileOps.getLocalFiles.mockResolvedValue(new Map([
+      ['board.html', localFile('board.html')],
+      ['notes.html', localFile('notes.html')]
+    ]));
+    apiClient.listNodes.mockResolvedValue([site(901, 'board.html'), site(902, 'notes.html')]);
+  }
+
+  test('a 503 on one file ends the pass and reaches the caller', async () => {
+    seedTwoSites();
+    apiClient.putNodeContent.mockRejectedValueOnce(
+      Object.assign(new Error('unavailable'), { statusCode: 503, retryAfterMs: 7000 })
+    );
+
+    await expect(syncEngine.performInitialSync()).rejects.toMatchObject({
+      statusCode: 503,
+      retryAfterMs: 7000
+    });
+
+    expect(apiClient.putNodeContent).toHaveBeenCalledTimes(1);
+  });
+
+  test('a 401 on one file ends the pass', async () => {
+    seedTwoSites();
+    apiClient.putNodeContent.mockRejectedValueOnce(
+      Object.assign(new Error('invalid key'), { statusCode: 401, code: 'invalid-key' })
+    );
+
+    await expect(syncEngine.performInitialSync()).rejects.toMatchObject({ statusCode: 401 });
+
+    expect(apiClient.putNodeContent).toHaveBeenCalledTimes(1);
+  });
+
+  test('a network failure on one file ends the pass', async () => {
+    seedTwoSites();
+    apiClient.putNodeContent.mockRejectedValueOnce(new Error('fetch failed'));
+
+    await expect(syncEngine.performInitialSync()).rejects.toThrow('fetch failed');
+
+    expect(apiClient.putNodeContent).toHaveBeenCalledTimes(1);
+  });
+
+  test('a 412 on one file is recorded and the pass continues', async () => {
+    const metaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reconcile-pass-conflicts-'));
+    syncEngine.metaDir = metaDir;
+    try {
+      seedTwoSites();
+      apiClient.putNodeContent
+        .mockRejectedValueOnce(Object.assign(new Error('precondition failed'), { statusCode: 412 }))
+        .mockResolvedValue({ etag: 'newetag' });
+
+      await syncEngine.performInitialSync();
+
+      expect(apiClient.putNodeContent).toHaveBeenCalledTimes(2);
+      const records = store.list(await store.load(metaDir));
+      expect(records.map((record) => record.path)).toEqual(['board.html']);
+    } finally {
+      fs.rmSync(metaDir, { recursive: true, force: true });
+    }
   });
 });

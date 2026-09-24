@@ -34,6 +34,9 @@ const nodeMap = require('./node-map');
 
 const SITE_PATTERN = /\.(html|htmlclay)$/i;
 
+// The failure kinds that belong to the session rather than to the file they hit.
+const SESSION_KINDS = new Set(['pause-all', 'pause', 'rediscover', 'offline', 'backoff']);
+
 // The order one pass executes in (C3 §5.5): folders created, content, local
 // trashes, remote deletes, folders deleted.
 const CONTENT_RANK = 2;
@@ -188,6 +191,10 @@ module.exports = {
         const again = await this.decideAgain(item, inventory);
         if (again) await this.runPlanItem(again, pass, true);
       }
+
+      // Failures about the session, not the file, end the pass: the runner pauses, backs off or
+      // goes offline instead of reporting a pass that silently skipped files.
+      if (SESSION_KINDS.has(kind)) throw error;
     }
   },
 

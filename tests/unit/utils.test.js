@@ -1,8 +1,17 @@
 const {
   calculateChecksum,
   isLocalNewer,
-  isFutureFile
+  isFutureFile,
+  calibrateClock
 } = require('../../src/sync-engine/utils');
+
+const CONN = {
+  serverUrl: 'http://localhyperclay.com',
+  syncBase: '/_/sync',
+  apiKey: 'hcsk_test',
+  protocol: 2,
+  accountId: 7
+};
 
 describe('calculateChecksum', () => {
   test('returns 16-character hex string', async () => {
@@ -107,5 +116,30 @@ describe('isFutureFile', () => {
 
     // After adjustment, the file should be considered current, not future
     expect(isFutureFile(futureDate, clockOffset)).toBe(false);
+  });
+});
+
+describe('calibrateClock', () => {
+  afterEach(() => {
+    delete global.fetch;
+  });
+
+  test('calibrateClock rejects on a network failure', async () => {
+    global.fetch = jest.fn().mockRejectedValue(new Error('fetch failed'));
+
+    await expect(calibrateClock(CONN)).rejects.toThrow('fetch failed');
+  });
+
+  test('calibrateClock rejects with statusCode and code on a 401', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => ({ code: 'invalid-key' })
+    });
+
+    await expect(calibrateClock(CONN)).rejects.toMatchObject({
+      statusCode: 401,
+      code: 'invalid-key'
+    });
   });
 });

@@ -59,36 +59,35 @@ function isFutureFile(mtime, clockOffset) {
 }
 
 /**
- * Calibrate local clock with server
+ * Calibrate local clock with server.
+ *
+ * Throws rather than guessing: a non-ok answer throws with the response's status
+ * (and its `code`, when the body carries one), and a network failure is rethrown
+ * as it arrived. `SyncEngine.init` is the only caller, and it is what classifies
+ * the failure — offline, or a refusal that fails the init.
  */
 async function calibrateClock(conn, logger = null) {
+  let response;
   try {
-    const response = await fetch(syncUrl(conn, '/status'), {
-      headers: authHeaders(conn)
-    });
-
-    if (!response.ok) {
-      throw new Error(`Server returned ${response.status}`);
-    }
-
-    const data = await response.json();
-    const serverTime = new Date(data.serverTime).getTime();
-    const localTime = Date.now();
-
-    const clockOffset = serverTime - localTime;
-
-    console.log(`[SYNC] Clock offset: ${clockOffset}ms`);
-    return clockOffset;
+    response = await fetch(syncUrl(conn, '/status'), { headers: authHeaders(conn) });
   } catch (error) {
-    console.error('[SYNC] Failed to calibrate clock:', error);
-    if (logger) {
-      logger.warn('SYNC', 'Clock calibration failed - using zero offset, timestamps may be unreliable', {
-        error: error.message,
-        statusCode: error.statusCode
-      });
-    }
-    return 0; // Assume no offset if calibration fails
+    console.error('[SYNC] Server unreachable during calibration:', error.message);
+    if (logger) logger.warn('SYNC', 'Server unreachable during calibration', { error: error.message });
+    throw error;
   }
+  if (!response.ok) {
+    let code;
+    try {
+      code = (await response.json()).code;
+    } catch {
+      code = undefined;
+    }
+    throw Object.assign(new Error(`Server returned ${response.status}`), { statusCode: response.status, code });
+  }
+  const data = await response.json();
+  const clockOffset = new Date(data.serverTime).getTime() - Date.now();
+  console.log(`[SYNC] Clock offset: ${clockOffset}ms`);
+  return clockOffset;
 }
 
 /**
