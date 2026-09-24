@@ -169,7 +169,7 @@ async function getAccounts({ serverUrl, apiKey }) {
  * @param {number|string} options.parentId - numeric Node id or 'root' / 0 for root
  * @param {string|Buffer} [options.content] - HTML string for sites, Buffer or base64 for uploads, omitted for folders
  * @param {string|Date} [options.modifiedAt] - file modification time
- * @returns {Promise<{ id, type, name, parentId, path }>}
+ * @returns {Promise<{ id, type, name, parentId, path, etag?, checksum?, structureVersion? }>}
  */
 async function createNode(conn, { type, name, parentId, content, modifiedAt }) {
   const url = syncUrl(conn, '/nodes');
@@ -189,7 +189,7 @@ async function createNode(conn, { type, name, parentId, content, modifiedAt }) {
     body: JSON.stringify(body)
   }, { errorPrefix: `Create ${type} failed` });
 
-  return data.node;
+  return { ...data.node, etag: data.etag, checksum: data.checksum, structureVersion: data.structureVersion };
 }
 
 /**

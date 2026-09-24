@@ -84,8 +84,16 @@ module.exports = {
 
     await this.refreshRemoteView();
 
-    const nodeId = known ? known.nodeId : null;
-    const remote = this.cachedRemoteView(nodeId, item.filename);
+    let remote = this.cachedRemoteView(known ? known.nodeId : null, item.filename);
+    // A node this desktop just created, or one a frame has not re-listed yet, is missing from a
+    // list read before it existed. Only a fresh list may say it is gone.
+    if (known && !remote) {
+      this.invalidateServerNodesCache();
+      await this.fetchAndCacheServerNodes(0);
+      if (this.serverNodesCache == null) return;
+      remote = this.cachedRemoteView(known.nodeId, item.filename);
+    }
+    const nodeId = known ? known.nodeId : (remote && remote.id != null ? String(remote.id) : null);
     const baseline = nodeId === null ? null : this.repo.getBaseline(nodeId);
     const decision = decide({
       baseline,

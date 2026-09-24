@@ -78,6 +78,7 @@ module.exports = {
    */
   remoteViewOf(node) {
     return {
+      id: node.id,
       etag: node.etag ?? node.checksum ?? null,
       path: relPathOf(node),
       type: node.type,

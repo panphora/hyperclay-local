@@ -55,4 +55,37 @@ describe('requests through the connection object', () => {
       headers: { 'X-API-Key': 'k' }
     });
   });
+
+  test('createNode returns the response\'s etag, checksum and structureVersion', async () => {
+    const originalFetch = global.fetch;
+    const conn = { serverUrl: 'http://test', syncBase: '/_/sync', apiKey: 'k', protocol: 1 };
+    const fetchMock = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        node: { id: 901, type: 'site', name: 'a.html', parentId: 0, path: '' },
+        etag: '3f9a0c1d2b4e5f60',
+        checksum: '3f9a0c1d2b4e5f60',
+        structureVersion: 'st1'
+      })
+    }));
+    global.fetch = fetchMock;
+
+    let created;
+    try {
+      created = await apiClient.createNode(conn, { type: 'site', name: 'a.html', parentId: 0, content: '<h1>a</h1>' });
+    } finally {
+      global.fetch = originalFetch;
+    }
+
+    expect(created).toEqual({
+      id: 901,
+      type: 'site',
+      name: 'a.html',
+      parentId: 0,
+      path: '',
+      etag: '3f9a0c1d2b4e5f60',
+      checksum: '3f9a0c1d2b4e5f60',
+      structureVersion: 'st1'
+    });
+  });
 });

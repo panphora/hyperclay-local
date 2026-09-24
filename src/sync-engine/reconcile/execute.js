@@ -450,6 +450,9 @@ async function createRemote(engine, nodeId, entry, context, gen) {
     structureVersion: created.structureVersion,
   }, await entryMeta(engine, rel, type, created.parentId));
 
+  // The cached list predates this node; a later event must not read its absence as a delete.
+  if (typeof engine.invalidateServerNodesCache === 'function') engine.invalidateServerNodesCache();
+
   engine.emit('file-synced', { file: rel, action: 'upload', type });
   return { action: A.CREATE_REMOTE, nodeId: created.id, etag };
 }
