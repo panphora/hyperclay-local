@@ -112,10 +112,19 @@ function remoteContent(content, etag) {
   };
 }
 
+const FEATURES_ON = {
+  accountScopes: true,
+  accountEvents: true,
+  conditionalContent: true,
+  conditionalStructure: true,
+  completeInventory: true
+};
+
 function discovery(overrides = {}) {
   return {
     success: true,
     protocol: 2,
+    features: FEATURES_ON,
     actor: { id: 17, username: 'alex' },
     accounts: [{
       id: ACCOUNT_ID, kind: 'team', username: 'acme', displayName: 'Acme', role: 'editor',
@@ -402,6 +411,23 @@ describe('the manager', () => {
 
     expect(result).toEqual({ ok: false, error: 'untrusted' });
     expect(settingsStore.save).not.toHaveBeenCalled();
+    expect(api.listNodes).not.toHaveBeenCalled();
+  });
+
+  it('refuses server-update-required when a feature is off', async () => {
+    const { manager, settings } = makeManager();
+    api.getAccounts.mockResolvedValue(discovery({ features: { ...FEATURES_ON, conditionalContent: false } }));
+
+    const result = await manager.setupTeam({
+      accountId: ACCOUNT_ID,
+      folder: '/home/test/hyperclay/acme',
+      trusted: true,
+      ...paths
+    });
+
+    expect(result).toEqual({ ok: false, error: 'server-update-required' });
+    expect(settings.roots).toEqual([]);
+    expect(settings.syncSessions).toEqual([]);
     expect(api.listNodes).not.toHaveBeenCalled();
   });
 

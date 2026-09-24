@@ -522,8 +522,8 @@ describe('SyncManager resume and rebind', () => {
     return { manager, settingsStore, settings };
   }
 
-  function addSession(manager, { id = SESSION_ID, accountId = ACCOUNT_ID, paused = null, state = 'paused' } = {}) {
-    const session = { id, rootId: 'root-a', accountId, kind: 'team', cached: {}, paused };
+  function addSession(manager, { id = SESSION_ID, accountId = ACCOUNT_ID, kind = 'team', paused = null, state = 'paused' } = {}) {
+    const session = { id, rootId: 'root-a', accountId, kind, cached: {}, paused };
     const runner = { state, start: jest.fn(), resume: jest.fn(), pause: jest.fn() };
     const engine = { sessionId: id, syncBase: '/_/sync', downloadFile: jest.fn() };
     manager.sessions.set(id, { session, root: { id: 'root-a', path: '/tmp/root-a' }, engine, runner });
@@ -542,14 +542,68 @@ describe('SyncManager resume and rebind', () => {
     expect(settingsStore.save).toHaveBeenCalled();
   });
 
-  it('does not resume a key-revoked session on discovery', () => {
+  it('a discovery resumes a key-revoked session and gives its engine the current key', () => {
     const { manager } = makeSyncManager();
-    const { runner, engine } = addSession(manager, { paused: { reason: 'key-revoked', since: '2026-09-23T00:00:00.000Z' } });
+    const { session, runner, engine } = addSession(manager, { paused: { reason: 'key-revoked', since: '2026-09-23T00:00:00.000Z' } });
+    engine.apiKey = 'hcsk_old';
 
     manager.onDiscovery(discovery());
 
-    expect(runner.resume).not.toHaveBeenCalled();
+    // The discovery answered with the current key, so the pause is over and the
+    // engine no longer holds the key it was started with.
+    expect(runner.resume).toHaveBeenCalled();
+    expect(engine.apiKey).toBe('hcsk_test');
+    expect(engine.syncBase).toBe('/_/team/acme/sync');
+    expect(session.cached).toEqual({ username: 'acme', displayName: 'Acme', role: 'editor' });
+  });
+
+  it('a personal session with no accountId resumes on a discovery that lists the personal account', () => {
+    const { manager } = makeSyncManager();
+    const { runner, engine } = addSession(manager, {
+      accountId: null,
+      kind: 'personal',
+      paused: { reason: 'unavailable', since: '2026-09-23T00:00:00.000Z' }
+    });
+    const personal = account({
+      id: 7, kind: 'personal', username: 'alex', displayName: 'alex', role: 'owner', syncBase: '/_/sync'
+    });
+
+    manager.onDiscovery(discovery({ accounts: [personal] }));
+
+    expect(runner.resume).toHaveBeenCalled();
     expect(engine.syncBase).toBe('/_/sync');
+  });
+
+  it('rediscover finds a personal session with no accountId by kind instead of pausing it removed', async () => {
+    const { manager } = makeSyncManager();
+    const { runner, engine } = addSession(manager, { accountId: null, kind: 'personal' });
+    apiClient.getAccounts.mockResolvedValue(discovery({
+      accounts: [account({
+        id: 7, kind: 'personal', username: 'alex', displayName: 'alex', role: 'owner', syncBase: '/_/sync'
+      })]
+    }));
+
+    await manager.rediscover({ reason: 'not-found', sessionId: SESSION_ID });
+
+    expect(runner.pause).not.toHaveBeenCalled();
+    expect(runner.start).toHaveBeenCalledTimes(1);
+    expect(engine.syncBase).toBe('/_/sync');
+  });
+
+  it('adoptKey sets serverUrl and every engine\'s apiKey', () => {
+    const { manager } = makeSyncManager();
+    const a = addSession(manager, { id: 'session-a', state: 'live' });
+    const b = addSession(manager, { id: 'session-b', state: 'live' });
+
+    manager.adoptKey({ serverUrl: 'http://new-test' });
+
+    expect(manager.serverUrl).toBe('http://new-test');
+    expect(a.engine.apiKey).toBe('hcsk_test');
+    expect(b.engine.apiKey).toBe('hcsk_test');
+
+    manager.adoptKey();
+
+    expect(manager.serverUrl).toBe('http://new-test');
   });
 
   it('resumes a server-update-required session only when every feature is true', () => {

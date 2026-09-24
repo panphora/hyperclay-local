@@ -146,9 +146,19 @@ function teamAccount(overrides = {}) {
   };
 }
 
-const discovery = (accounts) => ({
-  success: true, protocol: 2, features: {}, actor: { id: 17, username: 'alex' }, accounts
-});
+const FEATURES_ON = {
+  accountScopes: true,
+  accountEvents: true,
+  conditionalContent: true,
+  conditionalStructure: true,
+  completeInventory: true
+};
+
+function discovery(accounts, overrides = {}) {
+  return {
+    success: true, protocol: 2, features: FEATURES_ON, actor: { id: 17, username: 'alex' }, accounts, ...overrides
+  };
+}
 
 // The connection every session was initialized on: what `calibrateClock` saw.
 const connections = () => engineUtils.calibrateClock.mock.calls.map(([conn]) =>
@@ -450,6 +460,40 @@ describe('SyncManager.startEnabledSessions', () => {
     const entry = manager.sessions.get(team.id);
     expect(entry.runner.state).toBe('paused');
     expect(streamFor(team.id).open).not.toHaveBeenCalled();
+    expect(apiClient.listNodes).not.toHaveBeenCalled();
+  });
+
+  it('startEnabledSessions clears a persisted key-revoked pause when discovery answers', async () => {
+    settings.syncSessions = [team];
+    team.paused = { reason: 'key-revoked', since: '2026-09-23T00:00:00.000Z' };
+    apiClient.getAccounts.mockResolvedValue(discovery([teamAccount()]));
+    apiClient.listNodes.mockResolvedValue(completeList([]));
+
+    await manager.startEnabledSessions();
+
+    // The discovery answered with the current key, so the pause it persisted is gone
+    // and the session starts instead of waiting for one.
+    const entry = manager.sessions.get(team.id);
+    expect(team.paused).toBeNull();
+    expect(settingsStore.save).toHaveBeenCalled();
+    expect(entry.runner.state).toBe('starting');
+    expect(streamFor(team.id).open).toHaveBeenCalledTimes(1);
+  });
+
+  it('startEnabledSessions pauses every session server-update-required when a feature is off', async () => {
+    apiClient.getAccounts.mockResolvedValue(discovery([personalAccount(), teamAccount()], {
+      features: { ...FEATURES_ON, completeInventory: false }
+    }));
+
+    const statuses = await manager.startEnabledSessions();
+
+    expect(statuses.every((status) => status.status === 'paused')).toBe(true);
+    for (const session of [personal, team]) {
+      expect(session.paused).toEqual({ reason: 'server-update-required', since: expect.any(String) });
+      const entry = manager.sessions.get(session.id);
+      expect(entry.runner.state).toBe('paused');
+      expect(streamFor(session.id).open).not.toHaveBeenCalled();
+    }
     expect(apiClient.listNodes).not.toHaveBeenCalled();
   });
 

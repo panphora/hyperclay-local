@@ -46,6 +46,16 @@ function allFeaturesOn(discovery) {
   return REQUIRED_FEATURES.every((name) => features[name] === true);
 }
 
+/**
+ * The discovery entry a session belongs to. A migrated personal session has no account id
+ * until its import proves it, so it is found by kind (C3 §5.9).
+ */
+function accountFor(discovery, session) {
+  const accounts = (discovery && discovery.accounts) || [];
+  if (session.accountId != null) return accounts.find((a) => a.id === session.accountId);
+  return session.kind === 'personal' ? accounts.find((a) => a.kind === 'personal') : undefined;
+}
+
 /** The engine stamps `lastSyncedAt` as milliseconds; a snapshot carries ISO. */
 function isoOrNull(value) {
   if (value === null || value === undefined) return null;
@@ -274,13 +284,14 @@ class SyncManager extends EventEmitter {
 
       // A personal session discovery never identified is found by kind: C3.8's
       // import is what proves its identity, and it has no account id until then.
-      const account = discovery && (session.accountId != null
-        ? discovery.accounts.find((a) => a.id === session.accountId)
-        : discovery.accounts.find((a) => a.kind === 'personal'));
+      const account = discovery && accountFor(discovery, session);
       const syncBase = account?.syncBase
         ?? (session.kind === 'personal' ? '/_/sync' : `/_/team/${session.cached?.username}/sync`);
 
-      if (discovery && !account) {
+      if (discovery && session.paused?.reason === 'key-revoked') this.persistPaused(session.id, null);
+      if (discovery && !allFeaturesOn(discovery)) {
+        this.persistPaused(session.id, 'server-update-required');
+      } else if (discovery && !account) {
         this.persistPaused(session.id, session.kind === 'personal' ? 'unavailable' : 'removed');
       } else if (discovery && !account.sync.enabled) {
         this.persistPaused(session.id, account.sync.reason);
@@ -581,7 +592,7 @@ class SyncManager extends EventEmitter {
     const discovery = await this.refreshAccounts();
     const entry = this.sessions.get(sessionId);
     if (!entry) return;
-    const account = discovery.accounts.find((a) => a.id === entry.session.accountId);
+    const account = accountFor(discovery, entry.session);
     if (!account) return entry.runner?.pause(reason === 'unavailable' ? 'unavailable' : 'removed');
     if (!account.sync.enabled) return entry.runner?.pause(account.sync.reason);
     this.rebind(entry, account);
@@ -593,25 +604,41 @@ class SyncManager extends EventEmitter {
     return entry.runner?.start();
   }
 
+  /**
+   * `set-api-key` saved a new key (and maybe a new server): every engine takes it, and the
+   * next discovery resumes what the old key paused.
+   */
+  adoptKey({ serverUrl } = {}) {
+    if (serverUrl) this.serverUrl = serverUrl;
+    const apiKey = this.getApiKey();
+    for (const entry of this.sessions.values()) entry.engine.apiKey = apiKey;
+  }
+
   pauseAll(reason) {
     for (const entry of this.sessions.values()) entry.runner?.pause(reason);
   }
 
   /**
    * After every discovery refresh (launch, wake, the five minute timer, the
-   * popover, `account-changed`): a paused session whose cause is gone resumes.
-   * `key-revoked` waits for a new key, `port-taken` belongs to C1.
+   * popover, `account-changed`, a new key): a paused session whose cause is gone
+   * resumes. A discovery that answered was made with the current key, so it is
+   * what proves `key-revoked` over; `port-taken` belongs to C1.
    */
   onDiscovery(discovery) {
     for (const entry of this.sessions.values()) {
       if (!entry.runner || entry.runner.state !== 'paused') continue;
       const reason = entry.session.paused?.reason;
-      if (reason === 'key-revoked' || reason === 'port-taken') continue;
+      if (reason === 'port-taken') continue;
       if (reason === 'identity-mismatch') continue;
       if (reason === 'folder-missing' && !entry.engine.rootPresent()) continue;
-      if (reason === 'server-update-required' && !allFeaturesOn(discovery)) continue;
-      const account = discovery.accounts.find((a) => a.id === entry.session.accountId);
-      if (account?.sync.enabled) { this.rebind(entry, account); entry.runner.resume(); }
+      if (!allFeaturesOn(discovery)) continue;
+      const account = accountFor(discovery, entry.session);
+      if (!account?.sync.enabled) continue;
+      // This discovery answered with the current key, so a key-revoked pause is over and the
+      // engine drops the key it was started with.
+      entry.engine.apiKey = this.getApiKey();
+      this.rebind(entry, account);
+      entry.runner.resume();
     }
   }
 
@@ -641,6 +668,7 @@ class SyncManager extends EventEmitter {
     } catch (error) {
       return { ok: false, error: error.statusCode ? `http-${error.statusCode}` : 'offline' };
     }
+    if (!allFeaturesOn(discovery)) return { ok: false, error: 'server-update-required' };
     const account = ((discovery && discovery.accounts) || []).find((a) => a.id === accountId);
     if (!account) return { ok: false, error: 'not-found' };
     if (!account.sync || account.sync.enabled !== true) {

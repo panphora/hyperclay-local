@@ -1496,6 +1496,8 @@ ipcMain.handle('set-api-key', async (event, key, serverUrl) => {
     ensurePersonalSession(data.username);
     firstDiscoveryForKey = true;
     saveSettings(settings);
+    if (manager) manager.adoptKey({ serverUrl: baseUrl });
+    refreshDiscovery();
 
     return { success: true, username: data.username };
   } catch (error) {
