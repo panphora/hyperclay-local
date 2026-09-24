@@ -74,6 +74,11 @@ class SessionRunner extends EventEmitter {
           if (frame.data?.type === 'sync-ready') return ready.resolve(frame.data);
           if (frame.data?.type === 'account-changed') return this.#onAccountChanged(gen, frame.data);
           if (frame.data?.type === 'live-sync') return this.engine.relayLiveFrame(frame.data);
+          if (frame.data?.type === 'control') {
+            return Promise.resolve(this.engine.handleControlFrame(frame.data)).catch((error) => {
+              this.lastError = (error && error.message) || null;
+            });
+          }
           if (this.state === 'live') return this.#enqueueInvalidation(gen, frame.data);
           if (frame.data?.nodeId != null) invalidated.add(String(frame.data.nodeId));
         },

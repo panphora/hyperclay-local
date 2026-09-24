@@ -887,12 +887,16 @@ async function handleSelectFolder(event) {
   }
 
   const running = personalEngine();
-  if (running && running.isRunning) await handleSyncStop();
+  const session = personalSession();
+  const resume = !!(running && running.isRunning && session);
+  if (resume) await manager.stop(session.id);
 
   if (root) {
     root.path = check.path;
-    const session = personalSession();
-    if (session) session.legacyMetaDir = legacyMetaDirName(check.path);
+    if (session) {
+      session.id = crypto.randomUUID();
+      session.legacyMetaDir = legacyMetaDirName(check.path);
+    }
   } else {
     settings.roots = [...(settings.roots || []), {
       id: crypto.randomUUID(),
@@ -908,6 +912,8 @@ async function handleSelectFolder(event) {
     await pool.sync(rootsSnapshot(), { enabled: true });
   }
   await afterRootsChanged();
+
+  if (resume) await startPersonalSync();
 
   return { success: true, folder: check.path };
 }

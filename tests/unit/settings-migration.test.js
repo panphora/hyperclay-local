@@ -1,4 +1,7 @@
 const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const { migrateSettings, legacyMetaDirName, LEGACY_KEYS } = require('../../src/main/settings-v2');
 const { PERSONAL_PORT } = require('../../src/main/roots');
@@ -75,7 +78,7 @@ describe('migrateSettings', () => {
     expect(settings.syncSessions[0].legacyMetaDir).toBe(sha12('/Users/alex/Other'));
   });
 
-  test('selectedFolder wins when it differs from syncFolder', () => {
+  test('a v1 install that synced syncFolder while serving selectedFolder keeps syncFolder as the personal root', () => {
     const legacy = {
       selectedFolder: '/Users/alex/Sites',
       syncFolder: '/Users/alex/Abandoned',
@@ -85,9 +88,46 @@ describe('migrateSettings', () => {
 
     const { settings } = migrateSettings(legacy, { uuid: makeUuid() });
 
+    expect(settings.roots[0].path).toBe('/Users/alex/Abandoned');
+    expect(settings.syncSessions[0].rootId).toBe(settings.roots[0].id);
+    expect(settings.syncSessions[0].legacyMetaDir).toBe(sha12('/Users/alex/Abandoned'));
+  });
+
+  test('selectedFolder wins over syncFolder while sync was off', () => {
+    const legacy = {
+      selectedFolder: '/Users/alex/Sites',
+      syncFolder: '/Users/alex/Abandoned',
+      apiKey: 'ciphertext-blob',
+      syncEnabled: false
+    };
+
+    const { settings } = migrateSettings(legacy, { uuid: makeUuid() });
+
     expect(settings.roots[0].path).toBe('/Users/alex/Sites');
     expect(settings.syncSessions[0].rootId).toBe(settings.roots[0].id);
     expect(settings.syncSessions[0].legacyMetaDir).toBe(sha12('/Users/alex/Sites'));
+  });
+
+  test('a migrated root under a symlink is stored realpath\'d while legacyMetaDir hashes the v1 string', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'hyperclay-migrate-'));
+    const real = path.join(base, 'real');
+    const link = path.join(base, 'link');
+    fs.mkdirSync(real);
+    fs.symlinkSync(real, link);
+
+    try {
+      const { settings } = migrateSettings({
+        selectedFolder: link,
+        apiKey: 'ciphertext-blob',
+        syncEnabled: true
+      }, { uuid: makeUuid() });
+
+      expect(settings.roots[0].path).toBe(fs.realpathSync.native(real));
+      expect(settings.roots[0].path).not.toBe(link);
+      expect(settings.syncSessions[0].legacyMetaDir).toBe(sha12(link));
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
   });
 
   test('removes the legacy keys', () => {

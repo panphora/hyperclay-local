@@ -516,6 +516,32 @@ describe('the manager', () => {
     expect(manager.startRunner).toHaveBeenCalledTimes(1);
   });
 
+  it('two concurrent setupTeam calls both keep their root and session', async () => {
+    const { manager, settings } = makeManager();
+    const created = [];
+    jest.spyOn(manager, 'start').mockImplementation(async (session, root) => {
+      created.push(session);
+      manager.sessions.set(session.id, { session, root, engine: {}, runner: null });
+      return { success: true };
+    });
+    jest.spyOn(manager, 'startRunner').mockReturnValue(null);
+    jest.spyOn(manager, 'stop').mockResolvedValue({ success: true });
+    bindModule.firstBind.mockResolvedValue({ ok: true, files: 0, bytes: 0 });
+
+    const [one, two] = await Promise.all([
+      manager.setupTeam({ accountId: ACCOUNT_ID, folder: '/home/test/hyperclay/one', trusted: true, ...paths }),
+      manager.setupTeam({ accountId: ACCOUNT_ID, folder: '/home/test/hyperclay/two', trusted: true, ...paths })
+    ]);
+
+    expect(one).toEqual({ ok: true, files: 0, bytes: 0 });
+    expect(two).toEqual({ ok: true, files: 0, bytes: 0 });
+    expect(settings.roots.map((root) => root.path))
+      .toEqual(['/home/test/hyperclay/one', '/home/test/hyperclay/two']);
+    expect(settings.syncSessions.map((session) => session.rootId))
+      .toEqual(settings.roots.map((root) => root.id));
+    expect(created).toHaveLength(2);
+  });
+
   it('drops the root and the session when the bind refuses', async () => {
     const { manager, settings } = makeManager();
     const created = [];

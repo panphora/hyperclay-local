@@ -651,7 +651,13 @@ class SyncManager extends EventEmitter {
    * marker exists drops what this created, an interrupted bind keeps it so the
    * next start can resume it instead of downloading everything again.
    */
-  async setupTeam({
+  setupTeam(options) {
+    const run = (this.setupChain || Promise.resolve()).then(() => this._setupTeam(options));
+    this.setupChain = run.catch(() => {});
+    return run;
+  }
+
+  async _setupTeam({
     accountId,
     folder,
     trusted,

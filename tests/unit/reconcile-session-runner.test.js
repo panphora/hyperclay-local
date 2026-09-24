@@ -79,6 +79,7 @@ function makeEngine(overrides = {}) {
     sessionId: SESSION_ID,
     generation: 0,
     relayLiveFrame: jest.fn(),
+    handleControlFrame: jest.fn().mockResolvedValue(),
     reconcileAll: jest.fn().mockResolvedValue(),
     refreshNode: jest.fn().mockResolvedValue(),
     dropPendingWork: jest.fn(),
@@ -220,6 +221,18 @@ describe('live frames after the reconcile', () => {
 
     stream.push(READY);
     await started;
+  });
+
+  it('a control frame reaches engine.handleControlFrame', async () => {
+    const { runner, engine, stream } = await liveSession();
+
+    stream.push({ type: 'control', envelope: { type: 'data-loss-dismissed', nodeId: 901, path: 'a.html' } });
+    await flush();
+
+    expect(engine.handleControlFrame).toHaveBeenCalledWith(
+      { type: 'control', envelope: { type: 'data-loss-dismissed', nodeId: 901, path: 'a.html' } }
+    );
+    expect(runner.state).toBe('live');
   });
 
   it('answers whenIdle with the state the queue drained in', async () => {

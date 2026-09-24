@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const fs = require('fs');
 const { PERSONAL_PORT } = require('./roots');
 
 const LEGACY_KEYS = ['selectedFolder', 'serverFolder', 'syncFolder', 'syncUsername', 'hasApiKey'];
@@ -7,16 +8,25 @@ function legacyMetaDirName(folder) {
   return crypto.createHash('sha256').update(folder).digest('hex').slice(0, 12);
 }
 
+function realpathOr(folder) {
+  try {
+    return fs.realpathSync.native(folder);
+  } catch {
+    return folder;
+  }
+}
+
 function migrateSettings(legacy, { uuid = crypto.randomUUID } = {}) {
   const s = legacy || {};
   if (s.settingsVersion === 2) return { settings: s, migrated: false };
 
-  const folder = s.selectedFolder || s.serverFolder || s.syncFolder || null;
+  const synced = s.apiKey && s.syncEnabled === true && s.syncFolder ? s.syncFolder : null;
+  const folder = synced || s.selectedFolder || s.serverFolder || s.syncFolder || null;
   const roots = [];
   const syncSessions = [];
 
   if (folder) {
-    const root = { id: uuid(), kind: 'personal', path: folder, port: PERSONAL_PORT, trustedAt: null };
+    const root = { id: uuid(), kind: 'personal', path: realpathOr(folder), port: PERSONAL_PORT, trustedAt: null };
     roots.push(root);
     if (s.apiKey && (s.syncFolder || s.syncEnabled)) {
       syncSessions.push({

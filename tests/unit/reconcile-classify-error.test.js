@@ -46,6 +46,17 @@ describe('classifyError', () => {
       .toEqual({ kind: 'backoff', retryAfterMs: 15000 });
   });
 
+  it('409 managed is skip', () => {
+    expect(classifyError({ statusCode: 409, code: 'managed' }))
+      .toEqual({ kind: 'skip', reason: 'managed' });
+  });
+
+  it('429 is backoff', () => {
+    expect(classifyError({ statusCode: 429 })).toEqual({ kind: 'backoff', retryAfterMs: null });
+    expect(classifyError({ statusCode: 429, retryAfterMs: 30000 }))
+      .toEqual({ kind: 'backoff', retryAfterMs: 30000 });
+  });
+
   it('any 5xx is a backoff', () => {
     expect(classifyError({ statusCode: 500 })).toEqual({ kind: 'backoff', retryAfterMs: null });
     expect(classifyError({ statusCode: 502 })).toEqual({ kind: 'backoff', retryAfterMs: null });
