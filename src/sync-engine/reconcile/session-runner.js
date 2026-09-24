@@ -112,11 +112,16 @@ class SessionRunner extends EventEmitter {
     this.engine.legacyImport = null;
   }
 
-  pause(reason) {
+  /**
+   * C3.11: a session discovery paused before its start is already persisted, so
+   * the caller that holds that reason passes `persist: false` and the earlier
+   * `since` stands.
+   */
+  pause(reason, { persist = true } = {}) {
     this.#bump('paused');
     this.stream.close();
     this.engine.dropPendingWork();
-    this.manager.persistPaused(this.engine.sessionId, reason);
+    if (persist) this.manager.persistPaused(this.engine.sessionId, reason);
     this.emit('paused', { reason });
   }
 

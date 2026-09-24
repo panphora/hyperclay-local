@@ -112,6 +112,10 @@ class SyncManager extends EventEmitter {
     // protocol 2 lists, and the import works in the session's v2 directory
     // while `legacyMetaDir` still points at the legacy one.
     const ownsFirstPass = setup || resumed !== null;
+    // C3.11: a session already paused waits for `onDiscovery`, so init runs no
+    // pass and opens nothing for it either — nothing is downloaded or uploaded
+    // until its runner is resumed.
+    const noInitPasses = ownsFirstPass || this.pausedReasonFor(session) !== null;
 
     const logger = new SyncLogger();
     await logger.init(root.path, { subdir: session.id });
@@ -160,7 +164,7 @@ class SyncManager extends EventEmitter {
       const result = await engine.init(apiKey, session.cached?.username, root.path, this.serverUrl,
         this.deviceId, resumed === 'import' ? this.v2MetaDir(session) : metaDir, {
           sessionId: session.id, accountId: session.accountId,
-          syncBase, protocol: ownsFirstPass ? 2 : protocol, firstBind: ownsFirstPass,
+          syncBase, protocol: ownsFirstPass ? 2 : protocol, firstBind: noInitPasses,
           live: createRootLive(root),
           snapshots: { take: (rel) => this.takeSnapshot(rel, root.id) },
           observer,
@@ -192,6 +196,59 @@ class SyncManager extends EventEmitter {
   }
 
   /**
+   * C3.11: every saved session starts — at launch and whenever sync is switched
+   * on — under protocol 2, with the `syncBase` discovery names. Offline, a
+   * session falls back to the base its kind and cached username imply and
+   * `rediscover` corrects it later; offline is logged, never thrown.
+   *
+   * A session discovery refuses is persisted paused first, so its entry starts
+   * with the runner in `paused` (no stream, no pass) and `onDiscovery` can
+   * resume it from there.
+   */
+  async startEnabledSessions() {
+    let discovery = null;
+    try {
+      discovery = await this.refreshAccounts();
+    } catch (error) {
+      console.error('[SYNC] Discovery refresh failed:', error.message);
+    }
+
+    const settings = this.settingsStore.get();
+    const roots = settings.roots || [];
+    for (const session of settings.syncSessions || []) {
+      const root = roots.find((r) => r.id === session.rootId);
+      if (!root) {
+        console.warn(`[SYNC] No root ${session.rootId} for session ${session.id}; not starting it`);
+        continue;
+      }
+      if (this.sessions.has(session.id)) continue;
+
+      // A personal session discovery never identified is found by kind: C3.8's
+      // import is what proves its identity, and it has no account id until then.
+      const account = discovery && (session.accountId != null
+        ? discovery.accounts.find((a) => a.id === session.accountId)
+        : discovery.accounts.find((a) => a.kind === 'personal'));
+      const syncBase = account?.syncBase
+        ?? (session.kind === 'personal' ? '/_/sync' : `/_/team/${session.cached?.username}/sync`);
+
+      if (discovery && !account) {
+        this.persistPaused(session.id, session.kind === 'personal' ? 'unavailable' : 'removed');
+      } else if (discovery && !account.sync.enabled) {
+        this.persistPaused(session.id, account.sync.reason);
+      }
+
+      await this.start(session, root, { syncBase, protocol: 2 });
+    }
+
+    return this.statuses();
+  }
+
+  /** The reason a session's runner starts paused for, if it is paused at all. */
+  pausedReasonFor(session) {
+    return session.paused && session.paused.reason ? session.paused.reason : null;
+  }
+
+  /**
    * C3 §5.6: one state machine per session, owned by the entry and the engine.
    * It opens the session's stream, reconciles once `sync-ready` arrives, turns
    * live frames into invalidations and classifies every failure into the next
@@ -214,9 +271,18 @@ class SyncManager extends EventEmitter {
     return runner;
   }
 
-  /** Start the entry's runner. Not awaited: the session is live while it reconciles. */
+  /**
+   * Start the entry's runner. Not awaited: the session is live while it
+   * reconciles. A session discovery paused before its start takes the paused
+   * state without a stream, and without rewriting the reason it already carries.
+   */
   startRunner(entry) {
     const runner = entry.runner || this.attachRunner(entry);
+    const paused = this.pausedReasonFor(entry.session);
+    if (paused) {
+      runner.pause(paused, { persist: false });
+      return runner;
+    }
     runner.start().catch((error) => {
       if (entry.logger) entry.logger.error('SYNC', 'Session runner failed', { error: error.message });
     });
@@ -374,11 +440,14 @@ class SyncManager extends EventEmitter {
     this.discoveryTimer = null;
   }
 
+  /** C3.11: a session discovery refuses is persisted before it has an entry. */
   persistPaused(sessionId, reason) {
-    const entry = this.sessions.get(sessionId);
-    if (!entry) return;
-    entry.session.paused = reason ? { reason, since: new Date().toISOString() } : null;
-    this.settingsStore.save(this.settingsStore.get());
+    const settings = this.settingsStore.get();
+    const session = this.sessions.get(sessionId)?.session
+      || (settings.syncSessions || []).find((s) => s.id === sessionId);
+    if (!session) return;
+    session.paused = reason ? { reason, since: new Date().toISOString() } : null;
+    this.settingsStore.save(settings);
   }
 
   /** Rename is a rebind: same session, root, node map and baseline — a new sync base. */

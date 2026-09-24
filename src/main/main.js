@@ -1127,8 +1127,15 @@ async function handleSyncStart(apiKey, username, syncFolder, serverUrl) {
     if (apiKey) settings.apiKey = apiKey;
     observerFor(root.id)?.start();
 
-    const result = await manager.start(session, root, { syncBase: '/_/sync', protocol: 1 });
+    // C3.11: every saved session starts, under protocol 2, with the `syncBase`
+    // discovery names. The personal session answered for is the caller's result.
+    const statuses = await manager.startEnabledSessions();
     syncObservers();
+
+    const personal = statuses.find((status) => status.sessionId === session.id) || null;
+    const result = personal && (personal.running || personal.paused)
+      ? { success: true }
+      : { success: false, error: 'sync-failed' };
 
     if (result.success) {
       settings.syncEnabled = true;
@@ -1153,8 +1160,7 @@ async function handleSyncStart(apiKey, username, syncFolder, serverUrl) {
 
 async function handleSyncStop() {
   try {
-    const session = personalSession();
-    const result = session && manager ? await manager.stop(session.id) : { success: true };
+    if (manager) await manager.stopAll();
 
     settings.syncEnabled = false;
     saveSettings(settings);
@@ -1163,7 +1169,7 @@ async function handleSyncStop() {
     syncObservers();
 
     await updateUI();
-    return result;
+    return { success: true };
   } catch (error) {
     return {
       success: false,
@@ -1759,9 +1765,10 @@ app.whenReady().then(async () => {
       }
     }
 
-    // C3 §5.8: the sessions are up, so discovery runs once and the timer starts.
+    // C3 §5.8: the sessions are up, so the discovery timer starts. The launch
+    // itself already discovered: `startEnabledSessions` refreshed the accounts
+    // before it started every session (C3.11).
     syncDiscoveryTimer();
-    refreshDiscovery();
 
     if (settings.serverEnabled && personalRootPath()) {
       console.log('[APP] Auto-restarting server from previous session...');
