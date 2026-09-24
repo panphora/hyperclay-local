@@ -46,6 +46,11 @@ class SessionRunner extends EventEmitter {
 
   async start() {
     const gen = this.#bump('starting');
+    // C3.11: every path into a live session comes through here — a resume, a
+    // rediscover, the restart a backoff ends in, and the first start of a
+    // session whose init ran no passes (paused at launch, or offline). A
+    // session that already watches its folder keeps the subscription it has.
+    this.engine.startUnifiedWatcher?.();
     const invalidated = new Set();
     let ready;
     const readyFrame = new Promise((resolve, reject) => { ready = { resolve, reject }; });

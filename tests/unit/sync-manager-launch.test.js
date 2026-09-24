@@ -235,6 +235,17 @@ afterEach(async () => {
 
 const streamFor = (sessionId) => manager.sessions.get(sessionId).runner.stream;
 
+// A local edit as the folder observer delivers it: the change the watcher
+// dispatches for a file the user saved. The app's subscription is what calls
+// this; the tests drive it directly because the subscription is faked here.
+async function localEdit(engine, rel) {
+  engine._dispatchRaw('change', rel);
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+// Same drain, under the fake timers the backoff test runs on.
+const flush = () => jest.advanceTimersByTimeAsync(0);
+
 describe('SyncManager.startEnabledSessions', () => {
   it("starts the personal and every team session under protocol 2 with discovery’s syncBase", async () => {
     apiClient.getAccounts.mockResolvedValue(discovery([personalAccount(), teamAccount()]));
@@ -369,6 +380,135 @@ describe('SyncManager.startEnabledSessions', () => {
     expect(team.paused).toBeNull();
     expect(settingsStore.save).toHaveBeenCalled();
     expect(apiClient.listNodes.mock.calls[0][0]).toMatchObject({ protocol: 2, syncBase: '/_/team/acme/sync' });
+  });
+
+  it('a session launched paused starts its watcher when discovery resumes it', async () => {
+    settings.syncSessions = [team];
+    apiClient.getAccounts.mockResolvedValue(discovery([
+      teamAccount({ sync: { enabled: false, reason: 'viewer' } })
+    ]));
+
+    await manager.startEnabledSessions();
+
+    const entry = manager.sessions.get(team.id);
+    expect(entry.runner.state).toBe('paused');
+    // Nothing watched the folder while the session waited: there is nothing to
+    // watch for a session that cannot act on an event.
+    expect(entry.engine.startUnifiedWatcher).not.toHaveBeenCalled();
+
+    apiClient.listNodes.mockResolvedValue(completeList([]));
+    manager.onDiscovery(discovery([teamAccount()]));
+
+    // The resume is what subscribes the session, so the edit below is queued.
+    expect(entry.engine.startUnifiedWatcher).toHaveBeenCalledTimes(1);
+    streamFor(team.id).push(READY);
+    await waitFor(() => entry.runner.state === 'live');
+
+    await localEdit(entry.engine, 'index.html');
+
+    expect(entry.engine.syncQueue.length()).toBe(1);
+  });
+
+  it('a local edit while paused is not queued, and resume reconciles it', async () => {
+    settings.syncSessions = [team];
+    apiClient.getAccounts.mockResolvedValue(discovery([
+      teamAccount({ sync: { enabled: false, reason: 'viewer' } })
+    ]));
+
+    await manager.startEnabledSessions();
+
+    const entry = manager.sessions.get(team.id);
+    expect(entry.runner.state).toBe('paused');
+
+    // An edit made while the session is paused is dropped on the floor: nothing
+    // is queued for a later replay, and nothing is uploaded or created now.
+    await localEdit(entry.engine, 'index.html');
+    expect(entry.engine.syncQueue.length()).toBe(0);
+    expect(apiClient.putNodeContent).not.toHaveBeenCalled();
+    expect(apiClient.createNode).not.toHaveBeenCalled();
+    expect(initialSync.performInitialSync).not.toHaveBeenCalled();
+
+    // Discovery enables it: the resume reconciles the disk in one pass, and that
+    // pass — not the queue — is where the edit is picked up.
+    apiClient.listNodes.mockResolvedValue(completeList([]));
+    manager.onDiscovery(discovery([teamAccount()]));
+    streamFor(team.id).push(READY);
+    await waitFor(() => entry.runner.state === 'live');
+
+    expect(apiClient.listNodes).toHaveBeenCalledTimes(1);
+    expect(initialSync.performInitialFolderSync).toHaveBeenCalled();
+    expect(initialSync.performInitialSync).toHaveBeenCalled();
+    expect(initialSync.performInitialUploadSync).toHaveBeenCalled();
+    expect(entry.engine.syncQueue.length()).toBe(0);
+  });
+
+  it('an offline launch starts the session offline and it syncs once the network returns', async () => {
+    jest.useFakeTimers();
+    try {
+      settings.syncSessions = [team];
+      const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
+      apiClient.getAccounts.mockRejectedValue(new Error('fetch failed'));
+      // The key cannot be proved and the listing cannot be read: the network is
+      // gone, so `calibrateClock` rejects with what `classifyError` calls offline.
+      engineUtils.calibrateClock.mockRejectedValueOnce(new Error('fetch failed'));
+      apiClient.listNodes.mockRejectedValueOnce(new Error('fetch failed'));
+
+      const statuses = await manager.startEnabledSessions();
+
+      // The launch succeeded: the session has its entry and its runner, and the
+      // runner is the one that fails and backs off from here.
+      const entry = manager.sessions.get(team.id);
+      expect(statuses.map((status) => status.sessionId)).toEqual([team.id]);
+      expect(entry.engine.isRunning).toBe(true);
+      expect(entry.runner.state).toBe('starting');
+
+      const stream = streamFor(team.id);
+      expect(stream.open).toHaveBeenCalledTimes(1);
+      stream.push(READY);
+      await flush();
+
+      expect(entry.runner.state).toBe('offline');
+      expect(logged).toHaveBeenCalled();
+
+      // The network is back: the backoff retry reopens the stream and reconciles.
+      apiClient.listNodes.mockResolvedValue(completeList([]));
+      await jest.advanceTimersByTimeAsync(5000);
+
+      expect(stream.open).toHaveBeenCalledTimes(2);
+      stream.push(READY);
+      await flush();
+
+      expect(entry.runner.state).toBe('live');
+      expect(initialSync.performInitialSync).toHaveBeenCalled();
+      expect(apiClient.listNodes).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('one session failing to start does not stop the others', async () => {
+    apiClient.getAccounts.mockResolvedValue(discovery([personalAccount(), teamAccount()]));
+    apiClient.listNodes.mockResolvedValue(completeList([]));
+    // The personal session's key is refused, so its init throws: the team
+    // session after it still starts.
+    engineUtils.calibrateClock.mockRejectedValueOnce(
+      Object.assign(new Error('invalid key'), { statusCode: 401 })
+    );
+    const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    const statuses = await manager.startEnabledSessions();
+
+    expect(logged).toHaveBeenCalled();
+    expect(statuses.map((status) => status.sessionId)).toEqual([personal.id, team.id]);
+    const failed = manager.sessions.get(personal.id);
+    expect(failed.engine.isRunning).toBe(false);
+    expect(failed.runner.state).toBe('stopped');
+
+    const entry = manager.sessions.get(team.id);
+    expect(entry.engine.isRunning).toBe(true);
+    expect(entry.runner.state).toBe('starting');
+    expect(streamFor(team.id).open).toHaveBeenCalledTimes(1);
+    expect(statuses[1].status).toBe('syncing');
   });
 
   it('stopAll stops every session', async () => {

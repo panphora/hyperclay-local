@@ -22,8 +22,19 @@ const nodeMap = require('./node-map');
 const fs = require('fs/promises');
 const { RootObserver } = require('../main/root-observer');
 
+// C3.11: the states a session's feed is dropped in. What the user edits while a
+// session is paused, offline, degraded or stopped is reconciled by the pass that
+// brings it back, never replayed from this feed.
+const GATED_RUNNER_STATES = new Set(['paused', 'offline', 'error', 'stopped']);
+
 module.exports = {
   startUnifiedWatcher() {
+    // One subscription per session (C3.11). A session paused at launch has no
+    // watcher yet: the runner that resumes it starts this on its way out of
+    // `paused`, so the callers that follow each other (init, first bind, legacy
+    // import, resume, a backoff restart) subscribe once between them.
+    if (this._subscribedObserver) return;
+
     let observer = this.observer;
     if (!observer) {
       observer = new RootObserver({ path: this.syncFolder }, { live: this.live });
@@ -55,6 +66,10 @@ module.exports = {
   // --- Observer feed ---
 
   _dispatchRaw(event, rel) {
+    // C3.11: a runner that cannot act on the event drops it. An edit made while
+    // the session is paused is reconciled by the pass that resumes it instead.
+    if (this.runner && GATED_RUNNER_STATES.has(this.runner.state)) return;
+
     switch (event) {
       case 'add': return this._onAdd(rel);
       case 'addDir': return this._onAddDir(rel);

@@ -237,7 +237,16 @@ class SyncManager extends EventEmitter {
         this.persistPaused(session.id, account.sync.reason);
       }
 
-      await this.start(session, root, { syncBase, protocol: 2 });
+      // C3.11: one session's failure is its own. The rest still start, and what
+      // failed is logged rather than thrown out of the launch.
+      try {
+        const result = await this.start(session, root, { syncBase, protocol: 2 });
+        if (!result.success) {
+          console.error(`[SYNC] Session ${session.id} did not start:`, result.error);
+        }
+      } catch (error) {
+        console.error(`[SYNC] Session ${session.id} failed to start:`, error.message);
+      }
     }
 
     return this.statuses();

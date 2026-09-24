@@ -315,3 +315,28 @@ describe('unified watcher — cascade suppression set', () => {
     expect(syncEngine.cascade.size).toBe(1);
   });
 });
+
+describe('unified watcher — startUnifiedWatcher', () => {
+  function fakeObserver() {
+    return {
+      setRemoteApplyCheck: jest.fn(),
+      subscribe: jest.fn(() => () => {}),
+      start: jest.fn(),
+      on: jest.fn(),
+      off: jest.fn()
+    };
+  }
+
+  it('startUnifiedWatcher twice subscribes once', () => {
+    const observer = fakeObserver();
+    syncEngine.observer = observer;
+
+    syncEngine.startUnifiedWatcher();
+    syncEngine.startUnifiedWatcher();
+
+    expect(observer.subscribe).toHaveBeenCalledTimes(1);
+    expect(observer.on).toHaveBeenCalledTimes(1);
+    expect(syncEngine._subscribedObserver).toBe(observer);
+    expect(observer.start).not.toHaveBeenCalled();
+  });
+});

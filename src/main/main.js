@@ -1150,7 +1150,9 @@ async function handleSyncStart(apiKey, username, syncFolder, serverUrl) {
     await updateUI();
     return result;
   } catch (error) {
-    if (session) await manager.stop(session.id);
+    // C3.11: the launch is all the sessions, so a failure tears down all of them
+    // rather than leaving the team sessions running behind a failed personal one.
+    await manager.stopAll();
     return {
       success: false,
       error: error.message

@@ -12,6 +12,7 @@ const { getServerBaseUrl } = require('../main/utils/utils');
 // error handling, validation, etc.) lives inside the mixin modules that are
 // composed onto SyncEngine.prototype at the bottom of this file.
 const { calibrateClock, getLegacySnapshot } = require('./utils');
+const { classifyError } = require('./reconcile/classify-error');
 const { createRootLive } = require('../main/utils/root-live');
 const { ensureDirectory } = require('./file-operations');
 const SyncQueue = require('./sync-queue');
@@ -228,8 +229,22 @@ class SyncEngine extends EventEmitter {
         this.logger.info('SYNC', 'Testing connectivity and authenticating', { serverUrl: this.serverUrl });
       }
       const calibrateStart = Date.now();
-      await calibrateClock(this.conn, this.logger);
-      if (this.logger) {
+      let offline = false;
+      try {
+        await calibrateClock(this.conn, this.logger);
+      } catch (error) {
+        // C3.11: a session with a runner starts offline instead of failing for
+        // good. Its own start is what hits the network, goes `offline` and backs
+        // off (C3 §5.6), so init skips its passes exactly as the paused and
+        // firstBind paths do. A refusal (401, 403) is still a failure here.
+        if (!this.runner || classifyError(error).kind !== 'offline') throw error;
+        offline = true;
+        console.error('[SYNC] Server unreachable; starting offline:', error.message);
+        if (this.logger) {
+          this.logger.error('SYNC', 'Server unreachable; the session starts offline', { error });
+        }
+      }
+      if (!offline && this.logger) {
         this.logger.info('SYNC', 'Authentication successful, clock calibrated', {
           roundtripMs: Date.now() - calibrateStart
         });
@@ -256,7 +271,7 @@ class SyncEngine extends EventEmitter {
         this.lastSyncedAt = null;
       }
 
-      if (!this.firstBind) {
+      if (!this.firstBind && !offline) {
         await this.performInitialFolderSync();
 
         // Perform initial sync for sites
