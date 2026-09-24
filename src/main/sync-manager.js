@@ -218,13 +218,14 @@ class SyncManager extends EventEmitter {
           onProgress: (progress) => this.emit('sync-progress', progress),
         }, { drop: false });
         if (!bind.ok) {
+          if (this.sessions.get(session.id) !== entry) return { success: false, error: bind.error };
           await this.stop(session.id);
           return { success: false, error: bind.error, reason: bind.reason };
         }
       }
       // A first bind is the session's own pass over an empty folder and starts
       // the runner when it is done; every other session runs its runner now.
-      if (!setup) this.startRunner(entry);
+      if (!setup && this.sessions.get(session.id) === entry) this.startRunner(entry);
       return result;
     } finally {
       this._releaseInitialSlot();
@@ -365,6 +366,7 @@ class SyncManager extends EventEmitter {
     const entry = this.sessions.get(sessionId);
     if (!entry) return { success: true };
     this.sessions.delete(sessionId);
+    if (entry.bindAbort) entry.bindAbort.abort();
     if (entry.runner) {
       entry.runner.stop();
       entry.engine.runner = null;
@@ -714,6 +716,7 @@ class SyncManager extends EventEmitter {
     }
 
     const entry = this.sessions.get(session.id);
+    if (!entry) return { ok: false, error: 'cancelled', resumable: true };
     const result = await this.runBind(entry, {
       account,
       actorId: discovery.actor && discovery.actor.id,
@@ -721,7 +724,7 @@ class SyncManager extends EventEmitter {
       onProgress: (progress) => this.emit('sync-progress', progress),
     });
 
-    if (result.ok) this.startRunner(entry);
+    if (result.ok && this.sessions.get(session.id) === entry) this.startRunner(entry);
     return result;
   }
 
@@ -733,12 +736,17 @@ class SyncManager extends EventEmitter {
    */
   async runBind(entry, options, { drop = true } = {}) {
     const { session, root } = entry;
+    const bindAbort = new AbortController();
+    entry.bindAbort = bindAbort;
     await this._acquireInitialSlot();
     let result;
     try {
-      result = await firstBind(entry, options);
+      result = bindAbort.signal.aborted
+        ? { ok: false, error: 'cancelled', resumable: true }
+        : await firstBind(entry, { ...options, signal: bindAbort.signal });
     } finally {
       this._releaseInitialSlot();
+      entry.bindAbort = null;
     }
 
     if (!result.ok && drop) {

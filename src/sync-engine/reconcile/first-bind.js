@@ -223,6 +223,7 @@ async function firstBind(entry, options = {}) {
   const session = entry.session || { id: engine.sessionId, accountId: engine.accountId };
   const metaDir = options.metaDir || engine.metaDir;
   const signal = options.signal;
+  const aborted = () => Boolean(signal && signal.aborted);
   const now = options.now || Date.now;
   const onProgress = options.onProgress || null;
 
@@ -245,12 +246,14 @@ async function firstBind(entry, options = {}) {
 
     opened = openBindStream(engine, signal);
     const ready = await withTimeout(opened.ready, READY_TIMEOUT_MS, 'sync-ready timeout');
+    if (aborted()) return { ok: false, error: 'cancelled', resumable: markerWritten };
     if (!ready.sync || ready.sync.enabled !== true) {
       return { ok: false, error: (ready.sync && ready.sync.reason) || 'forbidden', resumable: false };
     }
 
     // 3. The inventory, its size, and room for it on this volume.
     const inventory = await listNodes(engine.conn, { signal });
+    if (aborted()) return { ok: false, error: 'cancelled', resumable: markerWritten };
     if (!inventory || inventory.complete !== true) {
       return { ok: false, error: 'inventory-incomplete', resumable: false };
     }
@@ -275,6 +278,7 @@ async function firstBind(entry, options = {}) {
     let done = 0;
     let bytesDone = 0;
     await runPool(files, DOWNLOAD_CONCURRENCY, async (node) => {
+      if (aborted()) return;
       await bindNode(engine, node);
       done += 1;
       bytesDone += sizeOf(node);
@@ -290,12 +294,18 @@ async function firstBind(entry, options = {}) {
       }
     });
 
+    // A stop while the pool ran (remove, disconnect, quit): the folder is incomplete, so it is
+    // never identified as bound and the next start resumes the bind from its marker.
+    if (aborted()) return { ok: false, error: 'cancelled', resumable: true };
+
     // Nodes a frame named while the download ran were decided against the
     // inventory of that moment: re-read each one against a fresh list.
     for (const nodeId of opened.frames) {
       if (signal && signal.aborted) break;
       await engine.refreshNode(nodeId, { signal });
     }
+
+    if (aborted()) return { ok: false, error: 'cancelled', resumable: true };
 
     // 6. The baseline first, then identity, then the marker: only a session
     // whose disk matches its baseline is ever identified as bound.

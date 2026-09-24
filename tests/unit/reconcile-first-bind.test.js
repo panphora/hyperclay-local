@@ -346,6 +346,41 @@ describe('firstBind', () => {
       uploadBlocked: true
     });
   });
+
+  it('an aborted bind stops downloading, writes no identity and keeps its marker', async () => {
+    const names = ['a.html', 'b.html', 'c.html', 'd.html', 'e.html', 'f.html'];
+    api.listNodes.mockResolvedValue(completeList(
+      names.map((name, index) => site({ id: 901 + index, name, etag: checksum(name) }))
+    ));
+
+    let release;
+    const blocked = new Promise((resolve) => { release = resolve; });
+    const downloaded = [];
+    api.getNodeContent.mockImplementation(async (conn, id) => {
+      downloaded.push(id);
+      await blocked;
+      return remoteContent(`<html><body>${id}</body></html>`, checksum(String(id)));
+    });
+
+    const controller = new AbortController();
+    const bind = firstBind(entry, { signal: controller.signal });
+    // Four at a time: the pool is busy when the abort lands.
+    await waitFor(() => downloaded.length === 4);
+    controller.abort();
+    release();
+
+    const result = await bind;
+
+    expect(result).toEqual({ ok: false, error: 'cancelled', resumable: true });
+    expect(await exists(identityPath())).toBe(false);
+    expect(await exists(markerPath())).toBe(true);
+    expect(engine.startUnifiedWatcher).not.toHaveBeenCalled();
+    // The pool never reached the last two files: nothing after the abort was
+    // downloaded or adopted. Which of the four finished first is not fixed.
+    expect([...downloaded].sort()).toEqual([901, 902, 903, 904]);
+    expect(await exists(path.join(root, 'e.html'))).toBe(false);
+    expect(await exists(path.join(root, 'f.html'))).toBe(false);
+  });
 });
 
 describe('the manager', () => {
@@ -579,5 +614,78 @@ describe('the manager', () => {
       // The engine leaves a timer and the session a stream open: both stop here.
       await manager.stop(SESSION_ID);
     }
+  });
+
+  it('a session stopped while its bind waits for a slot never binds', async () => {
+    const { manager } = makeManager({ userData: await tmpDir('bind-userdata-') });
+    const entry = {
+      session: { id: SESSION_ID },
+      root: { id: ROOT_ID },
+      observer: { setRemoteApplyCheck: jest.fn() },
+      engine: { stop: jest.fn().mockResolvedValue({ success: true }), clearApiKey: jest.fn(), off: jest.fn() },
+      listeners: []
+    };
+    manager.sessions.set(SESSION_ID, entry);
+    manager.initialRunning = 2;
+
+    const bind = manager.runBind(entry, {}, { drop: false });
+    await manager.stop(SESSION_ID);
+    manager._releaseInitialSlot();
+
+    await expect(bind).resolves.toEqual({ ok: false, error: 'cancelled', resumable: true });
+    expect(bindModule.firstBind).not.toHaveBeenCalled();
+  });
+
+  it('stopping a session mid-bind aborts the bind and setupTeam starts no runner', async () => {
+    const userData = await tmpDir('bind-userdata-');
+    const folder = await tmpDir('bind-setup-root-');
+    const names = ['a.html', 'b.html', 'c.html', 'd.html', 'e.html', 'f.html'];
+    api.listNodes.mockResolvedValue(completeList(
+      names.map((name, index) => site({ id: 901 + index, name, etag: checksum(name) }))
+    ));
+
+    let release;
+    const blocked = new Promise((resolve) => { release = resolve; });
+    const downloaded = [];
+    api.getNodeContent.mockImplementation(async (conn, id) => {
+      downloaded.push(id);
+      await blocked;
+      return remoteContent(`<html><body>${id}</body></html>`, checksum(String(id)));
+    });
+
+    const observer = fakeObserver();
+    const { manager, settings } = makeManager({ userData, observerFor: () => observer });
+    const stream = fakeStream();
+    jest.spyOn(SyncEngine.prototype, 'sessionStream').mockReturnValue(stream);
+    jest.spyOn(SyncEngine.prototype, 'startUnifiedWatcher').mockImplementation(() => {});
+    // The first bind tests leave the module's firstBind a spy; setupTeam runs the real one.
+    bindModule.firstBind.mockImplementation(firstBind);
+    const startRunner = jest.spyOn(manager, 'startRunner').mockReturnValue(null);
+    const pauseAll = jest.spyOn(manager, 'pauseAll');
+
+    const setup = manager.setupTeam({
+      accountId: ACCOUNT_ID,
+      folder,
+      trusted: true,
+      ...paths,
+      home: path.dirname(folder)
+    });
+
+    // The user removes the team folder while its first bind is still downloading.
+    await waitFor(() => downloaded.length === 4);
+    const sessionId = settings.syncSessions[0].id;
+    await manager.stop(sessionId);
+    const opensAtStop = stream.open.mock.calls.length;
+    release();
+
+    const result = await setup;
+
+    expect(result).toEqual({ ok: false, error: 'cancelled', resumable: true });
+    expect(startRunner).not.toHaveBeenCalled();
+    expect(stream.open.mock.calls.length).toBe(opensAtStop);
+    expect(pauseAll).not.toHaveBeenCalled();
+    expect(manager.sessions.has(sessionId)).toBe(false);
+    // The folder and the session stay, so the next start resumes the bind.
+    expect(settings.syncSessions).toHaveLength(1);
   });
 });
