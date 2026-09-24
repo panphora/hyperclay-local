@@ -42,7 +42,6 @@ class SyncEngine extends EventEmitter {
     // the process-wide personal keys and the legacy server snapshot store.
     this.live = createRootLive(null);
     this.snapshots = { take: (rel) => getLegacySnapshot(rel) };
-    this.clockOffset = 0;
     this.pollTimer = null;
     this.sseConnection = null;
     this.sseReconnectTimer = null;
@@ -221,17 +220,17 @@ class SyncEngine extends EventEmitter {
       console.log(`[SYNC] Ensuring sync folder exists: ${syncFolder}`);
       await ensureDirectory(syncFolder);
 
-      // Calibrate clock with server (also validates API key and connectivity)
+      // Prove the key works and the server answers before anything syncs. C3
+      // §5.5.5: the offset it reports is not used by the session engine any
+      // more — content is decided by checksum and etag, not by clocks.
       console.log(`[SYNC] Calibrating clock with server...`);
       if (this.logger) {
         this.logger.info('SYNC', 'Testing connectivity and authenticating', { serverUrl: this.serverUrl });
       }
       const calibrateStart = Date.now();
-      this.clockOffset = await calibrateClock(this.conn, this.logger);
-      console.log(`[SYNC] Clock offset: ${this.clockOffset}ms`);
+      await calibrateClock(this.conn, this.logger);
       if (this.logger) {
         this.logger.info('SYNC', 'Authentication successful, clock calibrated', {
-          clockOffsetMs: this.clockOffset,
           roundtripMs: Date.now() - calibrateStart
         });
       }

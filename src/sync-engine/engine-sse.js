@@ -27,7 +27,8 @@ const {
   calculateBufferChecksum
 } = require('./file-operations');
 const { syncUrl, authHeaders, getNodeContent } = require('./api-client');
-const { calculateChecksum, isLocalNewer } = require('./utils');
+const { calculateChecksum } = require('./utils');
+const { decide, A } = require('./reconcile/decide');
 const { SYNC_CONFIG } = require('./constants');
 const nodeMap = require('./node-map');
 const { getConsentRegistry, resolveWritePath } = require('../main/utils/path-resolver');
@@ -864,19 +865,22 @@ module.exports = {
               map.set(String(serverFile.nodeId), { path: relativePath, checksum: serverFile.checksum, inode, syncedAt: Date.now() });
             }
           } else {
-            const localInfo = localFiles.get(relativePath);
             const localContent = await readFile(localPath);
             const localChecksum = await calculateChecksum(localContent);
 
             // Check if content is different
             if (localChecksum !== serverFile.checksum) {
-              // Check if local is newer
-              if (isLocalNewer(localInfo.mtime, serverFile.modifiedAt, this.clockOffset)) {
-                console.log(`[SYNC] PRESERVE ${relativePath} - local is newer, uploading`);
-                this.stats.filesProtected++;
-                await this.uploadFile(relativePath);
-              } else {
-                // Download newer version from server
+              // C3: the baseline, not a clock, says which side moved. The local
+              // bytes are the ones on disk, the remote's etag is its checksum.
+              const decision = decide({
+                baseline: serverFile.nodeId ? this.repo.getBaseline(serverFile.nodeId) : null,
+                local: { checksum: localChecksum },
+                remote: { etag: serverFile.checksum },
+                complete: true
+              });
+
+              if (decision.action === A.DOWNLOAD) {
+                // Download the server's version
                 await this.downloadFile(serverFile.nodeId, relativePath);
                 this.stats.filesDownloaded++;
                 changesFound = true;
@@ -884,6 +888,14 @@ module.exports = {
                   const inode = await nodeMap.getInode(path.join(this.syncFolder, relativePath));
                   map.set(String(serverFile.nodeId), { path: relativePath, checksum: serverFile.checksum, inode, syncedAt: Date.now() });
                 }
+              } else if (decision.action === A.UPLOAD) {
+                console.log(`[SYNC] PRESERVE ${relativePath} - local changed since the last sync, uploading`);
+                this.stats.filesProtected++;
+                await this.uploadFile(relativePath);
+              } else {
+                // Both sides moved: the reconciliation pass records the conflict
+                // and neither file is written here.
+                console.log(`[SYNC] ${relativePath} - local and server both moved, leaving the conflict to reconcile`);
               }
             }
           }
@@ -912,22 +924,30 @@ module.exports = {
               map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null, syncedAt: Date.now() });
             }
           } else {
-            const localInfo = localUploads.get(serverUpload.path);
             const localContent = await readFileBuffer(localPath);
             const localChecksum = calculateBufferChecksum(localContent);
 
             if (localChecksum !== serverUpload.checksum) {
-              if (isLocalNewer(localInfo.mtime, serverUpload.modifiedAt, this.clockOffset)) {
-                console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - local is newer, uploading`);
-                this.stats.uploadsProtected++;
-                await this.uploadUploadFile(serverUpload.path);
-              } else {
+              const decision = decide({
+                baseline: serverUpload.nodeId ? this.repo.getBaseline(serverUpload.nodeId) : null,
+                local: { checksum: localChecksum },
+                remote: { etag: serverUpload.checksum },
+                complete: true
+              });
+
+              if (decision.action === A.DOWNLOAD) {
                 await this.downloadUploadFile(serverUpload.path, serverUpload.nodeId);
                 this.stats.uploadsDownloaded++;
                 changesFound = true;
                 if (serverUpload.nodeId) {
                   map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null, syncedAt: Date.now() });
                 }
+              } else if (decision.action === A.UPLOAD) {
+                console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - local changed since the last sync, uploading`);
+                this.stats.uploadsProtected++;
+                await this.uploadUploadFile(serverUpload.path);
+              } else {
+                console.log(`[SYNC] ${serverUpload.path} - local and server both moved, leaving the conflict to reconcile`);
               }
             }
           }

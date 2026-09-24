@@ -3,7 +3,7 @@
  */
 
 const { SYNC_CONFIG } = require('./constants');
-const { isRetryableError } = require('./error-handler');
+const { classifyError } = require('./reconcile/classify-error');
 
 class SyncQueue {
   constructor() {
@@ -78,8 +78,11 @@ class SyncQueue {
    * Handle retry for failed item
    */
   scheduleRetry(item, error, onRetry) {
-    // Check if error is retryable
-    if (!isRetryableError(error)) {
+    // C3: retry on the classifier's kind, not on a message substring. Only a
+    // server asking for backoff and a connection that never answered are worth
+    // another attempt; a refusal is handed to the session state machine.
+    const { kind } = classifyError(error);
+    if (kind !== 'backoff' && kind !== 'offline') {
       return {
         shouldRetry: false,
         reason: 'Non-retryable error'

@@ -51,6 +51,7 @@ const realFs = require('fs');
 const fileOps = require('../../src/sync-engine/file-operations');
 const apiClient = require('../../src/sync-engine/api-client');
 const nodeMapModule = require('../../src/sync-engine/node-map');
+const { calculateChecksum } = require('../../src/sync-engine/utils');
 const Outbox = require('../../src/sync-engine/state/outbox');
 const CascadeSuppression = require('../../src/sync-engine/state/cascade-suppression');
 const EchoWindow = require('../../src/sync-engine/state/echo-window');
@@ -121,6 +122,12 @@ beforeEach(() => {
   fileOps.fileExists.mockResolvedValue(false);
   fileOps.calculateBufferChecksum.mockReturnValue('mock-checksum');
   nodeMapModule.getInode.mockResolvedValue(12345);
+  // node-map is automocked here, so the baseline reader keeps its real
+  // implementation: a polled node is decided from the entry's remoteEtag and
+  // localChecksum.
+  nodeMapModule.readBaseline.mockImplementation(
+    jest.requireActual('../../src/sync-engine/node-map').readBaseline
+  );
   nodeMapModule.save.mockResolvedValue();
   nodeMapModule.load.mockResolvedValue(new Map());
   nodeMapModule.loadState.mockResolvedValue({});
@@ -382,15 +389,22 @@ describe('checkForRemoteChanges', () => {
     fileOps.getLocalUploads.mockResolvedValue(new Map());
   });
 
+  // C3 §5.5.5: a polled node is decided from the baseline and the bytes on
+  // disk, never from an mtime. The baseline's remoteEtag is the server version
+  // the last sync saw, its localChecksum the bytes it wrote.
+  const SERVER_BEFORE = 'cs-server-before';
+  const LOCAL_BEFORE = 'cs-before-local-change';
+
   describe('site reconciliation', () => {
-    it('uploads the local file when local is newer than server', async () => {
-      syncEngine.fetchAndCacheServerFiles.mockResolvedValue([
-        { nodeId: 1, path: 'my-site.html', filename: 'my-site.html', checksum: 'cs-server', modifiedAt: '2024-01-01T00:00:00Z' }
-      ]);
-      fileOps.getLocalFiles.mockResolvedValue(new Map([
-        ['my-site.html', { mtime: new Date('2026-01-01') }]
-      ]));
-      fileOps.readFile.mockResolvedValue('<html>local newer content</html>');
+    const siteNode = (checksum) => (
+      { nodeId: 1, path: 'my-site.html', filename: 'my-site.html', checksum, modifiedAt: '2024-01-01T00:00:00Z' }
+    );
+
+    it('uploads when only the local file moved since the last sync', async () => {
+      syncEngine.repo.seed([[1, { type: 'site', path: 'my-site.html', remoteEtag: SERVER_BEFORE, localChecksum: LOCAL_BEFORE }]]);
+      fileOps.getLocalFiles.mockResolvedValue(new Map([['my-site.html', { mtime: new Date('2026-01-01') }]]));
+      fileOps.readFile.mockResolvedValue('<html>edited locally</html>');
+      syncEngine.fetchAndCacheServerFiles.mockResolvedValue([siteNode(SERVER_BEFORE)]);
 
       await syncEngine.checkForRemoteChanges();
 
@@ -399,19 +413,30 @@ describe('checkForRemoteChanges', () => {
       expect(syncEngine.stats.filesProtected).toBe(1);
     });
 
-    it('downloads from server when server version is newer', async () => {
-      syncEngine.fetchAndCacheServerFiles.mockResolvedValue([
-        { nodeId: 1, path: 'my-site.html', filename: 'my-site.html', checksum: 'cs-server', modifiedAt: '2026-01-01T00:00:00Z' }
-      ]);
-      fileOps.getLocalFiles.mockResolvedValue(new Map([
-        ['my-site.html', { mtime: new Date('2024-01-01') }]
-      ]));
-      fileOps.readFile.mockResolvedValue('<html>old local content</html>');
+    it('downloads when only the server moved since the last sync', async () => {
+      const unchanged = '<html>untouched locally</html>';
+      const localChecksum = await calculateChecksum(unchanged);
+      syncEngine.repo.seed([[1, { type: 'site', path: 'my-site.html', remoteEtag: SERVER_BEFORE, localChecksum }]]);
+      fileOps.getLocalFiles.mockResolvedValue(new Map([['my-site.html', { mtime: new Date('2026-01-01') }]]));
+      fileOps.readFile.mockResolvedValue(unchanged);
+      syncEngine.fetchAndCacheServerFiles.mockResolvedValue([siteNode('cs-server-after')]);
 
       await syncEngine.checkForRemoteChanges();
 
       expect(syncEngine.downloadFile).toHaveBeenCalledWith(1, 'my-site.html');
       expect(syncEngine.uploadFile).not.toHaveBeenCalled();
+    });
+
+    it('leaves a node both sides moved to the reconciliation pass', async () => {
+      syncEngine.repo.seed([[1, { type: 'site', path: 'my-site.html', remoteEtag: SERVER_BEFORE, localChecksum: LOCAL_BEFORE }]]);
+      fileOps.getLocalFiles.mockResolvedValue(new Map([['my-site.html', { mtime: new Date('2026-01-01') }]]));
+      fileOps.readFile.mockResolvedValue('<html>edited locally too</html>');
+      syncEngine.fetchAndCacheServerFiles.mockResolvedValue([siteNode('cs-server-after')]);
+
+      await syncEngine.checkForRemoteChanges();
+
+      expect(syncEngine.uploadFile).not.toHaveBeenCalled();
+      expect(syncEngine.downloadFile).not.toHaveBeenCalled();
     });
   });
 
@@ -420,14 +445,13 @@ describe('checkForRemoteChanges', () => {
       fileOps.calculateBufferChecksum.mockReturnValue('cs-local-upload');
     });
 
-    it('uploads the local file when local is newer than server', async () => {
-      syncEngine.fetchAndCacheServerUploads.mockResolvedValue([
-        { nodeId: 2, path: 'image.png', checksum: 'cs-server-upload', modifiedAt: '2024-01-01T00:00:00Z' }
-      ]);
-      fileOps.getLocalUploads.mockResolvedValue(new Map([
-        ['image.png', { mtime: new Date('2026-01-01') }]
-      ]));
-      fileOps.readFileBuffer.mockResolvedValue(Buffer.from('local image content'));
+    const uploadNode = (checksum) => ({ nodeId: 2, path: 'image.png', checksum, modifiedAt: '2024-01-01T00:00:00Z' });
+
+    it('uploads when only the local file moved since the last sync', async () => {
+      syncEngine.repo.seed([[2, { type: 'upload', path: 'image.png', remoteEtag: SERVER_BEFORE, localChecksum: LOCAL_BEFORE }]]);
+      fileOps.getLocalUploads.mockResolvedValue(new Map([['image.png', { mtime: new Date('2026-01-01') }]]));
+      fileOps.readFileBuffer.mockResolvedValue(Buffer.from('edited locally'));
+      syncEngine.fetchAndCacheServerUploads.mockResolvedValue([uploadNode(SERVER_BEFORE)]);
 
       await syncEngine.checkForRemoteChanges();
 
@@ -436,19 +460,28 @@ describe('checkForRemoteChanges', () => {
       expect(syncEngine.stats.uploadsProtected).toBe(1);
     });
 
-    it('downloads from server when server version is newer', async () => {
-      syncEngine.fetchAndCacheServerUploads.mockResolvedValue([
-        { nodeId: 2, path: 'image.png', checksum: 'cs-server-upload', modifiedAt: '2026-01-01T00:00:00Z' }
-      ]);
-      fileOps.getLocalUploads.mockResolvedValue(new Map([
-        ['image.png', { mtime: new Date('2024-01-01') }]
-      ]));
-      fileOps.readFileBuffer.mockResolvedValue(Buffer.from('old local content'));
+    it('downloads when only the server moved since the last sync', async () => {
+      syncEngine.repo.seed([[2, { type: 'upload', path: 'image.png', remoteEtag: SERVER_BEFORE, localChecksum: 'cs-local-upload' }]]);
+      fileOps.getLocalUploads.mockResolvedValue(new Map([['image.png', { mtime: new Date('2026-01-01') }]]));
+      fileOps.readFileBuffer.mockResolvedValue(Buffer.from('untouched locally'));
+      syncEngine.fetchAndCacheServerUploads.mockResolvedValue([uploadNode('cs-server-after')]);
 
       await syncEngine.checkForRemoteChanges();
 
       expect(syncEngine.downloadUploadFile).toHaveBeenCalledWith('image.png', 2);
       expect(syncEngine.uploadUploadFile).not.toHaveBeenCalled();
+    });
+
+    it('leaves an upload both sides moved to the reconciliation pass', async () => {
+      syncEngine.repo.seed([[2, { type: 'upload', path: 'image.png', remoteEtag: SERVER_BEFORE, localChecksum: LOCAL_BEFORE }]]);
+      fileOps.getLocalUploads.mockResolvedValue(new Map([['image.png', { mtime: new Date('2026-01-01') }]]));
+      fileOps.readFileBuffer.mockResolvedValue(Buffer.from('edited locally too'));
+      syncEngine.fetchAndCacheServerUploads.mockResolvedValue([uploadNode('cs-server-after')]);
+
+      await syncEngine.checkForRemoteChanges();
+
+      expect(syncEngine.uploadUploadFile).not.toHaveBeenCalled();
+      expect(syncEngine.downloadUploadFile).not.toHaveBeenCalled();
     });
   });
 });

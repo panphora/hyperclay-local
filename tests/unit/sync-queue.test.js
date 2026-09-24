@@ -163,6 +163,41 @@ describe('SyncQueue', () => {
     });
   });
 
+  describe('scheduleRetry', () => {
+    const storageChanging = () => ({ message: 'storage changing', statusCode: 409, code: 'storage-changing' });
+
+    test('retries when the server asked for backoff', () => {
+      queue.add('change', 'site.html');
+      const result = queue.scheduleRetry(queue.next(), storageChanging(), () => {});
+
+      expect(result).toMatchObject({ shouldRetry: true, attempt: 1, maxAttempts: 3 });
+    });
+
+    test('retries a connection that never answered', () => {
+      const error = new Error('fetch failed');
+
+      expect(queue.scheduleRetry({ filename: 'site.html', type: 'change' }, error, () => {}))
+        .toMatchObject({ shouldRetry: true });
+    });
+
+    test('does not retry a refusal the classifier hands to the state machine', () => {
+      const error = { message: 'node changed', statusCode: 409, code: 'node-changed' };
+      const result = queue.scheduleRetry({ filename: 'site.html', type: 'change' }, error, () => {});
+
+      expect(result).toEqual({ shouldRetry: false, reason: 'Non-retryable error' });
+      expect(queue.getRetryInfo('site.html')).toBeUndefined();
+    });
+
+    test('stops once the retry budget is spent', () => {
+      const item = { filename: 'site.html', type: 'change' };
+
+      expect(queue.scheduleRetry(item, storageChanging(), () => {}).shouldRetry).toBe(true);
+      expect(queue.scheduleRetry(item, storageChanging(), () => {}).shouldRetry).toBe(true);
+      expect(queue.scheduleRetry(item, storageChanging(), () => {}))
+        .toMatchObject({ shouldRetry: false, reason: 'Max retries exceeded', attempts: 3 });
+    });
+  });
+
   describe('getQueuedItems', () => {
     test('returns copy of queue', () => {
       queue.add('add', 'a.html');
