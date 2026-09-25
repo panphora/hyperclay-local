@@ -79,7 +79,10 @@ wait_for_server() {
 launch() {
   local home="$1"; shift
   : > "$LAB/app.log"
-  HOME="$home" XDG_CONFIG_HOME="$home/.config" setsid xvfb-run -a -s "-screen 0 1280x800x24" "$APPIMAGE" "$@" > "$LAB/app.log" 2>&1 &
+  # The AppImage runtime extracts into $TMPDIR/appimage_extracted_<hash> and deletes it on exit. stop() can
+  # SIGKILL that delete halfway, and a shared /tmp would hand the next launch the half-deleted folder.
+  mkdir -p "$home/tmp"
+  HOME="$home" XDG_CONFIG_HOME="$home/.config" TMPDIR="$home/tmp" setsid xvfb-run -a -s "-screen 0 1280x800x24" "$APPIMAGE" "$@" > "$LAB/app.log" 2>&1 &
   echo $! > "$LAB/app.pid"
   echo $!
 }

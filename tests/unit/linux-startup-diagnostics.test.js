@@ -105,3 +105,48 @@ ss() { echo 'ss unavailable' >&2; return 78; }`);
     expect(fs.existsSync(path.join(fixtureDir, 'stopped'))).toBe(false);
   });
 });
+
+describeShell('Linux launch isolation', () => {
+  let fixtureDir;
+
+  beforeEach(() => {
+    fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'linux-launch-isolation-'));
+    fs.mkdirSync(path.join(fixtureDir, 'lab'));
+    fs.writeFileSync(path.join(fixtureDir, 'fixture.AppImage'), '#!/bin/bash\nprintf \'%s\\n\' "$TMPDIR" > "$HOME/tmpdir.txt"\n');
+  });
+
+  afterEach(() => {
+    fs.rmSync(fixtureDir, { recursive: true, force: true });
+  });
+
+  test('gives each launch its own TMPDIR inside its own HOME', () => {
+    const script = path.join(fixtureDir, 'launch.sh');
+    fs.writeFileSync(script, `#!/bin/bash
+mktemp() { printf '%s/lab\n' "$DIAGNOSTICS_FIXTURE"; }
+id() { echo 1000; }
+setsid() { "$@"; }
+xvfb-run() { shift 3; "$@"; }
+source "$DIAGNOSTICS_LIBRARY"
+launch "$DIAGNOSTICS_FIXTURE/home-a"
+launch "$DIAGNOSTICS_FIXTURE/home-b"
+wait
+`);
+    const result = spawnSync('bash', [script], {
+      encoding: 'utf8',
+      timeout: 10000,
+      env: {
+        ...process.env,
+        DIAGNOSTICS_FIXTURE: fixtureDir,
+        DIAGNOSTICS_LIBRARY: library,
+        APPIMAGE: path.join(fixtureDir, 'fixture.AppImage'),
+        LINUX_CHECK_OUT: path.join(fixtureDir, 'artifacts'),
+      },
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(fs.readFileSync(path.join(fixtureDir, 'home-a/tmpdir.txt'), 'utf8').trim()).toBe(path.join(fixtureDir, 'home-a/tmp'));
+    expect(fs.readFileSync(path.join(fixtureDir, 'home-b/tmpdir.txt'), 'utf8').trim()).toBe(path.join(fixtureDir, 'home-b/tmp'));
+    expect(fs.statSync(path.join(fixtureDir, 'home-a/tmp')).isDirectory()).toBe(true);
+    expect(fs.statSync(path.join(fixtureDir, 'home-b/tmp')).isDirectory()).toBe(true);
+  });
+});
