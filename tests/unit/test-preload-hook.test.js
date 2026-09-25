@@ -6,7 +6,8 @@ const fs = require('fs');
 const path = require('path');
 
 const MAIN = path.resolve(__dirname, '../../src/main/main.js');
-const source = fs.readFileSync(MAIN, 'utf8');
+// A Windows checkout has CRLF line endings; the positions below are compared on LF text.
+const source = fs.readFileSync(MAIN, 'utf8').replace(/\r\n/g, '\n');
 
 function at(needle) {
   const index = source.indexOf(needle);
