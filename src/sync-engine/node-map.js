@@ -1,6 +1,7 @@
 const fs = require('fs/promises');
 const path = require('path');
-const crypto = require('crypto');
+
+const { withFileLock, atomicWriteFile } = require('../main/utils/write-queue');
 
 const MAP_FILE = 'node-map.json';
 const STATE_FILE = 'sync-state.json';
@@ -11,10 +12,11 @@ const TOMBSTONES_FILE = 'tombstones.json';
 // Anything shorter than a stale tab's realistic lifetime is safe here.
 const TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-async function atomicWrite(filePath, data) {
-  const tmpPath = filePath + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
-  await fs.writeFile(tmpPath, data);
-  await fs.rename(tmpPath, filePath);
+// First bind saves the map from four downloads at once. The lock publishes those saves in call order, so an
+// older snapshot can never land over a newer one, and atomicWriteFile retries the rename Windows refuses
+// while another handle has the file.
+function atomicWrite(filePath, data) {
+  return withFileLock(filePath, () => atomicWriteFile(filePath, data));
 }
 
 async function load(metaDir, logger = null) {
@@ -88,7 +90,6 @@ function applyBaseline(entry, fields = {}) {
 }
 
 async function save(metaDir, map, logger = null) {
-  await fs.mkdir(metaDir, { recursive: true });
   const obj = Object.fromEntries(map);
   try {
     await atomicWrite(path.join(metaDir, MAP_FILE), JSON.stringify(obj, null, 2));
@@ -122,7 +123,6 @@ async function loadState(metaDir) {
 }
 
 async function saveState(metaDir, state) {
-  await fs.mkdir(metaDir, { recursive: true });
   await atomicWrite(path.join(metaDir, STATE_FILE), JSON.stringify(state, null, 2));
 }
 
@@ -176,7 +176,6 @@ async function loadTombstones(metaDir) {
 }
 
 async function saveTombstones(metaDir, map) {
-  await fs.mkdir(metaDir, { recursive: true });
   const obj = Object.fromEntries(map);
   await atomicWrite(path.join(metaDir, TOMBSTONES_FILE), JSON.stringify(obj, null, 2));
 }

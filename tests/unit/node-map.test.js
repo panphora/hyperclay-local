@@ -62,6 +62,27 @@ describe('node map load/save', () => {
     expect(loaded.get('2')).toEqual({ type: 'site', path: 'new.html', checksum: null, inode: null });
   });
 
+  test('concurrent saves land in call order, so the newest map is the one on disk', async () => {
+    const realRename = fs.rename.bind(fs);
+    let delayed = false;
+    const spy = jest.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (!delayed) {
+        delayed = true;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return realRename(from, to);
+    });
+    try {
+      const older = new Map([['1', { path: 'a.html' }]]);
+      const newer = new Map([['1', { path: 'a.html' }], ['2', { path: 'b.html' }]]);
+      await Promise.all([save(tmpDir, older), save(tmpDir, newer)]);
+      const onDisk = JSON.parse(await fs.readFile(path.join(tmpDir, 'node-map.json'), 'utf8'));
+      expect(Object.keys(onDisk).sort()).toEqual(['1', '2']);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   test('returns empty map on corrupt JSON', async () => {
     await fs.mkdir(tmpDir, { recursive: true });
     await fs.writeFile(path.join(tmpDir, 'node-map.json'), '{not valid json');
