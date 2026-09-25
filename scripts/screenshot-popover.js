@@ -200,7 +200,7 @@ async function capture(browser, sc, args) {
     return t.includes('Options') && t.includes('Quit');
   });
   if (!sc.gotoNotices && sc.gotoSetup == null && sc.cards && sc.cards.length) {
-    await page.getByText(sc.cards[0].title, { exact: false }).first().waitFor();
+    await page.locator(`[data-card-title="${sc.cards[0].title}"]`).first().waitFor();
   }
   if (sc.gotoNotices && sc.notices && sc.notices.length) {
     await page.getByText(sc.notices[0].error).waitFor();

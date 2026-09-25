@@ -49,8 +49,8 @@ if (!up) fail('the server did not answer on :4321 within 20s; popover text was: 
 await win.waitForTimeout(500);
 const running = await win.evaluate(() => document.body.innerText);
 await win.screenshot({ path: path.join(outDir, 'popover-running.png') });
-if (/\bOFF\b/.test(running)) fail('the server answers on :4321 but the popover toggle still says OFF; text was: ' + running.slice(0, 300));
-note('popover shows the running server (toggle no longer OFF, /_/meta answers)');
+if (await win.locator('[role="switch"][aria-label="Turn server off"]').count() !== 1) fail('the server answers on :4321 but the popover Serve switch is not on; text was: ' + running.slice(0, 300));
+note('popover shows the running server (Serve switch on, /_/meta answers)');
 
 // Every visible button must be clickable without the renderer throwing. Labels are
 // read up front: a click can redraw the popover, and a locator by index would then

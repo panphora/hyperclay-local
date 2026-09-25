@@ -8,9 +8,10 @@
 
 const EXTERNAL_URL_PREFIXES = ['https://hyperclay.com/', 'https://hyperclaylocal.com/'];
 
-const CARD_MENU_ACTIONS = ['open', 'reveal', 'backups', 'disconnect', 'remove'];
+const CARD_MENU_ACTIONS = ['open', 'copy', 'reveal', 'backups', 'disconnect', 'remove'];
 const CARD_MENU_LABELS = {
   open: 'Open in Browser',
+  copy: 'Copy Address',
   reveal: 'Reveal Folder',
   backups: 'Backups',
   disconnect: 'Disconnect…',
@@ -81,18 +82,30 @@ function movePortDialog({ title, port, nextPort }) {
   });
 }
 
-/** C4 §4: open, reveal, backups, then the two that change what this computer does. */
-function cardMenuModel(card) {
+/**
+ * C4 §4: the folder as a header, open, copy, reveal, backups, then the two that
+ * change what this computer does. Open and copy need a served address. Outside
+ * macOS a single `&` in a menu label is an accelerator marker, so the path
+ * doubles it.
+ */
+function cardMenuModel(card, platform = process.platform) {
   const actions = (card && card.actions) || [];
+  const served = !!(card && card.url);
   const items = [];
+  if (card && card.folder) {
+    const label = platform === 'darwin' ? card.folder : card.folder.replace(/&/g, '&&');
+    items.push({ label, enabled: false }, { type: 'separator' });
+  }
   let separated = false;
   for (const action of CARD_MENU_ACTIONS) {
-    if (!actions.includes(action)) continue;
+    if (action === 'copy' ? !served : !actions.includes(action)) continue;
     if (MENU_SEPARATOR_BEFORE.includes(action) && items.length && !separated) {
       items.push({ type: 'separator' });
       separated = true;
     }
-    items.push({ label: CARD_MENU_LABELS[action], action });
+    const item = { label: CARD_MENU_LABELS[action], action };
+    if (action === 'open' && !served) item.enabled = false;
+    items.push(item);
   }
   return items;
 }

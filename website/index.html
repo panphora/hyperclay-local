@@ -173,10 +173,10 @@
     }
     .shot-hotspot:hover, .shot-hotspot:focus-visible { outline: none; background: rgba(255, 255, 255, .06); }
     .shot-hotspot:hover::after, .shot-hotspot:focus-visible::after { opacity: 1; }
-    .shot-hotspot--server { left: 30%;  top: 9.5%; width: 20%; height: 6%; }
-    .shot-hotspot--sync   { left: 78%;  top: 9.5%; width: 20%; height: 6%; }
-    .shot-hotspot--bell   { left: 86%;  top: 1.5%; width: 12%; height: 6%; border-radius: 20px; }
-    .shot-hotspot--back   { left: 2.5%; top: 1.5%; width: 11%; height: 6%; border-radius: 20px; }
+    .shot-hotspot--server { left: 4%;   top: 83.4%; width: 45.3%; height: 8.4%; }
+    .shot-hotspot--sync   { left: 50.6%; top: 83.4%; width: 45.3%; height: 8.4%; }
+    .shot-hotspot--bell   { left: 86.5%; top: 1%;    width: 11%;   height: 6.8%; }
+    .shot-hotspot--back   { left: 4%;   top: 1%;    width: 10.2%; height: 6.8%; }
     #hero-shot[data-view="home"] .shot-hotspot--back { display: none; }
     #hero-shot[data-view="notices"] .shot-hotspot--server,
     #hero-shot[data-view="notices"] .shot-hotspot--sync,
@@ -480,7 +480,7 @@
 
       <div class="hero-shot">
         <div class="shot-frame" id="hero-shot" data-view="home">
-          <img id="hero-img" src="assets/app-popover.png" width="340" height="500" alt="Hyperclay Local menu-bar app: a folder set to local-hyperclay-apps, the server running on localhost:4321, sync on as @panphora synced two minutes ago, and a recent-activity feed of saved HTML files.">
+          <img id="hero-img" src="assets/app-popover.png" width="340" height="500" alt="Hyperclay Local menu-bar app: localhost:4321 served from ~/HyperclayApps/local-hyperclay-apps, synced two minutes ago as @panphora, with the Serve and Sync switches on.">
           <button type="button" class="shot-hotspot shot-hotspot--server" data-act="server" aria-label="Toggle the local server on or off"></button>
           <button type="button" class="shot-hotspot shot-hotspot--sync" data-act="sync" aria-label="Toggle cloud sync on or off"></button>
           <button type="button" class="shot-hotspot shot-hotspot--bell" data-act="bell" aria-label="Open notices"></button>
@@ -1111,18 +1111,18 @@ npm install</pre></div>
   <script>
     (function () {
       // The hero screenshot is a tiny state machine over the five captured PNGs.
-      // Clicking the SERVER/SYNC hotspots flips that flag; the bell opens the
+      // Clicking the Serve/Sync hotspots flips that flag; the bell opens the
       // notices shot; the back arrow returns. Pure src swaps, no dependencies.
       var frame = document.getElementById('hero-shot');
       var img = document.getElementById('hero-img');
       if (!frame || !img) return;
 
       var SHOTS = {
-        'on-on':   { src: 'assets/app-popover.png',         alt: 'Hyperclay Local: folder mounted, server on at localhost:4321, sync on as @panphora, and a recent-activity feed.' },
-        'on-off':  { src: 'assets/app-popover-on-off.png',  alt: 'Hyperclay Local: server on at localhost:4321, sync paused.' },
-        'off-off': { src: 'assets/app-popover-off-off.png', alt: 'Hyperclay Local: server off, sync paused.' },
-        'off-on':  { src: 'assets/app-popover-off-on.png',  alt: 'Hyperclay Local: server off, sync on as @panphora with a recent-activity feed.' },
-        'notices': { src: 'assets/app-popover-notices.png', alt: 'Hyperclay Local notices: calm status messages with a back arrow to return.' }
+        'on-on':   { src: 'assets/app-popover.png',         alt: 'Hyperclay Local: localhost:4321 served and synced as @panphora, both switches on.' },
+        'on-off':  { src: 'assets/app-popover-on-off.png',  alt: 'Hyperclay Local: localhost:4321 served, sync off.' },
+        'off-off': { src: 'assets/app-popover-off-off.png', alt: 'Hyperclay Local: server and sync off; the address says it starts at :4321.' },
+        'off-on':  { src: 'assets/app-popover-off-on.png',  alt: 'Hyperclay Local: server off, sync on as @panphora.' },
+        'notices': { src: 'assets/app-popover-notices.png', alt: 'Hyperclay Local notices: calm status messages, an Activity tab, and a back arrow to return.' }
       };
       // Warm the states the visitor can reach (on-on is already the loaded hero).
       Object.keys(SHOTS).forEach(function (k) { if (k !== 'on-on') new Image().src = SHOTS[k].src; });

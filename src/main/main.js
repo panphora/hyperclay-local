@@ -1372,6 +1372,7 @@ async function openTeamWeb(accountId) {
 
 function cardMenuClick(card, action) {
   if (action === 'open') return () => openRootInBrowser(card.rootId);
+  if (action === 'copy') return () => clipboard.writeText(card.url);
   if (action === 'reveal') return () => revealRoot(card.rootId);
   if (action === 'backups') return () => openBackups(card.rootId);
   if (action === 'disconnect') return () => confirmAndDisconnect(card.sessionId || sessionIdForRoot(card.rootId));
@@ -1394,7 +1395,7 @@ function showCardMenu(event, rootId) {
 
   const template = cardMenuModel(card).map((item) => {
     if (item.type === 'separator') return { type: 'separator' };
-    const click = cardMenuClick(card, item.action);
+    const click = item.enabled === false ? null : cardMenuClick(card, item.action);
     return click ? { label: item.label, click } : { label: item.label, enabled: false };
   });
 

@@ -119,12 +119,23 @@ describe('native dialog copy (C4 §4.9)', () => {
 });
 
 describe('card menu model', () => {
-  const teamCard = { rootId: 'root-acme', sessionId: 'session-acme', kind: 'team', actions: ['open', 'reveal', 'backups', 'disconnect', 'remove'] };
-  const personalCard = { rootId: 'root-personal', sessionId: 'session-personal', kind: 'personal', actions: ['open', 'reveal', 'backups'] };
+  const teamCard = {
+    rootId: 'root-acme', sessionId: 'session-acme', kind: 'team',
+    folder: '~/hyperclay-teams/acme', url: 'http://localhost:5432',
+    actions: ['open', 'reveal', 'backups', 'disconnect', 'remove'],
+  };
+  const personalCard = {
+    rootId: 'root-personal', sessionId: 'session-personal', kind: 'personal',
+    folder: '~/HyperclayApps/local-hyperclay-apps', url: 'http://localhost:4321',
+    actions: ['open', 'reveal', 'backups'],
+  };
 
-  test('a team card offers open, reveal, backups, then disconnect and remove', () => {
-    expect(cardMenuModel(teamCard)).toEqual([
+  test('a served team card: the folder, open, copy, reveal, backups, then disconnect and remove', () => {
+    expect(cardMenuModel(teamCard, 'darwin')).toEqual([
+      { label: '~/hyperclay-teams/acme', enabled: false },
+      { type: 'separator' },
       { label: 'Open in Browser', action: 'open' },
+      { label: 'Copy Address', action: 'copy' },
       { label: 'Reveal Folder', action: 'reveal' },
       { label: 'Backups', action: 'backups' },
       { type: 'separator' },
@@ -134,11 +145,36 @@ describe('card menu model', () => {
   });
 
   test('a personal card has no disconnect and no remove', () => {
-    expect(cardMenuModel(personalCard)).toEqual([
+    expect(cardMenuModel(personalCard, 'darwin')).toEqual([
+      { label: '~/HyperclayApps/local-hyperclay-apps', enabled: false },
+      { type: 'separator' },
       { label: 'Open in Browser', action: 'open' },
+      { label: 'Copy Address', action: 'copy' },
       { label: 'Reveal Folder', action: 'reveal' },
       { label: 'Backups', action: 'backups' },
     ]);
+  });
+
+  test('a folder that is not served cannot be opened and has no address to copy', () => {
+    expect(cardMenuModel({ ...personalCard, url: null }, 'darwin')).toEqual([
+      { label: '~/HyperclayApps/local-hyperclay-apps', enabled: false },
+      { type: 'separator' },
+      { label: 'Open in Browser', action: 'open', enabled: false },
+      { label: 'Reveal Folder', action: 'reveal' },
+      { label: 'Backups', action: 'backups' },
+    ]);
+  });
+
+  test('a card without a folder has no header', () => {
+    expect(cardMenuModel({ ...personalCard, folder: null }, 'darwin')[0])
+      .toEqual({ label: 'Open in Browser', action: 'open' });
+  });
+
+  test('outside macOS an ampersand in the path is doubled so it is not an accelerator', () => {
+    expect(cardMenuModel({ ...personalCard, folder: '~/Tom & Jerry' }, 'win32')[0])
+      .toEqual({ label: '~/Tom && Jerry', enabled: false });
+    expect(cardMenuModel({ ...personalCard, folder: '~/Tom & Jerry' }, 'darwin')[0])
+      .toEqual({ label: '~/Tom & Jerry', enabled: false });
   });
 });
 

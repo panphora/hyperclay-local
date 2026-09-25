@@ -9,7 +9,7 @@
 - SEO and social metadata for `https://hyperclaylocal.com/`.
 - A sticky header with section navigation, GitHub link, and persisted light/dark toggle.
 - An OS-aware hero download button backed by the canonical download list.
-- An interactive hero: transparent hotspots over the popover screenshot let visitors click the SERVER/SYNC toggles and the bell to swap between the five captured UI states.
+- An interactive hero: transparent hotspots over the popover screenshot let visitors click the Serve and Sync switches and the bell to swap between the five captured UI states.
 - Live in-page SAP demos for example single-file apps.
 - Example malleable HTML snippets for HyperclayJS and plain JavaScript.
 - FAQ and troubleshooting content for installation, source builds, saving, and safety.
@@ -54,7 +54,7 @@ npm run screenshot:setup     # one time: downloads the Chromium used for capture
 npm run screenshot:popover   # builds css+react, writes assets/app-popover-*.png
 ```
 
-It loads the actual `src/renderer/popover.html` in headless Chromium with a stubbed `electronAPI` seeded to each state, and screenshots `#root` at the real window size (340x500) times deviceScaleFactor 2 → 680x1000 retina. Captured states: `on-on`, `on-off`, `off-off`, `off-on` (the SERVER/SYNC matrix) and `notices`. `app-popover.png` is kept as an alias of the `on-on` hero.
+It loads the actual `src/renderer/popover.html` in headless Chromium with a stubbed `electronAPI` seeded to each state, and screenshots `#root` at the real window size (340x500) times deviceScaleFactor 2 → 680x1000 retina. Captured states: `on-on`, `on-off`, `off-off`, `off-on` (the Serve/Sync matrix) and `notices`. `app-popover.png` is kept as an alias of the `on-on` hero.
 
 - States live in `scripts/popover-scenarios.js` (data only; user is `@panphora`).
 - The engine is `scripts/screenshot-popover.js`; it asserts its `electronAPI` stub covers every method the real `src/main/popover-preload.js` exposes, so a UI change that starts calling a new method fails loudly instead of silently mis-rendering.
@@ -65,7 +65,7 @@ Re-run this after any change to the popover UI.
 
 ### Interactive hero
 
-The hero `#hero-shot` frame holds one `<img id="hero-img">` plus four transparent `.shot-hotspot` buttons positioned (in %) over the SERVER rocker, SYNC rocker, bell, and the notices back-arrow. A small inline script tracks `(server, sync, view)` and swaps `img.src`/`img.alt` between the five PNGs; the back arrow returns to the last toggle combo. Hotspot positions are percentages of the 340x500 frame, so they stay aligned as the shot scales. If the popover layout moves a control, nudge the matching `.shot-hotspot--*` rule.
+The hero `#hero-shot` frame holds one `<img id="hero-img">` plus four transparent `.shot-hotspot` buttons positioned (in %) over the Serve switch, Sync switch, bell, and the notices back-arrow. A small inline script tracks `(server, sync, view)` and swaps `img.src`/`img.alt` between the five PNGs; the back arrow returns to the last toggle combo. Hotspot positions are percentages of the 340x500 frame, so they stay aligned as the shot scales. If the popover layout moves a control, nudge the matching `.shot-hotspot--*` rule.
 
 ## Design Notes
 

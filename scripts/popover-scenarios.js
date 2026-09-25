@@ -8,9 +8,9 @@
 //   out            output filename written into the outdir
 //   dev            true = development state; `--scenario all` skips it (stage B only)
 //   aliases        extra filenames to copy the PNG to (e.g. the legacy static hero)
-//   serverEnabled  SERVER rocker on/off
-//   syncEnabled    SYNC rocker on/off
-//   hasApiKey      key stored; false swaps the rocker for `Connect →`
+//   serverEnabled  Serve switch on/off
+//   syncEnabled    Sync switch on/off
+//   hasApiKey      key stored; false swaps the Sync switch for `Connect sync →`
 //   actor          { username } the sync subline prints
 //   banner         global banner: 'reconnect' | 'server-update' | null (§4.7)
 //   home           home directory the renderer shortens folder paths with
@@ -28,7 +28,7 @@ const { switchSublines } = require('../src/main/ui/card-model');
 
 const FOLDER = '/Users/panphora/HyperclayApps/local-hyperclay-apps';
 const USERNAME = 'panphora';
-const APP_VERSION = '1.24.1';
+const APP_VERSION = '1.25.0';
 
 const HOME = '/Users/panphora';
 const DEV_HOME = '/Users/alex';
@@ -207,6 +207,15 @@ const SCENARIOS = [
     cards: [marketingPersonal({})],
     activity: MARKETING_ACTIVITY,
     gotoNotices: true, notices: CALM_NOTICES,
+  }),
+  scenario({
+    name: 'one-syncing',
+    out: 'dev-popover-one-syncing.png',
+    dev: true,
+    serverEnabled: true, syncEnabled: true, hasApiKey: true,
+    actor: { username: USERNAME }, home: HOME, personalFolder: FOLDER,
+    cards: [marketingPersonal({ state: 'syncing', detail: 'syncing 3 files…', detailLong: 'syncing 3 files…' })],
+    activity: MARKETING_ACTIVITY,
   }),
 
   // Development states: one per §4 mockup, captured by name (dev-*.png).

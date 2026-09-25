@@ -60,19 +60,19 @@ chmod +x HyperclayLocal-*.AppImage
 The app has no main window. It lives in the system tray, and on macOS it hides the dock
 icon entirely (`app.dock.hide()`).
 
-1. Click the tray icon to open the popover panel (300x460 px).
+1. Click the tray icon to open the popover panel (340x500 px).
 2. Click "Choose Folder..." and pick a folder in the native directory picker. The dialog
    title is "Select folder containing your malleable HTML files".
 3. **On a first run that is all you do: choosing the folder also starts the server**, so one
-   click takes a fresh install to a served folder. After that the SERVER rocker, or "Start
-   Server" in the tray menu, turns it on and off.
-4. The popover then shows a `localhost:4321` link. Click it, or use "Open Browser" in the
-   tray menu, to open the folder in your default browser. Nothing opens on its own.
+   click takes a fresh install to a served folder. After that the Serve switch at the bottom
+   of the popover, or "Start Server" in the tray menu, turns it on and off.
+4. The popover then shows `localhost:4321` as a large button. Click it, or use "Open Browser"
+   in the tray menu, to open the folder in your default browser. Nothing opens on its own.
 
-Click the mounted folder in the popover to open it in your file manager. Click "change" to
-pick a different one: the server stops and restarts on the new folder, and **sync pauses
-rather than silently following you**, so re-enable it deliberately if the new folder should
-sync too.
+Click "Reveal" next to the folder path to open it in your file manager, and use the "⋯" menu
+for Copy Address and Backups. To serve a different folder, use Options, then Change Personal
+Folder: the server stops and restarts on the new folder, and **sync pauses rather than silently
+following you**, so re-enable it deliberately if the new folder should sync too.
 
 The port is **4321**, hardcoded as `const PORT = 4321` in `src/main/server.js`, and the
 server binds to `localhost` only (`app.listen(PORT, 'localhost')`). There is no setting,

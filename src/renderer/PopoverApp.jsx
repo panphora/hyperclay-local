@@ -3,167 +3,141 @@ import React, { useState, useEffect, useRef } from 'react';
 const ARROW_HEIGHT = 10;
 const ARROW_HALF_WIDTH = 8;
 
-// Revision B palette — single source for the bevel/LED colors used inline
+// The seat C palette. `blue` and `muted` are the two colors the UI suite reads
+// back as computed styles, so they keep their old values.
 const C = {
-  surface: '#151722',
-  raised: '#1B1E2C',
-  well: '#10121C',
-  border: '#292F52',
-  bevelLt: '#474C65',
-  bevelDk: '#0D0F18',
-  text: '#E8EAF6',
-  text2: '#B8BFE5',
+  surface: '#171A27',
+  well: '#11131D',
+  wellHi: '#2A2F47',
+  face: '#262B3F',
+  faceHi: '#3B4263',
+  faceLo: '#0B0C14',
+  line: '#1C1F2E',
+  text: '#DCDFEB',
+  soft: '#A3A8C0',
   muted: '#6B7194',
-  faint: '#454A68',
-  ledGreen: '#28C83E',
-  greenFill: '#1E8136',
-  greenHover: '#23973F',
-  greenLt: '#56B96C',
-  greenDk: '#15311C',
+  faint: '#454B68',
+  green: '#45D17A',
   blue: '#69AEFE',
-  blueFill: '#1D498E',
-  blueLt: '#4F7CC4',
-  blueDk: '#0F2447',
-  fault: '#F73D48',
-  faultFill: '#7B2525',
-  faultLt: '#B45454',
-  faultDk: '#371111',
-  amber: '#E3A93C',
+  amber: '#E8AD45',
+  red: '#F0616A',
 };
 
-const bevelOut = (lt, dk) => ({
-  borderWidth: 2,
-  borderStyle: 'solid',
-  borderTopColor: lt,
-  borderLeftColor: lt,
-  borderBottomColor: dk,
-  borderRightColor: dk,
-});
+// One bevel rule: raised means you can press it, sunken means it is a readout.
+const FACES = {
+  plain: { bg: C.face, hi: C.faceHi, lo: C.faceLo, color: C.text },
+  go: { bg: '#1F5A37', hi: '#3F8F5E', lo: '#0B2415', color: C.text },
+  link: { bg: '#1D3F73', hi: '#3E6AAE', lo: '#0B1A33', color: C.text },
+  warn: { bg: '#4A3A1C', hi: '#7A6232', lo: '#1E170A', color: '#F3D9A4' },
+  bad: { bg: '#4F2227', hi: '#83404A', lo: '#1F0C0F', color: '#F5C0C4' },
+};
 
-const bevelIn = () => ({
-  borderWidth: 2,
-  borderStyle: 'solid',
-  borderTopColor: C.bevelDk,
-  borderLeftColor: C.bevelDk,
-  borderBottomColor: C.bevelLt,
-  borderRightColor: C.bevelLt,
-});
-
-const Led = ({ on, color = C.ledGreen, glow = 'rgba(40,200,62,0.55)' }) => (
-  <span
-    className="inline-block shrink-0"
-    style={{
-      width: 7,
-      height: 7,
-      background: on ? color : '#3A3F58',
-      boxShadow: on ? `0 0 6px ${glow}` : 'none',
-    }}
-  />
-);
-
-const Rocker = ({ on, disabled, onFlip, label }) => (
-  <button
-    role="switch"
-    aria-checked={on}
-    aria-label={label}
-    disabled={disabled}
-    onClick={disabled ? undefined : onFlip}
-    className="ml-auto flex p-0 shrink-0"
-    style={{
-      width: 58,
-      height: 21,
-      background: C.well,
-      cursor: disabled ? 'default' : 'pointer',
-      opacity: disabled ? 0.45 : 1,
-      ...bevelIn(),
-    }}
-  >
-    <span
-      className="flex items-center justify-center pointer-events-none"
-      style={{
-        width: '50%',
-        height: '100%',
-        marginLeft: on ? '50%' : 0,
-        fontFamily: '"Fixedsys", monospace',
-        fontSize: 12,
-        lineHeight: 1,
-        color: on ? '#F6F7FB' : C.text2,
-        background: on ? C.greenFill : '#2A2E45',
-        ...(on ? bevelOut(C.greenLt, C.greenDk) : bevelOut(C.bevelLt, C.bevelDk)),
-      }}
-    >
-      <span style={{ display: 'block', transform: 'translateY(-1px)' }}>
-        {on ? 'ON' : 'OFF'}
-      </span>
-    </span>
-  </button>
-);
-
-const BevelButton = ({ label, onClick, variant, disabled, small, tiny, style: extraStyle }) => {
-  const [hover, setHover] = useState(false);
-  const [active, setActive] = useState(false);
-
-  const colors = {
-    success: { bg: C.greenFill, hover: C.greenHover, tl: C.greenLt, br: C.greenDk },
-    danger: { bg: C.faultFill, hover: '#9F3030', tl: C.faultLt, br: C.faultDk },
-    sync: { bg: C.blueFill, hover: '#2156A8', tl: C.blueLt, br: C.blueDk },
-    neutral: { bg: '#1D1F2F', hover: '#232639', tl: C.bevelLt, br: '#131725' },
+const raised = (variant = 'plain', pressed = false) => {
+  const f = FACES[variant] || FACES.plain;
+  return {
+    background: f.bg,
+    color: f.color,
+    border: 'none',
+    borderRadius: 0,
+    boxShadow: pressed
+      ? `inset 1px 1px 0 ${f.lo}, inset -1px -1px 0 ${f.hi}`
+      : `inset 1px 1px 0 ${f.hi}, inset -1px -1px 0 ${f.lo}`,
   };
+};
 
-  const c = colors[variant] || colors.neutral;
-  const fontSize = tiny ? 12 : small ? 15 : 16;
-  const padding = tiny ? '2px 7px 3px' : small ? '4px 10px 5px' : '5px 12px 7px';
+const SUNKEN_TONES = {
+  plain: { bg: C.well, hi: C.wellHi },
+  warn: { bg: '#2B2415', hi: '#4A3D20' },
+  bad: { bg: '#2C1519', hi: '#4D2530' },
+};
 
+const sunken = (tone = 'plain') => {
+  const t = SUNKEN_TONES[tone] || SUNKEN_TONES.plain;
+  return { background: t.bg, boxShadow: `inset 1px 1px 0 ${C.faceLo}, inset -1px -1px 0 ${t.hi}` };
+};
+
+const FIXEDSYS = '"Fixedsys", monospace';
+const MONO = '"Berkeley Mono", monospace';
+
+// Every pressable surface. Held down, it shows the sunken edges.
+const Press = ({ variant, selected, disabled, onClick, style, children, ...rest }) => {
+  const [held, setHeld] = useState(false);
+  const [hover, setHover] = useState(false);
   return (
     <button
-      style={{
-        padding,
-        fontSize,
-        fontFamily: '"Fixedsys", monospace',
-        borderWidth: 2,
-        borderStyle: 'solid',
-        borderTopColor: active ? c.br : c.tl,
-        borderLeftColor: active ? c.br : c.tl,
-        borderBottomColor: active ? c.tl : c.br,
-        borderRightColor: active ? c.tl : c.br,
-        borderRadius: 0,
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        color: '#F6F7FB',
-        textAlign: 'center',
-        background: disabled ? c.bg : (hover ? c.hover : c.bg),
-        opacity: disabled ? 0.5 : 1,
-        ...extraStyle,
-      }}
-      onMouseEnter={() => !disabled && setHover(true)}
-      onMouseLeave={() => { setHover(false); setActive(false); }}
-      onMouseDown={() => !disabled && setActive(true)}
-      onMouseUp={() => setActive(false)}
-      onClick={disabled ? undefined : onClick}
+      {...rest}
       disabled={disabled}
-    >
-      <span style={{
-        display: 'inline-block',
-        whiteSpace: 'nowrap',
+      onClick={disabled ? undefined : onClick}
+      onMouseEnter={() => !disabled && setHover(true)}
+      onMouseLeave={() => { setHover(false); setHeld(false); }}
+      onMouseDown={() => !disabled && setHeld(true)}
+      onMouseUp={() => setHeld(false)}
+      style={{
+        ...raised(variant, held || selected),
+        fontFamily: FIXEDSYS,
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+        filter: hover && !held ? 'brightness(1.15)' : 'none',
         userSelect: 'none',
-        transform: active ? 'translate(1px, 1px)' : 'none',
-      }}>
-        {label}
-      </span>
+        whiteSpace: 'nowrap',
+        ...style,
+      }}
+    >
+      {children}
     </button>
   );
 };
 
-const LED_BY_STATE = {
-  synced: { on: true, color: C.ledGreen, glow: 'rgba(40,200,62,0.55)' },
-  syncing: { on: true, color: C.ledGreen, glow: 'rgba(40,200,62,0.55)' },
-  paused: { on: true, color: C.amber, glow: 'rgba(227,169,60,0.5)' },
-  offline: { on: true, color: C.amber, glow: 'rgba(227,169,60,0.5)' },
-  conflict: { on: true, color: C.fault, glow: 'rgba(247,61,72,0.55)' },
-  error: { on: true, color: C.fault, glow: 'rgba(247,61,72,0.55)' },
-  'port-taken': { on: true, color: C.fault, glow: 'rgba(247,61,72,0.55)' },
+const small = { height: 24, padding: '0 9px', fontSize: 12, display: 'inline-flex', alignItems: 'center' };
+const large = { height: 30, padding: '0 14px', fontSize: 13, display: 'inline-flex', alignItems: 'center' };
+
+// A plain text button: footer items, in-list addresses, Dismiss. Never beveled.
+const TextButton = ({ color = C.muted, style, children, ...rest }) => (
+  <button
+    {...rest}
+    style={{
+      background: 'transparent',
+      border: 'none',
+      padding: 0,
+      cursor: 'pointer',
+      color,
+      fontFamily: MONO,
+      ...style,
+    }}
+  >
+    {children}
+  </button>
+);
+
+const LED_COLORS = {
+  green: { background: C.green, boxShadow: '0 0 6px rgba(69,209,122,.7)' },
+  blue: { background: C.blue, boxShadow: '0 0 6px rgba(105,174,254,.6)' },
+  amber: { background: C.amber, boxShadow: '0 0 6px rgba(232,173,69,.5)' },
+  red: { background: C.red, boxShadow: '0 0 6px rgba(240,97,106,.6)' },
+  off: { background: C.faint, boxShadow: 'none' },
 };
 
-const linkClass = "bg-transparent border-none p-0 cursor-pointer text-[11.5px] font-['Berkeley_Mono',monospace] hover:underline";
+const Led = ({ tone = 'off' }) => (
+  <span style={{ width: 8, height: 8, flex: 'none', display: 'inline-block', ...LED_COLORS[tone] }} />
+);
+
+const STATE_TONE = {
+  synced: 'green',
+  syncing: 'blue',
+  paused: 'amber',
+  offline: 'amber',
+  conflict: 'red',
+  error: 'red',
+  'port-taken': 'red',
+};
+
+const NOTE_COLOR = {
+  paused: C.amber,
+  offline: C.amber,
+  conflict: C.red,
+  error: C.red,
+  'port-taken': C.red,
+};
 
 const STATE_CACHE_KEY = 'hyperclayPopoverStateCache.v2';
 const DEFAULT_STATE = {
@@ -193,9 +167,9 @@ const CACHED_STATE = readCachedState();
 
 // C4 §4.9: the feed's five verbs. `line.path` and `line.verb` come from main.
 const VERB_GLYPHS = {
-  uploaded: { glyph: '↑', color: C.ledGreen },
+  uploaded: { glyph: '↑', color: C.green },
   downloaded: { glyph: '↓', color: C.blue },
-  conflict: { glyph: '!', color: C.fault },
+  conflict: { glyph: '!', color: C.red },
   deleted: { glyph: '×', color: C.muted },
   renamed: { glyph: '→', color: C.muted },
 };
@@ -204,6 +178,7 @@ const PopoverApp = () => {
   const [arrowX, setArrowX] = useState(null);
   const [arrowPosition, setArrowPosition] = useState('top');
   const [currentView, setCurrentView] = useState('home');
+  const [noticesTab, setNoticesTab] = useState('notices');
   const [setupAccountId, setSetupAccountId] = useState(null);
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [updateVersion, setUpdateVersion] = useState(null);
@@ -225,7 +200,7 @@ const PopoverApp = () => {
   const [serverLoading, setServerLoading] = useState(false);
   const [syncLoading, setSyncLoading] = useState(false);
   // Re-render lags a fast second click, so state alone can't debounce the
-  // rockers — these refs make the flips single-flight.
+  // switches — these refs make the flips single-flight.
   const serverBusy = useRef(false);
   const syncBusy = useRef(false);
 
@@ -431,19 +406,23 @@ const PopoverApp = () => {
     }
   };
 
+  const openNotices = () => {
+    setNoticesTab('notices');
+    setCurrentView('notices');
+  };
+
   const handleAction = (action, card) => {
     const api = window.electronAPI;
     if (!api) return;
 
     if (action === 'open') api.openInBrowser(card.rootId);
-    else if (action === 'copy') api.copyText(card.url);
     else if (action === 'reveal') api.revealFolder(card.rootId);
     else if (action === 'more') api.showCardMenu(card.rootId);
     else if (action === 'web') api.openWeb(card.accountId);
     else if (action === 'disconnect') api.disconnect(card.sessionId);
     else if (action === 'retry') api.retryPort(card.rootId);
     else if (action === 'change-port') api.changePort(card.rootId);
-    else if (action === 'notices') setCurrentView('notices');
+    else if (action === 'notices') openNotices();
     else if (action === 'setup') {
       setSetupAccountId(card.accountId);
       setCurrentView('setup');
@@ -462,13 +441,14 @@ const PopoverApp = () => {
     setCurrentView('home');
   };
 
-  const toggleNotices = () => {
-    setCurrentView(currentView === 'notices' ? 'home' : 'notices');
-  };
-
   const setupCard = currentView === 'setup'
     ? (state.cards || []).find((card) => card.accountId === setupAccountId)
     : null;
+
+  const heading = currentView === 'home' ? 'Hyperclay Local'
+    : currentView === 'notices' ? 'Notices'
+      : currentView === 'setup' ? `Set up ${(setupCard && setupCard.title) || 'team'}`
+        : 'Connect';
 
   const arrowOnBottom = arrowPosition === 'bottom';
   const arrowHidden = arrowPosition === 'none';
@@ -499,13 +479,13 @@ const PopoverApp = () => {
       height: '100%',
       position: 'relative',
     }}>
-      {/* Arrow (only shown when at top, i.e. macOS) */}
       {!arrowOnBottom && !arrowHidden && <div style={arrowStyle} />}
 
-      {/* Panel body */}
       <div
         style={{
           background: C.surface,
+          color: C.text,
+          fontFamily: MONO,
           borderRadius: 10,
           overflow: 'hidden',
           height: arrowOnBottom || arrowHidden ? '100%' : `calc(100% - ${ARROW_HEIGHT}px)`,
@@ -513,103 +493,48 @@ const PopoverApp = () => {
           flexDirection: 'column',
         }}
       >
-        {/* Header — context-aware: title + bell on home, back button + view title on sub-views */}
-        <div className="flex items-center gap-2 px-3.5 pt-3 pb-2.5 border-b border-[#292F52]">
-          {currentView === 'home' ? (
-            <>
-              <span className="text-[#E8EAF6] text-[15px] font-semibold tracking-wide font-['Berkeley_Mono',monospace]">
-                Hyperclay Local
-              </span>
-              <button
-                onClick={toggleNotices}
-                title="Notices"
-                aria-label={unreadCount > 0 ? `Notices, ${unreadCount} unread` : 'Notices'}
-                className="relative ml-auto border-none rounded-[20px] px-2 py-1 cursor-pointer flex items-center justify-center bg-[#232D3A] hover:bg-[#2D3847]"
-              >
-                <svg className="w-[14px] h-[14px] text-[#B8BFE5]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
-                </svg>
-                {unreadCount > 0 && (
-                  <span className="absolute -top-0.5 -right-1 flex items-center justify-center min-w-4 h-4 px-1 text-[11px] font-bold font-['Berkeley_Mono',monospace] text-white bg-[#8B2020] rounded-[20px]">
-                    {unreadCount > 9 ? '9+' : unreadCount}
-                  </span>
-                )}
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                onClick={navigateHome}
-                title="Back"
-                aria-label="Back"
-                className="border-none rounded-[20px] px-2 py-1 cursor-pointer flex items-center justify-center bg-[#232D3A] hover:bg-[#2D3847]"
-              >
-                <svg className="w-[14px] h-[14px] text-[#B8BFE5]" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M20 11v2H4v-2zM8 13v2H6v-2zm2 2v2H8v-2zm2 2v2h-2v-2zm-4-6V9H6v2z" />
-                  <path d="M10 15V7H8v8zm2 2V5h-2v12z" />
-                </svg>
-              </button>
-              <span className="text-[#E8EAF6] text-[15px] font-semibold tracking-wide font-['Berkeley_Mono',monospace]">
-                {currentView === 'notices' ? 'Notices'
-                  : currentView === 'activity' ? 'Activity'
-                    : currentView === 'setup' ? `Set up ${(setupCard && setupCard.title) || 'team'}`
-                      : 'Connect'}
-              </span>
-              <div className="ml-auto flex gap-1">
-                {currentView === 'notices' && (
-                  <>
-                    <BevelButton label="mark read" onClick={markAllRead} variant="neutral" tiny />
-                    <BevelButton label="clear" onClick={clearAllErrors} variant="sync" tiny />
-                  </>
-                )}
-              </div>
-            </>
-          )}
-        </div>
+        <Header
+          view={currentView}
+          heading={heading}
+          unreadCount={unreadCount}
+          onNotices={openNotices}
+          onBack={navigateHome}
+        />
 
-        {/* Update banner */}
-        {updateAvailable && currentView === 'home' && (
-          <button
-            onClick={() => window.electronAPI?.openBrowser('https://hyperclaylocal.com/')}
-            className="flex items-center gap-2 w-full px-3.5 py-1.5 bg-[#1B1E2C] border-none border-b border-b-[#292F52] cursor-pointer text-left font-['Berkeley_Mono',monospace]"
-            style={{ borderBottom: `1px solid ${C.border}` }}
-          >
-            <Led on color={C.ledGreen} />
-            <span className="text-[12px] text-[#B8BFE5]">Update v{updateVersion} available</span>
-            <span className="ml-auto text-[12px] text-[#69AEFE]">→</span>
-          </button>
+        {currentView === 'home' && (
+          <Plate
+            banner={state.banner}
+            updateVersion={updateAvailable ? updateVersion : null}
+            onReconnect={() => setCurrentView('credentials')}
+          />
         )}
 
-        {/* View content */}
-        <div className="flex-1 overflow-hidden flex flex-col">
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           {currentView === 'home' && (
             <HomeView
-              state={state}
+              cards={state.cards || []}
+              banner={state.banner}
+              syncActive={!!state.hasApiKey && !!state.syncEnabled}
               serverLoading={serverLoading}
-              syncLoading={syncLoading}
-              onServerFlip={handleServerFlip}
-              onSyncFlip={handleSyncFlip}
               onChooseFolder={handleChooseFolder}
-              onConnect={() => setCurrentView('credentials')}
-              onShowActivity={() => setCurrentView('activity')}
               onAction={handleAction}
             />
           )}
 
           {currentView === 'notices' && (
             <NoticesView
+              tab={noticesTab}
+              onTab={setNoticesTab}
+              unreadCount={unreadCount}
               errors={errorQueue}
               conflicts={state.conflicts || []}
               cards={state.cards || []}
+              lines={state.activity || []}
               onMarkErrorRead={markErrorRead}
               onDismissError={dismissError}
+              onMarkAllRead={markAllRead}
+              onClearAll={clearAllErrors}
               onResolveConflict={(sessionId, path, choice) => window.electronAPI?.resolveConflict(sessionId, path, choice)}
-            />
-          )}
-
-          {currentView === 'activity' && (
-            <ActivityView
-              lines={state.activity || []}
             />
           )}
 
@@ -636,330 +561,377 @@ const PopoverApp = () => {
           )}
         </div>
 
-        {/* Footer */}
-        <div className="flex items-center px-3.5 py-2 border-t border-[#292F52]">
-          <FooterButton label="Options" onClick={handleOptions} />
-          <span className="flex-1 text-center text-[11px] text-[#454A68]">
-            {state.appVersion ? `v${state.appVersion}` : ''}
-          </span>
-          <FooterButton label="Quit" onClick={handleQuit} />
+        {currentView === 'home' && (
+          <SwitchStrip
+            serverEnabled={state.serverEnabled}
+            syncEnabled={state.syncEnabled}
+            hasApiKey={state.hasApiKey}
+            serverLoading={serverLoading}
+            syncLoading={syncLoading}
+            onServerFlip={handleServerFlip}
+            onSyncFlip={handleSyncFlip}
+            onConnect={() => setCurrentView('credentials')}
+          />
+        )}
+
+        <div style={{ height: 34, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 16px' }}>
+          <TextButton onClick={handleOptions} style={{ fontSize: 12 }}>Options</TextButton>
+          <span style={{ fontSize: 11, color: C.faint }}>{state.appVersion ? `v${state.appVersion}` : ''}</span>
+          <TextButton onClick={handleQuit} style={{ fontSize: 12 }}>Quit</TextButton>
         </div>
       </div>
     </div>
   );
 };
+
+// =============================================================================
+// HEADER, PLATE, SWITCH STRIP
+// =============================================================================
+
+const BELL_ICON = (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke={C.soft} strokeWidth="1.5">
+    <path d="M4 11V7a4 4 0 0 1 8 0v4l1 1.5H3L4 11Z" />
+    <path d="M6.5 14h3" />
+  </svg>
+);
+
+const Header = ({ view, heading, unreadCount, onNotices, onBack }) => (
+  <div style={{ height: 44, flex: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px 0 16px' }}>
+    {view !== 'home' && (
+      <Press
+        onClick={onBack}
+        title="Back"
+        aria-label="Back"
+        style={{ width: 28, height: 28, fontSize: 14, display: 'grid', placeItems: 'center', padding: 0 }}
+      >
+        ←
+      </Press>
+    )}
+    <span data-view-heading style={{ flex: 1, fontFamily: FIXEDSYS, fontSize: 14, letterSpacing: '.02em', color: C.text }}>
+      {heading}
+    </span>
+    {view === 'home' && (
+      <Press
+        onClick={onNotices}
+        title="Notices"
+        aria-label={unreadCount > 0 ? `Notices, ${unreadCount} unread` : 'Notices'}
+        style={{ width: 30, height: 28, display: 'grid', placeItems: 'center', padding: 0, position: 'relative' }}
+      >
+        {BELL_ICON}
+        {unreadCount > 0 && (
+          <span style={{
+            position: 'absolute', top: -5, right: -5, minWidth: 16, height: 16, padding: '0 4px',
+            borderRadius: 8, background: C.amber, color: '#20180A', fontSize: 11, lineHeight: '16px', textAlign: 'center',
+          }}>
+            {unreadCount > 9 ? '9+' : unreadCount}
+          </span>
+        )}
+      </Press>
+    )}
+  </div>
+);
+
+const plateStyle = { margin: '0 16px 6px', padding: '9px 12px', display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, lineHeight: 1.4 };
+
+const Plate = ({ banner, updateVersion, onReconnect }) => {
+  if (banner === 'reconnect') {
+    return (
+      <div data-plate="reconnect" style={{ ...plateStyle, ...sunken('bad'), color: '#F5C0C4' }}>
+        <span style={{ flex: 1 }}>Sync key no longer works.</span>
+        <Press variant="bad" onClick={onReconnect} style={small}>Reconnect →</Press>
+      </div>
+    );
+  }
+  if (banner === 'server-update') {
+    return (
+      <div data-plate="server-update" style={{ ...plateStyle, ...sunken('warn'), color: '#F3D9A4' }}>
+        <span style={{ flex: 1 }}>hyperclay.com needs an update before sync can run. Folders are still served.</span>
+      </div>
+    );
+  }
+  if (updateVersion) {
+    return (
+      <Press
+        variant="link"
+        onClick={() => window.electronAPI?.openBrowser('https://hyperclaylocal.com/')}
+        style={{ ...plateStyle, fontFamily: MONO, textAlign: 'left', width: 'calc(100% - 32px)' }}
+      >
+        <span style={{ flex: 1 }}>Update v{updateVersion} available</span>
+        <span>→</span>
+      </Press>
+    );
+  }
+  return null;
+};
+
+const Chip = ({ label, on, loading, onFlip, ariaLabel }) => (
+  <Press
+    role="switch"
+    aria-checked={on}
+    aria-label={ariaLabel}
+    disabled={loading}
+    onClick={onFlip}
+    style={{
+      height: 36, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      padding: '0 8px 0 12px', fontSize: 13, color: on ? C.text : C.muted, opacity: loading ? 0.7 : 1,
+    }}
+  >
+    <span>{loading ? (on ? 'Stopping…' : 'Starting…') : (on ? label : `${label} off`)}</span>
+    <span style={{ ...sunken(), width: 34, height: 18, padding: 2, display: 'flex', justifyContent: on ? 'flex-end' : 'flex-start' }}>
+      <span style={{
+        width: 14, height: 14, display: 'block',
+        background: on ? C.green : '#4A5070',
+        boxShadow: on ? '0 0 6px rgba(69,209,122,.6)' : 'none',
+      }} />
+    </span>
+  </Press>
+);
+
+const SwitchStrip = ({
+  serverEnabled, syncEnabled, hasApiKey, serverLoading, syncLoading, onServerFlip, onSyncFlip, onConnect,
+}) => (
+  <div style={{ flex: 'none', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, padding: '10px 16px' }}>
+    <Chip
+      label="Serve"
+      on={serverEnabled}
+      loading={serverLoading}
+      onFlip={onServerFlip}
+      ariaLabel={serverEnabled ? 'Turn server off' : 'Turn server on'}
+    />
+    {hasApiKey ? (
+      <Chip
+        label="Sync"
+        on={syncEnabled}
+        loading={syncLoading}
+        onFlip={onSyncFlip}
+        ariaLabel={syncEnabled ? 'Turn sync off' : 'Turn sync on'}
+      />
+    ) : (
+      <Press onClick={onConnect} style={{ height: 36, fontSize: 13, color: C.blue }}>
+        Connect sync →
+      </Press>
+    )}
+  </div>
+);
 
 // =============================================================================
 // HOME VIEW
 // =============================================================================
 
-const HomeView = ({
-  state, serverLoading, syncLoading,
-  onServerFlip, onSyncFlip, onChooseFolder, onConnect, onShowActivity, onAction,
-}) => {
-  const cards = state.cards || [];
-  const activity = state.activity || [];
-  const hasPersonal = cards.some((card) => card.kind === 'personal');
-  const hasTeam = cards.some((card) => card.kind !== 'personal');
-
+const HomeView = ({ cards, banner, syncActive, serverLoading, onChooseFolder, onAction }) => {
+  const personal = cards.find((card) => card.kind === 'personal');
+  // Under an account-wide plate, Disconnect is the wrong advice; it stays in the ⋯ menu.
+  const keyRevoked = banner === 'reconnect' || banner === 'server-update';
   return (
-    <div className="flex-1 overflow-hidden flex flex-col">
-      <SwitchBar
-        serverEnabled={state.serverEnabled}
-        syncEnabled={state.syncEnabled}
-        hasApiKey={state.hasApiKey}
-        sublines={state.sublines}
-        serverLoading={serverLoading}
-        syncLoading={syncLoading}
-        onServerFlip={onServerFlip}
-        onSyncFlip={onSyncFlip}
-        onConnect={onConnect}
-      />
-
-      <GlobalBanner banner={state.banner} onReconnect={onConnect} />
-
-      {!hasPersonal && (
-        <FirstRunBay serverLoading={serverLoading} onChooseFolder={onChooseFolder} />
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '4px 16px 0' }}>
+      {!personal && <FirstRun serverLoading={serverLoading} onChooseFolder={onChooseFolder} />}
+      {personal && cards.length === 1 && <Hero card={personal} keyRevoked={keyRevoked} onAction={onAction} />}
+      {(personal ? cards.length > 1 : cards.length > 0) && (
+        <FolderList cards={cards} keyRevoked={keyRevoked} syncActive={syncActive} onAction={onAction} />
       )}
-
-      <CardList cards={cards} onAction={onAction} />
-
-      <ActivityFeed
-        lines={activity}
-        onShowAll={onShowActivity}
-        showSharedNote={hasTeam || !state.hasApiKey}
-      />
     </div>
   );
 };
 
-// =============================================================================
-// SWITCH BAR
-// =============================================================================
+const cardAttrs = (card) => ({
+  'data-card-state': card.state,
+  'data-card-title': card.title || '',
+  'data-card-folder': card.folder || '',
+  'data-card-detail': card.detail || '',
+  title: card.detailLong || undefined,
+});
 
-const SwitchBar = ({
-  serverEnabled, syncEnabled, hasApiKey, sublines,
-  serverLoading, syncLoading, onServerFlip, onSyncFlip, onConnect,
-}) => {
-  const lines = sublines || {};
-  const serverSub = serverLoading
-    ? (serverEnabled ? 'stopping…' : 'starting…')
-    : lines.server;
-  const syncSub = syncLoading
-    ? (syncEnabled ? 'stopping…' : 'enabling…')
-    : lines.sync;
-
-  return (
-    <div className="flex px-3.5 pt-[9px]">
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-[9px]">
-          <Led on={serverEnabled} />
-          <span className="text-[12px] tracking-[0.14em] text-[#B8BFE5]">SERVER</span>
-          <Rocker
-            on={serverEnabled}
-            disabled={serverLoading}
-            onFlip={onServerFlip}
-            label={serverEnabled ? 'Turn server off' : 'Turn server on'}
-          />
-        </div>
-        <div className="pl-[30px] pt-[2px] pb-1.5 text-[11.5px] text-[#6B7194] whitespace-nowrap overflow-hidden text-ellipsis">
-          {serverSub}
-        </div>
-      </div>
-
-      <div className="flex-1 min-w-0 pl-3">
-        <div className="flex items-center gap-[9px]">
-          <Led on={hasApiKey && syncEnabled} />
-          <span className="text-[12px] tracking-[0.14em] text-[#B8BFE5]">SYNC</span>
-          {hasApiKey ? (
-            <Rocker
-              on={syncEnabled}
-              disabled={syncLoading}
-              onFlip={onSyncFlip}
-              label={syncEnabled ? 'Turn sync off' : 'Turn sync on'}
-            />
-          ) : (
-            <button
-              onClick={onConnect}
-              className="ml-auto bg-transparent border-none p-0 text-[12px] cursor-pointer text-[#69AEFE] font-['Berkeley_Mono',monospace] hover:underline"
-            >
-              Connect →
-            </button>
-          )}
-        </div>
-        <div className="pl-[30px] pt-[2px] pb-1.5 text-[11.5px] text-[#6B7194] whitespace-nowrap overflow-hidden text-ellipsis">
-          {syncSub}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// =============================================================================
-// GLOBAL BANNER
-// =============================================================================
-
-const GlobalBanner = ({ banner, onReconnect }) => {
-  if (banner === 'reconnect') {
-    return (
-      <button
-        onClick={onReconnect}
-        className="flex items-start gap-2 mx-3 mt-1.5 px-2.5 py-2 border-none cursor-pointer text-left font-['Berkeley_Mono',monospace]"
-        style={{ background: '#2A1518', borderLeft: `3px solid ${C.faultFill}` }}
-      >
-        <Led on color={C.fault} glow="rgba(247,61,72,0.55)" />
-        <span className="flex-1 min-w-0 text-[11.5px] leading-[1.4] text-[#E8C7CA]">
-          Sync key no longer works.
-        </span>
-        <span className="text-[11px] text-[#F73D48] whitespace-nowrap">Reconnect →</span>
-      </button>
-    );
-  }
-
-  if (banner === 'server-update') {
-    return (
-      <div
-        className="flex items-start gap-2 mx-3 mt-1.5 px-2.5 py-2"
-        style={{ background: '#2A2415', borderLeft: `3px solid ${C.amber}` }}
-      >
-        <Led on color={C.amber} glow="rgba(227,169,60,0.5)" />
-        <span className="flex-1 min-w-0 text-[11.5px] leading-[1.4] text-[#E4D3AE]">
-          hyperclay.com needs an update before sync can run. Folders are still served.
-        </span>
-      </div>
-    );
-  }
-
+// The address a card shows: the served URL, the port it will start on, or its
+// taken port. The span is the one element the UI suite reads the address from.
+const addressOf = (card) => {
+  if (card.url) return { text: card.url.replace('http://', ''), color: C.blue, live: true };
+  if (card.port && card.state === 'port-taken') return { text: `localhost:${card.port}`, color: C.muted, live: false };
+  if (card.port) return { text: `starts at :${card.port}`, color: C.muted, live: false };
   return null;
 };
 
-// =============================================================================
-// CARD LIST AND CARD
-// =============================================================================
+const heroStatus = (card) => {
+  if (card.state === 'synced') {
+    const ago = card.lastSyncAt ? ` ${formatRelativeTime(card.lastSyncAt)}` : '';
+    const who = card.kind === 'personal' && card.title ? ` as @${card.title}` : '';
+    return `Synced${ago}${who}`;
+  }
+  if (card.state === 'syncing') return capitalize(card.detail);
+  return card.detailLong || capitalize(card.detail);
+};
 
-const CardList = ({ cards, onAction }) => (
-  <div className="overflow-y-auto pt-1.5" style={{ maxHeight: 236 }}>
-    {cards.map((card) => (
-      <FolderCard
-        key={card.rootId || `account-${card.accountId}`}
-        card={card}
-        onAction={onAction}
-      />
-    ))}
-  </div>
-);
+const CardButtons = ({ card, keyRevoked, onAction }) => {
+  const buttons = [];
+  if (card.state === 'conflict' || card.state === 'error') buttons.push(['notices', 'See notices']);
+  if (card.actions.includes('change-port') && card.nextPort) buttons.push(['change-port', `Use port ${card.nextPort}…`]);
+  if (card.actions.includes('retry')) buttons.push(['retry', 'Retry']);
+  if (card.state === 'paused' && !keyRevoked && card.actions.includes('disconnect')) buttons.push(['disconnect', 'Disconnect…']);
+  if (!buttons.length) return null;
+  return (
+    <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+      {buttons.map(([action, label]) => (
+        <Press key={action} onClick={() => onAction(action, card)} style={small}>{label}</Press>
+      ))}
+    </div>
+  );
+};
 
-const FolderCard = ({ card, onAction }) => {
-  const led = LED_BY_STATE[card.state] || { on: false };
-  const dimmed = card.state === 'viewer';
-  const detail = card.state === 'synced' && card.lastSyncAt
-    ? `synced ${formatRelativeTime(card.lastSyncAt)}`
-    : card.detail;
+const Hero = ({ card, keyRevoked, onAction }) => {
+  const address = addressOf(card);
+  const statusTone = card.state === 'serve-only' ? 'off' : (STATE_TONE[card.state] || 'off');
+  return (
+    <div {...cardAttrs(card)} style={{ marginTop: 14 }}>
+      {address && (
+        <Press
+          onClick={() => onAction('open', card)}
+          disabled={!address.live}
+          style={{
+            width: '100%', height: 52, padding: '0 14px', display: 'flex', alignItems: 'center', gap: 10,
+            fontSize: 18, opacity: address.live ? 1 : 0.55,
+          }}
+        >
+          <Led tone={address.live ? 'green' : (card.state === 'port-taken' ? 'red' : 'off')} />
+          <span data-card-address style={{ color: address.color }}>{address.text}</span>
+          {address.live && <span style={{ marginLeft: 'auto', color: C.soft, fontSize: 14 }}>↗</span>}
+        </Press>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, fontSize: 12, color: C.soft }}>
+        <span
+          title={card.folder || undefined}
+          style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl', textAlign: 'left' }}
+        >
+          <bdi>{card.folder}</bdi>
+        </span>
+        {card.rootId && <Press onClick={() => onAction('reveal', card)} style={small}>Reveal</Press>}
+        {card.rootId && (
+          <Press
+            onClick={() => onAction('more', card)}
+            title="More"
+            aria-label={`More actions for ${card.title}`}
+            style={{ ...small, color: C.soft }}
+          >
+            ···
+          </Press>
+        )}
+      </div>
+      <div style={{ ...sunken(), marginTop: 14, padding: '9px 12px', fontSize: 12, lineHeight: 1.45, color: C.soft, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+        <span style={{ paddingTop: 4 }}><Led tone={statusTone} /></span>
+        <span>{heroStatus(card)}</span>
+      </div>
+      <CardButtons card={card} keyRevoked={keyRevoked} onAction={onAction} />
+    </div>
+  );
+};
+
+const FolderList = ({ cards, keyRevoked, syncActive, onAction }) => {
+  const compact = cards.length > 4;
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', paddingBottom: 4 }}>
+      <div style={{ fontFamily: FIXEDSYS, fontSize: 11, letterSpacing: '.08em', color: C.muted, margin: '12px 0 6px' }}>
+        FOLDERS{cards.length > 4 ? ` · ${cards.length}` : ''}
+      </div>
+      <div style={{ ...sunken(), minHeight: 0, overflowY: 'auto' }}>
+        {cards.map((card, i) => (
+          <FolderRow
+            key={card.rootId || `account-${card.accountId}`}
+            card={card}
+            first={i === 0}
+            compact={compact}
+            keyRevoked={keyRevoked}
+            syncActive={syncActive}
+            onAction={onAction}
+          />
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// The switch strip already says sync is off or not connected, so a serve-only
+// row only speaks when sync runs and this folder still does not (a detached team).
+const rowNote = (card, compact, syncActive) => {
+  if (card.state === 'synced') {
+    return compact || !card.lastSyncAt ? null : `synced ${formatRelativeTime(card.lastSyncAt)}`;
+  }
+  if (card.state === 'serve-only' && !syncActive) return null;
+  return card.detail;
+};
+
+const rowTag = (card) => (card.kind === 'personal' ? 'you' : (card.subtitle || '').split(' · ')[1] || 'team');
+
+const FolderRow = ({ card, first, compact, keyRevoked, syncActive, onAction }) => {
+  const address = addressOf(card);
+  const note = rowNote(card, compact, syncActive);
   const inline = card.actions.find((a) => a === 'setup' || a === 'web') || null;
   return (
     <div
-      className="mx-3 mb-1.5 px-2.5 py-[7px]"
-      style={{ background: C.well, opacity: dimmed ? 0.55 : 1, ...bevelIn() }}
-      title={card.detailLong || undefined}
-      data-card-state={card.state}
+      {...cardAttrs(card)}
+      style={{
+        padding: '9px 10px 9px 12px',
+        boxShadow: first ? 'none' : `inset 0 1px 0 ${C.line}`,
+        opacity: card.state === 'viewer' ? 0.55 : 1,
+      }}
     >
-      <div className="flex items-center gap-2 min-w-0">
-        <Led on={led.on} color={led.color} glow={led.glow} />
-        <span className="text-[13px] font-medium text-[#E8EAF6] whitespace-nowrap overflow-hidden text-ellipsis">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+        <Led tone={STATE_TONE[card.state] || 'off'} />
+        <span title={card.subtitle || undefined} style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }}>
           {card.title}
+          <small style={{ color: C.muted, fontSize: 11, marginLeft: 6 }}>{rowTag(card)}</small>
         </span>
-        <span className="ml-auto flex items-center gap-1.5 shrink-0">
-          {inline === 'setup' && (
-            <button onClick={() => onAction('setup', card)} className={`${linkClass} text-[#69AEFE]`}>Set up →</button>
-          )}
-          {inline === 'web' && (
-            <button onClick={() => onAction('web', card)} className={`${linkClass} text-[#69AEFE]`}>hyperclay.com ↗</button>
-          )}
-          {!inline && card.state === 'port-taken' && (
-            <span className="text-[11.5px] text-[#F73D48]">port {card.port} is in use</span>
-          )}
-          {!inline && card.state !== 'port-taken' && card.url && (
-            <>
-              <button onClick={() => onAction('open', card)} className={`${linkClass} text-[#69AEFE]`}>
-                {card.url.replace('http://', '')}
-              </button>
-              <button
-                onClick={() => onAction('copy', card)}
-                title="Copy URL"
-                aria-label={`Copy URL for ${card.title}`}
-                className="bg-transparent border-none p-0 cursor-pointer text-[11px] text-[#6B7194] hover:text-[#B8BFE5]"
-              >
-                ⧉
-              </button>
-            </>
-          )}
-          {!inline && card.state !== 'port-taken' && !card.url && card.port && (
-            <span className="text-[11.5px] text-[#6B7194]">starts at :{card.port}</span>
-          )}
-        </span>
-      </div>
-      <div className="mt-[2px] pl-[15px] text-[11px] text-[#6B7194] whitespace-nowrap overflow-hidden text-ellipsis">
-        {card.subtitle}{detail ? ` · ${detail}` : ''}
-        {(card.state === 'conflict' || card.state === 'error') && (
-          <button onClick={() => onAction('notices', card)} className={`${linkClass} ml-1.5 text-[#F73D48]`}>see notices</button>
+        {inline === 'setup' && <Press onClick={() => onAction('setup', card)} style={small}>Set up →</Press>}
+        {inline === 'web' && <Press onClick={() => onAction('web', card)} style={small}>hyperclay.com ↗</Press>}
+        {!inline && address && (
+          address.live ? (
+            <TextButton onClick={() => onAction('open', card)} color={C.blue} style={{ fontSize: 12 }}>
+              <span data-card-address style={{ color: address.color }}>{address.text}</span>
+            </TextButton>
+          ) : (
+            <span data-card-address style={{ color: address.color, fontSize: 12 }}>{address.text}</span>
+          )
+        )}
+        {card.rootId && (
+          <Press
+            onClick={() => onAction('more', card)}
+            title="More"
+            aria-label={`More actions for ${card.title}`}
+            style={{ ...small, width: 26, height: 22, padding: 0, justifyContent: 'center', color: C.soft }}
+          >
+            ···
+          </Press>
         )}
       </div>
-      {card.folder && (
-        <div className="flex items-center gap-2 mt-[2px] pl-[15px] text-[11px] text-[#6B7194]">
-          <button
-            onClick={() => onAction('reveal', card)}
-            title="Reveal folder"
-            className={`${linkClass} text-[11px] text-[#6B7194] whitespace-nowrap overflow-hidden text-ellipsis`}
-          >
-            {card.folder}
-          </button>
-          <span className="ml-auto flex items-center gap-2.5 shrink-0">
-            {card.actions.includes('retry') && (
-              <button onClick={() => onAction('retry', card)} className={`${linkClass} text-[#B8BFE5]`}>Retry</button>
-            )}
-            {card.actions.includes('change-port') && card.nextPort && (
-              <button onClick={() => onAction('change-port', card)} className={`${linkClass} text-[#B8BFE5]`}>Use port {card.nextPort}…</button>
-            )}
-            {card.state === 'paused' && card.actions.includes('disconnect') && (
-              <button onClick={() => onAction('disconnect', card)} className={`${linkClass} text-[#B8BFE5]`}>Disconnect…</button>
-            )}
-            <button
-              onClick={() => onAction('more', card)}
-              title="More"
-              aria-label={`More actions for ${card.title}`}
-              className="bg-transparent border-none px-1 cursor-pointer text-[13px] leading-none text-[#6B7194] hover:text-[#B8BFE5]"
-            >
-              ⋯
-            </button>
-          </span>
+      {note && (
+        <div style={{ marginTop: 3, paddingLeft: 18, fontSize: 11.5, color: NOTE_COLOR[card.state] || C.muted }}>
+          {note}
         </div>
       )}
+      <div style={{ paddingLeft: 18 }}>
+        <CardButtons card={card} keyRevoked={keyRevoked} onAction={onAction} />
+      </div>
     </div>
   );
 };
 
-// =============================================================================
-// ACTIVITY
-// =============================================================================
-
-const ActivityFeed = ({ lines, onShowAll, showSharedNote }) => (
-  <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-    <div className="flex items-center gap-2 mx-3.5 mt-2 mb-0.5">
-      <span className="text-[10px] tracking-[0.22em] text-[#6B7194]">ACTIVITY</span>
-      <span className="flex-1 h-px bg-[#292F52]" />
-      {lines.length > 0 && (
-        <button
-          onClick={onShowAll}
-          className="bg-transparent border-none p-0 cursor-pointer text-[11px] text-[#6B7194] font-['Berkeley_Mono',monospace] hover:text-[#B8BFE5]"
-        >
-          all →
-        </button>
-      )}
-    </div>
-    <div className="flex-1 overflow-hidden px-3.5" style={{ minHeight: 48 }}>
-      {lines.length === 0 ? (
-        <div className="pt-3 text-[11.5px] text-[#454A68]">
-          watching for changes
-        </div>
-      ) : (
-        lines.slice(0, 5).map((line, i) => (
-          <ActivityRow key={line.path + '-' + i} line={line} />
-        ))
-      )}
-    </div>
-    {showSharedNote && (
-      <button
-        onClick={() => window.electronAPI?.openBrowser('https://hyperclay.com/dashboard')}
-        className="mx-3.5 mb-2 mt-1 bg-transparent border-none p-0 cursor-pointer text-left text-[10.5px] text-[#454A68] font-['Berkeley_Mono',monospace] hover:text-[#B8BFE5]"
-      >
-        Shared documents and links are on the website
-      </button>
-    )}
+const FirstRun = ({ serverLoading, onChooseFolder }) => (
+  <div style={{ marginTop: 22, display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+    <div style={{ fontFamily: FIXEDSYS, fontSize: 16, color: C.text }}>Pick a folder to serve</div>
+    <p style={{ margin: '12px 0 0', fontSize: 12, lineHeight: 1.5, color: C.soft }}>
+      Every .html file in it opens in your browser and saves itself back into the folder.
+    </p>
+    <Press variant="go" onClick={onChooseFolder} disabled={serverLoading} style={{ ...large, marginTop: 16 }}>
+      {serverLoading ? 'Starting…' : 'Choose Folder…'}
+    </Press>
   </div>
 );
 
-const ActivityRow = ({ line }) => {
-  const verb = VERB_GLYPHS[line.verb] || { glyph: '·', color: C.muted };
-  return (
-    <div className="flex items-baseline gap-2 py-[4px] border-b border-[#1D1F2F] last:border-b-0">
-      <span className="shrink-0 w-3 text-[12px]" style={{ color: verb.color }}>
-        {verb.glyph}
-      </span>
-      <span className="text-[12px] text-[#B8BFE5] whitespace-nowrap overflow-hidden text-ellipsis">
-        {line.path}
-      </span>
-      <span className="ml-auto shrink-0 text-[11px] text-[#6B7194] tabular-nums">
-        {line.time ? formatShortTime(line.time) : ''}
-      </span>
-    </div>
-  );
-};
-
 // =============================================================================
-// NOTICES VIEW
+// NOTICES VIEW (notices + activity)
 // =============================================================================
 
-const NoticesView = ({ errors, conflicts, cards, onMarkErrorRead, onDismissError, onResolveConflict }) => {
+const NoticesView = ({
+  tab, onTab, unreadCount, errors, conflicts, cards, lines,
+  onMarkErrorRead, onDismissError, onMarkAllRead, onClearAll, onResolveConflict,
+}) => {
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -967,6 +939,42 @@ const NoticesView = ({ errors, conflicts, cards, onMarkErrorRead, onDismissError
     return () => clearInterval(interval);
   }, []);
 
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '4px 16px 12px' }}>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+        <Press selected={tab === 'notices'} onClick={() => onTab('notices')} style={small}>
+          Notices{unreadCount > 0 ? ` ${unreadCount}` : ''}
+        </Press>
+        <Press selected={tab === 'activity'} onClick={() => onTab('activity')} style={small}>Activity</Press>
+        <span style={{ flex: 1 }} />
+        {tab === 'notices' && (
+          <>
+            <Press onClick={onMarkAllRead} style={small}>Mark read</Press>
+            <Press onClick={onClearAll} style={small}>Clear</Press>
+          </>
+        )}
+      </div>
+      <div style={{ ...sunken(), flex: 1, minHeight: 0, overflowY: 'auto' }}>
+        {tab === 'notices'
+          ? <NoticeRows errors={errors} conflicts={conflicts} cards={cards} onMarkErrorRead={onMarkErrorRead} onDismissError={onDismissError} onResolveConflict={onResolveConflict} />
+          : <ActivityRows lines={lines} />}
+      </div>
+      {tab === 'activity' && (
+        <TextButton
+          onClick={() => window.electronAPI?.openBrowser('https://hyperclay.com/dashboard')}
+          color={C.faint}
+          style={{ marginTop: 8, textAlign: 'left', fontSize: 11 }}
+        >
+          Shared documents and links are on the website
+        </TextButton>
+      )}
+    </div>
+  );
+};
+
+const logRow = (first) => ({ padding: '7px 10px', boxShadow: first ? 'none' : `inset 0 1px 0 ${C.line}` });
+
+const NoticeRows = ({ errors, conflicts, cards, onMarkErrorRead, onDismissError, onResolveConflict }) => {
   const titleForSession = (sessionId) => {
     const card = (cards || []).find((candidate) => candidate.sessionId === sessionId);
     return card ? card.title : null;
@@ -974,116 +982,98 @@ const NoticesView = ({ errors, conflicts, cards, onMarkErrorRead, onDismissError
 
   const sortedErrors = [...errors].sort((a, b) => b.timestamp - a.timestamp);
 
+  if (sortedErrors.length === 0 && (conflicts || []).length === 0) {
+    return <div style={{ padding: '40px 0', textAlign: 'center', color: C.muted, fontSize: 13 }}>All quiet</div>;
+  }
+
   return (
-    <div className="flex flex-col flex-1 overflow-hidden">
-      <div className="flex-1 overflow-y-auto px-3.5 pt-3 pb-2.5">
-        {(sortedErrors.length === 0 && (conflicts || []).length === 0) ? (
-          <div className="py-10 text-center text-[#6B7194] text-[13px]">
-            All quiet
+    <>
+      {(conflicts || []).map((conflict, i) => {
+        const label = titleForSession(conflict.sessionId);
+        return (
+          <div key={`conflict-${conflict.sessionId}-${conflict.path}-${i}`} style={logRow(i === 0)}>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <span style={{ color: C.amber, fontSize: 12 }}>!</span>
+              <span style={{ fontSize: 12, lineHeight: 1.4, color: C.text, wordBreak: 'break-word' }}>
+                {label ? `${label}: ` : ''}{conflict.path} changed here and on hyperclay.com
+              </span>
+            </div>
+            <div style={{ display: 'flex', gap: 6, marginTop: 6, paddingLeft: 16 }}>
+              <Press onClick={() => onResolveConflict(conflict.sessionId, conflict.path, 'mine')} style={small}>Keep mine</Press>
+              <Press onClick={() => onResolveConflict(conflict.sessionId, conflict.path, 'theirs')} style={small}>Keep theirs</Press>
+            </div>
           </div>
-        ) : (
-          <>
-            {(conflicts || []).map((conflict, i) => {
-              const label = titleForSession(conflict.sessionId);
-              return (
-                <div key={`conflict-${conflict.sessionId}-${conflict.path}-${i}`} className="py-2 border-b border-[#1D1F2F]" style={{ borderLeft: `3px solid ${C.amber}`, paddingLeft: 8, marginLeft: -11 }}>
-                  <div className="text-[12px] text-[#D1D5E8] break-words leading-[1.4]">
-                    {label ? `${label}: ` : ''}{conflict.path} changed here and on hyperclay.com
-                  </div>
-                  <div className="mt-1 flex gap-2">
-                    <button
-                      onClick={() => onResolveConflict(conflict.sessionId, conflict.path, 'mine')}
-                      className={`${linkClass} text-[#B8BFE5]`}
-                    >
-                      Keep mine
-                    </button>
-                    <button
-                      onClick={() => onResolveConflict(conflict.sessionId, conflict.path, 'theirs')}
-                      className={`${linkClass} text-[#B8BFE5]`}
-                    >
-                      Keep theirs
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-            {sortedErrors.map(error => (
-              <div
-                key={error.id}
-                className="flex gap-2 items-start py-2 border-b border-[#1D1F2F]"
-                style={error.priority === 1 ? { borderLeft: `3px solid ${C.faultFill}`, paddingLeft: 8, marginLeft: -11 } : undefined}
-              >
-                {!error.read ? (
-                  <button
-                    onClick={() => onMarkErrorRead(error.id)}
-                    title="Mark as read"
-                    aria-label="Mark as read"
-                    className={`shrink-0 mt-[5px] w-[7px] h-[7px] rounded-full border-none cursor-pointer p-0 ${error.priority === 1 ? 'bg-[#F73D48]' : 'bg-gray-500'}`}
-                  />
-                ) : (
-                  <div className="shrink-0 w-[7px]" />
-                )}
-                <div className="flex-1 min-w-0 text-[12px] text-[#D1D5E8] break-words leading-[1.4]">
-                  {(() => {
-                    const label = error.sessionId ? titleForSession(error.sessionId) : null;
-                    return label ? `${label}: ${error.error}` : error.error;
-                  })()}
-                  {error.file && (
-                    <div className="mt-0.5 text-[11px] text-[#6B7194]">{error.file}</div>
-                  )}
-                  {error.dismissable !== false && error.priority !== 1 && (
-                    <button
-                      onClick={() => onDismissError(error.id)}
-                      className="block mt-1 bg-transparent border-none p-0 cursor-pointer text-[11px] text-[#6B7194] underline underline-offset-2 font-['Berkeley_Mono',monospace] hover:text-[#B8BFE5]"
-                    >
-                      Dismiss
-                    </button>
-                  )}
-                </div>
-                <div className="shrink-0 text-[11px] text-gray-500 tabular-nums">
-                  {formatRelativeTime(error.timestamp)}
-                </div>
-              </div>
-            ))}
-          </>
-        )}
-      </div>
-    </div>
+        );
+      })}
+      {sortedErrors.map((error, i) => {
+        const label = error.sessionId ? titleForSession(error.sessionId) : null;
+        return (
+          <div
+            key={error.id}
+            style={{ ...logRow(i === 0 && !(conflicts || []).length), display: 'flex', gap: 8, alignItems: 'flex-start' }}
+          >
+            {!error.read ? (
+              <button
+                onClick={() => onMarkErrorRead(error.id)}
+                title="Mark as read"
+                aria-label="Mark as read"
+                style={{
+                  flex: 'none', marginTop: 5, width: 7, height: 7, borderRadius: '50%', border: 'none', padding: 0, cursor: 'pointer',
+                  background: error.priority === 1 ? C.red : C.amber,
+                }}
+              />
+            ) : (
+              <div style={{ flex: 'none', width: 7 }} />
+            )}
+            <div style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.4, wordBreak: 'break-word', color: error.read ? C.soft : C.text }}>
+              {label ? `${label}: ${error.error}` : error.error}
+              {error.file && (
+                <div style={{ marginTop: 2, fontSize: 11, color: C.muted }}>{error.file}</div>
+              )}
+              {error.dismissable !== false && error.priority !== 1 && (
+                <TextButton
+                  onClick={() => onDismissError(error.id)}
+                  style={{ display: 'block', marginTop: 4, fontSize: 11, textDecoration: 'underline', textUnderlineOffset: 2 }}
+                >
+                  Dismiss
+                </TextButton>
+              )}
+            </div>
+            <div style={{ flex: 'none', fontSize: 11, color: C.muted }}>
+              {formatRelativeTime(error.timestamp)}
+            </div>
+          </div>
+        );
+      })}
+    </>
   );
 };
 
-// =============================================================================
-// ACTIVITY VIEW
-// =============================================================================
-
-const ActivityView = ({ lines }) => {
-  const [, setTick] = useState(0);
-
-  useEffect(() => {
-    const interval = setInterval(() => setTick(t => t + 1), 10000);
-    return () => clearInterval(interval);
-  }, []);
-
-  return (
-    <div className="flex flex-col flex-1 overflow-hidden">
-      <div className="flex-1 overflow-y-auto px-3.5 pt-3 pb-2.5">
-        {lines.length === 0 ? (
-          <div className="py-10 text-center text-[#6B7194] text-[13px]">
-            Transfers show up here
-          </div>
-        ) : (
-          lines.map((line, i) => (
-            <ActivityRow key={line.path + '-' + i} line={line} />
-          ))
-        )}
+const ActivityRows = ({ lines }) => {
+  if (lines.length === 0) {
+    return <div style={{ padding: '40px 0', textAlign: 'center', color: C.muted, fontSize: 13 }}>Transfers show up here</div>;
+  }
+  return lines.map((line, i) => {
+    const verb = VERB_GLYPHS[line.verb] || { glyph: '·', color: C.muted };
+    return (
+      <div key={line.path + '-' + i} style={{ ...logRow(i === 0), display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <span style={{ flex: 'none', width: 12, fontSize: 12, color: verb.color }}>{verb.glyph}</span>
+        <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: C.soft, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {line.path}
+        </span>
+        <span style={{ flex: 'none', fontSize: 11, color: C.muted, fontVariantNumeric: 'tabular-nums' }}>
+          {line.time ? formatShortTime(line.time) : ''}
+        </span>
       </div>
-    </div>
-  );
+    );
+  });
 };
 
 // =============================================================================
 // TEAM SETUP VIEW
 // =============================================================================
+
+const labelStyle = { fontFamily: FIXEDSYS, fontSize: 11, letterSpacing: '.08em', color: C.muted, margin: '14px 0 6px' };
 
 const TeamSetupView = ({ accountId, home, onDone, onCancel }) => {
   const [setup, setSetup] = useState(null);
@@ -1139,75 +1129,66 @@ const TeamSetupView = ({ accountId, home, onDone, onCancel }) => {
   const size = formatBytes(setup && setup.bytes);
 
   return (
-    <div className="flex-1 overflow-y-auto px-3.5 pt-3 pb-2.5">
-      <div className="text-[12px] text-[#B8BFE5]">
+    <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 16px 12px', display: 'flex', flexDirection: 'column', alignItems: 'stretch' }}>
+      <div style={{ fontSize: 12, color: C.soft }}>
         {(setup && setup.displayName) || username}{role ? ` · you're an ${role}` : ''}
       </div>
 
-      <div className="mt-3 text-[10px] tracking-[0.22em] text-[#6B7194]">FOLDER</div>
-      <div className="mt-1 flex items-center gap-2 px-2.5 py-2" style={{ background: C.well, ...bevelIn() }}>
-        <span className={`text-[12px] whitespace-nowrap overflow-hidden text-ellipsis ${folder ? 'text-[#E8EAF6]' : 'text-[#454A68]'}`}>
+      <div style={labelStyle}>FOLDER</div>
+      <div style={{ ...sunken(), padding: '9px 12px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
+        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: folder ? C.text : C.faint }}>
           {shortenHome(folder, home)}
         </span>
-        <span className="ml-auto shrink-0 text-[11px] text-[#6B7194]">
+        <span style={{ marginLeft: 'auto', flex: 'none', fontSize: 11, color: C.muted }}>
           {setup && setup.folderIsNew ? '(new)' : ''}
         </span>
       </div>
       {folderError && (
-        <div className="mt-1 text-[11.5px] text-[#F73D48]">{folderError}</div>
+        <div style={{ marginTop: 6, fontSize: 11.5, color: C.red }}>{folderError}</div>
       )}
-      {alternative && (
-        <button
-          onClick={() => { setFolder(alternative); setFolderError(null); setAlternative(null); }}
-          className={`${linkClass} mt-1 text-[#69AEFE] block`}
-        >
-          Use {shortenHome(alternative, home)} instead
-        </button>
-      )}
-      <button
-        onClick={handleChooseFolder}
-        className={`${linkClass} mt-1.5 text-[#69AEFE] block`}
-      >
-        Choose another folder…
-      </button>
-
-      <div className="mt-3.5 flex items-center gap-3">
-        <span className="text-[10px] tracking-[0.22em] text-[#6B7194]">ADDRESS</span>
-        {setup && (
-          <span className="text-[12px] text-[#B8BFE5]">localhost:{setup.port}</span>
+      <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+        {alternative && (
+          <Press
+            onClick={() => { setFolder(alternative); setFolderError(null); setAlternative(null); }}
+            style={small}
+          >
+            Use {shortenHome(alternative, home)} instead
+          </Press>
         )}
+        <Press onClick={handleChooseFolder} style={small}>Choose another folder…</Press>
       </div>
 
-      <div className="mt-3.5 text-[11.5px] leading-[1.5] text-[#6B7194]">
+      <div style={labelStyle}>OPENS AT</div>
+      <div style={{ ...sunken(), padding: '9px 12px', fontSize: 12.5, color: C.text }}>
+        {setup ? `localhost:${setup.port}` : '…'}
+      </div>
+
+      <div style={{ marginTop: 12, fontSize: 12, lineHeight: 1.5, color: C.soft }}>
         Pages in this folder come from {username}'s editors. They run in your browser at this address, like your own apps do.
       </div>
 
-      <label className="mt-3.5 flex items-center gap-2 cursor-pointer text-[11.5px] text-[#B8BFE5]">
+      <label style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 9, cursor: 'pointer', fontSize: 12.5, color: C.text }}>
         <input
           type="checkbox"
           checked={trusted}
           onChange={(e) => setTrusted(e.target.checked)}
-          className="w-3.5 h-3.5 cursor-pointer accent-[#1E8136]"
+          style={{ width: 14, height: 14, cursor: 'pointer', accentColor: C.green }}
         />
         I trust {username}'s editors
       </label>
 
       {error && (
-        <div className="mt-2 text-[12px] text-[#FE5F58] text-center">{error}</div>
+        <div style={{ marginTop: 8, fontSize: 12, color: C.red }}>{error}</div>
       )}
 
-      <div className="mt-3 flex items-center justify-end gap-2">
-        <BevelButton label="Cancel" onClick={onCancel} variant="neutral" small />
-        <BevelButton
-          label="Set up & sync"
-          onClick={handleSetup}
-          variant="success"
-          small
-          disabled={!trusted || !folder || saving}
-        />
+      <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+        <Press onClick={onCancel} style={large}>Cancel</Press>
+        <Press variant="go" onClick={handleSetup} disabled={!trusted || !folder || saving} style={large}>
+          Set up &amp; sync
+        </Press>
       </div>
 
-      <div className="mt-2 text-[11px] text-[#6B7194]">
+      <div style={{ marginTop: 10, fontSize: 11, color: C.muted }}>
         {!setup
           ? 'Counting files…'
           : (files == null ? '' : `${files} ${files === 1 ? 'file' : 'files'}${size ? `, ${size}` : ''} will download.`)}
@@ -1217,36 +1198,20 @@ const TeamSetupView = ({ accountId, home, onDone, onCancel }) => {
 };
 
 // =============================================================================
-// FIRST-RUN BAY
-// =============================================================================
-
-const FirstRunBay = ({ serverLoading, onChooseFolder }) => (
-  <>
-    <div
-      className="mx-3 mt-3 mb-2.5 px-3 pt-4 pb-3.5 text-center"
-      style={{ background: C.well, border: `2px dashed ${C.border}` }}
-    >
-      <BevelButton
-        label={serverLoading ? 'Starting…' : 'Choose Folder…'}
-        onClick={onChooseFolder}
-        variant="success"
-        disabled={serverLoading}
-      />
-      <div className="mt-2.5 text-[11.5px] leading-[1.5] text-[#6B7194]">
-        Serve your HTML apps locally.<br />Sync them to hyperclay.com.
-      </div>
-    </div>
-    <div className="px-3.5 pb-3 text-center text-[11px] leading-[1.55] text-[#454A68]">
-      Any .html file in your folder becomes<br />
-      an app you can open, edit, and save,<br />
-      right in the browser.
-    </div>
-  </>
-);
-
-// =============================================================================
 // CREDENTIALS VIEW
 // =============================================================================
+
+const fieldStyle = {
+  ...sunken(),
+  width: '100%',
+  boxSizing: 'border-box',
+  border: 'none',
+  outline: 'none',
+  padding: '8px 10px',
+  fontSize: 13,
+  fontFamily: MONO,
+  color: C.text,
+};
 
 const CredentialsView = ({ username, apiKey, error, loading, onUsernameChange, onApiKeyChange, onSubmit, onCancel }) => {
   const handleKeyDown = (e) => {
@@ -1254,83 +1219,65 @@ const CredentialsView = ({ username, apiKey, error, loading, onUsernameChange, o
   };
 
   return (
-    <div className="flex-1 px-3.5 pt-3.5 pb-2.5">
-      <div className="text-[11.5px] text-[#6B7194] leading-[1.5] mb-3">
+    <div style={{ flex: 1, padding: '4px 16px 12px' }}>
+      <div style={{ fontSize: 12, lineHeight: 1.5, color: C.soft, marginBottom: 14 }}>
         Syncs your folders with hyperclay.com. Teams you're on appear automatically.
       </div>
 
-      <div className="mb-2.5">
-        <label className="block mb-[3px] text-[12px] text-[#8A92BB]">Username</label>
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ display: 'block', marginBottom: 5, fontSize: 12, color: C.soft }}>Username</label>
         <input
           type="text"
           value={username}
           onChange={(e) => onUsernameChange(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Your hyperclay.com username"
-          className="w-full px-2 py-1.5 text-[13px] font-['Berkeley_Mono',monospace] bg-[#111220] border-2 border-[#4F5A97] text-white outline-none"
+          style={fieldStyle}
         />
       </div>
 
-      <div className="mb-3">
-        <label className="block mb-[3px] text-[12px] text-[#8A92BB]">API Key</label>
+      <div style={{ marginBottom: 14 }}>
+        <label style={{ display: 'block', marginBottom: 5, fontSize: 12, color: C.soft }}>API Key</label>
         <input
           type="password"
           value={apiKey}
           onChange={(e) => onApiKeyChange(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="hcsk_..."
-          className="w-full px-2 py-1.5 text-[13px] font-['Berkeley_Mono',monospace] bg-[#111220] border-2 border-[#4F5A97] text-white outline-none"
+          style={fieldStyle}
         />
       </div>
 
       {error && (
-        <div className="mb-2 text-[12px] text-[#FE5F58] text-center">
-          {error}
-        </div>
+        <div style={{ marginBottom: 10, fontSize: 12, color: C.red, textAlign: 'center' }}>{error}</div>
       )}
 
-      <BevelButton
-        label={loading ? 'Connecting...' : 'Connect & Enable Sync'}
-        onClick={onSubmit}
-        variant="sync"
-        disabled={loading}
-        style={{ width: '100%' }}
-      />
+      <Press variant="link" onClick={onSubmit} disabled={loading} style={{ ...large, width: '100%', justifyContent: 'center' }}>
+        {loading ? 'Connecting...' : 'Connect & Enable Sync'}
+      </Press>
 
-      <div className="mt-2.5 flex justify-between items-center">
-        <button
-          onClick={onCancel}
-          className="bg-transparent border-none text-[#6B7194] text-[12px] cursor-pointer py-0.5 font-['Berkeley_Mono',monospace]"
-        >
-          Cancel
-        </button>
-        <button
+      <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <TextButton onClick={onCancel} style={{ fontSize: 12 }}>Cancel</TextButton>
+        <TextButton
           onClick={() => window.electronAPI?.openBrowser('https://hyperclay.com/dashboard')}
-          className="bg-transparent border-none text-[#69AEFE] text-[12px] cursor-pointer py-0.5 font-['Berkeley_Mono',monospace]"
+          color={C.blue}
+          style={{ fontSize: 12 }}
         >
           Get API key
-        </button>
+        </TextButton>
       </div>
     </div>
   );
 };
 
 // =============================================================================
-// FOOTER BUTTON
-// =============================================================================
-
-const FooterButton = ({ label, onClick }) => (
-  <button
-    className="bg-transparent border-none text-[#6B7194] hover:text-[#B8BFE5] text-[13px] cursor-pointer px-1 py-0.5 font-['Berkeley_Mono',monospace]"
-    onClick={onClick}
-  >
-    {label}
-  </button>
-);
-
-// =============================================================================
 // HELPERS
 // =============================================================================
+
+function capitalize(text) {
+  if (!text) return '';
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
 
 function formatRelativeTime(timestamp) {
   const diff = Date.now() - new Date(timestamp).getTime();
