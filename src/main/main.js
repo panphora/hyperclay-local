@@ -57,6 +57,12 @@ if (isDev) {
   app.commandLine.appendSwitch('remote-debugging-port', '9229');
 }
 
+// The scripted UI suite (hyperclay tests/db/desktop-ui.test.js) moves userData and pins the
+// server here, before anything reads either. Unpackaged builds only.
+if (isDev && process.env.HYPERCLAY_TEST_PRELOAD) {
+  require(process.env.HYPERCLAY_TEST_PRELOAD);
+}
+
 if (process.platform === 'darwin') {
   const iconPath = path.join(__dirname, '../../assets/icons/icon.png');
   const aboutOptions = {

@@ -292,6 +292,27 @@ describe('stale generations', () => {
     expect(stream.close).toHaveBeenCalled();
     expect(engine.dropPendingWork).toHaveBeenCalled();
   });
+
+  it('pause() persists before it announces, so a state listener reads the pause from settings', () => {
+    const order = [];
+    const { runner } = session({ manager: { persistPaused: jest.fn(() => order.push('persisted')) } });
+    runner.on('state', (state) => order.push(state));
+
+    runner.pause('key-revoked');
+
+    expect(order).toEqual(['persisted', 'paused']);
+  });
+
+  it('pause() with persist: false announces without writing', () => {
+    const order = [];
+    const { runner, manager } = session({ manager: { persistPaused: jest.fn(() => order.push('persisted')) } });
+    runner.on('state', (state) => order.push(state));
+
+    runner.pause('plan-lapsed', { persist: false });
+
+    expect(order).toEqual(['paused']);
+    expect(manager.persistPaused).not.toHaveBeenCalled();
+  });
 });
 
 describe('access refusals', () => {

@@ -2,7 +2,7 @@ const os = require('os');
 const net = require('net');
 const path = require('upath');
 
-const PERSONAL_PORT = 4321;
+const PERSONAL_PORT = Number(process.env.HYPERCLAY_TEST_PERSONAL_PORT) || 4321;
 const TEAM_PORT_LADDER = [5432, 6543, 7654, 8765, 9876];
 const RANDOM_PORT_MIN = 49152;
 const RANDOM_PORT_MAX = 65535;

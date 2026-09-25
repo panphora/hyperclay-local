@@ -136,13 +136,14 @@ class SessionRunner extends EventEmitter {
   /**
    * C3.11: a session discovery paused before its start is already persisted, so
    * the caller that holds that reason passes `persist: false` and the earlier
-   * `since` stands.
+   * `since` stands. It persists before it announces: a 'state' listener builds
+   * the popover's snapshot synchronously from settings.
    */
   pause(reason, { persist = true } = {}) {
+    if (persist) this.manager.persistPaused(this.engine.sessionId, reason);
     this.#bump('paused');
     this.stream.close();
     this.engine.dropPendingWork();
-    if (persist) this.manager.persistPaused(this.engine.sessionId, reason);
     this.emit('paused', { reason });
   }
 

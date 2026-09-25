@@ -14,6 +14,7 @@ let EXPLICIT_VERSION = '';
 let RESUME = false;
 let IGNORE_WINDOW = false;
 let DRY_RUN = false;
+let SKIP_UI_PASS = false;
 
 const VERSION_RE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
@@ -46,6 +47,7 @@ for (const arg of process.argv.slice(2)) {
     case '--patch': VERSION_TYPE = 'patch'; break;
     case '--resume': RESUME = true; break;
     case '--ignore-window': IGNORE_WINDOW = true; break;
+    case '--skip-ui-pass': SKIP_UI_PASS = true; break;
     case '--dry-run': DRY_RUN = true; break;
     case '--help':
     case '-h':
@@ -70,6 +72,8 @@ for (const arg of process.argv.slice(2)) {
       console.log('                       release on finding out. Runs at any hour.');
       console.log('  --ignore-window      Release inside the Tue-Fri 09:00-18:00 ET window.');
       console.log('                       Deliberate override; a release publishes publicly.');
+      console.log('  --skip-ui-pass       Release without the Electron UI suite (../hyperclay');
+      console.log('                       tests/db/desktop-ui.test.js). Deliberate override.');
       console.log('');
       console.log('If no version option is provided, the bump is chosen automatically');
       console.log('from the commit messages since the last tag. Nothing prompts.');
@@ -369,6 +373,29 @@ function verifyLicenseAblation() {
   }
 }
 
+// The suite clicks the real popover of this checkout's Electron app against a real test server.
+// 1.24.1 shipped "Sync won't turn on" because nothing before it ran main.js; this is that check.
+function verifyUiPass() {
+  logSection('Electron UI suite');
+  if (SKIP_UI_PASS) {
+    logWarn('Skipping the Electron UI suite because --skip-ui-pass was passed.');
+    logWarn('Nothing has clicked this build\'s popover.');
+    return;
+  }
+  const { runUiPass } = require('./ui-pass-gate');
+  const started = Date.now();
+  const verdict = runUiPass({ localDir: ROOT_DIR, hyperclayDir: path.join(ROOT_DIR, '..', 'hyperclay') });
+  fs.appendFileSync(LOG_FILE, verdict.output);
+  if (verdict.ok) {
+    logSuccess(`${verdict.summary} in ${elapsed(started)}`);
+    return;
+  }
+  logError(`The Electron UI suite did not pass: ${verdict.reason}`);
+  logError('Release stopped before anything was committed, tagged or dispatched.');
+  logError(`Full output is in ${LOG_FILE}. Pass --skip-ui-pass to override deliberately.`);
+  process.exit(1);
+}
+
 // Polled here rather than handed to `gh run watch --exit-status`, which exits nonzero
 // both when the run failed and when watching it failed, with no way to tell the two
 // apart. On 2026-08-26 it exited nonzero 68 seconds AFTER v1.22.3 had gone green and
@@ -610,6 +637,8 @@ async function main() {
       logWarn('Working tree has uncommitted changes; they will NOT be in this build:');
       dirty.split('\n').forEach(line => log(`  ${line}`));
     }
+
+    verifyUiPass();
   } else {
     logSection('Step 1: Pre-flight Checks');
 
@@ -641,6 +670,8 @@ async function main() {
       logError('Run: gh auth login');
       process.exit(1);
     }
+
+    verifyUiPass();
 
     logSection('Step 2: Version');
 
