@@ -455,6 +455,38 @@ curl 'http://localhost:4321/index.html?data={title:"h1",xs:".item[]"}'
 raw HTML. Both endpoints are the local port of hyperclay.com's `serveSiteApi` and
 `extractSiteData`, and are built on the `hyper-html-api` engine.
 
+### Writing through the data API
+
+POST JSON to the same address to change the document's content. The page's own rules tag
+decides where each key lands, so the body has the same shape a GET returns:
+
+```bash
+curl -X POST http://localhost:4321/_/api/index.html \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Groceries","items":["eggs","milk"]}'
+# {"title":"Groceries","items":["eggs","milk"]}
+```
+
+- The write is content only. Text is written as text, never parsed as HTML. Attributes are
+  refused when they could run script or change how the page behaves: `on*` handlers,
+  `style`, `srcdoc`, the save and region markers (`no-save`, `no-data`, `contenteditable` and
+  the rest), and `javascript:`, `vbscript:` and `data:` URLs. Nothing inside `<script>`,
+  `<style>`, `<template>`, `<iframe>`, `<object>`, `<noscript>` or the `<head>` metadata tags
+  can be written, and neither can `@innerHTML` or `@outerHTML`. A refused write returns 400
+  `{"error":"Write refused","details":[{"target":"<a#home>","reason":"..."}]}`, and nothing is
+  written.
+- Keys the rules tag does not define, and rules whose selector matches nothing, return 400
+  `{"error":"Write rejected","details":{"unknownKeys":[...],"unmatched":[...]}}`.
+- A key you leave out is left alone. `null` clears a text value.
+- A list grows by cloning its first row, or its `cms-template` seed when the list is empty.
+- Regions marked `no-data` or `editor-ui` are invisible to both reads and writes.
+- Only the changed elements are rewritten. Every other byte of the file stays as it was.
+- The write lands exactly like a browser save: version backup, open tabs updated live, and
+  the sidecar refreshed. A body that changes nothing writes nothing.
+- The answer is the fresh extraction, and GET and POST both carry an `ETag`. Send it back as
+  `If-Match` to refuse the write with 412 when the file changed since you read it.
+- Bodies must be `application/json` (415 otherwise) and at most 1 MB.
+
 ## Tailwind CSS
 
 A page that links a `/tailwindcss/<name>.css` stylesheet gets that file compiled on save
