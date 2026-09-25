@@ -8,6 +8,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Re-running main on demand is how an intermittent failure gets counted.
+  workflow_dispatch:
 
 env:
   # Node 26, matching the release workflow. See the note in release.yml for why this

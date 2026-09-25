@@ -22,6 +22,7 @@ const {
   addWordBreaks
 } = require('../../src/main/server.js');
 const { listenLoopback, closeLoopback } = require('../helpers/loopback');
+const { getConsentRegistry } = require('../../src/main/utils/path-resolver.js');
 
 // The data-loss guard writes into .hyperclay/guard detached from the request by
 // design, so it can still be running when a test finishes. Let it settle and
@@ -39,6 +40,7 @@ describe('A2: Host header validation', () => {
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'host-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
     app = await listenLoopback(createApp(dir));
+    await getConsentRegistry(dir).ready();
     await fs.writeFile(path.join(dir, 'index.html'), '<html>ok</html>');
   });
 
@@ -127,6 +129,7 @@ describe('Origin validation on the mutating surface', () => {
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'origin-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
     app = await listenLoopback(createApp(dir));
+    await getConsentRegistry(dir).ready();
     await fs.writeFile(path.join(dir, 'index.html'), '<html>original</html>');
   });
 
@@ -189,6 +192,7 @@ describe('A0: directory listing escaping and href encoding', () => {
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'listing-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
     app = await listenLoopback(createApp(dir));
+    await getConsentRegistry(dir).ready();
   });
 
   afterEach(async () => {
@@ -262,6 +266,7 @@ describe('A0 + A3: a name with %, # and a space survives listing, click and save
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'roundtrip-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
     app = await listenLoopback(createApp(dir));
+    await getConsentRegistry(dir).ready();
     await fs.writeFile(path.join(dir, NAME), '<html>original</html>');
   });
 
@@ -344,6 +349,7 @@ describe('A3: symlink escape blocked on both GET and POST', () => {
     outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'outside-')));
     jest.spyOn(console, 'log').mockImplementation(() => {});
     app = await listenLoopback(createApp(dir));
+    await getConsentRegistry(dir).ready();
     await fs.writeFile(path.join(outside, 'secret.txt'), 'TOP SECRET');
     await fs.writeFile(path.join(outside, 'victim.html'), '<html>victim</html>');
   });
@@ -427,6 +433,7 @@ describe('A4 + A5: dotfiles and internal directories', () => {
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
     app = await listenLoopback(createApp(dir));
+    await getConsentRegistry(dir).ready();
   });
 
   afterEach(async () => {
