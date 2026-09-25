@@ -11,9 +11,10 @@
 // Callers MUST pass a `name` that already passed validateAndResolvePath.
 const fs = require('fs').promises;
 const path = require('upath');
-const { extractData, extractViaTag, parseExtractionRules } = require('./data-extractor');
+const { extractData, extractViaTag, parseExtractionRules, writeViaTag } = require('./data-extractor');
 const { writeApiSidecarData, deleteApiSidecar, readFreshSidecar } = require('./api-sidecar');
 const { withFileLock } = require('./write-queue');
+const { documentEtag, ifMatchSatisfied } = require('../spec-wire');
 
 // Map an api-tag extraction failure to the platform's author-facing 400 bodies
 // (data-actions.js serveSiteApi). Returns null for an unmapped error → caller
@@ -66,10 +67,12 @@ async function serveSiteApiInLock(baseDir, name, sourcePath) {
     };
   }
 
+  const etag = documentEtag(await fs.readFile(sourcePath));
+
   const fresh = await readFreshSidecar(baseDir, name, sourceStat.mtimeMs);
   if (fresh !== null) {
     // Send the file bytes verbatim — res.json on a string would double-encode it.
-    return { status: 200, raw: fresh };
+    return { status: 200, headers: { ETag: etag }, raw: fresh };
   }
 
   const html = await fs.readFile(sourcePath, 'utf8');
@@ -92,7 +95,7 @@ async function serveSiteApiInLock(baseDir, name, sourcePath) {
   }
 
   await writeApiSidecarData(baseDir, name, data);
-  return { status: 200, headers: { 'X-Served-By': 'app-generated' }, json: data };
+  return { status: 200, headers: { 'X-Served-By': 'app-generated', ETag: etag }, json: data };
 }
 
 // GET <name>?data={...} — query-driven extraction with relaxed-JSON rules.
@@ -154,4 +157,59 @@ async function extractSiteDataLocal(baseDir, name, dataParam, { sourcePath } = {
   }
 }
 
-module.exports = { mapApiTagError, serveSiteApiLocal, extractSiteDataLocal };
+// Map a write failure to a 400 body. Returns null for an unmapped error, which
+// the caller rethrows as a 500.
+function mapWriteError(error) {
+  switch (error && error.name) {
+    case 'NoRulesTag':
+      return { error: 'No api rules tag', message: 'This page has no rules tag with data-rules-name~="api".' };
+    case 'WriteRejected':
+      return { error: 'Write rejected', message: error.message, details: { unknownKeys: error.unknownKeys, unmatched: error.unmatched } };
+    case 'WriteRefused':
+      return { error: 'Write refused', message: error.message, details: error.refusals };
+    case 'ShapeMismatch':
+      return { error: 'Shape mismatch', message: error.message, details: error.mismatches };
+    case 'EmptyListInsert':
+      return { error: 'Cannot grow list', message: error.message, details: error.path };
+    default:
+      return mapApiTagError(error);
+  }
+}
+
+// POST /_/api/<name>: apply JSON to the document through its own api rules tag,
+// then commit the new bytes through `commit(html, previousText)`, which the
+// route binds to commitDocument. Runs in the same queue slot as /save and GET.
+// A body that changes nothing writes nothing.
+async function applySiteDataLocal(baseDir, name, data, { sourcePath, ifMatch, commit } = {}) {
+  sourcePath = sourcePath || path.join(baseDir, name);
+  return await withFileLock(sourcePath, async () => {
+    let stored;
+    try {
+      stored = await fs.readFile(sourcePath);
+    } catch (e) {
+      if (e.code !== 'ENOENT') throw e;
+      return { status: 404, json: { error: 'Site content not found', message: 'The site exists but has no content' } };
+    }
+    if (ifMatch !== undefined && !ifMatchSatisfied(ifMatch, stored)) {
+      return {
+        status: 412,
+        headers: { ETag: documentEtag(stored) },
+        json: { error: 'Precondition Failed', message: `${name} changed since you read it. Nothing was written.` }
+      };
+    }
+    const previous = stored.toString('utf8');
+    let result;
+    try {
+      result = await writeViaTag(previous, data, 'api');
+    } catch (err) {
+      const mapped = mapWriteError(err);
+      if (!mapped) throw err;
+      return { status: 400, json: mapped };
+    }
+    const written = result.changed ? await commit(result.html, previous) : previous;
+    const fresh = await extractViaTag(written, 'api');
+    return { status: 200, headers: { ETag: documentEtag(Buffer.from(written, 'utf8')) }, json: fresh };
+  });
+}
+
+module.exports = { mapApiTagError, serveSiteApiLocal, extractSiteDataLocal, applySiteDataLocal };

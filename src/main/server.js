@@ -33,7 +33,7 @@ const { createHelperDispatcher } = require('./helpers/dispatcher');
 const errorLogger = require('./error-logger');
 const formatHtml = require('./format-html');
 const { hasHtmlRoot } = formatHtml;
-const { serveSiteApiLocal, extractSiteDataLocal } = require('./utils/data-api');
+const { serveSiteApiLocal, extractSiteDataLocal, applySiteDataLocal } = require('./utils/data-api');
 const { writeApiSidecar } = require('./utils/api-sidecar');
 const dataGuard = require('./data-loss-guard');
 const { documentEtag, ifMatchSatisfied } = require('./spec-wire');
@@ -262,6 +262,7 @@ function resolveResourceFromHref(href) {
 // ---------------------------------------------------------------- uploads (spec §9)
 
 const SAVE_MAX_BYTES = 20 * 1024 * 1024;
+const API_WRITE_MAX_BYTES = 1024 * 1024;
 const UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 
 // Refused by extension. A document or a script stored beside a document and
@@ -2039,6 +2040,49 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });
       }
     });
+
+    // POST `/_/api/<name>.html` writes JSON into the document through its own api
+    // rules tag, content only (the engine refuses script, handlers and HTML). Same
+    // marker gate as the GET, the same loopback-origin gate as every mutating
+    // request, and the same commit path as /save.
+    app.post(
+      /^\/api\/(.+)\.(html|htmlclay)$/,
+      (req, res, next) => (req.originalUrl.startsWith('/_/api/') ? next() : next('route')),
+      express.text({ type: () => true, limit: API_WRITE_MAX_BYTES }),
+      async (req, res) => {
+        if (!isJsonContentType(req.headers['content-type'])) {
+          return res.status(415).json({ error: 'Unsupported Media Type', message: 'POST /_/api takes Content-Type: application/json.' });
+        }
+        let data;
+        try {
+          data = JSON.parse(req.body);
+        } catch {
+          return res.status(400).json({ error: 'Invalid JSON body', message: 'The request body is not valid JSON.' });
+        }
+        let name;
+        let sourcePath;
+        try {
+          name = `${req.params[0]}.${req.params[1]}`;
+          sourcePath = await resolveWriteTarget(paths, name);
+        } catch (error) {
+          return res.status(error.status || 400).json({ error: error.message });
+        }
+        try {
+          const result = await applySiteDataLocal(baseDir, name, data, {
+            sourcePath,
+            ifMatch: req.headers['if-match'],
+            commit: (html, previous) => commitDocument({
+              name, filePath: sourcePath, content: html, dataLossPrev: previous, userDriven: false, saveId: ''
+            })
+          });
+          if (result.status === 200) console.log(`Wrote data into ${name}`);
+          return sendApiResult(res, result);
+        } catch (error) {
+          console.error('Site API write error:', error);
+          return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });
+        }
+      }
+    );
 
     // `/_/api` or `/_/api/` with no file → index.html's data (parity nicety).
     app.get(/^\/api\/?$/, async (req, res, next) => {

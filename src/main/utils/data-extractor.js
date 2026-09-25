@@ -43,4 +43,17 @@ async function parseExtractionRules(str) {
   return parseRelaxed(str);
 }
 
-module.exports = { extractData, extractViaTag, parseExtractionRules };
+let writePromise = null;
+function loadWrite() {
+  if (!writePromise) writePromise = import('hyper-html-api/write');
+  return writePromise;
+}
+
+// Applies a JSON body to a document's source through its own rules tag, content
+// only. Returns { html, changed, spliced }; throws the engine's typed errors.
+async function writeViaTag(html, data, token) {
+  const { writeDocument } = await loadWrite();
+  return writeDocument(cheerio.load, html, data, { token });
+}
+
+module.exports = { extractData, extractViaTag, parseExtractionRules, writeViaTag };
