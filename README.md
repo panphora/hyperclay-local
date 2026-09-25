@@ -80,7 +80,7 @@ This local server provides the core functionality needed to run and edit your Hy
    - **macOS (Intel)**: [HyperclayLocal-1.25.0.dmg](https://local.hyperclay.com/HyperclayLocal-1.25.0.dmg) (108.6MB)
    - **Windows**: [HyperclayLocal-Setup-1.25.0.exe](https://local.hyperclay.com/HyperclayLocal-Setup-1.25.0.exe) (89.9MB)
    - **Linux (x86_64)**: [HyperclayLocal-1.25.0.AppImage](https://local.hyperclay.com/HyperclayLocal-1.25.0.AppImage) (123.4MB)
-   - **Linux (ARM64)**: [HyperclayLocal-1.25.0-arm64.AppImage](https://local.hyperclay.com/HyperclayLocal-1.25.0-arm64.AppImage) (123.2MB)
+   - **Linux (ARM64)**: [HyperclayLocal-1.25.0-arm64.AppImage](https://local.hyperclay.com/HyperclayLocal-1.25.0-arm64.AppImage) (123.1MB)
 
 2. **Install** and run the app
 
