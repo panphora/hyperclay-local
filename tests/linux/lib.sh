@@ -36,6 +36,15 @@ capture_failure() {
       fi
       echo "--- launcher and its process group, before cleanup"
       ps -eo pid,ppid,pgid,stat,etime,args | awk -v pid="$pid" 'NR == 1 || $1 == pid || $3 == pid'
+      # What each process in the group is blocked on: its kernel wait channel and the files and
+      # sockets it holds. A launch that never reaches app ready shows here and nowhere else.
+      if [ -d /proc ]; then
+        echo "--- wait channels and open files, before cleanup"
+        for p in $(ps -eo pid,pgid | awk -v pid="$pid" '$2 == pid { print $1 }'); do
+          echo "pid $p wchan=$(cat "/proc/$p/wchan" 2>/dev/null || echo ?)"
+          ls -l "/proc/$p/fd" 2>/dev/null | awk 'NR > 1 { print "  " $NF }' | sort | uniq -c | sort -rn | head -15
+        done
+      fi
     else
       echo "launcher_status=not recorded"
     fi
@@ -82,7 +91,9 @@ launch() {
   # The AppImage runtime extracts into $TMPDIR/appimage_extracted_<hash> and deletes it on exit. stop() can
   # SIGKILL that delete halfway, and a shared /tmp would hand the next launch the half-deleted folder.
   mkdir -p "$home/tmp"
-  HOME="$home" XDG_CONFIG_HOME="$home/.config" TMPDIR="$home/tmp" setsid xvfb-run -a -s "-screen 0 1280x800x24" "$APPIMAGE" "$@" > "$LAB/app.log" 2>&1 &
+  # ELECTRON_ENABLE_LOGGING puts Chromium's own startup log in app.log, so a launch that stalls before
+  # app ready leaves a trail.
+  HOME="$home" XDG_CONFIG_HOME="$home/.config" TMPDIR="$home/tmp" ELECTRON_ENABLE_LOGGING=1 setsid xvfb-run -a -s "-screen 0 1280x800x24" "$APPIMAGE" "$@" > "$LAB/app.log" 2>&1 &
   echo $! > "$LAB/app.pid"
   echo $!
 }
