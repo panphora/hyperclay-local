@@ -1163,6 +1163,141 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     // Disk sync is handled by polling + /sync/download (stripped content).
     console.log(`[LiveSync] Ready for browser-to-browser sync (no file watcher broadcast)`);
 
+    // The second half of a save, shared by POST /save and POST /_/api/<file>:
+    // first-save backup, Tailwind link scoping, formatting, version backup,
+    // atomic write, etag record, saved-lane broadcast, sidecar, data-loss guard,
+    // Tailwind compile and sync provenance. The caller must hold
+    // withFileLock(filePath). Returns the bytes that reached disk.
+    async function commitDocument({ name, filePath, content, dataLossPrev, userDriven, saveId }) {
+      // ANCILLARY DISK CONVENTION: versions dir and backups use baseName without
+      // extension (matches platform's versions/{baseName}/ layout).
+      // Do NOT reuse `backupName` as a liveSync channel key — liveSync keys must
+      // carry the extension (Rule 1).
+      const backupName = name.replace(/\.(html|htmlclay)$/, '');
+
+      // Check if this is the first save (no versions exist yet)
+      const siteVersionsDir = path.join(baseDir, VERSIONS_DIR, backupName);
+      let isFirstSave = false;
+      try {
+        const versionFiles = await fs.readdir(siteVersionsDir);
+        isFirstSave = versionFiles.length === 0;
+      } catch (error) {
+        // Directory doesn't exist yet, so this is the first save
+        isFirstSave = true;
+      }
+
+      // If first save, backup the existing site content first
+      if (isFirstSave) {
+        try {
+          const existingContent = await fs.readFile(filePath, 'utf8');
+          await createBackup(baseDir, backupName, existingContent);
+          console.log(`Created initial backup of existing ${name}`);
+        } catch (error) {
+          // File doesn't exist yet, that's OK
+        }
+      }
+
+      content = scopeTailwindLink(name, content);
+
+      // Format HTML to match platform output (consistent checksums)
+      content = formatHtml(content);
+
+      // Create backup of the new content
+      await createBackup(baseDir, backupName, content);
+
+      // Write via temp + rename: a crash or a full disk can never leave the
+      // served file holding partial bytes.
+      await atomicWriteFile(filePath, content);
+
+      // Mark as browser save so file watcher doesn't send redundant notification.
+      // Key is full path with extension so it matches engine-watcher's wasBrowserSave check.
+      live.markBrowserSave(name);
+
+      // Recorded from the bytes actually written, so a later conflict can tell a
+      // second tab of this person's from a text editor. Set after the write, since
+      // before it this would claim authorship of a save that then failed.
+      // Keyed on the canonical filePath, the same key the write queue uses, so two
+      // spellings of one file (an in-tree symlink, or a case-insensitive volume) can
+      // never keep two separate records of who last wrote it.
+      //
+      // The mtime rides along with the stamp because the stamp alone cannot answer
+      // the question. A file can go B -> C -> B, and once it is back at B the digest
+      // matches this host's last write again, so an external editor's undo reads
+      // exactly like another of this person's tabs. The mtime moved for both of those
+      // writes and does not come back.
+      const wroteAt = await fs.stat(filePath, { bigint: true }).catch(() => null);
+      store.etags.set(filePath, {
+        etag: documentEtag(content),
+        mtimeNs: wroteAt ? wroteAt.mtimeNs : null,
+        // §6's receipt, bound here and nowhere else: this is the one moment this
+        // host knows both which request's body it stored and what those stored
+        // bytes stamp to. An id-less save records '' and so replaces any id
+        // remembered from an earlier one, which is what keeps a remembered id from
+        // outliving its own bytes when a later save happens to restore them.
+        saveId
+      });
+
+      // Morph view-mode tabs with the persisted on-disk HTML. Edit-mode tabs
+      // are untouched — they sync via /live-sync/save on the live lane.
+      live.broadcast(name, { html: content, sender: 'server-save' }, { lane: 'saved' });
+
+      // Refresh the per-site API data sidecar BEFORE the fallible Tailwind compile,
+      // so a Tailwind failure can't skip it and leave stale API data on disk
+      // (mirrors the platform ordering in node-content.js). Non-fatal: a sidecar
+      // error must never fail the save.
+      try {
+        await writeApiSidecar(baseDir, name, content);
+      } catch (e) {
+        console.error('writeApiSidecar failed (non-fatal):', e && e.message ? e.message : e);
+      }
+
+      // Data-clobber guard (non-blocking, non-fatal). A browser /save is always
+      // a UI save, split by the userDriven bit into ui-gestured / ui-background.
+      {
+        const dataLossProv = dataGuard.provenanceForLocalSave(userDriven);
+        dataGuard.runDataLossGuard({
+          baseDir, name, newHtml: content, prevContent: dataLossPrev, prov: dataLossProv, live,
+        }).catch(err => console.error('[data-guard] /save guard error:', err && err.message ? err.message : err));
+      }
+
+      // Generate Tailwind CSS if site uses it. `tailwindName` from
+      // getTailwindCssName includes any path prefix present in the URL
+      // (e.g. "blog/post"), so path.join naturally nests the CSS file. After
+      // the replaceTailwindLink above, the URL is always scoped to the site's
+      // folder, which mirrors the platform's
+      // public-assets/tailwindcss/{username}/{path}/{baseName}.css layout.
+      // Non-fatal, for the same reason as the sidecar above and the two remote
+      // writers: the file is already written, backed up and broadcast by this
+      // point, so a compiler error must not report the save as failed, and must
+      // not skip the snapshot cache below.
+      const tailwindName = getTailwindCssName(content);
+      if (tailwindName) {
+        try {
+          const css = await compileTailwind(content);
+          const cssPath = await resolveTailwindWrite(tailwindName);
+          await atomicWriteFile(cssPath, css);
+          console.log(`Generated Tailwind CSS: ${TAILWIND_DIR}/${tailwindName}.css`);
+        } catch (e) {
+          console.error('compileTailwind failed (non-fatal):', e && e.message ? e.message : e);
+        }
+      }
+
+      // Record the provenance bit for platform sync. The sync engine reads it
+      // when uploading, so the platform guard can split a UI save from a
+      // background-script save. The snapshot beside it comes from
+      // /live-sync/save, which is why this merges rather than replaces: the two
+      // lanes contribute different halves of the same entry.
+      {
+        const prev = store.snapshots.get(name);
+        store.snapshots.set(name, {
+          html: prev ? prev.html : null,
+          userDriven,
+          timestamp: Date.now()
+        });
+      }
+      return content;
+    }
+
     // Spec §3: /_/save takes the document as text, and this route has exactly one
     // body shape. Everything else about the save travels in a header: the
     // provenance bit is `Save-Trigger`, and an unstripped snapshot goes to
@@ -1271,12 +1406,6 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         // Ensure directory exists for subfolder files
         await fs.mkdir(path.dirname(filePath), { recursive: true });
 
-        // ANCILLARY DISK CONVENTION: versions dir and backups use baseName without
-        // extension (matches platform's versions/{baseName}/ layout).
-        // Do NOT reuse `backupName` as a liveSync channel key — liveSync keys must
-        // carry the extension (Rule 1).
-        const backupName = name.replace(/\.(html|htmlclay)$/, '');
-
         // Capture the pre-write body for the data-clobber guard (cold-start seed
         // + whole-file Revert). Read once, before the overwrite below.
         // Read as BYTES, not as decoded text, because §6 stamps the bytes on disk
@@ -1358,126 +1487,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           }
         }
 
-        // Check if this is the first save (no versions exist yet)
-        const siteVersionsDir = path.join(baseDir, VERSIONS_DIR, backupName);
-        let isFirstSave = false;
-        try {
-          const versionFiles = await fs.readdir(siteVersionsDir);
-          isFirstSave = versionFiles.length === 0;
-        } catch (error) {
-          // Directory doesn't exist yet, so this is the first save
-          isFirstSave = true;
-        }
-
-        // If first save, backup the existing site content first
-        if (isFirstSave) {
-          try {
-            const existingContent = await fs.readFile(filePath, 'utf8');
-            await createBackup(baseDir, backupName, existingContent);
-            console.log(`Created initial backup of existing ${name}`);
-          } catch (error) {
-            // File doesn't exist yet, that's OK
-          }
-        }
-
-        content = scopeTailwindLink(name, content);
-
-        // Format HTML to match platform output (consistent checksums)
-        content = formatHtml(content);
-
-        // Create backup of the new content
-        await createBackup(baseDir, backupName, content);
-
-        // Write via temp + rename: a crash or a full disk can never leave the
-        // served file holding partial bytes.
-        await atomicWriteFile(filePath, content);
-
-        // Mark as browser save so file watcher doesn't send redundant notification.
-        // Key is full path with extension so it matches engine-watcher's wasBrowserSave check.
-        live.markBrowserSave(name);
-
-        // Recorded from the bytes actually written, so a later conflict can tell a
-        // second tab of this person's from a text editor. Set after the write, since
-        // before it this would claim authorship of a save that then failed.
-        // Keyed on the canonical filePath, the same key the write queue uses, so two
-        // spellings of one file (an in-tree symlink, or a case-insensitive volume) can
-        // never keep two separate records of who last wrote it.
-        //
-        // The mtime rides along with the stamp because the stamp alone cannot answer
-        // the question. A file can go B -> C -> B, and once it is back at B the digest
-        // matches this host's last write again, so an external editor's undo reads
-        // exactly like another of this person's tabs. The mtime moved for both of those
-        // writes and does not come back.
-        const wroteAt = await fs.stat(filePath, { bigint: true }).catch(() => null);
-        store.etags.set(filePath, {
-          etag: documentEtag(content),
-          mtimeNs: wroteAt ? wroteAt.mtimeNs : null,
-          // §6's receipt, bound here and nowhere else: this is the one moment this
-          // host knows both which request's body it stored and what those stored
-          // bytes stamp to. An id-less save records '' and so replaces any id
-          // remembered from an earlier one, which is what keeps a remembered id from
-          // outliving its own bytes when a later save happens to restore them.
-          saveId
-        });
-
-        // Morph view-mode tabs with the persisted on-disk HTML. Edit-mode tabs
-        // are untouched — they sync via /live-sync/save on the live lane.
-        live.broadcast(name, { html: content, sender: 'server-save' }, { lane: 'saved' });
-
-        // Refresh the per-site API data sidecar BEFORE the fallible Tailwind compile,
-        // so a Tailwind failure can't skip it and leave stale API data on disk
-        // (mirrors the platform ordering in node-content.js). Non-fatal: a sidecar
-        // error must never fail the save.
-        try {
-          await writeApiSidecar(baseDir, name, content);
-        } catch (e) {
-          console.error('writeApiSidecar failed (non-fatal):', e && e.message ? e.message : e);
-        }
-
-        // Data-clobber guard (non-blocking, non-fatal). A browser /save is always
-        // a UI save, split by the userDriven bit into ui-gestured / ui-background.
-        {
-          const dataLossProv = dataGuard.provenanceForLocalSave(userDriven);
-          dataGuard.runDataLossGuard({
-            baseDir, name, newHtml: content, prevContent: dataLossPrev, prov: dataLossProv, live,
-          }).catch(err => console.error('[data-guard] /save guard error:', err && err.message ? err.message : err));
-        }
-
-        // Generate Tailwind CSS if site uses it. `tailwindName` from
-        // getTailwindCssName includes any path prefix present in the URL
-        // (e.g. "blog/post"), so path.join naturally nests the CSS file. After
-        // the replaceTailwindLink above, the URL is always scoped to the site's
-        // folder, which mirrors the platform's
-        // public-assets/tailwindcss/{username}/{path}/{baseName}.css layout.
-        // Non-fatal, for the same reason as the sidecar above and the two remote
-        // writers: the file is already written, backed up and broadcast by this
-        // point, so a compiler error must not report the save as failed, and must
-        // not skip the snapshot cache below.
-        const tailwindName = getTailwindCssName(content);
-        if (tailwindName) {
-          try {
-            const css = await compileTailwind(content);
-            const cssPath = await resolveTailwindWrite(tailwindName);
-            await atomicWriteFile(cssPath, css);
-            console.log(`Generated Tailwind CSS: ${TAILWIND_DIR}/${tailwindName}.css`);
-          } catch (e) {
-            console.error('compileTailwind failed (non-fatal):', e && e.message ? e.message : e);
-          }
-        }
-
-        // Record the provenance bit for platform sync. The sync engine reads it
-        // when uploading, so the platform guard can split a UI save from a
-        // background-script save. The snapshot beside it comes from
-        // /live-sync/save, which is why this merges rather than replaces: the two
-        // lanes contribute different halves of the same entry.
-        {
-          const prev = store.snapshots.get(name);
-          store.snapshots.set(name, {
-            html: prev ? prev.html : null,
-            userDriven,
-            timestamp: Date.now()
-          });
-        }
+        content = await commitDocument({ name, filePath, content, dataLossPrev, userDriven, saveId });
         });
 
         if (conflict && conflict.status === 500) {
