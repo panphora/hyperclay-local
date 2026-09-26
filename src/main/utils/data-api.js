@@ -67,7 +67,8 @@ async function serveSiteApiInLock(baseDir, name, sourcePath) {
     };
   }
 
-  const etag = documentEtag(await fs.readFile(sourcePath));
+  const stored = await fs.readFile(sourcePath);
+  const etag = documentEtag(stored);
 
   const fresh = await readFreshSidecar(baseDir, name, sourceStat.mtimeMs);
   if (fresh !== null) {
@@ -75,7 +76,7 @@ async function serveSiteApiInLock(baseDir, name, sourcePath) {
     return { status: 200, headers: { ETag: etag }, raw: fresh };
   }
 
-  const html = await fs.readFile(sourcePath, 'utf8');
+  const html = stored.toString('utf8');
   let data;
   try {
     data = await extractViaTag(html, 'api');
@@ -171,6 +172,8 @@ function mapWriteError(error) {
       return { error: 'Shape mismatch', message: error.message, details: error.mismatches };
     case 'EmptyListInsert':
       return { error: 'Cannot grow list', message: error.message, details: error.path };
+    case 'RuleTargetReadOnly':
+      return { error: 'Read-only rule', message: error.message };
     default:
       return mapApiTagError(error);
   }
@@ -198,6 +201,12 @@ async function applySiteDataLocal(baseDir, name, data, { sourcePath, ifMatch, co
       };
     }
     const previous = stored.toString('utf8');
+    if (!Buffer.from(previous, 'utf8').equals(stored)) {
+      return {
+        status: 400,
+        json: { error: 'Unsupported encoding', message: `${name} is not UTF-8, so it cannot be written through the data API without changing bytes outside the edit.` }
+      };
+    }
     let result;
     try {
       result = await writeViaTag(previous, data, 'api');

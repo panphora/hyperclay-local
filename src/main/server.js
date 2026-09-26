@@ -2044,44 +2044,59 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     // POST `/_/api/<name>.html` writes JSON into the document through its own api
     // rules tag, content only (the engine refuses script, handlers and HTML). Same
     // marker gate as the GET, the same loopback-origin gate as every mutating
-    // request, and the same commit path as /save.
+    // request, and the same commit path as /save. Bare `/_/api` writes index.html,
+    // as the bare GET reads it.
+    const apiWriteBody = (req, res, next) => express.text({ type: () => true, limit: API_WRITE_MAX_BYTES })(req, res, (err) => {
+      if (!err) return next();
+      if (err.type === 'entity.too.large') {
+        return res.status(413).json({ error: 'Payload Too Large', message: 'The JSON body is limited to 1 MB.' });
+      }
+      return res.status(400).json({ error: 'Invalid JSON body', message: 'The request body could not be read.' });
+    });
+
+    async function handleApiWrite(req, res, name) {
+      if (!isJsonContentType(req.headers['content-type'])) {
+        return res.status(415).json({ error: 'Unsupported Media Type', message: 'POST /_/api takes Content-Type: application/json.' });
+      }
+      let data;
+      try {
+        data = JSON.parse(req.body);
+      } catch {
+        return res.status(400).json({ error: 'Invalid JSON body', message: 'The request body is not valid JSON.' });
+      }
+      let sourcePath;
+      try {
+        sourcePath = await resolveWriteTarget(paths, name);
+      } catch (error) {
+        return res.status(error.status || 400).json({ error: error.message });
+      }
+      try {
+        const result = await applySiteDataLocal(baseDir, name, data, {
+          sourcePath,
+          ifMatch: req.headers['if-match'],
+          commit: (html, previous) => commitDocument({
+            name, filePath: sourcePath, content: html, dataLossPrev: previous, userDriven: false, saveId: ''
+          })
+        });
+        if (result.status === 200) console.log(`Wrote data into ${name}`);
+        return sendApiResult(res, result);
+      } catch (error) {
+        console.error('Site API write error:', error);
+        return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });
+      }
+    }
+
     app.post(
       /^\/api\/(.+)\.(html|htmlclay)$/,
       (req, res, next) => (req.originalUrl.startsWith('/_/api/') ? next() : next('route')),
-      express.text({ type: () => true, limit: API_WRITE_MAX_BYTES }),
-      async (req, res) => {
-        if (!isJsonContentType(req.headers['content-type'])) {
-          return res.status(415).json({ error: 'Unsupported Media Type', message: 'POST /_/api takes Content-Type: application/json.' });
-        }
-        let data;
-        try {
-          data = JSON.parse(req.body);
-        } catch {
-          return res.status(400).json({ error: 'Invalid JSON body', message: 'The request body is not valid JSON.' });
-        }
-        let name;
-        let sourcePath;
-        try {
-          name = `${req.params[0]}.${req.params[1]}`;
-          sourcePath = await resolveWriteTarget(paths, name);
-        } catch (error) {
-          return res.status(error.status || 400).json({ error: error.message });
-        }
-        try {
-          const result = await applySiteDataLocal(baseDir, name, data, {
-            sourcePath,
-            ifMatch: req.headers['if-match'],
-            commit: (html, previous) => commitDocument({
-              name, filePath: sourcePath, content: html, dataLossPrev: previous, userDriven: false, saveId: ''
-            })
-          });
-          if (result.status === 200) console.log(`Wrote data into ${name}`);
-          return sendApiResult(res, result);
-        } catch (error) {
-          console.error('Site API write error:', error);
-          return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });
-        }
-      }
+      apiWriteBody,
+      (req, res) => handleApiWrite(req, res, `${req.params[0]}.${req.params[1]}`)
+    );
+    app.post(
+      /^\/api\/?$/,
+      (req, res, next) => (req.originalUrl.startsWith('/_/api') ? next() : next('route')),
+      apiWriteBody,
+      (req, res) => handleApiWrite(req, res, 'index.html')
     );
 
     // `/_/api` or `/_/api/` with no file → index.html's data (parity nicety).
