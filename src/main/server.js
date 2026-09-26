@@ -37,6 +37,7 @@ const { serveSiteApiLocal, extractSiteDataLocal, applySiteDataLocal } = require(
 const { writeApiSidecar } = require('./utils/api-sidecar');
 const dataGuard = require('./data-loss-guard');
 const { documentEtag, ifMatchSatisfied } = require('./spec-wire');
+const { MAX_EXTERNAL_HTML } = require('./root-observer');
 const { buildEnvelope } = require('../sync-engine/control-lane-core.cjs');
 
 // Initialize Eta
@@ -1169,7 +1170,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     // atomic write, etag record, saved-lane broadcast, sidecar, data-loss guard,
     // Tailwind compile and sync provenance. The caller must hold
     // withFileLock(filePath). Returns the bytes that reached disk.
-    async function commitDocument({ name, filePath, content, dataLossPrev, userDriven, saveId }) {
+    async function commitDocument({ name, filePath, content, dataLossPrev, userDriven, saveId, origin = 'save' }) {
       // ANCILLARY DISK CONVENTION: versions dir and backups use baseName without
       // extension (matches platform's versions/{baseName}/ layout).
       // Do NOT reuse `backupName` as a liveSync channel key — liveSync keys must
@@ -1230,6 +1231,10 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       store.etags.set(filePath, {
         etag: documentEtag(content),
         mtimeNs: wroteAt ? wroteAt.mtimeNs : null,
+        // Who wrote these bytes: 'save' for a tab, 'api' for a write with no tab
+        // behind it. /save reads it to decide whether a conflicting stamp is
+        // honestly another tab's, because a data API write is nobody's tab.
+        writer: origin,
         // §6's receipt, bound here and nowhere else: this is the one moment this
         // host knows both which request's body it stored and what those stored
         // bytes stamp to. An id-less save records '' and so replaces any id
@@ -1240,7 +1245,26 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
 
       // Morph view-mode tabs with the persisted on-disk HTML. Edit-mode tabs
       // are untouched — they sync via /live-sync/save on the live lane.
-      live.broadcast(name, { html: content, sender: 'server-save' }, { lane: 'saved' });
+      //
+      // A data API write has no tab behind it to relay its snapshot, so it has to
+      // reach edit-mode tabs the way an external disk change does: the same
+      // `external-change` notify the observer's _notifyExternal sends, so ClayJS
+      // runs it through dirty-region protection before morphing. The saved-lane
+      // broadcast stays, for the viewers. Same payload as the observer, different
+      // sender — the writer here is the data API, not the file system.
+      if (origin === 'api') {
+        live.notify(name, {
+          msgType: 'warning',
+          msg: `${path.basename(name)} was updated through the data API`,
+          action: 'reload',
+          data: Buffer.byteLength(content, 'utf8') <= MAX_EXTERNAL_HTML
+            ? { kind: 'external-change', html: content, sender: 'data-api', etag: documentEtag(content) }
+            : { kind: 'external-change', sender: 'data-api' },
+        });
+        live.broadcast(name, { html: content, sender: 'data-api' }, { lane: 'saved' });
+      } else {
+        live.broadcast(name, { html: content, sender: 'server-save' }, { lane: 'saved' });
+      }
 
       // Refresh the per-site API data sidecar BEFORE the fallible Tailwind compile,
       // so a Tailwind failure can't skip it and leave stale API data on disk
@@ -1254,8 +1278,10 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
 
       // Data-clobber guard (non-blocking, non-fatal). A browser /save is always
       // a UI save, split by the userDriven bit into ui-gestured / ui-background.
+      // A data API write has no tab behind it at all, so it is judged as an
+      // external edit, exactly like a write the watcher saw on disk.
       {
-        const dataLossProv = dataGuard.provenanceForLocalSave(userDriven);
+        const dataLossProv = origin === 'api' ? 'external' : dataGuard.provenanceForLocalSave(userDriven);
         dataGuard.runDataLossGuard({
           baseDir, name, newHtml: content, prevContent: dataLossPrev, prov: dataLossProv, live,
         }).catch(err => console.error('[data-guard] /save guard error:', err && err.message ? err.message : err));
@@ -1465,7 +1491,9 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
             // §6: name a writer only when this host can honestly say. Both halves have
             // to agree — the bytes on disk are the ones this process last wrote, AND
             // nothing has rewritten the file since — or the field is omitted, because
-            // the wrong answer available here is the reassuring one.
+            // the wrong answer available here is the reassuring one. A stamp this host
+            // recorded for a data API write belongs to no tab of this person's, so it
+            // never answers `another-tab`: the caller is being told about the API.
             const ours = store.etags.get(filePath);
             const now = await fs.stat(filePath, { bigint: true }).catch(() => null);
             const untouchedSinceOurWrite =
@@ -1475,7 +1503,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
             conflict = {
               status: 412,
               etag: currentEtag,
-              changedBy: ours && ours.etag === currentEtag && untouchedSinceOurWrite
+              changedBy: ours && ours.writer !== 'api' && ours.etag === currentEtag && untouchedSinceOurWrite
                 ? 'another-tab'
                 : null,
               // §6's late-duplicate rule. A client that recognises its OWN id here is
@@ -2075,7 +2103,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           sourcePath,
           ifMatch: req.headers['if-match'],
           commit: (html, previous) => commitDocument({
-            name, filePath: sourcePath, content: html, dataLossPrev: previous, userDriven: false, saveId: ''
+            name, filePath: sourcePath, content: html, dataLossPrev: previous, userDriven: false, saveId: '', origin: 'api'
           })
         });
         if (result.status === 200) console.log(`Wrote data into ${name}`);

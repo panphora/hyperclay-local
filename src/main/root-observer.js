@@ -141,4 +141,4 @@ class RootObserver extends EventEmitter {
   }
 }
 
-module.exports = { RootObserver, EMPTY_QUIET_MS, IGNORED };
+module.exports = { RootObserver, EMPTY_QUIET_MS, IGNORED, MAX_EXTERNAL_HTML };
