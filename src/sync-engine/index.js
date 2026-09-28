@@ -183,11 +183,18 @@ class SyncEngine extends EventEmitter {
     //   snapshots,   // { take(rel) } for this root, from server.js getAndClearSnapshot(rel, rootId)
     //   observer,    // RootObserver for this root (5.9)
     //   logger,      // a SyncLogger instance for this session
+    //   rootId,      // settings root id, for the folder's marker (root-marker.js)
+    //   rootMarker,  // identity.json's rootMarker: the folder must carry the marker
     // }
     this.sessionId = opts.sessionId || null;
     this.accountId = opts.accountId ?? null;
     this.syncBase = opts.syncBase || '/_/sync';
     this.protocol = opts.protocol || 1;
+    // The settings root this session syncs, and whether its folder carries the session's
+    // marker yet (root-marker.js). Both come from the manager; a bind or an import sets the
+    // second once it has written the marker.
+    this.rootId = opts.rootId ?? null;
+    this.rootMarkerRequired = opts.rootMarker === true;
     // C3.7: a team session's first bind owns its first pass (progress, disk
     // check, marker, identity), so init defers the passes and the stream to it.
     this.firstBind = opts.firstBind === true;
@@ -284,6 +291,9 @@ class SyncEngine extends EventEmitter {
         // Perform initial sync for uploads
         console.log(`[SYNC] Starting initial upload sync...`);
         await this.performInitialUploadSync();
+        this.movedRemotely = new Set();
+        this.pathUnresolved = new Set();
+        this.restoredFolders = [];
         console.log(`[SYNC] Initial upload sync completed`);
 
         console.log(`[SYNC] Starting unified watcher...`);

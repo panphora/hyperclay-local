@@ -19,15 +19,16 @@ const {
   getLocalFolders,
   readFile,
   fileExists,
-  ensureDirectory,
   moveFile,
   getLocalUploads,
   readFileBuffer,
-  calculateBufferChecksum
+  calculateBufferChecksum,
+  getFileStats
 } = require('./file-operations');
 const { calculateChecksum } = require('./utils');
 const { ERROR_PRIORITY } = require('./constants');
-const { decide, A } = require('./reconcile/decide');
+const { decide, decideFolder, A } = require('./reconcile/decide');
+const { ancestorPaths } = require('./path-helpers');
 const { executeDecision } = require('./reconcile/execute');
 const { classifyError: classifySyncError } = require('./reconcile/classify-error');
 const nodeMap = require('./node-map');
@@ -38,7 +39,8 @@ const SITE_PATTERN = /\.(html|htmlclay)$/i;
 const SESSION_KINDS = new Set(['pause-all', 'pause', 'rediscover', 'offline', 'backoff']);
 
 // The order one pass executes in (C3 §5.5): folders created, content, local
-// trashes, remote deletes, folders deleted.
+// trashes, remote deletes, folders deleted. The folder pass runs its own plan
+// first (reconcileAll), then the site and upload passes run theirs.
 const CONTENT_RANK = 2;
 const RANK_BY_ACTION = Object.freeze({
   [A.UPLOAD]: CONTENT_RANK,
@@ -118,14 +120,17 @@ module.exports = {
   async decideNode({ nodeId, rel, entry, remote, localPresent, complete, type }) {
     const nodeType = type || (remote && remote.type) || typeFor(entry, rel);
     const baseline = nodeId === null || nodeId === undefined ? null : this.repo.getBaseline(nodeId);
-    const decision = decide({
+    const key = nodeId === null || nodeId === undefined ? null : String(nodeId);
+    const decision = key && this.pathUnresolved && this.pathUnresolved.has(key) ? { action: A.DEFER } : decide({
       baseline,
       local: localPresent ? await this.localView(rel) : null,
       remote: remote ? { etag: remote.etag } : null,
       complete: complete === undefined ? this.completeForNode(remote, baseline) : complete,
       // A bootstrap pass (a legacy import, a lost map) must not delete on the
-      // server: a node the local disk lost is downloaded instead.
-      bootstrap: this.bootstrapPass === true
+      // server: a node the local disk lost is downloaded instead. Nor may a pass
+      // delete anything under a folder it is restoring.
+      bootstrap: this.bootstrapPass === true || this.isUnderRestoredFolder(rel) ||
+        (key !== null && this.movedRemotely && this.movedRemotely.has(key))
     });
 
     return {
@@ -185,7 +190,7 @@ module.exports = {
 
       // A stale view of that node: re-list once for the whole pass (coalesced)
       // and decide it again. A second refusal for the same node is not retried.
-      if (kind === 'refresh-node' && !isRetry && !pass.refreshed.has(String(item.nodeId))) {
+      if (kind === 'refresh-node' && item.type !== 'folder' && !isRetry && !pass.refreshed.has(String(item.nodeId))) {
         pass.refreshed.add(String(item.nodeId));
         const inventory = await this.refreshInventory(pass);
         const again = await this.decideAgain(item, inventory);
@@ -327,26 +332,7 @@ module.exports = {
         for (const [nid, entry] of [...this.repo]) {
           if (listed.has(nid) || !entry.path) continue;
 
-          const type = typeFor(entry, entry.path);
-          if (type === 'upload') continue; // the upload pass owns this node
-
-          if (type === 'folder') {
-            // A folder absent from a complete inventory is forgotten, never
-            // trashed: its local directory stays until it is empty (C3 §9).
-            plan.push({
-              nodeId: nid,
-              type,
-              path: entry.path,
-              decision: decide({
-                baseline: null,
-                local: null,
-                remote: null,
-                complete: this.serverNodesComplete === true
-              }),
-              context: { path: entry.path, type }
-            });
-            continue;
-          }
+          if (typeFor(entry, entry.path) !== 'site') continue; // the upload pass owns uploads, the folder pass owns folders
 
           plan.push(await this.decideNode({
             nodeId: nid,
@@ -428,10 +414,14 @@ module.exports = {
     if (!serverFile.nodeId) return;
 
     const nid = String(serverFile.nodeId);
+    // Its folder's move failed this pass: the file stays where it is until the folder moves.
+    if (this.pathUnresolved && this.pathUnresolved.has(nid)) return;
     const entry = map.get(nid);
     if (!entry || entry.path === relativePath) return;
 
     const knownPath = entry.path;
+    // A teammate moved a node this disk no longer has at its old path: restore, never delete.
+    if (!localFiles.has(knownPath)) (this.movedRemotely ||= new Set()).add(nid);
     if (localFiles.has(knownPath)) {
       const oldFullPath = path.join(this.syncFolder, knownPath);
       const newFullPath = path.join(this.syncFolder, relativePath);
@@ -460,6 +450,7 @@ module.exports = {
         }
       } catch (error) {
         console.error(`[SYNC] Failed to move ${knownPath} → ${relativePath}:`, error.message);
+        (this.movedRemotely ||= new Set()).add(nid);
       }
     }
 
@@ -507,8 +498,8 @@ module.exports = {
       const serverPath = relPathOf(serverNode);
 
       // Only run local change detection for nodeIds where the server hasn't changed the path
-      // (server wins for move/rename conflicts)
-      if (serverPath !== entry.path) continue;
+      // (server wins for move/rename conflicts); correlation has already repointed those.
+      if (serverPath !== entry.path || (this.movedRemotely && this.movedRemotely.has(nid))) continue;
       if (localFiles.has(entry.path)) continue; // file still at expected path
 
       // File is GONE from expected path but still exists on server — find where it went
@@ -644,7 +635,7 @@ module.exports = {
         const serverNode = serverNodeById.get(nid);
         const serverPath = relPathOf(serverNode);
 
-        if (serverPath !== entry.path) continue; // server changed path — server wins
+        if (serverPath !== entry.path || (this.movedRemotely && this.movedRemotely.has(nid))) continue; // server changed path — server wins
         if (localUploads.has(entry.path)) continue; // still at expected path
 
         const expectedBasename = path.basename(entry.path);
@@ -775,6 +766,14 @@ module.exports = {
 
       const knownNodeIdsAtStart = new Set([...this.repo].map(([nid]) => nid));
 
+      // The same correlation the site pass runs: an upload the server moved or
+      // renamed is moved on disk to the server's path before it is decided.
+      await this.repo.apply(async (map) => {
+        for (const serverUpload of serverUploads) {
+          await this.correlateServerFile(serverUpload, localUploads, map);
+        }
+      });
+
       const plan = [];
       const handled = this.lastSyncedAt
         ? await this.detectLocalUploadChanges(allServerNodes, localUploads, knownNodeIdsAtStart, plan)
@@ -844,191 +843,292 @@ module.exports = {
     }
   },
 
+  /**
+   * The folder pass: every tracked folder and every listed folder is decided
+   * from `{ tracked, local, remote, complete }` (decideFolder) and executed
+   * through the one executor in the fixed order. The disk is scanned before
+   * anything is written to it, so a folder the user deleted while offline reads
+   * as absent instead of being recreated first. A path the watcher is still
+   * deciding (a pending unlink in its grace period) is the watcher's: it is
+   * neither recreated nor deleted here.
+   */
   async performInitialFolderSync(inventory = null) {
     console.log('[SYNC] Starting initial folder sync...');
+    this.restoredFolders = [];
+    this.movedRemotely = new Set();
+    this.pathUnresolved = new Set();
+    this.assertRootPresent();
 
-    // A session reconcile hands its own inventory over (C3 §5.6): the list the
-    // runner already proved complete is the one this pass decides from.
     const allServerNodes = inventory || await this.fetchAndCacheServerNodes(0);
-    const serverFolders = allServerNodes.filter(n => n.type === 'folder');
-    const serverNodeIds = new Set(allServerNodes.map(n => String(n.id)));
-
-    // Snapshot known nodeIds before creating any server folders locally, so the
-    // detect step never treats a folder created this pass as a local delete.
-    const knownNodeIdsAtStart = new Set([...this.repo].map(([nid]) => nid));
-
-    // Step 1: Ensure all server folders exist locally and are tracked in the repo.
-    // Track folders whose local create FAILED. The delete branch in detect is only
-    // reachable when a server folder is still missing on disk after this loop, which
-    // means ensureDirectory threw — never a confirmed user delete. Without this guard
-    // a transient mkdir failure would cascade-delete the live server folder and its
-    // entire subtree.
-    let added = 0;
-    const failedFolderCreates = new Set();
-    await this.repo.apply(async (map) => {
-      for (const folder of serverFolders) {
-        const fullPath = folder.path ? `${folder.path}/${folder.name}` : folder.name;
-        const localPath = path.join(this.syncFolder, fullPath);
-
-        try {
-          await ensureDirectory(localPath);
-        } catch (error) {
-          console.warn(`[SYNC] Could not create local folder ${fullPath}:`, error.message);
-          failedFolderCreates.add(fullPath);
-        }
-
-        const inode = await nodeMap.getInode(localPath);
-        map.set(String(folder.id), {
-          type: 'folder',
-          path: fullPath,
-          parentId: folder.parentId,
-          inode
-        });
-        added++;
-      }
-    });
-    console.log(`[SYNC] Synced ${added} server folder(s) to local`);
-
-    // Step 2: Detect structural changes (rename/move/delete) that happened while offline.
-    // Only runs when we have a baseline to compare against (not first-ever sync).
-    if (this.lastSyncedAt) {
-      const localFolders = await getLocalFolders(this.syncFolder, this.logger);
-      await this.detectLocalFolderChanges(allServerNodes, serverNodeIds, localFolders, knownNodeIdsAtStart, failedFolderCreates);
+    const complete = this.serverNodesComplete === true || (Array.isArray(allServerNodes) && allServerNodes.complete === true);
+    const listed = new Map();
+    for (const node of allServerNodes) {
+      if (node.type === 'folder') listed.set(String(node.id), node);
     }
 
+    const localFolders = await getLocalFolders(this.syncFolder, this.logger);
+    const firstPass = !this.lastSyncedAt;
+    const bootstrap = this.bootstrapPass === true;
+    const plan = [];
+    const deleting = [];
+    const restoring = [];
+    const relocated = [];
+
+    // Parents first, so a cascade delete covers its subtree and a child under a
+    // folder already planned for delete is not sent on its own.
+    const tracked = [...this.repo]
+      .filter(([, entry]) => entry.type === 'folder' && entry.path)
+      .sort(([, a], [, b]) => a.path.length - b.path.length);
+
+    const localOnly = new Set();
+    for (const [rel] of localFolders) {
+      if (!this.repo.getByPath(rel)) localOnly.add(rel);
+    }
+
+    await this.repo.apply(async (map) => {
+      for (const [nid, snapshot] of tracked) {
+        // A folder under one relocated this pass already moved with it (or waits for the next pass).
+        if (relocated.some((parent) => snapshot.path.startsWith(parent + '/'))) continue;
+        // A parent the server moved was relocated above: read the path it has now.
+        const entry = map.get(nid) || snapshot;
+        if (this.hasPendingUnlink(entry.path)) continue;
+        const node = listed.get(nid);
+
+        if (!node) {
+          plan.push(this.folderItem(nid, entry.path,
+            decideFolder({ tracked: true, local: localFolders.has(entry.path), remote: false, complete }),
+            { parentId: entry.parentId }));
+          continue;
+        }
+
+        // Moved on the server: the directory moves with everything in it and every
+        // descendant is repointed, the way a live frame applies it (applyRemotePath).
+        // A directory this disk no longer has is restored at the server's path with its subtree.
+        const remotePath = relPathOf(node);
+        if (remotePath !== entry.path) {
+          const missing = (await this.localDirState(entry.path)) === 'absent' && (await this.localDirState(remotePath)) === 'absent';
+          try {
+            await this.applyRemotePath(nid, entry, this.remoteViewOf(node), true);
+          } catch (error) {
+            console.error(`[SYNC] Failed to follow the server's folder move ${entry.path} → ${remotePath}:`, error.message);
+            for (const { nodeId: descId } of this.repo.walkDescendants(entry.path)) this.pathUnresolved.add(String(descId));
+            relocated.push(entry.path);
+            continue;
+          }
+          if (missing) {
+            restoring.push(remotePath);
+            plan.push(this.folderItem(nid, remotePath, { action: A.DOWNLOAD }, { parentId: node.parentId }));
+          }
+          continue;
+        }
+
+        if (localFolders.has(entry.path)) {
+          const inode = await nodeMap.getInode(path.join(this.syncFolder, entry.path));
+          map.set(nid, { ...entry, parentId: node.parentId, inode });
+          continue;
+        }
+
+        // Missing from the scan: only an ENOENT proves the directory is gone.
+        if ((await this.localDirState(entry.path)) !== 'absent') continue;
+        if (await this.relocateFolderByInode(nid, entry, localOnly, map)) {
+          relocated.push(entry.path);
+          continue;
+        }
+        if (deleting.some((parent) => entry.path.startsWith(parent + '/'))) continue;
+
+        // A folder under one being restored comes back with it: when in doubt, keep the data.
+        const underRestore = restoring.some((parent) => entry.path.startsWith(parent + '/'));
+        const decision = decideFolder({
+          tracked: true,
+          local: false,
+          remote: true,
+          complete,
+          bootstrap,
+          firstPass,
+          remoteChanged: underRestore || this.folderSubtreeChangedRemotely(entry.path, allServerNodes)
+        });
+        if (decision.action === A.DELETE_REMOTE) deleting.push(entry.path);
+        if (decision.action === A.DOWNLOAD) restoring.push(entry.path);
+        plan.push(this.folderItem(nid, entry.path, decision, { parentId: node.parentId, structureVersion: node.structureVersion }));
+      }
+
+      // Listed folders the baseline does not know: created locally and tracked.
+      for (const [nid, node] of listed) {
+        if (map.has(nid)) continue;
+        const rel = relPathOf(node);
+        // Under a folder renamed on the server this pass: the inventory still names the old path.
+        if (relocated.some((parent) => rel.startsWith(parent + '/'))) continue;
+        if (this.hasPendingUnlink(rel)) continue;
+        plan.push(this.folderItem(nid, rel,
+          decideFolder({ tracked: false, local: localFolders.has(rel), remote: true, complete }),
+          { parentId: node.parentId }));
+      }
+    });
+
+    this.restoredFolders = restoring;
+    await this.runPlan(plan);
     console.log('[SYNC] Initial folder sync complete');
   },
 
+  folderItem(nodeId, rel, decision, { parentId, structureVersion } = {}) {
+    return {
+      nodeId,
+      type: 'folder',
+      path: rel,
+      decision,
+      context: { path: rel, type: 'folder', parentId, structureVersion }
+    };
+  },
+
+  /** The watcher is still deciding this path (or a folder above it): its delete is the watcher's to send. */
+  hasPendingUnlink(rel) {
+    if (!this.pendingUnlinks || this.pendingUnlinks.size === 0) return false;
+    if (this.pendingUnlinks.has(rel)) return true;
+    return ancestorPaths(rel).some((ancestor) => this.pendingUnlinks.has(ancestor));
+  },
+
+  /** A path under a folder this reconcile restores: its files come back instead of being deleted. */
+  isUnderRestoredFolder(rel) {
+    return (this.restoredFolders || []).some((folder) => rel.startsWith(folder + '/'));
+  },
+
   /**
-   * Detect local folder structural changes (rename/move/delete) that happened while offline.
+   * 'present', 'absent' (ENOENT) or 'unknown'. A folder missing from the scan
+   * because a parent could not be read is never deleted on that evidence.
    */
-  async detectLocalFolderChanges(allServerNodes, serverNodeIds, localFolders, knownNodeIdsAtStart, failedFolderCreates) {
-    const serverNodeById = new Map(allServerNodes.map(n => [String(n.id), n]));
-
-    const trackedFolderPaths = new Map(); // relativePath → nid
-    for (const [nid, entry] of this.repo) {
-      if (entry.type === 'folder') trackedFolderPaths.set(entry.path, nid);
+  async localDirState(rel) {
+    try {
+      const stats = await getFileStats(path.join(this.syncFolder, rel));
+      if (typeof stats.isDirectory === 'function' && !stats.isDirectory()) return 'absent';
+      return 'present';
+    } catch (error) {
+      return error && error.code === 'ENOENT' ? 'absent' : 'unknown';
     }
+  },
 
-    const localFolderOnlySet = new Set();
-    for (const [relPath] of localFolders) {
-      if (!trackedFolderPaths.has(relPath)) localFolderOnlySet.add(relPath);
+  /**
+   * Did anything under this folder change on the server since the baseline?
+   * A listed descendant the map does not know, one listed at a path other than
+   * its baseline path, or a file whose etag differs from its baseline (or has
+   * none) all count. The answer turns a local folder delete into a restore, so
+   * a teammate's work is never cascaded away.
+   */
+  folderSubtreeChangedRemotely(folderPath, nodes) {
+    const prefix = folderPath + '/';
+    for (const node of nodes) {
+      const rel = relPathOf(node);
+      if (!rel.startsWith(prefix)) continue;
+      const entry = this.repo.get(node.id);
+      if (!entry || entry.path !== rel) return true;
+      if (node.type === 'folder') continue;
+      const baseline = this.repo.getBaseline(node.id);
+      const etag = node.etag ?? node.checksum ?? null;
+      if (!baseline || !baseline.remoteEtag || baseline.remoteEtag !== etag) return true;
     }
+    return false;
+  },
 
-    const serverFolderIds = new Set(
-      allServerNodes.filter(n => n.type === 'folder').map(n => String(n.id))
-    );
-
-    await this.repo.apply(async (map) => {
-      for (const [nid, entry] of [...map]) {
-        if (!serverFolderIds.has(nid)) continue; // not a folder node (or not on server)
-        if (knownNodeIdsAtStart && !knownNodeIdsAtStart.has(nid)) continue; // created this pass — not a local-delete candidate
-
-        const serverNode = serverNodeById.get(nid);
-        const serverPath = serverNode
-          ? (serverNode.path ? `${serverNode.path}/${serverNode.name}` : serverNode.name)
-          : entry.path;
-
-        if (serverPath !== entry.path) continue; // server moved it — server wins
-        if (localFolders.has(entry.path)) continue; // folder still at expected path
-        if (failedFolderCreates && failedFolderCreates.has(entry.path)) continue; // local create failed this pass — never delete the live server folder over a local mkdir failure
-
-        // Folder is gone from its expected local path but still exists on server.
-        // Find where it went using inode identity.
-        let handled = false;
-
-        for (const localFolder of localFolderOnlySet) {
-          const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFolder));
-          if (!localInode || !entry.inode || localInode !== entry.inode) continue;
-
-          // Inode match — same folder, moved/renamed locally
-          const oldBasename = path.basename(entry.path);
-          const newBasename = path.basename(localFolder);
-          const oldDirname = path.dirname(entry.path);
-          const newDirname = path.dirname(localFolder);
-          const normalizeDir = d => (d === '.' ? '' : d);
-
-          const isRename = newBasename !== oldBasename && normalizeDir(newDirname) === normalizeDir(oldDirname);
-          const isMove   = newBasename === oldBasename && normalizeDir(newDirname) !== normalizeDir(oldDirname);
-          const shape    = isRename ? 'rename' : isMove ? 'move' : 'move+rename';
-
-          try {
-            console.log(`[SYNC] Local folder ${shape} detected: ${entry.path} → ${localFolder} (nodeId ${nid})`);
-
-            if (shape === 'rename') {
-              await this._apiRenameNode(nid, newBasename);
-            } else if (shape === 'move') {
-              const targetParentId = this.resolveParentIdByPath(normalizeDir(newDirname));
-              await this._apiMoveNode(nid, targetParentId);
-            } else {
-              const targetParentId = this.resolveParentIdByPath(normalizeDir(newDirname));
-              await this._apiMoveNode(nid, targetParentId, newBasename);
-            }
-
-            // Update repo: this folder and all descendants
-            const descendants = this.repo.walkDescendants(entry.path);
-            for (const { nodeId: descId, entry: descEntry } of descendants) {
-              const newPath = localFolder + descEntry.path.slice(entry.path.length);
-              map.set(descId, { ...descEntry, path: newPath });
-            }
-            map.set(nid, { type: 'folder', path: localFolder, parentId: entry.parentId, inode: localInode });
-
-            localFolderOnlySet.delete(localFolder);
-            handled = true;
-            if (this.logger) {
-              this.logger.info('SYNC', `Folder ${shape} synced to server`, {
-                from: entry.path,
-                to: localFolder,
-                nodeId: nid,
-                descendantsUpdated: descendants.length
-              });
-            }
-          } catch (err) {
-            console.error(`[SYNC] Failed to sync local folder ${shape} for nodeId ${nid}:`, err.message);
-            if (this.logger) {
-              this.logger.error('SYNC', `Failed to sync offline folder ${shape}`, {
-                from: entry.path,
-                to: localFolder,
-                nodeId: nid,
-                error: err.message
-              });
-            }
-          }
-          break;
-        }
-
-        if (handled) continue;
-
-        // No inode match — folder was deleted locally while offline.
-        // Cascade=true tells the server to soft-delete every descendant first,
-        // which the platform requires before removing a non-empty folder.
-        try {
-          console.log(`[SYNC] Local folder delete detected: ${entry.path} (nodeId ${nid})`);
-          await this._apiDeleteNode(nid, { cascade: true });
-
-          const descendants = this.repo.walkDescendants(entry.path);
-          for (const { nodeId: descId } of descendants) {
-            map.delete(descId);
-          }
-          map.delete(nid);
-          if (this.logger) {
-            this.logger.info('SYNC', 'Folder delete synced to server', {
-              folder: entry.path,
-              nodeId: nid,
-              descendantsDeleted: descendants.length
-            });
-          }
-        } catch (err) {
-          console.error(`[SYNC] Failed to sync local folder delete for nodeId ${nid}:`, err.message);
-          if (this.logger) {
-            this.logger.error('SYNC', 'Failed to sync offline folder delete', {
-              folder: entry.path,
-              nodeId: nid,
-              error: err.message
-            });
-          }
+  /**
+   * A tracked folder gone from its path whose inode is now at a local-only
+   * path was renamed or moved while offline: send that and repoint the folder
+   * and its descendants. Returns true when the folder was matched, whether or
+   * not the send succeeded: a failed rename leaves the folder to the next pass
+   * and never falls through to a delete. With no inode to match (a filesystem
+   * without stable ones, or none recorded) the folder is recognised by its
+   * content instead — the one local-only folder holding its files unchanged.
+   */
+  async relocateFolderByInode(nid, entry, localOnly, map) {
+    if (entry.inode) {
+      for (const localFolder of localOnly) {
+        const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFolder));
+        if (localInode && localInode === entry.inode) {
+          return this.relocateFolderTo(nid, entry, localFolder, localInode, localOnly, map);
         }
       }
-    });
+    }
+    // No inode match (a filesystem without stable inodes, or none recorded): the one
+    // local-only folder holding this folder's files, unchanged, is the same folder.
+    const byContent = await this.folderMatchingContent(entry.path, localOnly);
+    if (!byContent) return false;
+    const inode = await nodeMap.getInode(path.join(this.syncFolder, byContent));
+    return this.relocateFolderTo(nid, entry, byContent, inode, localOnly, map);
+  },
+
+  /**
+   * The local-only folder that holds this folder's tracked files at the same relative
+   * paths with their baseline checksums. At least one file must match, and only a
+   * single candidate counts: two lookalikes are no evidence.
+   */
+  async folderMatchingContent(folderPath, localOnly) {
+    const files = [];
+    for (const { nodeId, entry } of this.repo.walkDescendants(folderPath)) {
+      if (entry.type === 'folder') continue;
+      const baseline = this.repo.getBaseline(nodeId);
+      if (!baseline || !baseline.localChecksum) continue;
+      files.push({ rel: entry.path.slice(folderPath.length + 1), checksum: baseline.localChecksum });
+    }
+    if (files.length === 0) return null;
+
+    const matches = [];
+    for (const candidate of localOnly) {
+      for (const file of files) {
+        const rel = `${candidate}/${file.rel}`;
+        if (!fileExists(path.join(this.syncFolder, rel))) continue;
+        const { checksum } = await this.localView(rel);
+        if (checksum === file.checksum) {
+          matches.push(candidate);
+          break;
+        }
+      }
+    }
+    return matches.length === 1 ? matches[0] : null;
+  },
+
+  async relocateFolderTo(nid, entry, localFolder, localInode, localOnly, map) {
+    const oldBasename = path.basename(entry.path);
+    const newBasename = path.basename(localFolder);
+    const normalizeDir = d => (d === '.' ? '' : d);
+    const oldDirname = normalizeDir(path.dirname(entry.path));
+    const newDirname = normalizeDir(path.dirname(localFolder));
+    const isRename = newBasename !== oldBasename && newDirname === oldDirname;
+    const isMove = newBasename === oldBasename && newDirname !== oldDirname;
+    const shape = isRename ? 'rename' : isMove ? 'move' : 'move+rename';
+
+    try {
+      console.log(`[SYNC] Local folder ${shape} detected: ${entry.path} → ${localFolder} (nodeId ${nid})`);
+      // A folder moved into a new local folder needs that folder on the server first.
+      if (shape !== 'rename' && newDirname && !this.repo.getByPath(newDirname)) {
+        await this.createFolderOnServer(newDirname);
+      }
+      if (shape === 'rename') {
+        await this._apiRenameNode(nid, newBasename);
+      } else if (shape === 'move') {
+        await this._apiMoveNode(nid, this.resolveParentIdByPath(newDirname));
+      } else {
+        await this._apiMoveNode(nid, this.resolveParentIdByPath(newDirname), newBasename);
+      }
+
+      const descendants = this.repo.walkDescendants(entry.path);
+      for (const { nodeId: descId, entry: descEntry } of descendants) {
+        map.set(descId, { ...descEntry, path: localFolder + descEntry.path.slice(entry.path.length) });
+      }
+      map.set(nid, { type: 'folder', path: localFolder, parentId: entry.parentId, inode: localInode });
+      localOnly.delete(localFolder);
+      if (this.logger) {
+        this.logger.info('SYNC', `Folder ${shape} synced to server`, {
+          from: entry.path, to: localFolder, nodeId: nid, descendantsUpdated: descendants.length
+        });
+      }
+    } catch (err) {
+      console.error(`[SYNC] Failed to sync local folder ${shape} for nodeId ${nid}:`, err.message);
+      if (this.logger) {
+        this.logger.error('SYNC', `Failed to sync offline folder ${shape}`, {
+          from: entry.path, to: localFolder, nodeId: nid, error: err.message
+        });
+      }
+      this.stats.errors.push(formatErrorForLog(err, { filename: entry.path, action: 'reconcile' }));
+      if (SESSION_KINDS.has(classifySyncError(err).kind)) throw err;
+    }
+    return true;
   }
 };

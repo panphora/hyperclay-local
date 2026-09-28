@@ -413,6 +413,16 @@ module.exports = {
     this.emit('file-synced', { file: localFolderPath, action: 'trash', source: 'sse', type: 'folder' });
   },
 
+  /** A case-only rename on a case-insensitive disk: the "occupant" at the new path is the node itself. */
+  async _isSameEntry(relA, relB) {
+    if (relA === relB || relA.toLowerCase() !== relB.toLowerCase()) return false;
+    const [a, b] = await Promise.all([
+      nodeMap.getInode(path.join(this.syncFolder, relA)),
+      nodeMap.getInode(path.join(this.syncFolder, relB)),
+    ]);
+    return a != null && a === b;
+  },
+
   /**
    * Make room at `relPath` for a tracked file or folder the server says lives there. Whatever
    * already occupies it (a file the user made, a folder the watcher never sent) is renamed to a
@@ -472,7 +482,7 @@ module.exports = {
     // handler. No markBrowserSave needed.
     this.cascade.mark([currentPath, newPath]);
 
-    await this._moveOccupantAside(newPath);
+    if (!(await this._isSameEntry(currentPath, newPath))) await this._moveOccupantAside(newPath);
     await ensureDirectory(path.dirname(newLocalPath));
     await moveFile(localPath, newLocalPath);
 
@@ -530,7 +540,7 @@ module.exports = {
       return;
     }
 
-    await this._moveOccupantAside(newPath);
+    if (!(await this._isSameEntry(oldPath, newPath))) await this._moveOccupantAside(newPath);
 
     await ensureDirectory(path.dirname(localNewPath));
 

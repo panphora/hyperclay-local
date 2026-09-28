@@ -5,7 +5,7 @@ const PAUSE_BY_CODE = {
 };
 
 function classifyError(error) {
-  if (error && error.code === 'folder-missing') return { kind: 'pause', reason: 'folder-missing' };
+  if (error && (error.code === 'folder-missing' || error.code === 'folder-replaced')) return { kind: 'pause', reason: error.code };
   const status = error.statusCode;
   const code = error.code;
   if (!status) return { kind: 'offline' };

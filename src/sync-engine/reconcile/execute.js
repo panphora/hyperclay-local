@@ -314,8 +314,38 @@ async function settleUpload(engine, nodeId, entry, context, localChecksum) {
   return { action: A.UPLOAD, etag, checksum: etag, recovered: true };
 }
 
+/**
+ * A folder has no bytes to fetch: its download is the directory on disk and
+ * the entry in the baseline. The path comes from the context first, because a
+ * folder the server moved is downloaded at its new path while the baseline
+ * still holds the old one. The mkdir is cascade-marked so the watcher never
+ * turns it into a folder create of its own.
+ */
+async function downloadFolder(engine, nodeId, entry, context, gen) {
+  const rel = context.path || relPathOf(entry, context, nodeId);
+  engine.resolveContainedPath(rel);
+  const localPath = path.join(engine.syncFolder, rel);
+  const created = await engine._applyRemoteFsChange([rel], () => ensureDirectory(localPath));
+  if (!created) engine.cascade.consume(rel);
+  if (gen !== engine.generation) return { action: A.DOWNLOAD, stale: true };
+
+  const parentId = context.parentId !== undefined && context.parentId !== null
+    ? context.parentId
+    : entry ? entry.parentId : null;
+  await engine.repo.set(nodeId, {
+    ...(entry || {}),
+    type: 'folder',
+    path: rel,
+    parentId,
+    inode: await nodeMap.getInode(localPath),
+  });
+  engine.emit('file-synced', { file: rel, action: 'create', type: 'folder' });
+  return { action: A.DOWNLOAD };
+}
+
 async function download(engine, nodeId, entry, context, gen) {
   const rel = relPathOf(entry, context, nodeId);
+  if (typeOf(entry, context, rel) === 'folder') return downloadFolder(engine, nodeId, entry, context, gen);
   const open = await openConflict(engine, nodeId, rel);
   if (open) return refreshRemoteCopy(engine, nodeId, rel, open, gen);
 
@@ -380,11 +410,16 @@ async function deleteRemote(engine, nodeId, entry, context) {
   const rel = relPathOf(entry, context, nodeId);
   const type = typeOf(entry, context, rel);
   const id = idOf(nodeId);
-  const expectedVersion = (await engine._expectedVersion(id)) ?? null;
+  // A folder is deleted against the version the decision was made from: the server refuses a
+  // cascade when anything under the folder changed since.
+  const decidedVersion = type === 'folder' && engine.protocol === 2 ? context.structureVersion : undefined;
+  const expectedVersion = decidedVersion ?? (await engine._expectedVersion(id)) ?? null;
+  // The platform refuses to delete a folder with contents unless the delete cascades.
+  const options = type === 'folder' ? { expectedVersion, cascade: true } : { expectedVersion };
 
   engine.outbox.markInFlight('delete', id);
   try {
-    await deleteNode(engine.conn, id, { expectedVersion });
+    await deleteNode(engine.conn, id, options);
   } catch (error) {
     if (!error.statusCode && (await deleteLanded(engine, id))) {
       await finishDelete(engine, nodeId, rel, type);
@@ -407,7 +442,15 @@ async function deleteLanded(engine, id) {
 }
 
 async function finishDelete(engine, nodeId, rel, type) {
-  await engine.repo.delete(nodeId);
+  if (type === 'folder') {
+    const descendants = engine.repo.walkDescendants(rel);
+    await engine.repo.apply(async (map) => {
+      for (const { nodeId: descId } of descendants) map.delete(descId);
+      map.delete(String(nodeId));
+    });
+  } else {
+    await engine.repo.delete(nodeId);
+  }
   if (typeof engine.invalidateServerNodesCache === 'function') engine.invalidateServerNodesCache();
   engine.emit('file-synced', { file: rel, action: 'delete', type });
 }

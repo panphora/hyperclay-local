@@ -22,6 +22,7 @@ const path = require('upath');
 
 const { getAccounts, listNodes } = require('../api-client');
 const nodeMap = require('../node-map');
+const { writeRootMarker } = require('../root-marker');
 
 const IDENTITY_FILE = 'identity.json';
 const MAP_FILE = 'node-map.json';
@@ -166,13 +167,17 @@ async function importLegacyMeta(entry, options = {}) {
   //    first, then the switch away from the legacy directory. Its directory
   //    belongs to the session from here on.
   const state = await engine.repo.loadState();
+  const rootPath = (entry.root && entry.root.path) || engine.syncFolder;
+  if (session.rootId != null) writeRootMarker(rootPath, session.rootId);
   await writeIdentity(metaDir, {
     serverUrl: engine.serverUrl,
     actorId: found.actorId,
     accountId: found.account.id,
     rootId: session.rootId ?? null,
-    rootRealpath: await realpathOr((entry.root && entry.root.path) || engine.syncFolder),
+    rootRealpath: await realpathOr(rootPath),
+    rootMarker: true,
   });
+  engine.rootMarkerRequired = true;
   await engine.repo.saveState({ ...state, migratedAt: new Date(now()).toISOString() });
   engine.startUnifiedWatcher();
   if (options.persist) options.persist({ accountId: found.account.id, actorId: found.actorId });

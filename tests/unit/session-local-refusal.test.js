@@ -72,6 +72,7 @@ const { SyncEngine } = require('../../src/sync-engine');
 const { SessionRunner } = require('../../src/sync-engine/reconcile/session-runner');
 const { createRootLive } = require('../../src/main/utils/root-live');
 const { SyncManager } = require('../../src/main/sync-manager');
+const { readRootMarker, writeRootMarker } = require('../../src/sync-engine/root-marker');
 
 const TEAM_ACCOUNT_ID = 21;
 const SERVER_URL = 'http://test';
@@ -134,6 +135,10 @@ function matchingIdentity(session, root) {
     rootId: root.id,
     rootRealpath: fs.realpathSync.native(root.path),
   };
+}
+
+function readIdentity(session) {
+  return JSON.parse(fs.readFileSync(path.join(manager.metaDirFor(session), 'identity.json'), 'utf8'));
 }
 
 beforeEach(() => {
@@ -275,5 +280,171 @@ describe('localRefusal at start', () => {
     expect(entry.runner.state).toBe('paused');
     expect(resume).not.toHaveBeenCalled();
     expect(session.paused.reason).toBe('identity-mismatch');
+  });
+});
+
+const FEATURES_ON = {
+  accountScopes: true, accountEvents: true, conditionalContent: true, conditionalStructure: true, completeInventory: true,
+};
+
+describe('the root marker at start', () => {
+  it('a marked session whose root is empty and unmarked is paused folder-missing', async () => {
+    const session = teamSession();
+    const root = makeRoot(tmpDir('session-local-refusal-root-'));
+    register(session, root);
+    writeIdentity(session, { ...matchingIdentity(session, root), rootMarker: true });
+
+    await manager.start(session, root);
+
+    expect(session.paused.reason).toBe('folder-missing');
+    expect(initialSync.performInitialFolderSync).not.toHaveBeenCalled();
+    expect(readRootMarker(root.path)).toBeNull();
+  });
+
+  it('a marked session whose root holds files without the marker is paused folder-replaced', async () => {
+    const session = teamSession();
+    const root = makeRoot(tmpDir('session-local-refusal-root-'));
+    register(session, root);
+    writeIdentity(session, { ...matchingIdentity(session, root), rootMarker: true });
+    fs.writeFileSync(path.join(root.path, 'board.html'), 'recloned');
+
+    await manager.start(session, root);
+
+    expect(session.paused.reason).toBe('folder-replaced');
+    expect(initialSync.performInitialFolderSync).not.toHaveBeenCalled();
+    expect(readRootMarker(root.path)).toBeNull();
+  });
+
+  it('a marked session whose marker names another root is paused folder-replaced', async () => {
+    const session = teamSession();
+    const root = makeRoot(tmpDir('session-local-refusal-root-'));
+    register(session, root);
+    writeIdentity(session, { ...matchingIdentity(session, root), rootMarker: true });
+    writeRootMarker(root.path, 'another-root');
+
+    await manager.start(session, root);
+
+    expect(session.paused.reason).toBe('folder-replaced');
+    expect(readRootMarker(root.path)).toMatchObject({ rootId: 'another-root' });
+  });
+
+  it('a marked session whose marker matches starts', async () => {
+    const session = teamSession();
+    const root = makeRoot(tmpDir('session-local-refusal-root-'));
+    register(session, root);
+    writeIdentity(session, { ...matchingIdentity(session, root), rootMarker: true });
+    writeRootMarker(root.path, root.id);
+
+    const result = await manager.start(session, root);
+
+    expect(result.success).toBe(true);
+    expect(session.paused).toBeNull();
+    expect(manager.sessions.get(session.id).engine.rootMarkerRequired).toBe(true);
+  });
+
+  it('an unmarked session with files adopts its folder: the marker is written and identity flagged', async () => {
+    const session = teamSession();
+    const root = makeRoot(tmpDir('session-local-refusal-root-'));
+    register(session, root);
+    writeIdentity(session, matchingIdentity(session, root));
+    fs.writeFileSync(path.join(root.path, 'board.html'), 'mine');
+
+    await manager.start(session, root);
+
+    expect(session.paused).toBeNull();
+    expect(readRootMarker(root.path)).toMatchObject({ rootId: root.id });
+    expect(readIdentity(session).rootMarker).toBe(true);
+    expect(manager.sessions.get(session.id).engine.rootMarkerRequired).toBe(true);
+  });
+
+  it('an unmarked session whose root cannot take the marker keeps syncing', async () => {
+    const session = teamSession();
+    const root = makeRoot(tmpDir('session-local-refusal-root-'));
+    register(session, root);
+    writeIdentity(session, matchingIdentity(session, root));
+    fs.writeFileSync(path.join(root.path, 'board.html'), 'mine');
+    fs.writeFileSync(path.join(root.path, '.hyperclay'), 'not a directory');
+
+    const result = await manager.start(session, root);
+
+    expect(result.success).toBe(true);
+    expect(session.paused).toBeNull();
+    expect(readRootMarker(root.path)).toBeNull();
+    expect(readIdentity(session).rootMarker).toBeUndefined();
+    expect(manager.sessions.get(session.id).engine.rootMarkerRequired).toBe(false);
+  });
+
+  it('an unmarked session whose root is empty against a non-empty baseline is paused folder-missing and not adopted', async () => {
+    nodeMap.load.mockResolvedValue(new Map([['901', { path: 'board.html', type: 'site' }]]));
+    const session = teamSession();
+    const root = makeRoot(tmpDir('session-local-refusal-root-'));
+    register(session, root);
+    writeIdentity(session, matchingIdentity(session, root));
+
+    await manager.start(session, root);
+
+    expect(session.paused.reason).toBe('folder-missing');
+    expect(initialSync.performInitialFolderSync).not.toHaveBeenCalled();
+    expect(readRootMarker(root.path)).toBeNull();
+    expect(readIdentity(session).rootMarker).toBeUndefined();
+  });
+
+  it('onDiscovery never resumes folder-replaced', async () => {
+    const session = teamSession();
+    const root = makeRoot(tmpDir('session-local-refusal-root-'));
+    register(session, root);
+    writeIdentity(session, { ...matchingIdentity(session, root), rootMarker: true });
+    fs.writeFileSync(path.join(root.path, 'board.html'), 'recloned');
+
+    await manager.start(session, root);
+    expect(session.paused.reason).toBe('folder-replaced');
+
+    writeRootMarker(root.path, root.id);
+    const entry = manager.sessions.get(session.id);
+    const resume = jest.spyOn(SessionRunner.prototype, 'resume');
+    manager.onDiscovery(discovery([teamAccount()]));
+
+    expect(entry.runner.state).toBe('paused');
+    expect(resume).not.toHaveBeenCalled();
+    expect(session.paused.reason).toBe('folder-replaced');
+  });
+
+  it('onDiscovery resumes folder-missing only once the marker is back', async () => {
+    const session = teamSession();
+    const root = makeRoot(tmpDir('session-local-refusal-root-'));
+    register(session, root);
+    writeIdentity(session, { ...matchingIdentity(session, root), rootMarker: true });
+
+    await manager.start(session, root);
+    expect(session.paused.reason).toBe('folder-missing');
+
+    const entry = manager.sessions.get(session.id);
+    const resume = jest.spyOn(SessionRunner.prototype, 'resume');
+    const live = { ...discovery([teamAccount()]), features: FEATURES_ON };
+    manager.onDiscovery(live);
+    expect(resume).not.toHaveBeenCalled();
+    expect(entry.runner.state).toBe('paused');
+
+    writeRootMarker(root.path, root.id);
+    manager.onDiscovery(live);
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(session.paused).toBeNull();
+  });
+
+  it('a folder-replaced pause clears on the next start that finds the marker', async () => {
+    const session = teamSession();
+    const root = makeRoot(tmpDir('session-local-refusal-root-'));
+    register(session, root);
+    writeIdentity(session, { ...matchingIdentity(session, root), rootMarker: true });
+    fs.writeFileSync(path.join(root.path, 'board.html'), 'recloned');
+
+    await manager.start(session, root);
+    expect(session.paused.reason).toBe('folder-replaced');
+
+    writeRootMarker(root.path, root.id);
+    await manager.stop(session.id);
+    await manager.start(session, root);
+
+    expect(session.paused).toBeNull();
   });
 });

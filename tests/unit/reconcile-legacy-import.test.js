@@ -65,6 +65,7 @@ jest.mock('../../src/sync-engine/utils', () => ({
 
 const os = require('os');
 const path = require('upath');
+const { readRootMarker } = require('../../src/sync-engine/root-marker');
 const crypto = require('crypto');
 const fsp = require('fs').promises;
 
@@ -272,8 +273,11 @@ describe('importLegacyMeta', () => {
       actorId: 17,
       accountId: ACCOUNT_ID,
       rootId: ROOT_ID,
-      rootRealpath: root
+      rootRealpath: root,
+      rootMarker: true
     });
+    expect(readRootMarker(root)).toMatchObject({ rootId: ROOT_ID });
+    expect(engine.rootMarkerRequired).toBe(true);
     expect(persist).toHaveBeenCalledTimes(1);
     expect(persist).toHaveBeenCalledWith({ accountId: ACCOUNT_ID, actorId: 17 });
     expect(engine.startUnifiedWatcher).toHaveBeenCalled();

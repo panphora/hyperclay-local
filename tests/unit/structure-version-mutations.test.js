@@ -23,6 +23,7 @@ const { renameNode, moveNode, deleteNode } = require('../../src/sync-engine/api-
 const NodeRepository = require('../../src/sync-engine/state/node-repository');
 const mutations = require('../../src/sync-engine/engine-mutations');
 const sessionMethods = require('../../src/sync-engine/engine-session');
+const { writeRootMarker } = require('../../src/sync-engine/root-marker');
 
 const SV_OLD = 'sv-old';
 const ETAG = 'etag-1';
@@ -54,7 +55,7 @@ function folderEntry(overrides = {}) {
   };
 }
 
-function makeEngine({ protocol = 2, entries = [], nodes = [], syncFolder = rootDir } = {}) {
+function makeEngine({ protocol = 2, entries = [], nodes = [], syncFolder = rootDir, rootId = null, rootMarker = false } = {}) {
   const repo = new NodeRepository();
   repo.attach(metaDir);
   repo.seed(entries);
@@ -67,6 +68,9 @@ function makeEngine({ protocol = 2, entries = [], nodes = [], syncFolder = rootD
     invalidateServerNodesCache: jest.fn(),
     fetchAndCacheServerNodes: jest.fn(async () => nodes),
     syncFolder,
+    rootId,
+    rootMarkerRequired: rootMarker,
+    metaDir,
     repo
   });
 }
@@ -168,6 +172,53 @@ describe('_expectedVersion — one read per structural change', () => {
 
     expect(deleteNode).not.toHaveBeenCalled();
     expect(runner.pause).toHaveBeenCalledWith('folder-missing');
+  });
+
+  test('_apiDeleteNode refuses folder-replaced when the marker is required and the root holds files without it', async () => {
+    fs.writeFileSync(path.join(rootDir, 'a.html'), 'still here');
+    const runner = { pause: jest.fn() };
+    const engine = makeEngine({
+      entries: [['901', fileEntry({ structureVersion: SV_OLD })]],
+      nodes: [{ id: 901, type: 'site', etag: ETAG, structureVersion: 'sv-fresh' }],
+      rootId: 'root-1',
+      rootMarker: true
+    });
+    engine.runner = runner;
+
+    await expect(engine._apiDeleteNode('901')).rejects.toMatchObject({ code: 'folder-replaced' });
+
+    expect(deleteNode).not.toHaveBeenCalled();
+    expect(runner.pause).toHaveBeenCalledWith('folder-replaced');
+  });
+
+  test('_apiDeleteNode refuses folder-missing when the marker is required and the root is empty', async () => {
+    const runner = { pause: jest.fn() };
+    const engine = makeEngine({
+      entries: [['901', fileEntry({ structureVersion: SV_OLD })]],
+      nodes: [{ id: 901, type: 'site', etag: ETAG, structureVersion: 'sv-fresh' }],
+      rootId: 'root-1',
+      rootMarker: true
+    });
+    engine.runner = runner;
+
+    await expect(engine._apiDeleteNode('901')).rejects.toMatchObject({ code: 'folder-missing' });
+
+    expect(deleteNode).not.toHaveBeenCalled();
+    expect(runner.pause).toHaveBeenCalledWith('folder-missing');
+  });
+
+  test('_apiDeleteNode sends the delete when the marker matches', async () => {
+    writeRootMarker(rootDir, 'root-1');
+    const engine = makeEngine({
+      entries: [['901', fileEntry({ structureVersion: SV_OLD })]],
+      nodes: [{ id: 901, type: 'site', etag: ETAG, structureVersion: 'sv-fresh' }],
+      rootId: 'root-1',
+      rootMarker: true
+    });
+
+    await engine._apiDeleteNode('901');
+
+    expect(deleteNode).toHaveBeenCalledTimes(1);
   });
 
   test('a rename and a move both drop the baseline version they just spent', async () => {

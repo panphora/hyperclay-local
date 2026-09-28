@@ -85,7 +85,7 @@ function makeEngine(overrides = {}) {
     dropPendingWork: jest.fn(),
     whenQueueEmpty: jest.fn().mockResolvedValue(),
     _applyFileDelete: jest.fn(),
-    rootPresent: () => true,
+    rootRefusal: () => null,
     ...overrides
   };
 }
@@ -148,13 +148,24 @@ describe('sync-ready and the first reconcile', () => {
   });
 
   it('start pauses with folder-missing when the root is gone and opens no stream', async () => {
-    const { runner, engine, manager, stream } = session({ engine: { rootPresent: () => false } });
+    const { runner, engine, manager, stream } = session({ engine: { rootRefusal: () => 'folder-missing' } });
 
     await runner.start();
 
     expect(runner.state).toBe('paused');
     expect(stream.open).not.toHaveBeenCalled();
     expect(manager.persistPaused).toHaveBeenCalledWith(SESSION_ID, 'folder-missing');
+    expect(engine.reconcileAll).not.toHaveBeenCalled();
+  });
+
+  it('start pauses with folder-replaced when the folder lost its marker and opens no stream', async () => {
+    const { runner, engine, manager, stream } = session({ engine: { rootRefusal: () => 'folder-replaced' } });
+
+    await runner.start();
+
+    expect(runner.state).toBe('paused');
+    expect(stream.open).not.toHaveBeenCalled();
+    expect(manager.persistPaused).toHaveBeenCalledWith(SESSION_ID, 'folder-replaced');
     expect(engine.reconcileAll).not.toHaveBeenCalled();
   });
 

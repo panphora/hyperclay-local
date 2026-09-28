@@ -89,6 +89,10 @@ function commitAndPushFile(filePath, version) {
   const repoName = path.basename(repoPath);
 
   git(repoPath, `add "${relativePath}"`);
+  if (filePath.startsWith(DOCS_DIR)) {
+    execSync('npm run sync-docs && npm run build:llms-txt', { cwd: repoPath, stdio: 'inherit' });
+    git(repoPath, 'add content public/llms.txt');
+  }
   git(repoPath, `commit -m "chore: update Hyperclay Local download links to v${version}"`);
   git(repoPath, 'push');
   logSuccess(`Committed and pushed in ${repoName}`);

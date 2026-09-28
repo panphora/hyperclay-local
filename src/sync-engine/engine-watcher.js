@@ -14,7 +14,8 @@ const { formatErrorForLog } = require('./error-handler');
 const {
   readFile,
   readFileBuffer,
-  calculateBufferChecksum
+  calculateBufferChecksum,
+  fileExists
 } = require('./file-operations');
 const { calculateChecksum } = require('./utils');
 const { classifyPath, ancestorPaths } = require('./path-helpers');
@@ -174,6 +175,9 @@ module.exports = {
 
     if (!foundNodeId) {
       console.log(`[SYNC] Watcher: ${type} unlink for untracked path: ${normalizedPath}`);
+      if (type === 'folder' && this.logger) {
+        this.logger.warn('WATCHER', 'Folder unlink for untracked path, nothing sent', { path: normalizedPath });
+      }
       return;
     }
 
@@ -232,6 +236,14 @@ module.exports = {
 
     const timerId = setTimeout(async () => {
       this.pendingUnlinks.delete(normalizedPath);
+      // Back at the same path before the grace period ended (undo, replace, checkout): not a delete.
+      if (fileExists(path.join(this.syncFolder, normalizedPath))) {
+        console.log(`[SYNC] Watcher: ${normalizedPath} is back on disk, delete not sent`);
+        if (this.logger) {
+          this.logger.info('WATCHER', 'Path back on disk before the grace period ended, delete not sent', { path: normalizedPath, type });
+        }
+        return;
+      }
       console.log(`[SYNC] Watcher: Local ${type} delete detected: ${normalizedPath} (nodeId ${foundNodeId})`);
       try {
         // Folder rm -rf requires cascade=true; the platform returns 400 for a non-empty folder otherwise.

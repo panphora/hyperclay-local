@@ -815,7 +815,7 @@ const Hero = ({ card, keyRevoked, onAction }) => {
         )}
       </div>
       <div style={{ ...sunken(), marginTop: 14, padding: '9px 12px', fontSize: 12, lineHeight: 1.45, color: C.soft, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-        <span style={{ paddingTop: 4 }}><Led tone={statusTone} /></span>
+        <span style={{ height: '1.45em', display: 'flex', alignItems: 'center' }}><Led tone={statusTone} /></span>
         <span>{heroStatus(card)}</span>
       </div>
       <CardButtons card={card} keyRevoked={keyRevoked} onAction={onAction} />

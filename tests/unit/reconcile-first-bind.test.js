@@ -73,6 +73,7 @@ const fs = require('fs');
 const fsp = require('fs').promises;
 const os = require('os');
 const path = require('upath');
+const { readRootMarker } = require('../../src/sync-engine/root-marker');
 const crypto = require('crypto');
 
 const api = require('../../src/sync-engine/api-client');
@@ -300,8 +301,11 @@ describe('firstBind', () => {
       actorId: 17,
       accountId: ACCOUNT_ID,
       rootId: ROOT_ID,
-      rootRealpath: root
+      rootRealpath: root,
+      rootMarker: true
     });
+    expect(readRootMarker(root)).toMatchObject({ rootId: ROOT_ID });
+    expect(engine.rootMarkerRequired).toBe(true);
     expect(await exists(markerPath())).toBe(false);
     expect(engine.startUnifiedWatcher).toHaveBeenCalled();
     expect(engine.stream.close).toHaveBeenCalled();

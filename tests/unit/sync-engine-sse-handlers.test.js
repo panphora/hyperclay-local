@@ -374,6 +374,56 @@ describe('handleNodeRenamed', () => {
     expect(syncEngine.repo.get('60').path).toBe('new');
     expect(syncEngine.repo.get('61').path).toBe('new/a.html');
   });
+
+  it('a case-only folder rename renames in place on a case-insensitive disk', async () => {
+    syncEngine.repo._map.set('60', { type: 'folder', path: 'Proj', parentId: 0 });
+    fileOps.fileExists.mockResolvedValue(true);
+    nodeMapModule.getInode.mockResolvedValue(777);
+    nodeMapModule.walkDescendants.mockReturnValue([]);
+
+    await syncEngine._applyFolderRelocate('60', 'Proj', 'proj');
+
+    expect(fileOps.moveFile).toHaveBeenCalledWith(
+      path.join(SYNC_ROOT, 'Proj'),
+      path.join(SYNC_ROOT, 'proj')
+    );
+    expect(fileOps.moveFile.mock.calls.some(([s, d]) => `${s} ${d}`.includes('conflicted copy'))).toBe(false);
+    expect(syncEngine.repo.get('60').path).toBe('proj');
+  });
+
+  it('a folder rename onto a different entry still moves the occupant aside', async () => {
+    syncEngine.repo._map.set('60', { type: 'folder', path: 'Proj', parentId: 0 });
+    fileOps.fileExists.mockImplementation(async (p) => !String(p).includes('conflicted copy'));
+    nodeMapModule.getInode.mockImplementation(async (p) => (p === path.join(SYNC_ROOT, 'Proj') ? 1 : 2));
+    nodeMapModule.walkDescendants.mockReturnValue([]);
+
+    await syncEngine._applyFolderRelocate('60', 'Proj', 'proj');
+
+    expect(fileOps.moveFile).toHaveBeenCalledWith(
+      path.join(SYNC_ROOT, 'proj'),
+      path.join(SYNC_ROOT, 'proj (conflicted copy)')
+    );
+    expect(fileOps.moveFile).toHaveBeenCalledWith(
+      path.join(SYNC_ROOT, 'Proj'),
+      path.join(SYNC_ROOT, 'proj')
+    );
+    expect(syncEngine.repo.get('60').path).toBe('proj');
+  });
+
+  it('a case-only file rename renames in place on a case-insensitive disk', async () => {
+    syncEngine.repo._map.set('42', { type: 'site', path: 'Proj.html', checksum: 'cs', inode: 100 });
+    fileOps.fileExists.mockResolvedValue(true);
+    nodeMapModule.getInode.mockResolvedValue(777);
+
+    await syncEngine._applyFileRelocate('42', 'Proj.html', 'proj.html', 'site');
+
+    expect(fileOps.moveFile).toHaveBeenCalledWith(
+      path.join(SYNC_ROOT, 'Proj.html'),
+      path.join(SYNC_ROOT, 'proj.html')
+    );
+    expect(fileOps.moveFile.mock.calls.some(([s, d]) => `${s} ${d}`.includes('conflicted copy'))).toBe(false);
+    expect(syncEngine.repo.get('42').path).toBe('proj.html');
+  });
 });
 
 describe('checkForRemoteChanges', () => {

@@ -92,7 +92,7 @@ beforeEach(() => {
   fileOps.calculateBufferChecksum = jest.fn(() => 'buffer-chk');
   fileOps.moveFile = jest.fn().mockResolvedValue();
   fileOps.ensureDirectory = jest.fn().mockResolvedValue();
-  fileOps.fileExists = jest.fn().mockResolvedValue(true);
+  fileOps.fileExists.mockResolvedValue(true);
 
   nodeMapModule.getInode = jest.fn().mockResolvedValue(999);
   nodeMapModule.save = jest.fn().mockResolvedValue();
@@ -433,6 +433,8 @@ describe('chokidar burst: file delete', () => {
       const ancestor = p.split('/').slice(0, -1).join('/');
       if (ancestor) seedAncestors(ancestor);
       seedRepo([{ id: 42, type: 'site', path: p, checksum: 'chk', inode: 100 }]);
+      // The real `fileExists` is synchronous: the root is present, the deleted path is gone.
+      fileOps.fileExists.mockImplementation((p) => p === syncEngine.syncFolder);
 
       fireEvents([['unlink', p]]);
       await settle();
@@ -741,6 +743,8 @@ describe('chokidar burst: folder delete', () => {
       const ancestor = anchor.split('/').slice(0, -1).join('/');
       if (ancestor) seedAncestors(ancestor);
       seedFolderWithSubtree(anchor, descendants);
+      // The real `fileExists` is synchronous: the root is present, the deleted path is gone.
+      fileOps.fileExists.mockImplementation((p) => p === syncEngine.syncFolder);
 
       fireEvents(folderDeleteEvents(anchor, descendants));
       await settle();
@@ -761,6 +765,44 @@ describe('chokidar burst: folder delete', () => {
       }
     });
   }
+});
+
+// ===========================================================================
+// Folder delete cancelled by the path coming back during the grace period
+// (undo, Finder replace, git checkout, unzip over the folder). The timer must
+// send nothing and leave the node tracked; the re-created content is handled by
+// the normal add/change events.
+// ===========================================================================
+
+describe('chokidar burst: folder back on disk within the grace period', () => {
+  it('sends no delete and keeps the node tracked when the path is back on disk', async () => {
+    seedRepo([{ id: 10, type: 'folder', path: 'proj', inode: 10 }]);
+    fileOps.fileExists.mockReturnValue(true);
+
+    fireEvents([['unlinkDir', 'proj']]);
+    expect(syncEngine.pendingUnlinks.has('proj')).toBe(true);
+    await settle();
+
+    expect(fileOps.fileExists).toHaveBeenCalledWith(`${syncEngine.syncFolder}/proj`);
+    expect(deleteNode).not.toHaveBeenCalled();
+    expect(syncEngine.pendingUnlinks.size).toBe(0);
+    expect(syncEngine.repo.get('10')).toBeDefined();
+    expect(syncEngine.repo.get('10').path).toBe('proj');
+  });
+
+  it('sends the delete with cascade=true when the path is really gone', async () => {
+    seedRepo([{ id: 10, type: 'folder', path: 'proj', inode: 10 }]);
+    // The real `fileExists` is synchronous: the root is present, the folder path is gone.
+    fileOps.fileExists.mockImplementation((p) => p === syncEngine.syncFolder);
+
+    fireEvents([['unlinkDir', 'proj']]);
+    await settle();
+
+    expect(deleteNode).toHaveBeenCalledTimes(1);
+    expect(deleteNode).toHaveBeenCalledWith(expect.objectContaining({ serverUrl: 'http://test', apiKey: 'test-key' }), 10, { cascade: true });
+    expect(syncEngine.pendingUnlinks.size).toBe(0);
+    expect(syncEngine.repo.has('10')).toBe(false);
+  });
 });
 
 // ===========================================================================
@@ -853,6 +895,8 @@ describe('folder delete: descendant pending-unlinks are cancelled (no 404 spam)'
       { id: 104, type: 'upload', path: 'proj/sub/deep/data.png', checksum: 'd', inode: 104 },
       { id: 105, type: 'site',   path: 'proj/top.html', checksum: 't', inode: 105 }
     ]);
+    // The real `fileExists` is synchronous: the root is present, the deleted path is gone.
+    fileOps.fileExists.mockImplementation((p) => p === syncEngine.syncFolder);
 
     // Fire the full delete burst: children deepest-first, folder last.
     fireEvents([
@@ -891,6 +935,8 @@ describe('folder delete: descendant pending-unlinks are cancelled (no 404 spam)'
       { id: 201, type: 'folder', path: 'b/inner' },
       { id: 202, type: 'site',   path: 'b/inner/two.html', checksum: '2' }
     ]);
+    // The real `fileExists` is synchronous: the root is present, the deleted paths are gone.
+    fileOps.fileExists.mockImplementation((p) => p === syncEngine.syncFolder);
 
     fireEvents([
       ['unlink',    'a/one.html'],

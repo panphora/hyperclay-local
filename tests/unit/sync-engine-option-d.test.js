@@ -205,7 +205,9 @@ describe('Folder safety — a failed local create never deletes the live server 
 
     await syncEngine.performInitialFolderSync();
 
-    // The footgun would have cascade-deleted the live server folder + subtree.
+    // The guard is that only a stat proving the directory gone with ENOENT may
+    // delete the folder: an unproved absence would have cascade-deleted the live
+    // server folder + subtree.
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
   });
 });

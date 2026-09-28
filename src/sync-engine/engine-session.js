@@ -11,22 +11,54 @@
 
 const path = require('upath');
 const { fileExists } = require('./file-operations');
+const { classifyRoot, writeRootMarker, flagIdentity } = require('./root-marker');
 const { decidePath } = require('./reconcile/decide');
 
 module.exports = {
-  /** The session's folder is still on disk. A missing root is never recreated (CONTRACTS §6). */
+  /**
+   * Why the session's folder cannot be trusted right now, or null. The folder has to exist
+   * and, once the session is bound to a marked folder, carry its marker (root-marker.js): an
+   * unmounted volume, a recreated folder or an evicted one reads as every file deleted
+   * otherwise. A missing root is never recreated (CONTRACTS §6). A folder an older install
+   * never marked is marked here, the first time it is seen with its files.
+   */
+  rootRefusal() {
+    if (!fileExists(this.syncFolder)) return 'folder-missing';
+    const { refusal, adopt } = classifyRoot(this.syncFolder, {
+      rootId: this.rootId ?? null,
+      required: this.rootMarkerRequired === true,
+      baselineSize: this.repo ? this.repo.size : 0,
+    });
+    if (refusal) return refusal;
+    if (adopt) {
+      try {
+        writeRootMarker(this.syncFolder, this.rootId);
+      } catch {
+        // A root the app cannot write into (read-only mount, permissions) syncs as it did
+        // before the marker: the marker is not required until it has been written.
+        return null;
+      }
+      flagIdentity(this.metaDir);
+      this.rootMarkerRequired = true;
+    }
+    return null;
+  },
+
   rootPresent() {
-    return fileExists(this.syncFolder);
+    return this.rootRefusal() === null;
   },
 
   /**
-   * Refuse a remote delete while the root is gone: an unmounted or deleted folder looks like
-   * every file was deleted. The session pauses instead, and the delete is not sent.
+   * Refuse a remote delete while the root cannot be trusted: an unmounted, deleted or
+   * replaced folder looks like every file was deleted. The session pauses instead, and
+   * the delete is not sent.
    */
   assertRootPresent() {
-    if (this.rootPresent()) return;
-    if (this.runner) this.runner.pause('folder-missing');
-    throw Object.assign(new Error('The sync folder is missing'), { code: 'folder-missing' });
+    const reason = this.rootRefusal();
+    if (!reason) return;
+    if (this.runner) this.runner.pause(reason);
+    const message = reason === 'folder-replaced' ? 'The sync folder was replaced' : 'The sync folder is missing';
+    throw Object.assign(new Error(message), { code: reason });
   },
 
   /**
@@ -56,6 +88,9 @@ module.exports = {
       await this.performInitialUploadSync();
     } finally {
       this.bootstrapPass = false;
+      this.movedRemotely = new Set();
+      this.pathUnresolved = new Set();
+      this.restoredFolders = [];
     }
   },
 

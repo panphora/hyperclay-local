@@ -74,6 +74,10 @@ const CARD_COPY = {
       detail: 'paused: set up again',
       detailLong: "This folder's sync records belong to a different account or folder, so nothing syncs. Disconnect, then set it up again.",
     },
+    'folder-replaced': {
+      detail: 'paused: folder changed',
+      detailLong: "This folder's contents were replaced since it was set up, so nothing syncs and nothing was deleted on hyperclay.com. Put the original folder back, or Disconnect and set it up again.",
+    },
   },
 };
 

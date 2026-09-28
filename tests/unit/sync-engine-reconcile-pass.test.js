@@ -145,8 +145,9 @@ describe('performInitialSync — the inventory decides, not mtime', () => {
 
     apiClient.listNodes.mockResolvedValue(completeList());
     fileOps.getLocalFiles.mockResolvedValue(new Map([['proj/page.html', localFile('proj/page.html')]]));
+    fileOps.getLocalFolders.mockResolvedValue(new Map([['proj', { fullPath: '/test/sync/proj' }]]));
 
-    await syncEngine.performInitialSync();
+    await syncEngine.reconcileAll(completeList(), { generation: syncEngine.generation });
 
     expect(syncEngine.repo.has('10')).toBe(false);
     expect(syncEngine.repo.has('11')).toBe(false);

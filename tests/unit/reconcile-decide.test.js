@@ -4,7 +4,7 @@
  * decidePath says where a node lives. The rows mirror section 5.4 of the C3 stage.
  */
 
-const { decide, decidePath, A } = require('../../src/sync-engine/reconcile/decide');
+const { decide, decidePath, decideFolder, A } = require('../../src/sync-engine/reconcile/decide');
 
 const BASE = { remoteEtag: 'etag-1', localChecksum: 'sum-1' };
 const BLOCKED = { ...BASE, uploadBlocked: true };
@@ -123,6 +123,74 @@ const PATH_ROWS = [
   ],
 ];
 
+const FOLDER_ROWS = [
+  [
+    'an incomplete inventory with no remote folder defers, whatever the baseline and the disk say',
+    { tracked: true, local: true, remote: false, complete: false },
+    A.DEFER,
+  ],
+  [
+    'with no remote folder and no baseline entry, an incomplete inventory still defers',
+    { tracked: false, local: false, remote: false, complete: false },
+    A.DEFER,
+  ],
+  [
+    'untracked, absent locally, in a complete inventory: download',
+    { tracked: false, local: false, remote: true, complete: true },
+    A.DOWNLOAD,
+  ],
+  [
+    'untracked and present locally only: noop, nobody is here to create the folder',
+    { tracked: false, local: true, remote: false, complete: true },
+    A.NOOP,
+  ],
+  [
+    'tracked and present on both sides: noop',
+    { tracked: true, local: true, remote: true, complete: true },
+    A.NOOP,
+  ],
+  [
+    'tracked, gone locally, still in a complete inventory: delete-remote',
+    { tracked: true, local: false, remote: true, complete: true },
+    A.DELETE_REMOTE,
+  ],
+  [
+    'tracked, gone locally, listed but by an inventory that is not complete: defer',
+    { tracked: true, local: false, remote: true, complete: false },
+    A.DEFER,
+  ],
+  [
+    'tracked, gone locally, listed by an incomplete inventory with a descendant changed remotely: download',
+    { tracked: true, local: false, remote: true, complete: false, remoteChanged: true },
+    A.DOWNLOAD,
+  ],
+  [
+    'tracked, gone locally, bootstrap: download',
+    { tracked: true, local: false, remote: true, complete: true, bootstrap: true },
+    A.DOWNLOAD,
+  ],
+  [
+    'tracked, gone locally, first pass: download',
+    { tracked: true, local: false, remote: true, complete: true, firstPass: true },
+    A.DOWNLOAD,
+  ],
+  [
+    'tracked, gone locally, a descendant changed remotely: download',
+    { tracked: true, local: false, remote: true, complete: true, remoteChanged: true },
+    A.DOWNLOAD,
+  ],
+  [
+    'tracked, gone remotely, still on disk, complete inventory: forget, the directory stays',
+    { tracked: true, local: true, remote: false, complete: true },
+    A.FORGET,
+  ],
+  [
+    'tracked, gone on both sides, complete inventory: forget',
+    { tracked: true, local: false, remote: false, complete: true },
+    A.FORGET,
+  ],
+];
+
 describe('decide', () => {
   it.each(DECIDE_ROWS)('%s', (name, input, expected) => {
     expect(decide(input)).toEqual(expected);
@@ -164,5 +232,11 @@ describe('decide', () => {
 describe('decidePath', () => {
   it.each(PATH_ROWS)('%s', (name, input, expected) => {
     expect(decidePath(input)).toEqual(expected);
+  });
+});
+
+describe('decideFolder', () => {
+  it.each(FOLDER_ROWS)('%s', (name, input, expected) => {
+    expect(decideFolder(input)).toEqual({ action: expected });
   });
 });

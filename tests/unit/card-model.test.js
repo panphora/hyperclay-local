@@ -213,6 +213,10 @@ describe('buildCards', () => {
       detail: 'paused: set up again',
       detailLong: "This folder's sync records belong to a different account or folder, so nothing syncs. Disconnect, then set it up again.",
     },
+    'folder-replaced': {
+      detail: 'paused: folder changed',
+      detailLong: "This folder's contents were replaced since it was set up, so nothing syncs and nothing was deleted on hyperclay.com. Put the original folder back, or Disconnect and set it up again.",
+    },
   };
 
   for (const [reason, copy] of Object.entries(PAUSED_COPY)) {
@@ -250,7 +254,7 @@ describe('buildCards', () => {
   });
 
   test('personal folder-missing and identity-mismatch reach the same copy', () => {
-    for (const reason of ['folder-missing', 'identity-mismatch']) {
+    for (const reason of ['folder-missing', 'identity-mismatch', 'folder-replaced']) {
       const cards = buildCards(snapshot({
         roots: [personalRoot()],
         sessions: [session({

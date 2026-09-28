@@ -8,6 +8,8 @@ const { SyncLogger } = require('../sync-engine/logger');
 const { getAccounts, listNodes } = require('../sync-engine/api-client');
 const { SessionRunner } = require('../sync-engine/reconcile/session-runner');
 const { firstBind, inventoryTotals, BIND_MARKER } = require('../sync-engine/reconcile/first-bind');
+const nodeMap = require('../sync-engine/node-map');
+const { classifyRoot } = require('../sync-engine/root-marker');
 const { validateRootPath, defaultTeamFolder, allocateTeamPort } = require('./roots');
 const { realpathNearestParent } = require('./utils/path-resolver');
 const { getServerBaseUrl } = require('./utils/utils');
@@ -140,10 +142,12 @@ class SyncManager extends EventEmitter {
     const resumed = setup ? null : await this.firstPassFor(session);
     // CONTRACTS §6-7: a missing folder or another identity's metadata pauses the session before
     // anything reads its baseline or its disk; a folder that came back clears its own pause.
+    let rootMarker = false;
     if (!setup) {
       const refusal = await this.localRefusal(session, root, resumed);
       if (refusal) this.persistPaused(session.id, refusal);
-      else if (this.pausedReasonFor(session) === 'folder-missing') this.persistPaused(session.id, null);
+      else if (['folder-missing', 'folder-replaced'].includes(this.pausedReasonFor(session))) this.persistPaused(session.id, null);
+      rootMarker = (await this.readIdentity(session))?.rootMarker === true;
     }
     // A bind and an import own the session's first pass, so init runs no passes
     // and opens no stream of its own. Both read the complete inventory only
@@ -215,7 +219,7 @@ class SyncManager extends EventEmitter {
     try {
       const result = await engine.init(apiKey, session.cached?.username, root.path, this.serverUrl,
         this.deviceId, resumed === 'import' ? this.v2MetaDir(session) : metaDir, {
-          sessionId: session.id, accountId,
+          sessionId: session.id, accountId, rootId: root.id, rootMarker,
           syncBase, protocol: effectiveProtocol, firstBind: noInitPasses,
           createFolder: setup,
           live: createRootLive(root),
@@ -249,15 +253,20 @@ class SyncManager extends EventEmitter {
     }
   }
 
-  async localRefusal(session, root, resumed) {
-    if (!(await pathExists(root.path))) return 'folder-missing';
-    if (resumed === 'import') return null;
-    let identity;
+  /** `identity.json`, or null when the session has none yet or it cannot be read. */
+  async readIdentity(session) {
     try {
-      identity = JSON.parse(await fs.readFile(path.join(this.metaDirFor(session), 'identity.json'), 'utf8'));
+      return JSON.parse(await fs.readFile(path.join(this.metaDirFor(session), 'identity.json'), 'utf8'));
     } catch {
       return null;
     }
+  }
+
+  async localRefusal(session, root, resumed) {
+    if (!(await pathExists(root.path))) return 'folder-missing';
+    if (resumed === 'import') return null;
+    const identity = await this.readIdentity(session);
+    if (!identity) return null;
     const expected = {
       serverUrl: this.serverUrl,
       actorId: this.settingsStore.get().actor?.id,
@@ -269,7 +278,14 @@ class SyncManager extends EventEmitter {
       if (value == null || identity[field] == null) continue;
       if (String(identity[field]) !== String(value)) return 'identity-mismatch';
     }
-    return null;
+    // The folder has to be the one the session was bound to (root-marker.js). The engine is
+    // what adopts an unmarked folder; here the session is only refused or let through.
+    const baseline = await nodeMap.load(this.metaDirFor(session));
+    return classifyRoot(root.path, {
+      rootId: root.id,
+      required: identity.rootMarker === true,
+      baselineSize: baseline ? baseline.size : 0,
+    }).refusal;
   }
 
   /**
@@ -649,6 +665,7 @@ class SyncManager extends EventEmitter {
       const reason = entry.session.paused?.reason;
       if (reason === 'port-taken') continue;
       if (reason === 'identity-mismatch') continue;
+      if (reason === 'folder-replaced') continue;
       if (reason === 'folder-missing' && !entry.engine.rootPresent()) continue;
       if (!allFeaturesOn(discovery)) continue;
       const account = accountFor(discovery, entry.session);

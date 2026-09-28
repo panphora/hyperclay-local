@@ -107,7 +107,7 @@ async function getFileStats(filePath) {
  * Ensure directory exists
  */
 async function ensureDirectory(dirPath) {
-  await fs.mkdir(dirPath, { recursive: true });
+  return fs.mkdir(dirPath, { recursive: true });
 }
 
 /**

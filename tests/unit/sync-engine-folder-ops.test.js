@@ -155,6 +155,8 @@ describe('folder delete cleans up descendants in nodeMap', () => {
     });
 
     deleteNode.mockResolvedValueOnce({});
+    // The real `fileExists` is synchronous: the root is present, the deleted path is gone.
+    fileOps.fileExists.mockImplementation((p) => p === syncEngine.syncFolder);
 
     syncEngine._registerPendingUnlink('projects', 'folder');
 
