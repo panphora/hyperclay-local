@@ -153,7 +153,7 @@ function gone() {
   fileOps.getFileStats.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
 }
 const ROOT = '/test/sync/';
-const rel = (abs) => abs.startsWith(ROOT) ? abs.slice(ROOT.length) : (abs === '/test/sync' ? '' : abs);
+const rel = (a) => { const abs = a.replace(/\\/g, '/').replace(/^[A-Za-z]:/, ''); return abs.startsWith(ROOT) ? abs.slice(ROOT.length) : (abs === '/test/sync' ? '' : abs); };
 const cs = (c) => realBufferChecksum(Buffer.from(c));
 let files, dirs;
 function parentsOf(r) { const out = []; const parts = r.split('/'); for (let i = 1; i < parts.length; i++) out.push(parts.slice(0, i).join('/')); return out; }
