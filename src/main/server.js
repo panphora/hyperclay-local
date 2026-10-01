@@ -1090,7 +1090,16 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       const href = req.headers['document-url'] || req.headers['page-url'] ||
         req.query['document-url'] || req.query['page-url'];
       if (!href || !hrefIsThisOrigin(req, String(href))) return null;
-      return resolveResourceFromHref(String(href));
+      // The same segment rules the process lane and the static route apply: a
+      // page cannot name a file outside the served folder, a dotfile or an
+      // internal folder.
+      const rel = resolveResourceFromHref(String(href));
+      try {
+        validateSegments(rel);
+      } catch {
+        return null;
+      }
+      return rel;
     };
 
     // A local process has no page, so it names an absolute path, which is then

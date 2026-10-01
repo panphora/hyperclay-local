@@ -102,15 +102,36 @@ function routeEngine(comment, engines, defaultEngine) {
 
 // ---------------------------------------------------------------- context (@ tokens)
 
+const MAX_CONTEXT_FILES = 8;
+const MAX_CONTEXT_FILE_BYTES = 256 * 1024;
+const MAX_CONTEXT_TOTAL_BYTES = 1024 * 1024;
+
+// @file references stay inside the served folder after symlinks are followed, and
+// stay small: everything here is sent to the model.
 async function resolveContext(refs = [], baseDir) {
+  const wanted = refs.filter(ref => ref !== 'page'); // @page is the page: true flag, read from disk
+  if (wanted.length > MAX_CONTEXT_FILES) {
+    throw coded('invalid_context', `too many context files (at most ${MAX_CONTEXT_FILES})`);
+  }
+  const baseReal = await fs.realpath(baseDir).catch(() => baseDir);
   const sections = [];
-  for (const ref of refs) {
-    if (ref === 'page') continue; // handled by the page: true flag, read from disk
+  let total = 0;
+  for (const ref of wanted) {
     const resolved = path.resolve(baseDir, ref);
-    if (resolved !== baseDir && !resolved.startsWith(baseDir + path.sep)) {
+    if (resolved === baseDir || !resolved.startsWith(baseDir + path.sep)) {
       throw coded('invalid_context', `@${ref} escapes the served folder`);
     }
-    const content = await fs.readFile(resolved, 'utf8').catch(() => {
+    const real = await fs.realpath(resolved).catch(() => null);
+    if (!real) throw coded('invalid_context', `cannot read @${ref}`);
+    if (!real.startsWith(baseReal + path.sep)) {
+      throw coded('invalid_context', `@${ref} escapes the served folder`);
+    }
+    const info = await fs.stat(real).catch(() => null);
+    if (!info || !info.isFile()) throw coded('invalid_context', `cannot read @${ref}`);
+    if (info.size > MAX_CONTEXT_FILE_BYTES) throw coded('invalid_context', `@${ref} is larger than 256 KB`);
+    total += info.size;
+    if (total > MAX_CONTEXT_TOTAL_BYTES) throw coded('invalid_context', 'the context files are over 1 MB in total');
+    const content = await fs.readFile(real, 'utf8').catch(() => {
       throw coded('invalid_context', `cannot read @${ref}`);
     });
     sections.push(`Context file @${ref}:\n\n${content}`);

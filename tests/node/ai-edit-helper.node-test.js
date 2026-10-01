@@ -10,6 +10,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const fsp = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
 
 const { runAiEdit, claudeArgs, codexArgs } = require('../../src/main/helpers/ai-edit');
@@ -153,6 +155,27 @@ test('an escaping context ref is refused', async () => {
     assert.equal(error.payload.code, 'invalid_context');
     assert.match(error.text, /escapes the served folder/);
   });
+});
+
+test('@file context refuses a symlink out of the folder, an oversized file and too many files', async () => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'ai-edit-ctx-'));
+  try {
+    const dir = path.join(root, 'site');
+    await fsp.mkdir(dir);
+    await fsp.writeFile(path.join(root, 'secret.txt'), 'outside');
+    await fsp.symlink(path.join(root, 'secret.txt'), path.join(dir, 'link.md'));
+    await fsp.writeFile(path.join(dir, 'big.txt'), 'x'.repeat(300 * 1024));
+    await fsp.writeFile(path.join(dir, 'doc.html'), '<p>x</p>');
+    const run = (refs) => runAiEdit(
+      { elementHTML: '<p>x</p>', tag: 'p', comment: 'tighten', editId: 'p', contextRefs: refs },
+      { file: path.join(dir, 'doc.html'), baseDir: dir, settings: {} },
+    );
+    await assert.rejects(run(['link.md']), err => err.code === 'invalid_context' && /escapes/.test(err.message));
+    await assert.rejects(run(['big.txt']), err => err.code === 'invalid_context' && /256 KB/.test(err.message));
+    await assert.rejects(run(Array.from({ length: 9 }, (_, i) => `f${i}.md`)), err => err.code === 'invalid_context' && /too many/.test(err.message));
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
 });
 
 test('generic engine: the prompt reaches stdin and the reply is the result', async () => {

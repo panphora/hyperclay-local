@@ -499,3 +499,46 @@ test('/_/meta reads ai-edit as unavailable when the AI Editing toggle is off', a
     assert.deepEqual((await res.json()).document.helpers, [{ name: 'ai-edit', state: 'unavailable' }]);
   });
 });
+
+test('one AI edit at a time per document: a second is refused as helper_busy, a reused id as duplicate_request', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  await withHelperApp({
+    html: documentHTML({ helpers: [] }),
+    aiEdit: { run: async () => { await gate; return { html: '<p>edited</p>', model: 'mock', stopReason: 'end_turn' }; } },
+  }, async (h) => {
+    const stream = await h.page.subscribe();
+    const edit = (id) => request(id, 'ai-edit', { payload: { elementHTML: '<p>x</p>', tag: 'p', comment: 'tighten', editId: 'p' } });
+
+    await h.page.send(edit('e1'));
+    await awaitFrame(stream, (frame) => frame.id === 'e1' && frame.type === 'wire/ack');
+
+    await h.page.send(edit('e1'));
+    const dup = await awaitFrame(stream, (frame) => frame.id === 'e1' && frame.type === 'wire/error');
+    assert.equal(dup.payload.code, 'duplicate_request');
+
+    await h.page.send(edit('e2'));
+    const busy = await awaitRequest(stream, 'e2');
+    assert.equal(busy.at(-1).type, 'wire/error');
+    assert.equal(busy.at(-1).payload.code, 'helper_busy');
+
+    release();
+    const done = await awaitFrame(stream, (frame) => frame.id === 'e1' && frame.type === 'wire/done');
+    assert.equal(done.payload.html, '<p>edited</p>');
+  });
+});
+
+test('a page whose Document-URL climbs out of the served folder reaches no helper', async () => {
+  let runs = 0;
+  await withHelperApp({
+    html: documentHTML({ helpers: [] }),
+    aiEdit: { run: async () => { runs += 1; return { html: '<p>x</p>', model: 'mock', stopReason: 'end_turn' }; } },
+  }, async (h) => {
+    const outside = h.page.forDocument(`${h.page.origin}/..%2foutside.html`);
+    const res = await outside.send(request('t1', 'ai-edit', { payload: { elementHTML: '<p>x</p>', tag: 'p', comment: 'x', editId: 'p', page: true } }));
+    assert.ok(res.status >= 400, `refused, got ${res.status}`);
+    const meta = await fetch(`${h.page.origin}/_/meta`, { headers: { 'Document-URL': `${h.page.origin}/..%2foutside.html` } });
+    assert.ok(meta.status >= 400 || !(await meta.json()).document, 'no document block for an outside path');
+    assert.equal(runs, 0);
+  });
+});

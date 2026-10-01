@@ -52,6 +52,7 @@ function programAvailable(program) {
 
 function createHelperDispatcher({ baseDir, helpers, backupBaseline, logger = console }) {
   const live = new Map(); // `${file}\n${id}` -> AbortController
+  const aiEditRunning = new Set(); // documents with an AI edit in flight: one at a time each
   const pendingApprovals = new Map(); // `${file}\n${name}` -> Promise
 
   const log = (message) => {
@@ -293,9 +294,18 @@ function createHelperDispatcher({ baseDir, helpers, backupBaseline, logger = con
         refuse(publish, env, 'helper_not_granted', AI_EDIT_OFF_TEXT);
         return;
       }
+      if (live.has(liveKey)) {
+        refuse(publish, env, 'duplicate_request', 'a request with this id is already running');
+        return;
+      }
+      if (aiEditRunning.has(filePath)) {
+        refuse(publish, env, 'helper_busy', 'an AI edit is already running on this document');
+        return;
+      }
       publishFrame(publish, env, { type: 'wire/ack', payload: { mode: 'jsonl', budgetMs } });
       const controller = new AbortController();
       live.set(liveKey, controller);
+      aiEditRunning.add(filePath);
       onCancel(env.id, () => controller.abort());
       const budget = setTimeout(() => controller.abort(), budgetMs);
       try {
@@ -324,6 +334,7 @@ function createHelperDispatcher({ baseDir, helpers, backupBaseline, logger = con
       } finally {
         clearTimeout(budget);
         live.delete(liveKey);
+        aiEditRunning.delete(filePath);
       }
       return;
     }
