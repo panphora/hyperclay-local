@@ -21,9 +21,8 @@
  *   machine's Claude Code login.
  * - codex: `codex exec` in a read-only sandbox, ephemeral, config-isolated;
  *   final-only via --output-last-message (no streaming).
- * - agy: PTY-wrapped (`script`) because agy silently drops stdout in
- *   non-TTY runs; the prompt and the reply both travel through files in a
- *   scratch dir that doubles as the sandbox cwd. Final-only.
+ * - agy is refused as unsupported: it can read files without asking and has
+ *   no switch to stop that, so it cannot run with no tools.
  * - generic (user-defined engines): prompt on stdin (or an argv-level
  *   {prompt} placeholder — never through a shell), stdout as progress,
  *   exit 0 = success. A shell script can be an agent.
@@ -50,14 +49,14 @@ const BUILTIN_ENGINES = {
   claude: { adapter: 'claude', model: 'claude-opus-5-5' },
   fable: { adapter: 'claude', model: 'claude-fable-5-1' },
   codex: { adapter: 'codex' },
-  agy: { adapter: 'agy' }
+  agy: { adapter: 'unsupported' }
 };
 
 const SYSTEM = `You edit one HTML element on a static page.
-Reply with exactly one complete element: the revised version of the element you are given, keeping its tag and its data-edit-id attribute.
-Output raw HTML only — no markdown fences, no commentary before or after. Your reply is morphed into the live page verbatim.
+Reply with exactly one complete element: the revised version of the element you are given, keeping its tag and every attribute it already has (id, class, data-*).
+Output raw HTML only, no markdown fences, no commentary before or after. Your reply is morphed into the live page verbatim.
 The page's stylesheet is external to the element; stay consistent with the class and structure conventions visible in the element you are given.
-Do not add <script> tags or inline event handlers unless the request explicitly asks for them.`;
+Never add <script> tags, inline event handlers or javascript: URLs. The page refuses a reply that contains them.`;
 
 const isMock = () => process.env.MOCK_MODEL === '1';
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -130,60 +129,95 @@ function buildUserPrompt(payload, comment, contextSections, pageText) {
 
 // ---------------------------------------------------------------- adapters
 
-function claudeAdapter(engine, userPrompt, ctx) {
-  return new Promise((resolve, reject) => {
-    // No --bare: it skips the credential store, which breaks keyless
-    // subscription auth (verified 2026-07-02) — the whole point here.
-    const child = spawn('claude', [
-      '-p',
-      '--model', engine.model,
-      '--append-system-prompt', SYSTEM,
-      '--tools', '',
-      '--max-turns', '1',
-      '--output-format', 'stream-json',
-      '--include-partial-messages',
-      '--verbose'
-    ], { cwd: ctx.baseDir, env: ctx.env, stdio: ['pipe', 'pipe', 'pipe'], signal: ctx.signal });
-    child.stdin.end(userPrompt);
+// No --bare: it skips the credential store, which breaks keyless subscription
+// auth (verified 2026-07-02). --tools '' removes the built-in tools only; MCP
+// servers from the person's config still load unless --strict-mcp-config is
+// passed with no --mcp-config (verified 2026-09-30).
+function claudeArgs(model) {
+  return [
+    '-p',
+    '--model', model,
+    '--append-system-prompt', SYSTEM,
+    '--tools', '',
+    '--strict-mcp-config',
+    '--no-session-persistence',
+    '--max-turns', '1',
+    '--output-format', 'stream-json',
+    '--include-partial-messages',
+    '--verbose'
+  ];
+}
 
-    let result = null;
-    let modelSeen = engine.model;
-    let stderrTail = '';
-    let buf = '';
-    child.stdout.on('data', chunk => {
-      buf += chunk;
-      const lines = buf.split('\n');
-      buf = lines.pop();
-      for (const line of lines) {
-        let event;
-        try { event = JSON.parse(line); } catch { continue; }
-        if (event.type === 'stream_event' && event.event?.delta?.type === 'text_delta') {
-          ctx.progress(event.event.delta.text);
-        } else if (event.type === 'system' && event.subtype === 'init') {
-          modelSeen = event.model;
-        } else if (event.type === 'result') {
-          result = event;
+// A read-only sandbox still lets codex run shell commands; these features are
+// what give it tools. With them off it can only answer (verified 2026-09-30).
+const CODEX_DISABLED_FEATURES = [
+  'shell_tool', 'unified_exec', 'apps', 'browser_use', 'computer_use',
+  'multi_agent', 'plugins', 'image_generation', 'view_image'
+];
+
+function codexArgs(dir, outFile) {
+  return [
+    'exec',
+    '--ephemeral', '--ignore-user-config', '--ignore-rules',
+    '--skip-git-repo-check',
+    '--sandbox', 'read-only',
+    ...CODEX_DISABLED_FEATURES.flatMap(feature => ['--disable', feature]),
+    '-C', dir,
+    '-o', outFile,
+    '-'
+  ];
+}
+
+async function claudeAdapter(engine, userPrompt, ctx) {
+  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-edit-claude-'));
+  try {
+    return await new Promise((resolve, reject) => {
+      const child = spawn('claude', claudeArgs(engine.model),
+        { cwd: scratch, env: ctx.env, stdio: ['pipe', 'pipe', 'pipe'], signal: ctx.signal });
+      child.stdin.on('error', () => {});
+      child.stdin.end(userPrompt);
+
+      let result = null;
+      let modelSeen = engine.model;
+      let stderrTail = '';
+      let buf = '';
+      child.stdout.on('data', chunk => {
+        buf += chunk;
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          let event;
+          try { event = JSON.parse(line); } catch { continue; }
+          if (event.type === 'stream_event' && event.event?.delta?.type === 'text_delta') {
+            ctx.progress(event.event.delta.text);
+          } else if (event.type === 'system' && event.subtype === 'init') {
+            modelSeen = event.model;
+          } else if (event.type === 'result') {
+            result = event;
+          }
         }
-      }
+      });
+      child.stderr.on('data', chunk => { stderrTail = (stderrTail + chunk).slice(-400); });
+      child.on('error', reject);
+      child.on('close', code => {
+        if (ctx.signal.aborted) {
+          reject(abortError());
+        } else if (!result) {
+          reject(new Error(`claude exited (${code}) without a result${stderrTail ? ': ' + stderrTail.trim() : ''}`));
+        } else if (result.is_error) {
+          reject(new Error(String(result.result || result.subtype)));
+        } else {
+          resolve({
+            html: stripFences(result.result || ''),
+            stopReason: result.stop_reason || (result.subtype === 'success' ? 'end_turn' : result.subtype),
+            model: modelSeen
+          });
+        }
+      });
     });
-    child.stderr.on('data', chunk => { stderrTail = (stderrTail + chunk).slice(-400); });
-    child.on('error', reject);
-    child.on('close', code => {
-      if (ctx.signal.aborted) {
-        reject(abortError());
-      } else if (!result) {
-        reject(new Error(`claude exited (${code}) without a result${stderrTail ? ': ' + stderrTail.trim() : ''}`));
-      } else if (result.is_error) {
-        reject(new Error(String(result.result || result.subtype)));
-      } else {
-        resolve({
-          html: stripFences(result.result || ''),
-          stopReason: result.stop_reason || (result.subtype === 'success' ? 'end_turn' : result.subtype),
-          model: modelSeen
-        });
-      }
-    });
-  });
+  } finally {
+    fs.rm(scratch, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 async function codexAdapter(engine, userPrompt, ctx) {
@@ -191,14 +225,10 @@ async function codexAdapter(engine, userPrompt, ctx) {
   const outFile = path.join(scratch, 'last-message.txt');
   try {
     await new Promise((resolve, reject) => {
-      const child = spawn('codex', [
-        'exec',
-        '--ephemeral', '--ignore-user-config', '--ignore-rules',
-        '--sandbox', 'read-only',
-        '-C', ctx.baseDir,
-        '-o', outFile,
-        SYSTEM + '\n\n' + userPrompt
-      ], { env: ctx.env, stdio: ['ignore', 'ignore', 'pipe'], signal: ctx.signal });
+      const child = spawn('codex', codexArgs(scratch, outFile),
+        { cwd: scratch, env: ctx.env, stdio: ['pipe', 'ignore', 'pipe'], signal: ctx.signal });
+      child.stdin.on('error', () => {});
+      child.stdin.end(SYSTEM + '\n\n' + userPrompt);
       let stderrTail = '';
       child.stderr.on('data', chunk => { stderrTail = (stderrTail + chunk).slice(-400); });
       child.on('error', reject);
@@ -211,39 +241,6 @@ async function codexAdapter(engine, userPrompt, ctx) {
     const text = await fs.readFile(outFile, 'utf8').catch(() => '');
     if (!text.trim()) throw new Error('codex produced no reply');
     return { html: stripFences(text), stopReason: 'end_turn', model: 'codex' };
-  } finally {
-    fs.rm(scratch, { recursive: true, force: true }).catch(() => {});
-  }
-}
-
-async function agyAdapter(engine, userPrompt, ctx) {
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-edit-agy-'));
-  const promptFile = path.join(scratch, 'prompt.md');
-  const replyFile = path.join(scratch, 'reply.html');
-  try {
-    await fs.writeFile(promptFile, SYSTEM + '\n\n' + userPrompt +
-      `\n\nWrite your complete reply (the raw HTML only, nothing else) to the file ${replyFile} — create it. Do not print the reply anywhere else.`);
-    // The prompt travels through a file so no user content enters argv or a
-    // shell string; the scratch dir is also the cwd, keeping agy's sandbox
-    // writes confined to it.
-    const instruction = `Read the file ${promptFile} and follow the instructions in it exactly.`;
-    const argv = process.platform === 'linux'
-      ? ['script', '-qec', `agy -p ${JSON.stringify(instruction)} --sandbox --dangerously-skip-permissions`, '/dev/null']
-      : ['script', '-q', '/dev/null', 'agy', '-p', instruction, '--sandbox', '--dangerously-skip-permissions'];
-    await new Promise((resolve, reject) => {
-      const child = spawn(argv[0], argv.slice(1), { cwd: scratch, env: ctx.env, stdio: ['ignore', 'ignore', 'pipe'], signal: ctx.signal });
-      let stderrTail = '';
-      child.stderr.on('data', chunk => { stderrTail = (stderrTail + chunk).slice(-400); });
-      child.on('error', reject);
-      child.on('close', code => {
-        if (ctx.signal.aborted) reject(abortError());
-        else if (code !== 0) reject(new Error(`agy exited (${code})${stderrTail ? ': ' + stderrTail.trim() : ''}`));
-        else resolve();
-      });
-    });
-    const text = await fs.readFile(replyFile, 'utf8').catch(() => '');
-    if (!text.trim()) throw new Error('agy produced no reply (its stdout is unreliable headless; the reply file stayed empty)');
-    return { html: stripFences(text), stopReason: 'end_turn', model: 'agy' };
   } finally {
     fs.rm(scratch, { recursive: true, force: true }).catch(() => {});
   }
@@ -284,7 +281,7 @@ function genericAdapter(engine, userPrompt, ctx) {
   });
 }
 
-const ADAPTERS = { claude: claudeAdapter, codex: codexAdapter, agy: agyAdapter, generic: genericAdapter };
+const ADAPTERS = { claude: claudeAdapter, codex: codexAdapter, generic: genericAdapter };
 
 async function mockStream(payload, comment, label, progress, signal) {
   const stop = comment.match(/\[mock:(\w+)\]/);
@@ -326,6 +323,9 @@ async function runAiEdit(payload, { file, baseDir, settings, signal, progress })
   }
   const { engine, comment: cleanComment } = routed;
   const label = engine.model || engine.name;
+  if (engine.adapter === 'unsupported') {
+    throw coded('engine_unsupported', `@${engine.name} can't be used for AI editing: it can read files without asking, and AI editing only runs agents with no tools`);
+  }
   log(`[${payload.editId}] ${isMock() ? 'mock' : label}` +
     (payload.contextRefs?.length ? ` context: ${payload.contextRefs.join(', ')}` : '') +
     (payload.page ? ' +page' : ''));
@@ -358,8 +358,8 @@ async function runAiEdit(payload, { file, baseDir, settings, signal, progress })
   } catch (err) {
     if (err.name === 'AbortError') throw err;
     if (err.code === 'ENOENT') {
-      const binary = engine.adapter === 'generic' ? `its command` : `\`${engine.adapter === 'agy' ? 'agy' : engine.adapter}\``;
-      throw coded('engine_unavailable', `@${engine.name} isn't available — ${binary} was not found on this machine`);
+      const binary = engine.adapter === 'generic' ? 'its command' : `\`${engine.adapter}\``;
+      throw coded('engine_unavailable', `@${engine.name} isn't available: ${binary} was not found on this machine. Install it and sign in, or pick another agent with @claude, @fable or @codex.`);
     }
     throw coded('engine_failed', err.message);
   }
@@ -376,4 +376,4 @@ async function runAiEdit(payload, { file, baseDir, settings, signal, progress })
   return { html: result.html, stopReason: result.stopReason, model: result.model };
 }
 
-module.exports = { runAiEdit, resolveEngines, routeEngine };
+module.exports = { runAiEdit, resolveEngines, routeEngine, claudeArgs, codexArgs };

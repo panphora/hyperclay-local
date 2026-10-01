@@ -12,7 +12,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { runAiEdit } = require('../../src/main/helpers/ai-edit');
+const { runAiEdit, claudeArgs, codexArgs } = require('../../src/main/helpers/ai-edit');
 const { documentHTML, awaitRequest, withHelperApp } = require('../helpers/helper-harness');
 
 const FIXTURES = path.join(__dirname, '..', 'fixtures');
@@ -240,4 +240,29 @@ test('with the toggle off ai-edit is refused and nobody is asked', async () => {
     assert.equal(frames[0].text, "AI Editing is off. Turn it on in Hyperclay Local's Options.");
     assert.equal(h.approvals.length, 0, 'a built-in helper needs no approval');
   });
+});
+
+test('claude runs with no built-in tools and no MCP servers', () => {
+  const args = claudeArgs('claude-opus-5-5');
+  assert.ok(args.includes('--strict-mcp-config'));
+  assert.equal(args[args.indexOf('--tools') + 1], '');
+  assert.equal(args[args.indexOf('--max-turns') + 1], '1');
+  assert.ok(!args.includes('--mcp-config'));
+});
+
+test('codex runs with its tool features disabled and reads the prompt from stdin', () => {
+  const args = codexArgs('/tmp/x', '/tmp/x/out.txt');
+  for (const feature of ['shell_tool', 'unified_exec', 'apps', 'browser_use', 'computer_use', 'multi_agent', 'plugins']) {
+    assert.equal(args[args.indexOf(feature) - 1], '--disable', feature);
+  }
+  assert.ok(args.includes('--skip-git-repo-check'));
+  assert.equal(args.at(-1), '-');
+});
+
+test('@agy is refused as unsupported before anything runs', async () => {
+  await assert.rejects(
+    runAiEdit({ elementHTML: '<p>x</p>', tag: 'p', comment: '@agy tighten', editId: 'p' },
+      { file: '/tmp/none.html', baseDir: '/tmp', settings: {} }),
+    err => err.code === 'engine_unsupported' && /@agy/.test(err.message)
+  );
 });

@@ -23,6 +23,7 @@ const { extractOpenPaths, handleOpenPath, htmlClayLauncher } = require('./open-p
 const { removeProgram, forgetDecisions } = require('./helpers/store');
 const { runAiEdit } = require('./helpers/ai-edit');
 const { rootAccountFor } = require('./helpers/root-account');
+const { aiEditEnabled, toggledAiEdit } = require('./helpers/ai-edit-setting');
 const { buildCards, worstState, trayIconVariant, trayTooltip, switchSublines, toLine, trayMenuModel } = require('./ui/card-model');
 const { createNewTeamNotifier } = require('./new-team-notifier');
 const { isAllowedExternalUrl, requireRoot, requireSession, requireAccount, cardMenuModel, disconnectDialog, removeFolderDialog, movePortDialog, flattenConflicts, ACTIVITY_THROTTLE_MS, createThrottle } = require('./ui/main-ipc');
@@ -441,7 +442,7 @@ function helpersFor(root) {
     saveSettings: () => saveSettings(settings),
     approve: approveHelperQueued,
     aiEdit: {
-      enabled: () => settings.aiEdit?.enabled === true,
+      enabled: () => aiEditEnabled(settings),
       run: runAiEdit,
     },
   };
@@ -537,7 +538,7 @@ function cardSubmenu(card, model) {
 }
 
 function toggleAiEditing() {
-  settings.aiEdit = { ...settings.aiEdit, enabled: !(settings.aiEdit?.enabled === true) };
+  settings.aiEdit = toggledAiEdit(settings);
   saveSettings(settings);
   updateTrayMenu();
 }
@@ -575,7 +576,7 @@ function getTrayMenuTemplate(cards = lastCards) {
     serverEnabled: settings.serverEnabled === true,
     syncEnabled: settings.syncEnabled === true,
     hasApiKey: !!settings.hasApiKey,
-    aiEditEnabled: settings.aiEdit?.enabled === true
+    aiEditEnabled: aiEditEnabled(settings)
   });
 
   const cardItems = cards.filter((card) => card.state !== 'viewer');
@@ -1551,9 +1552,9 @@ ipcMain.handle('show-options-menu', (event) => {
     {
       label: 'AI Editing',
       type: 'checkbox',
-      checked: settings.aiEdit?.enabled === true,
+      checked: aiEditEnabled(settings),
       click: () => {
-        settings.aiEdit = { ...settings.aiEdit, enabled: !(settings.aiEdit?.enabled === true) };
+        settings.aiEdit = toggledAiEdit(settings);
         saveSettings(settings);
         updateTrayMenu();
       }
