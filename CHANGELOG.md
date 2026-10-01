@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- AI editing is on by default. A settings file written before the switch existed reads as on, and turning it off in the tray still sticks.
+- Every built-in agent runs with no tools. Claude Code runs with `--strict-mcp-config` in an empty scratch folder, so the MCP servers in your own Claude config no longer load for an AI edit. Codex runs with its shell and other tool features disabled and receives the prompt on standard input. `@agy` is refused as unsupported, because agy can read files without asking and has no switch to stop that.
+- The agent is told to keep every attribute of the element it rewrites, and that a reply adding code is refused.
+- A missing agent CLI names the agent and says how to pick another one.
+
+### Fixed
+- A page's `Document-URL` can no longer name a file outside the served folder. The browser lane now applies the same segment rules as the process lane and the static route.
+- `@file` context follows symlinks only within the served folder, and is limited to 8 files, 256 KB each and 1 MB in total.
+- One AI edit runs per document at a time, and a request that reuses a running request's id is refused.
+
 ## [1.23.0] - 2026-08-29
 
 ### Added

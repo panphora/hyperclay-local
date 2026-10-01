@@ -140,6 +140,18 @@ The app runs an embedded Express.js server (same as the Node.js version) with:
 - **Auto-resume**: Sync restarts automatically on app launch if previously enabled
 - **Sync queue**: Changes are queued and synced reliably with conflict handling
 
+### AI Editing
+
+Select some text in any HTML file that loads ClayJS, press ⌘K (Ctrl+K on Windows and Linux) or click the small **AI** chip at the end of the selection, and describe the change. An agent on your computer rewrites the block around the selection, and the page shows the rewrite in place. Keep saves it. Revert puts the original back. Nothing is saved while the rewrite waits for your answer.
+
+- On by default. Turn it off with **AI Editing** in the tray menu.
+- Uses the agent CLIs you already have installed and signed in: Claude Code by default, `@fable` for Fable, `@codex` for the Codex CLI. Start the request with the name to pick one.
+- The agent runs with no tools: it cannot read files, run commands or browse. It sees the block's HTML, the selected text, your request, any file you name with `@name.ext` (it must sit inside the served folder; at most 8 files, 256 KB each, 1 MB in total), and with `@page` the whole saved page. The agent CLI sends that prompt to its model provider.
+- A reply that adds a script, an inline event handler or a `javascript:` URL is refused.
+- `@agy` is not supported, because agy can read files without asking.
+- One AI edit runs per document at a time.
+- Your own agents: add `"aiEdit": { "engines": { "name": ["command", "arg", "{prompt}"] } }` to `settings.json` in the app's data folder. An argument containing `{prompt}` receives the prompt; without one, the prompt arrives on standard input. `"default": "name"` makes one the default.
+
 ## 🛡️ Security Features
 
 - **Sandboxed renderer**: Web content runs in isolated context
