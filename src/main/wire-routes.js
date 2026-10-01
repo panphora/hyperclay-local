@@ -87,7 +87,7 @@ function mountWire(app, { hub, resolveBrowserTarget, resolveProcessTarget, onHan
       mode = req.query.mode === undefined || req.query.mode === '' ? 'raw' : req.query.mode;
       if (mode !== 'raw' && mode !== 'jsonl') return sendError(res, 400, 'invalid handler mode');
     }
-    const key = isBrowser ? resolveBrowserTarget(req) : await resolveProcessTarget(req.query.file);
+    const key = isBrowser ? await resolveBrowserTarget(req) : await resolveProcessTarget(req.query.file);
     if (!key) return res.status(404).type('text/plain').send('Not Found');
 
     const sub = createWireSub({ key, handler: wantHandler, mode, res });
@@ -157,7 +157,7 @@ function mountWire(app, { hub, resolveBrowserTarget, resolveProcessTarget, onHan
     const id = body.id;
     if (typeof id !== 'string' || id === '' || id.length > MAX_WIRE_ID_LEN) return sendError(res, 400, 'invalid id');
 
-    const key = isBrowser ? resolveBrowserTarget(req) : await resolveProcessTarget(body.file);
+    const key = isBrowser ? await resolveBrowserTarget(req) : await resolveProcessTarget(body.file);
     if (!key) return sendError(res, 404, 'unknown file');
 
     let text = typeof body.text === 'string' ? body.text : '';
@@ -177,12 +177,15 @@ function mountWire(app, { hub, resolveBrowserTarget, resolveProcessTarget, onHan
     if (hub.namedHandler) {
       const cancelKey = `${key}\n${id}`;
       if (env.helper && (type === 'wire/request' || type === 'wire/describe')) {
+        // A duplicate id is refused with a terminal frame under the running
+        // request's id; only the dispatch that registered the cancel removes it.
+        const owner = {};
         const publish = (frame) => {
           const out = { v: 1, id, file: key, helper: env.helper, ...frame, from: 'process' };
-          if (isTerminal(out)) hub.namedCancels.delete(cancelKey);
+          if (isTerminal(out) && hub.namedCancels.get(cancelKey)?.owner === owner) hub.namedCancels.delete(cancelKey);
           return hub.publish(key, out);
         };
-        const onCancel = (cancelId, cb) => hub.namedCancels.set(`${key}\n${cancelId}`, cb);
+        const onCancel = (cancelId, cb) => hub.namedCancels.set(`${key}\n${cancelId}`, { cb, owner });
         Promise.resolve()
           .then(() => hub.namedHandler(env, { file: key, publish, onCancel }))
           .catch((err) => publish({
@@ -193,7 +196,7 @@ function mountWire(app, { hub, resolveBrowserTarget, resolveProcessTarget, onHan
         return res.json({ ok: true, delivered: 1, observers: 0 });
       }
       if (type === 'wire/cancel' && hub.namedCancels.has(cancelKey)) {
-        const cb = hub.namedCancels.get(cancelKey);
+        const { cb } = hub.namedCancels.get(cancelKey);
         hub.namedCancels.delete(cancelKey);
         cb();
         return res.json({ ok: true, delivered: 1, observers: 0 });

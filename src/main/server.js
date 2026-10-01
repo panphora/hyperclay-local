@@ -1084,9 +1084,10 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     // (wire.go:684-700): the older spellings stay because a document that opened
     // a wire before the rename hardcoded one in its own inline script. An absolute
     // URL must name this host, or a page could drive another origin's wire.
-    // Synchronous on purpose — it reads headers, never the disk, and a page that
-    // exists is a file that exists.
-    const resolveBrowserTarget = (req) => {
+    // The consent check runs too, so a symlink the static route refuses is refused
+    // here. A file that does not exist yet is not refused: nothing can be read
+    // through it.
+    const resolveBrowserTarget = async (req) => {
       const href = req.headers['document-url'] || req.headers['page-url'] ||
         req.query['document-url'] || req.query['page-url'];
       if (!href || !hrefIsThisOrigin(req, String(href))) return null;
@@ -1098,6 +1099,11 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         validateSegments(rel);
       } catch {
         return null;
+      }
+      try {
+        await resolveReadPath(paths, rel);
+      } catch (err) {
+        if (err?.status !== 404) return null;
       }
       return rel;
     };

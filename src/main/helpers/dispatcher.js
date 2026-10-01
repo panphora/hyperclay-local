@@ -111,7 +111,10 @@ function createHelperDispatcher({ baseDir, helpers, backupBaseline, logger = con
     const settings = helpers.settings();
     const account = accountOf();
     const names = await declaredNames(filePath);
-    const list = names.map(name => ({ name, state: stateOf(settings, filePath, name, account) }));
+    // ai-edit is built in, so a document declaring it gets the built-in entry once.
+    const list = names
+      .filter(name => name !== 'ai-edit')
+      .map(name => ({ name, state: stateOf(settings, filePath, name, account) }));
     if (HELPER_DOCUMENT.test(filePath)) {
       list.push({ name: 'ai-edit', state: aiEditReady() ? 'ready' : 'unavailable' });
     }
@@ -292,6 +295,10 @@ function createHelperDispatcher({ baseDir, helpers, backupBaseline, logger = con
     if (name === 'ai-edit') {
       if (!aiEditReady()) {
         refuse(publish, env, 'helper_not_granted', AI_EDIT_OFF_TEXT);
+        return;
+      }
+      if (env.type === 'wire/describe') {
+        refuse(publish, env, 'invalid_type', 'ai-edit does not support wire/describe');
         return;
       }
       if (live.has(liveKey)) {

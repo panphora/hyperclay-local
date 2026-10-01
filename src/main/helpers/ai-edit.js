@@ -44,6 +44,7 @@ const os = require('os');
 const path = require('path');
 
 const { loginPath, withPath } = require('./runner');
+const { validateSegments } = require('../utils/path-resolver');
 
 const BUILTIN_ENGINES = {
   claude: { adapter: 'claude', model: 'claude-opus-5-5' },
@@ -90,7 +91,7 @@ function resolveEngines(aiEditSettings = {}) {
 // A leading bare @word (no dot, no slash) names an engine. @page is a context
 // token, never an engine.
 function routeEngine(comment, engines, defaultEngine) {
-  const match = comment.match(/^\s*@([a-z0-9_-]+)(?![./])\s*/i);
+  const match = comment.match(/^\s*@([a-z0-9_-]+)(?![\w./-])\s*/i);
   if (!match) return { engine: engines[defaultEngine], comment };
   const name = match[1].toLowerCase();
   if (name === 'page') return { engine: engines[defaultEngine], comment };
@@ -108,6 +109,17 @@ const MAX_CONTEXT_TOTAL_BYTES = 1024 * 1024;
 
 // @file references stay inside the served folder after symlinks are followed, and
 // stay small: everything here is sent to the model.
+// The static route's segment rules: no dotfile, no dot folder, no internal folder,
+// checked against the name asked for and against where it really lands.
+function visibleInFolder(rel) {
+  try {
+    validateSegments(rel.split(path.sep).join('/'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function resolveContext(refs = [], baseDir) {
   const wanted = refs.filter(ref => ref !== 'page'); // @page is the page: true flag, read from disk
   if (wanted.length > MAX_CONTEXT_FILES) {
@@ -121,10 +133,16 @@ async function resolveContext(refs = [], baseDir) {
     if (resolved === baseDir || !resolved.startsWith(baseDir + path.sep)) {
       throw coded('invalid_context', `@${ref} escapes the served folder`);
     }
+    if (!visibleInFolder(path.relative(baseDir, resolved))) {
+      throw coded('invalid_context', `@${ref} is a hidden or internal file`);
+    }
     const real = await fs.realpath(resolved).catch(() => null);
     if (!real) throw coded('invalid_context', `cannot read @${ref}`);
     if (!real.startsWith(baseReal + path.sep)) {
       throw coded('invalid_context', `@${ref} escapes the served folder`);
+    }
+    if (!visibleInFolder(path.relative(baseReal, real))) {
+      throw coded('invalid_context', `@${ref} is a hidden or internal file`);
     }
     const info = await fs.stat(real).catch(() => null);
     if (!info || !info.isFile()) throw coded('invalid_context', `cannot read @${ref}`);
@@ -141,7 +159,14 @@ async function resolveContext(refs = [], baseDir) {
 
 function buildUserPrompt(payload, comment, contextSections, pageText) {
   const parts = [`The element to edit:\n\n${payload.elementHTML}`];
-  if (payload.quote) parts.push(`The user selected this text inside the element: "${payload.quote}"`);
+  if (payload.quote) {
+    let quote = `The user selected this text inside the element: "${payload.quote}"`;
+    const sel = payload.selection;
+    if (sel && Number.isInteger(sel.start) && Number.isInteger(sel.end) && sel.start >= 0 && sel.end >= sel.start) {
+      quote += ` (characters ${sel.start} to ${sel.end} of the element's text)`;
+    }
+    parts.push(quote);
+  }
   parts.push(...contextSections);
   if (pageText) parts.push(`The full page, for context (@page):\n\n${pageText}`);
   parts.push(`Request: ${comment}`);
@@ -189,12 +214,31 @@ function codexArgs(dir, outFile) {
   ];
 }
 
+// An agent CLI may start children of its own. On Unix it leads its own process
+// group, and cancel kills the group, so nothing it started outlives the request.
+function spawnAgent(command, args, options, signal) {
+  const child = spawn(command, args, { ...options, detached: process.platform !== 'win32' });
+  if (!signal) return child;
+  const kill = () => {
+    try {
+      if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
+      else child.kill('SIGKILL');
+    } catch {
+      try { child.kill('SIGKILL'); } catch {}
+    }
+  };
+  if (signal.aborted) kill();
+  else signal.addEventListener('abort', kill, { once: true });
+  child.on('close', () => signal.removeEventListener('abort', kill));
+  return child;
+}
+
 async function claudeAdapter(engine, userPrompt, ctx) {
   const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-edit-claude-'));
   try {
     return await new Promise((resolve, reject) => {
-      const child = spawn('claude', claudeArgs(engine.model),
-        { cwd: scratch, env: ctx.env, stdio: ['pipe', 'pipe', 'pipe'], signal: ctx.signal });
+      const child = spawnAgent('claude', claudeArgs(engine.model),
+        { cwd: scratch, env: ctx.env, stdio: ['pipe', 'pipe', 'pipe'] }, ctx.signal);
       child.stdin.on('error', () => {});
       child.stdin.end(userPrompt);
 
@@ -246,8 +290,8 @@ async function codexAdapter(engine, userPrompt, ctx) {
   const outFile = path.join(scratch, 'last-message.txt');
   try {
     await new Promise((resolve, reject) => {
-      const child = spawn('codex', codexArgs(scratch, outFile),
-        { cwd: scratch, env: ctx.env, stdio: ['pipe', 'ignore', 'pipe'], signal: ctx.signal });
+      const child = spawnAgent('codex', codexArgs(scratch, outFile),
+        { cwd: scratch, env: ctx.env, stdio: ['pipe', 'ignore', 'pipe'] }, ctx.signal);
       child.stdin.on('error', () => {});
       child.stdin.end(SYSTEM + '\n\n' + userPrompt);
       let stderrTail = '';
@@ -280,9 +324,9 @@ function genericAdapter(engine, userPrompt, ctx) {
     return arg.replaceAll('{prompt}', prompt); // argv-level: never through a shell
   });
   return new Promise((resolve, reject) => {
-    const child = spawn(substituted[0], substituted.slice(1), {
-      cwd: ctx.baseDir, env: ctx.env, stdio: ['pipe', 'pipe', 'pipe'], signal: ctx.signal
-    });
+    const child = spawnAgent(substituted[0], substituted.slice(1), {
+      cwd: ctx.baseDir, env: ctx.env, stdio: ['pipe', 'pipe', 'pipe']
+    }, ctx.signal);
     child.stdin.on('error', () => {}); // agent may exit without reading stdin
     child.stdin.end(viaStdin ? prompt : '');
     let out = '';
@@ -397,4 +441,4 @@ async function runAiEdit(payload, { file, baseDir, settings, signal, progress })
   return { html: result.html, stopReason: result.stopReason, model: result.model };
 }
 
-module.exports = { runAiEdit, resolveEngines, routeEngine, claudeArgs, codexArgs };
+module.exports = { runAiEdit, resolveEngines, routeEngine, buildUserPrompt, claudeArgs, codexArgs };

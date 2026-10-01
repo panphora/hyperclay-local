@@ -14,8 +14,8 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 
-const { runAiEdit, claudeArgs, codexArgs } = require('../../src/main/helpers/ai-edit');
-const { documentHTML, awaitRequest, withHelperApp } = require('../helpers/helper-harness');
+const { runAiEdit, buildUserPrompt, routeEngine, claudeArgs, codexArgs } = require('../../src/main/helpers/ai-edit');
+const { documentHTML, awaitRequest, awaitFrame, withHelperApp } = require('../helpers/helper-harness');
 
 const FIXTURES = path.join(__dirname, '..', 'fixtures');
 const NODE = process.execPath;
@@ -288,4 +288,88 @@ test('@agy is refused as unsupported before anything runs', async () => {
       { file: '/tmp/none.html', baseDir: '/tmp', settings: {} }),
     err => err.code === 'engine_unsupported' && /@agy/.test(err.message)
   );
+});
+
+test('@file context refuses dotfiles, internal folders and a symlink to a dotfile', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ai-edit-hidden-'));
+  try {
+    await fsp.writeFile(path.join(dir, '.env'), 'SECRET=1');
+    await fsp.mkdir(path.join(dir, '.git'));
+    await fsp.writeFile(path.join(dir, '.git', 'config'), 'x');
+    await fsp.symlink(path.join(dir, '.env'), path.join(dir, 'notes.md'));
+    await fsp.writeFile(path.join(dir, 'doc.html'), '<p>x</p>');
+    const run = (refs) => runAiEdit(
+      { elementHTML: '<p>x</p>', tag: 'p', comment: 'tighten', editId: 'p', contextRefs: refs },
+      { file: path.join(dir, 'doc.html'), baseDir: dir, settings: {} },
+    );
+    for (const ref of ['.env', '.git/config', 'notes.md']) {
+      await assert.rejects(run([ref]), err => err.code === 'invalid_context' && /hidden or internal/.test(err.message), ref);
+    }
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('the prompt carries the selection offsets', () => {
+  const prompt = buildUserPrompt({ elementHTML: '<p>repeat repeat</p>', quote: 'repeat', selection: { start: 7, end: 13 } }, 'x', [], '');
+  assert.match(prompt, /"repeat" \(characters 7 to 13 of the element's text\)/);
+});
+
+test('a leading @file ref is not read as an agent name', () => {
+  const engines = { claude: { name: 'claude' } };
+  const routed = routeEngine('@notes.md tighten', engines, 'claude');
+  assert.equal(routed.engine.name, 'claude');
+  assert.equal(routed.comment, '@notes.md tighten');
+});
+
+test('wire/describe for ai-edit is refused and runs nothing', async () => {
+  let ran = false;
+  const counting = { enabled: true, run: async () => { ran = true; return { html: '<p>x</p>', model: 'm', stopReason: 'end_turn' }; } };
+  await withHelperApp({ html: documentHTML(), settings: settings(), aiEdit: counting }, async (h) => {
+    const stream = await h.page.subscribe();
+    await h.page.send({ ...request('d1', 'tighten'), type: 'wire/describe' });
+    const error = (await awaitRequest(stream, 'd1')).at(-1);
+    assert.equal(error.type, 'wire/error');
+    assert.equal(error.payload.code, 'invalid_type');
+    assert.equal(ran, false);
+  });
+});
+
+test('a duplicate request id does not take Stop away from the running edit', async () => {
+  let aborted = false;
+  const gated = {
+    enabled: true,
+    run: (payload, ctx) => new Promise((resolve, reject) => {
+      ctx.signal.addEventListener('abort', () => { aborted = true; reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); });
+    }),
+  };
+  await withHelperApp({ html: documentHTML(), settings: settings(), aiEdit: gated }, async (h) => {
+    const stream = await h.page.subscribe();
+    await h.page.send(request('e1', 'tighten'));
+    await awaitFrame(stream, (f) => f.id === 'e1' && f.type === 'wire/ack');
+    await h.page.send(request('e1', 'tighten'));
+    await awaitFrame(stream, (f) => f.id === 'e1' && f.payload?.code === 'duplicate_request');
+    await h.page.send({ type: 'wire/cancel', id: 'e1' });
+    await awaitFrame(stream, (f) => f.id === 'e1' && f.payload?.code === 'helper_cancelled');
+    assert.equal(aborted, true);
+  });
+});
+
+test('a page URL naming a symlink out of the folder is refused on the wire, as on the static route', async () => {
+  const outside = await fsp.mkdtemp(path.join(os.tmpdir(), 'ai-edit-outside-'));
+  try {
+    await fsp.writeFile(path.join(outside, 'other.html'), '<p>outside</p>');
+    await withHelperApp({ html: documentHTML(), settings: settings(), env: MOCK, aiEdit: aiEdit(true) }, async (h) => {
+      // The consent registry walks the folder once, on first use: start it before
+      // the link exists, so the link is not consented at open time.
+      await fetch(`${h.page.origin}/app.html`);
+      await fsp.symlink(path.join(outside, 'other.html'), path.join(h.dir, 'link.html'));
+      const staticGet = await fetch(`${h.page.origin}/link.html`);
+      assert.equal(staticGet.status, 403);
+      const { status } = await h.page.forDocument(`${h.page.origin}/link.html`).send(request('s1', 'tighten'));
+      assert.equal(status, 404);
+    });
+  } finally {
+    await fsp.rm(outside, { recursive: true, force: true });
+  }
 });
