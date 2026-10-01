@@ -142,7 +142,7 @@ The app runs an embedded Express.js server (same as the Node.js version) with:
 
 ### AI Editing
 
-Select some text in any HTML file that loads ClayJS, press ⌘K (Ctrl+K on Windows and Linux) or click the small **AI** chip at the end of the selection, and describe the change. An agent on your computer rewrites the block around the selection, and the page shows the rewrite in place. Keep saves it. Revert puts the original back. Nothing is saved while the rewrite waits for your answer.
+Select some text in any HTML file that loads ClayJS, press ⌘J (Ctrl+J on Windows and Linux) or click the small **AI** chip at the end of the selection, and describe the change. An agent on your computer rewrites the block around the selection, and the page shows the rewrite in place. Keep saves it. Revert puts the original back. Nothing is saved while the rewrite waits for your answer.
 
 - On by default. Turn it off with **AI Editing** in the tray menu.
 - Uses the agent CLIs you already have installed and signed in: Claude Code by default, `@fable` for Fable, `@codex` for the Codex CLI. Start the request with the name to pick one.
