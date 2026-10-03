@@ -14,7 +14,15 @@ run_variant() {
   port_free_or_fail
   local pid; pid="$(launch "$home" "$@")"
   local result
-  if wait_for_server 40; then result="PASS booted, server answered on :$PORT"; else result="FAIL no server after 40s"; fi
+  if wait_for_server 40; then
+    result="PASS booted, server answered on :$PORT"
+  else
+    result="FAIL no server after 40s"
+    capture_failure "$name: $result" || true
+    if [ -f "$OUT/$CHECK/startup-diagnostics.txt" ]; then
+      cp "$OUT/$CHECK/startup-diagnostics.txt" "$OUT/$CHECK/startup-$name.txt"
+    fi
+  fi
   err="$(startup_error || true)"; [ -n "$err" ] && result="$result; stderr shows: $err"
   stop "$pid"
   cp "$LAB/app.log" "$OUT/$CHECK/app-$name.log"
