@@ -34,6 +34,7 @@ const errorLogger = require('./error-logger');
 const formatHtml = require('./format-html');
 const { hasHtmlRoot } = formatHtml;
 const { serveSiteApiLocal, extractSiteDataLocal, applySiteDataLocal } = require('./utils/data-api');
+const { readDataQuery } = require('./utils/data-query');
 const { writeApiSidecar } = require('./utils/api-sidecar');
 const dataGuard = require('./data-loss-guard');
 const { documentEtag, ifMatchSatisfied } = require('./spec-wire');
@@ -806,6 +807,32 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         res.status(404).send('Not found');
       }
     });
+
+    const apiWriteBody = (req, res, next) => express.text({ type: () => true, limit: API_WRITE_MAX_BYTES })(req, res, (err) => {
+      if (!err) return next();
+      if (err.type === 'entity.too.large') {
+        return res.status(413).json({ error: 'Payload Too Large', message: 'The JSON body is limited to 1 MB.' });
+      }
+      return res.status(400).json({ error: 'Invalid JSON body', message: 'The request body could not be read.' });
+    });
+
+    function plainDataName(req) {
+      const requestedPath = req.path.replace(/^\//, '');
+      const htmlMatch = requestedPath.match(/^(.*?\.html(?:clay)?)(\/.*)?$/);
+      return htmlMatch ? htmlMatch[1] : (req.path === '/' ? 'index.html' : null);
+    }
+
+    app.post(/.*/, (req, res, next) => {
+      if (req.fromSystemRoute || !readDataQuery(req.originalUrl).present) return next('route');
+      const rawName = plainDataName(req);
+      if (!rawName) return next('route');
+      try {
+        req.dataDocumentName = decodeOnce(rawName);
+      } catch (error) {
+        return res.status(error.status || 400).json({ error: error.message });
+      }
+      return next();
+    }, apiWriteBody, (req, res) => handleApiWrite(req, res, req.dataDocumentName));
 
     // Middleware to parse JSON body for live-sync endpoint, under both the legacy
     // path and the spec §10 address.
@@ -1677,7 +1704,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // not keeps the per-tab stream it has always used.
       // `wire` because this host serves §11's two routes, so `clay.wire` pages and
       // the `htmlclay wire` CLI can drive a local process from a document here.
-      const body = { spec: 1, extensions: ['conditional', 'format', 'receipts', 'scoped-stylesheet', 'sync', 'sync-worker', 'upload', 'wire'] };
+      const body = { spec: 1, extensions: ['conditional', 'data-read', 'data-write', 'format', 'receipts', 'scoped-stylesheet', 'sync', 'sync-worker', 'upload', 'wire'] };
       const href = documentUrlHeader(req);
       if (href) {
         try {
@@ -2024,7 +2051,6 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         // so decoding here again would 400 on "50% off" and mis-resolve "a%20b".
         name = req.params[0]; // may contain slashes, e.g. "blog/post"
         cssPath = await resolveTailwindWrite(name);
-        htmlPath = await resolveDerivedWrite(`${name}.html`);
       } catch (error) {
         return res.status(error.status === 400 ? 400 : 403).send('');
       }
@@ -2034,6 +2060,18 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         const css = await fs.readFile(cssPath, 'utf8');
         return res.send(css);
       } catch {}
+
+      try {
+        htmlPath = await resolveDerivedWrite(`${name}.html`);
+        try {
+          await fs.stat(htmlPath);
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+          htmlPath = await resolveDerivedWrite(`${name}.htmlclay`);
+        }
+      } catch (error) {
+        return res.status(error.status === 400 ? 400 : 403).send('');
+      }
 
       // Cache miss: this is a read-modify-write of a derived artifact, so it
       // belongs in the SOURCE file's critical section like every other derived
@@ -2063,8 +2101,17 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     // serveSiteApi). Gated on req.originalUrl so a BARE `/api/...` request still
     // falls through to a user's real `api/` folder; only the `/_/` marker form is
     // treated as the data API. Must come before the static catch-all. Reads the
-    // requested extension (unlike the Tailwind route, which hardcodes .html), since
+    // requested extension, since
     // .htmlclay sites exist locally too.
+    async function readApiDocument(req, res, name, sourcePath) {
+      const query = readDataQuery(req.originalUrl);
+      if (query.error) return res.status(400).json(query.error);
+      const result = query.present
+        ? await extractSiteDataLocal(baseDir, name, query.text, { sourcePath })
+        : await serveSiteApiLocal(baseDir, name, { sourcePath });
+      return sendApiResult(res, result);
+    }
+
     app.get(/^\/api\/(.+)\.(html|htmlclay)$/, async (req, res, next) => {
       if (!req.originalUrl.startsWith('/_/api/')) return next();
       let name;
@@ -2077,7 +2124,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         return res.status(error.status || 400).json({ error: error.message });
       }
       try {
-        return sendApiResult(res, await serveSiteApiLocal(baseDir, name, { sourcePath }));
+        return await readApiDocument(req, res, name, sourcePath);
       } catch (error) {
         console.error('Site API endpoint error:', error);
         return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });
@@ -2089,17 +2136,11 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     // marker gate as the GET, the same loopback-origin gate as every mutating
     // request, and the same commit path as /save. Bare `/_/api` writes index.html,
     // as the bare GET reads it.
-    const apiWriteBody = (req, res, next) => express.text({ type: () => true, limit: API_WRITE_MAX_BYTES })(req, res, (err) => {
-      if (!err) return next();
-      if (err.type === 'entity.too.large') {
-        return res.status(413).json({ error: 'Payload Too Large', message: 'The JSON body is limited to 1 MB.' });
-      }
-      return res.status(400).json({ error: 'Invalid JSON body', message: 'The request body could not be read.' });
-    });
-
     async function handleApiWrite(req, res, name) {
+      const query = readDataQuery(req.originalUrl);
+      if (query.error) return res.status(400).json(query.error);
       if (!isJsonContentType(req.headers['content-type'])) {
-        return res.status(415).json({ error: 'Unsupported Media Type', message: 'POST /_/api takes Content-Type: application/json.' });
+        return res.status(415).json({ error: 'Unsupported Media Type', message: 'JSON writes take Content-Type: application/json.' });
       }
       let data;
       try {
@@ -2117,6 +2158,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         const result = await applySiteDataLocal(baseDir, name, data, {
           sourcePath,
           ifMatch: req.headers['if-match'],
+          ...(query.present ? { dataParam: query.text } : {}),
           commit: (html, previous) => commitDocument({
             name, filePath: sourcePath, content: html, dataLossPrev: previous, userDriven: false, saveId: '', origin: 'api'
           })
@@ -2147,7 +2189,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       if (!req.originalUrl.startsWith('/_/api')) return next();
       try {
         const sourcePath = await resolveWriteTarget(paths, 'index.html');
-        return sendApiResult(res, await serveSiteApiLocal(baseDir, 'index.html', { sourcePath }));
+        return await readApiDocument(req, res, 'index.html', sourcePath);
       } catch (error) {
         console.error('Site API endpoint error:', error);
         return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });
@@ -2162,11 +2204,11 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // route, so its stripped path is reserved: `?data=` must not extract the file, just as the
       // static catch-all must not serve it.
       if (req.fromSystemRoute) return res.status(404).send('File not found');
-      if (req.query.data === undefined) return next();
-      const requestedPath = req.path.replace(/^\//, '');
-      const htmlMatch = requestedPath.match(/^(.*?\.html(?:clay)?)(\/.*)?$/);
-      const rawName = htmlMatch ? htmlMatch[1] : (req.path === '/' ? 'index.html' : null);
+      const query = readDataQuery(req.originalUrl);
+      if (!query.present) return next();
+      const rawName = plainDataName(req);
       if (!rawName) return next();
+      if (query.error) return res.status(400).json(query.error);
       let name;
       let sourcePath;
       try {
@@ -2176,7 +2218,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         return res.status(error.status || 400).json({ error: error.message });
       }
       try {
-        return sendApiResult(res, await extractSiteDataLocal(baseDir, name, req.query.data, { sourcePath }));
+        return sendApiResult(res, await extractSiteDataLocal(baseDir, name, query.text, { sourcePath }));
       } catch (error) {
         console.error('Data endpoint error:', error);
         return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });

@@ -43,6 +43,12 @@ describe('data API route wiring', () => {
     await fs.writeFile(p, html);
   }
 
+  test('/_/meta announces data reads and writes', async () => {
+    const res = await request(app).get('/_/meta');
+    expect(res.status).toBe(200);
+    expect(res.body.extensions).toEqual(expect.arrayContaining(['data-read', 'data-write']));
+  });
+
   test('/_/api/<name>.html returns extracted JSON and writes the sidecar', async () => {
     await writeSite('index.html', '<html>x</html>');
     extractViaTag.mockResolvedValue({ title: 'Hi' });
@@ -50,7 +56,7 @@ describe('data API route wiring', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ title: 'Hi' });
     expect(res.headers['x-served-by']).toBe('app-generated');
-    expect(await fs.readFile(path.join(dir, '.hyperclay/api/index.json'), 'utf8')).toBe('{"title":"Hi"}');
+    expect(await fs.readFile(path.join(dir, '.hyperclay/api-v2/index.html.json'), 'utf8')).toBe('{"title":"Hi"}');
   });
 
   test('bare /api/<name>.html falls through to static — serves the real file, not extraction', async () => {
@@ -136,6 +142,6 @@ describe('data API route wiring', () => {
       .set('Content-Type', 'text/plain')
       .send('<html><body>hi</body></html>');
     expect(res.status).toBe(200);
-    expect(await fs.readFile(path.join(dir, '.hyperclay/api/index.json'), 'utf8')).toBe('{"saved":true}');
+    expect(await fs.readFile(path.join(dir, '.hyperclay/api-v2/index.html.json'), 'utf8')).toBe('{"saved":true}');
   });
 });

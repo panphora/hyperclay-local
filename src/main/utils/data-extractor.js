@@ -27,7 +27,19 @@ function loadEngine() {
 
 async function extractData(html, rules) {
   const { extract, cheerioAdapter } = await loadEngine();
-  return extract(cheerioAdapter, cheerio.load(html).root(), rules);
+  const queryAdapter = {
+    ...cheerioAdapter,
+    find(...args) {
+      try {
+        return cheerioAdapter.find(...args);
+      } catch (cause) {
+        const error = new Error(cause.message, { cause });
+        error.name = 'InvalidSelector';
+        throw error;
+      }
+    }
+  };
+  return extract(queryAdapter, cheerio.load(html).root(), rules);
 }
 
 async function extractViaTag(html, token) {
@@ -56,4 +68,12 @@ async function writeViaTag(html, data, token) {
   return writeDocument(cheerio.load, html, data, { token });
 }
 
-module.exports = { extractData, extractViaTag, parseExtractionRules, writeViaTag };
+// Applies a JSON body through caller-supplied rules (the ?data= mapping) instead
+// of the document's own tag, content only. Same return shape and typed errors as
+// writeViaTag.
+async function writeWithRules(html, data, rules) {
+  const { writeDocument } = await loadWrite();
+  return writeDocument(cheerio.load, html, data, { rules });
+}
+
+module.exports = { extractData, extractViaTag, parseExtractionRules, writeViaTag, writeWithRules };

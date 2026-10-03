@@ -101,6 +101,42 @@ For building and releasing, see [BUILD.md](./BUILD.md).
 
 The standalone `hyperclaylocal.com` marketing page lives in `website/`. See [WEBSITE.md](./WEBSITE.md) for its structure, local preview workflow, download-link contract, and tests.
 
+## JSON data API
+
+Read and update `.html` and `.htmlclay` files as JSON using CSS selector rules.
+
+Caller supplied rules work on both URL forms, for GET and POST. No embedded tag is required:
+
+```bash
+curl --get 'http://127.0.0.1:51842/soup.htmlclay' \
+  --data-urlencode 'data={title:h1}'
+
+curl --request POST \
+  'http://127.0.0.1:51842/soup.htmlclay?data=%7Btitle%3Ah1%7D' \
+  --header 'Content-Type: application/json' \
+  --data '{"title":"Lunch"}'
+```
+
+Replace the port with your file's port. The same requests work with
+`/_/api/soup.htmlclay?data=%7Btitle%3Ah1%7D`, and with `.html` files.
+Supplied rules replace the embedded mapping for that request, even if the tag is malformed.
+They are never merged with it or saved into the file. Without `data`, `/_/api/` uses the
+embedded `api` tag as before. An empty, malformed, or repeated `data` parameter returns
+`400`; it never falls back to the tag. POST bodies remain strict JSON, with no rules envelope.
+The response uses the same rules as the request. GET and POST return the source file's
+`ETag`; send it as `If-Match` to refuse a stale write with `412`.
+
+Writes preserve the existing save flow, including backups and live updates. They change
+content only: scripts, styles, event handlers, executable URLs, and raw HTML targets are
+refused. Unknown body keys and unmatched selectors return `400` without writing anything.
+Use `Content-Type: application/json` and a body no larger than 1 MB. Browser requests must
+come from the same origin; command line requests need no browser token.
+
+Caller projections bypass the embedded mapping's cache. Each complete source filename has
+its own JSON cache, so `soup.html` and `soup.htmlclay` remain independent. Existing legacy
+Tailwind CSS URLs still share a basename: cold generation prefers `.html`, then falls back
+to `.htmlclay` if the HTML file is missing.
+
 ## 🎯 User Interface
 
 ### Tray Popover

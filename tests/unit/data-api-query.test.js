@@ -10,6 +10,7 @@ jest.mock('../../src/main/utils/data-extractor', () => ({
 
 const { extractData, parseExtractionRules } = require('../../src/main/utils/data-extractor');
 const { extractSiteDataLocal } = require('../../src/main/utils/data-api');
+const { documentEtag } = require('../../src/main/spec-wire');
 
 describe('extractSiteDataLocal (?data=)', () => {
   let dir;
@@ -61,5 +62,56 @@ describe('extractSiteDataLocal (?data=)', () => {
     const r = await extractSiteDataLocal(dir, 'index.html', '{x:":::"}');
     expect(r.status).toBe(400);
     expect(r.json.error).toBe('Invalid CSS selector');
+  });
+
+  // The relaxed parser reports its own syntax failures as RulesParseError and its
+  // message never contains "JSON", so the name is what has to catch them.
+  test('a named RulesParseError → 400 even when the message does not say JSON', async () => {
+    await writeSite('index.html', '<html></html>');
+    parseExtractionRules.mockRejectedValue(
+      Object.assign(new Error('Invalid extraction rules syntax: Unexpected token }'), { name: 'RulesParseError' })
+    );
+    const r = await extractSiteDataLocal(dir, 'index.html', '{bad}');
+    expect(r.status).toBe(400);
+    expect(r.json.error).toBe('Invalid extraction rules');
+    expect(r.json.details).toContain('Invalid extraction rules syntax');
+    expect(r.json.example).toBeDefined();
+  });
+
+  test('an unmapped extraction failure keeps the 500 shape', async () => {
+    await writeSite('index.html', '<html></html>');
+    parseExtractionRules.mockResolvedValue({ x: 'body' });
+    extractData.mockRejectedValue(Object.assign(new Error('boom'), { name: 'TypeError' }));
+    const r = await extractSiteDataLocal(dir, 'index.html', '{x:"body"}');
+    expect(r.status).toBe(500);
+    expect(r.json.error).toBe('Extraction failed');
+  });
+
+  // Repeated parameters arrive as an array; the success path must never see one.
+  test('repeated ?data= parameters are a 400, not a guess', async () => {
+    const r = await extractSiteDataLocal(dir, 'index.html', ['{title:"h1"}', '{title:"h2"}']);
+    expect(r.status).toBe(400);
+    expect(r.json.error).toBe('Invalid extraction rules');
+    expect(parseExtractionRules).not.toHaveBeenCalled();
+  });
+
+  test('the ETag covers the stored bytes, not a re-encoded copy of them', async () => {
+    // 0xFF is not valid UTF-8, so a stamp taken over the decoded string would name
+    // bytes that are not on disk — and a caller could never If-Match them back.
+    const bytes = Buffer.concat([
+      Buffer.from('<html><h1>Hi</h1>', 'utf8'),
+      Buffer.from([0xff]),
+      Buffer.from('</html>', 'utf8')
+    ]);
+    await fs.writeFile(path.join(dir, 'index.html'), bytes);
+    parseExtractionRules.mockResolvedValue({ title: 'h1' });
+    extractData.mockResolvedValue({ title: 'Hi' });
+
+    const r = await extractSiteDataLocal(dir, 'index.html', '{title:"h1"}');
+
+    expect(r.status).toBe(200);
+    expect(r.headers.ETag).toBe(documentEtag(bytes));
+    expect(r.headers.ETag).not.toBe(documentEtag(Buffer.from(bytes.toString('utf8'), 'utf8')));
+    expect(extractData).toHaveBeenCalledWith(bytes.toString('utf8'), { title: 'h1' });
   });
 });

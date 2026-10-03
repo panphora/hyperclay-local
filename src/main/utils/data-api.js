@@ -11,7 +11,7 @@
 // Callers MUST pass a `name` that already passed validateAndResolvePath.
 const fs = require('fs').promises;
 const path = require('upath');
-const { extractData, extractViaTag, parseExtractionRules, writeViaTag } = require('./data-extractor');
+const { extractData, extractViaTag, parseExtractionRules, writeViaTag, writeWithRules } = require('./data-extractor');
 const { writeApiSidecarData, deleteApiSidecar, readFreshSidecar } = require('./api-sidecar');
 const { withFileLock } = require('./write-queue');
 const { documentEtag, ifMatchSatisfied } = require('../spec-wire');
@@ -34,6 +34,61 @@ function mapApiTagError(error) {
   }
   if (message.includes('selector')) {
     return { error: 'Invalid selector in api rules tag', message };
+  }
+  return null;
+}
+
+// Map a query-extraction failure to the platform's author-facing 400 bodies
+// (data-actions.js extractSiteData). Returns null for an unmapped error → caller
+// answers 500. Note the discriminator differs from mapApiTagError: the relaxed-JSON
+// parser reports its own syntax failures as RulesParseError with a message that
+// never contains "JSON", so the name is what catches them.
+function mapQueryError(error) {
+  const name = error && error.name;
+  const message = (error && error.message) || '';
+  if (name === 'RulesParseError' || message.includes('JSON')) {
+    return {
+      error: 'Invalid extraction rules',
+      message: 'Failed to parse extraction rules. Check your JSON syntax.',
+      details: message,
+      example: '?data={title:"h1",items:".item"}'
+    };
+  }
+  if (name === 'InvalidSelector' || message.includes('selector')) {
+    return {
+      error: 'Invalid CSS selector',
+      message: 'One or more CSS selectors are invalid',
+      details: message
+    };
+  }
+  return null;
+}
+
+// The ?data= parameter must arrive as ONE non-empty string. Repeated parameters
+// (`?data=a&data=b`) reach Express as an array, which no extraction path accepts —
+// both entry points below read this, so neither can start accepting them.
+// Returns the 400 result, or null when the value is usable.
+function unusableDataParam(dataParam) {
+  if (dataParam === undefined || dataParam === null || dataParam === '') {
+    return {
+      status: 400,
+      json: {
+        error: 'Missing data parameter',
+        message: 'Please provide extraction rules via ?data= parameter',
+        example: '?data={title:"h1",items:".item"}'
+      }
+    };
+  }
+  if (typeof dataParam !== 'string') {
+    return {
+      status: 400,
+      json: {
+        error: 'Invalid extraction rules',
+        message: 'Extraction rules must be a single string.',
+        details: `received ${Array.isArray(dataParam) ? 'repeated parameters' : typeof dataParam}`,
+        example: '?data={title:"h1",items:".item"}'
+      }
+    };
   }
   return null;
 }
@@ -100,23 +155,15 @@ async function serveSiteApiInLock(baseDir, name, sourcePath) {
 }
 
 // GET <name>?data={...} — query-driven extraction with relaxed-JSON rules.
-// Note the error discriminators differ from serveSiteApiLocal: this path keys on
-// message.includes('JSON') and has no version-error case (matches the platform).
+// The failure mapping lives in mapQueryError, shared with the write path's
+// caller-rules mode so a bad ?data= reads the same on either verb.
 async function extractSiteDataLocal(baseDir, name, dataParam, { sourcePath } = {}) {
-  if (!dataParam) {
-    return {
-      status: 400,
-      json: {
-        error: 'Missing data parameter',
-        message: 'Please provide extraction rules via ?data= parameter',
-        example: '?data={title:"h1",items:".item"}'
-      }
-    };
-  }
+  const unusable = unusableDataParam(dataParam);
+  if (unusable) return unusable;
 
-  let html;
+  let stored;
   try {
-    html = await fs.readFile(sourcePath || path.join(baseDir, name), 'utf8');
+    stored = await fs.readFile(sourcePath || path.join(baseDir, name));
   } catch {
     return {
       status: 404,
@@ -126,33 +173,19 @@ async function extractSiteDataLocal(baseDir, name, dataParam, { sourcePath } = {
 
   try {
     const rules = await parseExtractionRules(dataParam);
-    const data = await extractData(html, rules);
-    return { status: 200, json: data };
+    const data = await extractData(stored.toString('utf8'), rules);
+    // The stamp describes the stored bytes, not a re-encoding of them: a caller
+    // can hand it straight back as If-Match on a write.
+    return { status: 200, headers: { ETag: documentEtag(stored) }, json: data };
   } catch (err) {
-    const message = (err && err.message) || '';
-    if (message.includes('JSON')) {
-      return {
-        status: 400,
-        json: {
-          error: 'Invalid extraction rules',
-          message: 'Failed to parse extraction rules. Check your JSON syntax.',
-          details: message,
-          example: '?data={title:"h1",items:".item"}'
-        }
-      };
-    }
-    if (message.includes('selector')) {
-      return {
-        status: 400,
-        json: { error: 'Invalid CSS selector', message: 'One or more CSS selectors are invalid', details: message }
-      };
-    }
+    const mapped = mapQueryError(err);
+    if (mapped) return { status: 400, json: mapped };
     return {
       status: 500,
       json: {
         error: 'Extraction failed',
         message: 'Failed to extract data from the site',
-        details: process.env.NODE_ENV === 'development' ? message : undefined
+        details: process.env.NODE_ENV === 'development' ? (err && err.message) || '' : undefined
       }
     };
   }
@@ -183,8 +216,28 @@ function mapWriteError(error) {
 // then commit the new bytes through `commit(html, previousText)`, which the
 // route binds to commitDocument. Runs in the same queue slot as /save and GET.
 // A body that changes nothing writes nothing.
-async function applySiteDataLocal(baseDir, name, data, { sourcePath, ifMatch, commit } = {}) {
-  sourcePath = sourcePath || path.join(baseDir, name);
+//
+// When the caller supplies `dataParam` the mapping comes from that parameter
+// instead of the document's tag, so a tagless document is writable and a caller
+// can write a projection the tag does not describe. The parameter is validated
+// and parsed BEFORE the lock: a bad one is the caller's own input, and answering
+// it must not wait on — or leak anything about — the file.
+async function applySiteDataLocal(baseDir, name, data, options = {}) {
+  const { ifMatch, commit } = options;
+  const sourcePath = options.sourcePath || path.join(baseDir, name);
+  const supplied = Object.prototype.hasOwnProperty.call(options, 'dataParam');
+  let rules;
+  if (supplied) {
+    const unusable = unusableDataParam(options.dataParam);
+    if (unusable) return unusable;
+    try {
+      rules = await parseExtractionRules(options.dataParam);
+    } catch (err) {
+      const mapped = mapQueryError(err);
+      if (!mapped) throw err;
+      return { status: 400, json: mapped };
+    }
+  }
   return await withFileLock(sourcePath, async () => {
     let stored;
     try {
@@ -207,16 +260,42 @@ async function applySiteDataLocal(baseDir, name, data, { sourcePath, ifMatch, co
         json: { error: 'Unsupported encoding', message: `${name} is not UTF-8, so it cannot be written through the data API without changing bytes outside the edit.` }
       };
     }
+    if (supplied) {
+      try {
+        await extractData(previous, rules);
+      } catch (err) {
+        return { status: 400, json: mapQueryError(err) || {
+          error: 'Invalid extraction rules',
+          message: 'Could not extract the requested data.',
+          details: err.message
+        } };
+      }
+    }
     let result;
     try {
-      result = await writeViaTag(previous, data, 'api');
+      result = supplied
+        ? await writeWithRules(previous, data, rules)
+        : await writeViaTag(previous, data, 'api');
     } catch (err) {
-      const mapped = mapWriteError(err);
+      // Rules parsed from the caller's own parameter keep the query path's
+      // author-facing wording; everything else keeps the tag path's.
+      const mapped = (supplied && mapQueryError(err)) || mapWriteError(err);
       if (!mapped) throw err;
       return { status: 400, json: mapped };
     }
+    if (supplied) {
+      try {
+        await extractData(result.html, rules);
+      } catch (err) {
+        return { status: 400, json: mapQueryError(err) || {
+          error: 'Invalid extraction rules',
+          message: 'Could not extract the requested data.',
+          details: err.message
+        } };
+      }
+    }
     const written = result.changed ? await commit(result.html, previous) : previous;
-    const fresh = await extractViaTag(written, 'api');
+    const fresh = supplied ? await extractData(written, rules) : await extractViaTag(written, 'api');
     return { status: 200, headers: { ETag: documentEtag(Buffer.from(written, 'utf8')) }, json: fresh };
   });
 }
