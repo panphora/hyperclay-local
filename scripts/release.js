@@ -153,16 +153,30 @@ const colors = {
 // ============================================
 
 let startTime;
+let logFileFailed = false;
+
+function writeLog(contents, append = true) {
+  if (logFileFailed) return false;
+  try {
+    if (append) fs.appendFileSync(LOG_FILE, contents);
+    else fs.writeFileSync(LOG_FILE, contents);
+    return true;
+  } catch (error) {
+    logFileFailed = true;
+    console.error(`Could not write ${LOG_FILE}: ${error.message}. Continuing with console output.`);
+    return false;
+  }
+}
 
 function initLog() {
   startTime = Date.now();
-  fs.writeFileSync(LOG_FILE, `# Release Log - ${new Date().toISOString()}\n\n`);
+  writeLog(`# Release Log - ${new Date().toISOString()}\n\n`, false);
 }
 
 function log(message, color = null) {
   const timestamp = new Date().toISOString();
   const logLine = `[${timestamp}] ${message}\n`;
-  fs.appendFileSync(LOG_FILE, logLine);
+  writeLog(logLine);
 
   if (color) {
     console.log(`${color}${message}${colors.reset}`);
@@ -385,7 +399,7 @@ function verifyUiPass() {
   const { runUiPass } = require('./ui-pass-gate');
   const started = Date.now();
   const verdict = runUiPass({ localDir: ROOT_DIR, hyperclayDir: path.join(ROOT_DIR, '..', 'hyperclay') });
-  fs.appendFileSync(LOG_FILE, verdict.output);
+  if (!writeLog(verdict.output)) console.log(verdict.output);
   if (verdict.ok) {
     logSuccess(`${verdict.summary} in ${elapsed(started)}`);
     return;
