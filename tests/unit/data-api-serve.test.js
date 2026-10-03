@@ -24,7 +24,7 @@ describe('serveSiteApiLocal', () => {
   });
 
   const sidecarPath = (name) =>
-    path.join(dir, '.hyperclay/api', name.replace(/\.(html|htmlclay)$/, '') + '.json');
+    path.join(dir, '.hyperclay/api-v2', name + '.json');
 
   async function writeSite(name, html) {
     const p = path.join(dir, name);

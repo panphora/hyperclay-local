@@ -452,10 +452,10 @@ describe('A4 + A5: dotfiles and internal directories', () => {
   });
 
   test('a file inside a dot directory returns a clean 404', async () => {
-    await fs.mkdir(path.join(dir, '.hyperclay/api'), { recursive: true });
-    await fs.writeFile(path.join(dir, '.hyperclay/api/index.json'), '{"private":true}');
+    await fs.mkdir(path.join(dir, '.hyperclay/api-v2'), { recursive: true });
+    await fs.writeFile(path.join(dir, '.hyperclay/api-v2/index.json'), '{"private":true}');
 
-    const res = await request(app).get('/.hyperclay/api/index.json');
+    const res = await request(app).get('/.hyperclay/api-v2/index.json');
     expect(res.status).toBe(404);
     expect(res.text).toBe('File not found');
   });

@@ -2,7 +2,7 @@
 // the platform's private-site guard (local owns every file). The extracted data is
 // written as a bare JSON file (no wrapper, no hash) under a HIDDEN directory:
 //
-//   {baseDir}/.hyperclay/api/<name-minus-ext>.json
+//   {baseDir}/.hyperclay/api-v2/<complete-source-name>.json
 //
 // Hidden (not a visible `api/` like `tailwindcss/`) on purpose: a bare user folder
 // named `api` is a real, supported site path on the platform, so a visible local
@@ -52,7 +52,7 @@ async function resolveSidecarWritePath(baseDir, abs) {
 // before it touches the filesystem; canonicalizing the nearest existing parent
 // then stops a planted directory symlink from redirecting the operation out of
 // tree. That second half is what a lexical `path.resolve` cannot do: with
-// `.hyperclay/api/blog` linked to an external folder, `blog/post.json` resolves
+// `.hyperclay/api-v2/blog` linked to an external folder, `blog/post.html.json` resolves
 // lexically inside the tree while `fs.unlink` deletes the external file.
 async function resolveSidecarCanonical(baseDir, name) {
   return await resolveSidecarWritePath(baseDir, resolveSidecarPath(baseDir, name));
@@ -79,7 +79,7 @@ async function guardedUnlink(canonicalBase, target) {
 // inode with no reopen gap.
 //
 // O_NOFOLLOW is a no-op on Windows, and assertRealDirChain only walks DIRECTORIES,
-// so neither covers a symlinked sidecar file there: `.hyperclay/api/foo.json`
+// so neither covers a symlinked sidecar file there: `.hyperclay/api-v2/foo.html.json`
 // pointing at an external file was followed and its bytes served verbatim. An
 // explicit lstat closes that, which is why the refusal test runs on every platform
 // rather than being skipped on Windows.
@@ -105,11 +105,9 @@ async function guardedOpenRead(canonicalBase, target) {
   }
 }
 
-// "blog/post.html" -> ".hyperclay/api/blog/post.json" (strips .html / .htmlclay,
-// mirroring the platform's sidecarFileName).
+// Keep the source extension so same-basename documents have separate caches.
 function sidecarRelPath(name) {
-  const base = name.replace(/\.(html|htmlclay)$/, '');
-  return path.join(SIDECAR_DIR, base + '.json');
+  return path.join(SIDECAR_DIR, name + '.json');
 }
 
 // Absolute sidecar path with a containment check, so a crafted name can never

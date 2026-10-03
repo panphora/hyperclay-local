@@ -35,7 +35,7 @@ describe('A3: sidecar operations do not follow symlinks out of the served root',
   });
 
   // Escape 1: the sidecar FILE is a link to an external file. A lexical check
-  // sees `.hyperclay/api/foo.json` inside the tree; fs.stat and fs.readFile
+  // sees `.hyperclay/api-v2/foo.html.json` inside the tree; fs.stat and fs.readFile
   // follow the link and hand back the external file's mtime and bytes, so
   // `/_/api/foo.html` serves them verbatim.
   describe('a sidecar file symlinked to an external file', () => {
@@ -44,8 +44,8 @@ describe('A3: sidecar operations do not follow symlinks out of the served root',
     beforeEach(async () => {
       secret = path.join(outside, 'secret.json');
       await fs.writeFile(secret, '{"secret":"exfiltrated"}');
-      await fs.mkdir(path.join(base, '.hyperclay/api'), { recursive: true });
-      await fs.symlink(secret, path.join(base, '.hyperclay/api/foo.json'));
+      await fs.mkdir(path.join(base, '.hyperclay/api-v2'), { recursive: true });
+      await fs.symlink(secret, path.join(base, '.hyperclay/api-v2/foo.html.json'));
     });
 
     test('readFreshSidecar refuses it instead of returning the external bytes', async () => {
@@ -58,23 +58,23 @@ describe('A3: sidecar operations do not follow symlinks out of the served root',
       await writeApiSidecarData(base, 'foo.html', { ours: true });
 
       expect(await fs.readFile(secret, 'utf8')).toBe('{"secret":"exfiltrated"}');
-      const link = path.join(base, '.hyperclay/api/foo.json');
+      const link = path.join(base, '.hyperclay/api-v2/foo.html.json');
       expect((await fs.lstat(link)).isSymbolicLink()).toBe(false);
       expect(await fs.readFile(link, 'utf8')).toBe('{"ours":true}');
     });
   });
 
   // Escape 2: an intermediate DIRECTORY is a link out of tree. `blog/post.html`
-  // loses its api tag, cleanup unlinks `.hyperclay/api/blog/post.json`, and the
+  // loses its api tag, cleanup unlinks `.hyperclay/api-v2/blog/post.html.json`, and the
   // unlink traverses the link and deletes the external file.
   describe('a sidecar directory symlinked to an external directory', () => {
     let external;
 
     beforeEach(async () => {
-      external = path.join(outside, 'post.json');
+      external = path.join(outside, 'post.html.json');
       await fs.writeFile(external, '{"external":true}');
-      await fs.mkdir(path.join(base, '.hyperclay/api'), { recursive: true });
-      await fs.symlink(outside, path.join(base, '.hyperclay/api/blog'));
+      await fs.mkdir(path.join(base, '.hyperclay/api-v2'), { recursive: true });
+      await fs.symlink(outside, path.join(base, '.hyperclay/api-v2/blog'));
     });
 
     test('deleteApiSidecar does not unlink the external file', async () => {
@@ -100,7 +100,7 @@ describe('A3: sidecar operations do not follow symlinks out of the served root',
   test('ordinary in-tree sidecars are untouched by the containment checks', async () => {
     await writeApiSidecarData(base, 'blog/post.html', { title: 'Hi' });
 
-    const written = path.join(base, '.hyperclay/api/blog/post.json');
+    const written = path.join(base, '.hyperclay/api-v2/blog/post.html.json');
     const stat = await fs.stat(written);
     expect(await readFreshSidecar(base, 'blog/post.html', stat.mtimeMs)).toBe('{"title":"Hi"}');
 
@@ -119,16 +119,16 @@ describe('A3: sidecar operations do not follow symlinks out of the served root',
 
     beforeEach(async () => {
       // Phase 1: blog is a REAL directory holding a real sidecar.
-      await fs.mkdir(path.join(base, '.hyperclay/api/blog'), { recursive: true });
-      await fs.writeFile(path.join(base, '.hyperclay/api/blog/post.json'), '{"in":"tree"}');
+      await fs.mkdir(path.join(base, '.hyperclay/api-v2/blog'), { recursive: true });
+      await fs.writeFile(path.join(base, '.hyperclay/api-v2/blog/post.html.json'), '{"in":"tree"}');
       cbase = await canonicalizeBase(base);
       target = await resolveSidecarCanonical(base, 'blog/post.html');
 
-      // Phase 2: swap `blog` for a symlink to an outside dir with its own post.json.
-      outsidePost = path.join(outside, 'post.json');
+      // Phase 2: swap `blog` for a symlink to an outside dir with its own post.html.json.
+      outsidePost = path.join(outside, 'post.html.json');
       await fs.writeFile(outsidePost, '{"external":true}');
-      await fs.rm(path.join(base, '.hyperclay/api/blog'), { recursive: true, force: true });
-      await fs.symlink(outside, path.join(base, '.hyperclay/api/blog'));
+      await fs.rm(path.join(base, '.hyperclay/api-v2/blog'), { recursive: true, force: true });
+      await fs.symlink(outside, path.join(base, '.hyperclay/api-v2/blog'));
     });
 
     test('guardedUnlink refuses and the external file survives', async () => {
