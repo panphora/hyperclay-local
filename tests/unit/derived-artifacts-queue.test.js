@@ -128,6 +128,28 @@ describe('A1: the lazy Tailwind GET compiles inside the source file queue slot',
     expect(await fs.readFile(cssPath, 'utf8')).toBe('/* published by the concurrent save */');
   });
 
+  test('a nested htmlclay-only source generates CSS on a cold cache', async () => {
+    await fs.mkdir(path.join(dir, 'nested'));
+    await fs.writeFile(path.join(dir, 'nested/clay.htmlclay'), '<html><body class="p-4">Clay</body></html>');
+    const response = await request(app).get('/tailwindcss/nested/clay.css').set('Host', HOST);
+    expect(response.status).toBe(200);
+    expect(response.text).toContain('.p-4');
+  });
+
+  test('html wins when both extensions exist and warm CSS needs no source', async () => {
+    await fs.writeFile(path.join(dir, 'page.htmlclay'), '<html><body class="m-8">Clay</body></html>');
+    const response = await request(app).get('/tailwindcss/page.css').set('Host', HOST);
+    expect(response.text).toContain('.p-4');
+    expect(response.text).not.toContain('.m-8');
+    await fs.unlink(path.join(dir, 'page.html'));
+    await fs.unlink(path.join(dir, 'page.htmlclay'));
+    const warm = await request(app).get('/tailwindcss/page.css').set('Host', HOST);
+    expect(warm.text).toBe(response.text);
+    const missing = await request(app).get('/tailwindcss/missing.css').set('Host', HOST);
+    expect(missing.status).toBe(200);
+    expect(missing.text).toBe('');
+  });
+
   test('an uncontended cache miss still generates and serves the stylesheet', async () => {
     const response = await request(app).get('/tailwindcss/page.css').set('Host', HOST);
 
@@ -220,7 +242,7 @@ describe('A1: the remote writers refresh derived artifacts inside their critical
   // HTML, so an unrefreshed H0 sidecar outranks H1 by mtime and readFreshSidecar
   // reports it current forever. Only an actual refresh clears this.
   async function plantStaleSidecar(name) {
-    const sidecar = path.join(dir, '.hyperclay/api', name.replace(/\.html$/, '') + '.json');
+    const sidecar = path.join(dir, '.hyperclay/api-v2', name + '.json');
     await fs.mkdir(path.dirname(sidecar), { recursive: true });
     await fs.writeFile(sidecar, '{"title":"h0"}');
     const future = new Date(Date.now() + 60 * 60 * 1000);
