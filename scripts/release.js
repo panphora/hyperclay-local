@@ -1,9 +1,29 @@
 #!/usr/bin/env node
 
-const { execSync, spawn } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+
+const { execCaptured, writeOutput } = require('./release-command');
+const { superviseRelease, externalCapturePath } = require('./release-transcript');
+
+// A standalone run captures its whole output outside the checkout. A hypersave run
+// already has a sink open for this process, so the handshake in the condition says so
+// and this process stays the one doing the release.
+if (process.env.HYPERCLAY_RELEASE_LOG_WORKER !== '1' && !externalCapturePath(process.env)) {
+  superviseRelease({ scriptPath: __filename, args: process.argv.slice(2) }).then(({ code, signal }) => {
+    if (signal) {
+      process.kill(process.pid, signal);
+    } else {
+      process.exitCode = code === null ? 1 : code;
+    }
+  }).catch(error => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
+  return;
+}
 
 // ============================================
 // CLI ARGUMENT PARSING
@@ -127,7 +147,10 @@ const ROOT_DIR = path.join(__dirname, '..');
 
 // Load .env file for Apple credentials
 require('dotenv').config({ path: path.join(ROOT_DIR, '.env') });
-const LOG_FILE = path.join(ROOT_DIR, 'release.log');
+
+// A display pointer only: the supervisor holds the real sink, and this says where it
+// is so the console can point at it. It is never proof that anything is captured.
+const TRANSCRIPT = externalCapturePath(process.env) || process.env.HYPERCLAY_RELEASE_LOG || 'console output only';
 
 // src/main/main.js used to carry a literal version; it reads app.getVersion() now,
 // so it is not in this list any more.
@@ -153,31 +176,12 @@ const colors = {
 // ============================================
 
 let startTime;
-let logFileFailed = false;
-
-function writeLog(contents, append = true) {
-  if (logFileFailed) return false;
-  try {
-    if (append) fs.appendFileSync(LOG_FILE, contents);
-    else fs.writeFileSync(LOG_FILE, contents);
-    return true;
-  } catch (error) {
-    logFileFailed = true;
-    console.error(`Could not write ${LOG_FILE}: ${error.message}. Continuing with console output.`);
-    return false;
-  }
-}
 
 function initLog() {
   startTime = Date.now();
-  writeLog(`# Release Log - ${new Date().toISOString()}\n\n`, false);
 }
 
 function log(message, color = null) {
-  const timestamp = new Date().toISOString();
-  const logLine = `[${timestamp}] ${message}\n`;
-  writeLog(logLine);
-
   if (color) {
     console.log(`${color}${message}${colors.reset}`);
   } else {
@@ -224,11 +228,7 @@ function elapsed(since) {
 }
 
 function execSafe(command, options = {}) {
-  try {
-    return execSync(command, { encoding: 'utf8', cwd: ROOT_DIR, ...options });
-  } catch (error) {
-    throw new Error(`Command failed: ${command}\n${error.message}`);
-  }
+  return execCaptured(command, { encoding: 'utf8', cwd: ROOT_DIR, ...options });
 }
 
 // ============================================
@@ -372,17 +372,11 @@ function verifyPublishWindow() {
 function verifyLicenseAblation() {
   logSection('License');
   try {
-    execSync('python3 scripts/ablation-check.py LICENSE', {
-      encoding: 'utf8',
-      cwd: ROOT_DIR,
-      stdio: 'pipe',
-    });
+    execSafe('python3 scripts/ablation-check.py LICENSE', { stdio: 'pipe' });
     logSuccess('LICENSE still ablates to plain MIT');
-  } catch (error) {
+  } catch {
     logError('LICENSE does not ablate to plain MIT. Release stopped.');
     logError('The conversion clause printed in LICENSE is not true of this file.');
-    const detail = `${error.stdout || ''}${error.stderr || ''}`.trim();
-    if (detail) console.log(detail);
     process.exit(1);
   }
 }
@@ -399,14 +393,14 @@ function verifyUiPass() {
   const { runUiPass } = require('./ui-pass-gate');
   const started = Date.now();
   const verdict = runUiPass({ localDir: ROOT_DIR, hyperclayDir: path.join(ROOT_DIR, '..', 'hyperclay') });
-  if (!writeLog(verdict.output)) console.log(verdict.output);
+  if (verdict.output) writeOutput(1, verdict.output);
   if (verdict.ok) {
     logSuccess(`${verdict.summary} in ${elapsed(started)}`);
     return;
   }
   logError(`The Electron UI suite did not pass: ${verdict.reason}`);
   logError('Release stopped before anything was committed, tagged or dispatched.');
-  logError(`Full output is in ${LOG_FILE}. Pass --skip-ui-pass to override deliberately.`);
+  logError(`Full output is in ${TRANSCRIPT}. Pass --skip-ui-pass to override deliberately.`);
   process.exit(1);
 }
 
@@ -886,12 +880,12 @@ async function main() {
   log('');
   logSuccess('Released.');
   log('');
-  log(`Full log: ${LOG_FILE}`);
+  log(`Full log: ${TRANSCRIPT}`);
 }
 
 main().catch(error => {
   logError(error.message);
   log('');
-  log(`Full log: ${LOG_FILE}`);
+  log(`Full log: ${TRANSCRIPT}`);
   process.exit(1);
 });
