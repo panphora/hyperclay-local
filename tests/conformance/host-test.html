@@ -187,10 +187,11 @@
   const metaRoute = (token) => (token ? `/_/meta/${encodeURIComponent(token)}` : '/_/meta');
 
   // A conforming host may inject savetoken/documentid on the root <html> at serve time
-  // WITHOUT writing them to disk (spec §4/§9). So served bytes (what GET returns) can
-  // legitimately differ from stored bytes by exactly those attributes. Strip them from
-  // the opening <html> tag before comparing served vs. sent/preimage bytes, or every
-  // injecting host would fail the round-trip.
+  // WITHOUT writing them to disk (spec §4/§9), and spec §4 response metadata puts
+  // the stamp of the served bytes there too, as `documentetag`. So served bytes (what GET
+  // returns) can legitimately differ from stored bytes by exactly those attributes. Strip
+  // them from the opening <html> tag before comparing served vs. sent/preimage bytes, or
+  // every injecting host would fail the round-trip.
   //
   // The two pre-rename spellings are stripped as well. HTML Clay injects the token
   // under `savetoken` AND `htmlclaytoken` with one value, so a host that is behaving
@@ -198,7 +199,7 @@
   // page did not know to remove.
   const stripInjected = (s) =>
     s == null ? s : s.replace(/(<html\b[^>]*?)>/i, (m, open) =>
-      open.replace(/\s+(?:savetoken|htmlclaytoken|documentid|htmlclayid)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '') + '>');
+      open.replace(/\s+(?:savetoken|htmlclaytoken|documentid|htmlclayid|documentetag)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '') + '>');
 
   async function save(body, { target, token, ifMatch, saveId } = {}) {
     const headers = { 'Content-Type': 'text/html', 'Document-URL': target };

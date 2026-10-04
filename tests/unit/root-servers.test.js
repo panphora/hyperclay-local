@@ -14,6 +14,7 @@ jest.mock('../../src/main/utils/data-extractor', () => ({
 }));
 
 const { RootServer, RootServerPool } = require('../../src/main/root-servers.js');
+const { withoutInjectedDocumentEtag } = require('../helpers/served-metadata');
 
 const PERSONAL_BODY = '<html><body>personal</body></html>';
 const TEAM_BODY = '<html><body>team</body></html>';
@@ -43,6 +44,10 @@ async function freePorts(count) {
 }
 
 const get = (port, file = 'index.html') => fetch(`http://127.0.0.1:${port}/${file}`);
+
+// A served document carries the stamp of its own bytes as root response metadata, so the
+// body fetched here differs from the file by that one attribute.
+const servedText = async (port, file) => withoutInjectedDocumentEtag(await (await get(port, file)).text());
 
 describe('C1.5: one root, one server, one saved port', () => {
   let personalDir;
@@ -81,7 +86,7 @@ describe('C1.5: one root, one server, one saved port', () => {
       expect(server.state).toBe('running');
       expect(server.error).toBeNull();
       expect(server.server.address().port).toBe(port);
-      expect(await (await get(port)).text()).toBe(PERSONAL_BODY);
+      expect(await servedText(port)).toBe(PERSONAL_BODY);
 
       await server.stop();
       expect(server.state).toBe('stopped');
@@ -116,7 +121,7 @@ describe('C1.5: one root, one server, one saved port', () => {
 
     expect(res).toEqual({ ok: true });
     expect(pool.states()).toEqual([{ rootId: 'team-root', port, state: 'running', error: null }]);
-    expect(await (await get(port)).text()).toBe(TEAM_BODY);
+    expect(await servedText(port)).toBe(TEAM_BODY);
   });
 
   test('the removed bus route is 404 on both a personal and a team root', async () => {
@@ -147,7 +152,7 @@ describe('C1.5: one root, one server, one saved port', () => {
       { rootId: 'personal-root', port: personalPort, state: 'running', error: null },
       { rootId: 'team-root', port: teamPort, state: 'running', error: null },
     ]);
-    expect(await (await get(teamPort)).text()).toBe(TEAM_BODY);
+    expect(await servedText(teamPort)).toBe(TEAM_BODY);
 
     const states = await pool.sync([personalRoot(personalPort), teamRoot(teamPort)], { enabled: false });
 
@@ -171,8 +176,8 @@ describe('C1.5: one root, one server, one saved port', () => {
     expect(pool.get('personal-root')).not.toBe(stale);
     expect(pool.get('team-root')).toBe(untouched);
     expect(untouched.state).toBe('running');
-    expect(await (await get(nextPort)).text()).toBe(PERSONAL_BODY);
-    expect(await (await get(teamPort)).text()).toBe(TEAM_BODY);
+    expect(await servedText(nextPort)).toBe(PERSONAL_BODY);
+    expect(await servedText(teamPort)).toBe(TEAM_BODY);
     await expect(get(personalPort)).rejects.toThrow();
   });
 });

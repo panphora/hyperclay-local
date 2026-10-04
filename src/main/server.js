@@ -17,7 +17,7 @@ const { withFileLock, atomicWriteFile } = require('./utils/write-queue.js');
 const crypto = require('crypto');
 const busboy = require('busboy');
 const { scopeTailwindLink } = require('./utils/tailwind-scoping.js');
-const { stripSaveToken } = require('./utils/root-attrs.js');
+const { stripSaveToken, injectDocumentEtag } = require('./utils/root-attrs.js');
 const { createRootLive } = require('./utils/root-live.js');
 const { replayStore } = require('./sync-replay.js');
 const { VERSIONS_DIR, TAILWIND_DIR } = require('./utils/artifact-paths.js');
@@ -212,10 +212,19 @@ async function resolveWriteTarget(paths, name) {
 
 // Serve the file's ORIGINAL BYTES. Reading as utf8 and re-encoding on the way
 // out silently rewrites any file that is not valid UTF-8.
+//
+// The response also carries the stamp of those exact bytes on the root element
+// (spec §4 response metadata, `documentetag`), so a tab that loaded this document
+// can tell whether the version it is holding is still the one on disk. The stamp
+// is computed from the buffer this response was built from — never from the
+// injected bytes and never from the DOM — and the buffer is read exactly once, so
+// the attribute cannot describe a version other than the one being served. The
+// file itself is untouched, and every response gets it, in view and edit mode:
+// the repair fetch needs it as much as the navigation that preceded it.
 async function serveHtml(res, filePath) {
   const html = await fs.readFile(filePath);
   res.set('Content-Type', 'text/html');
-  return res.send(html);
+  return res.send(injectDocumentEtag(html, documentEtag(html)));
 }
 
 // Translate a data-api result object ({ status, headers?, json?, raw? }) into a
@@ -1642,6 +1651,11 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     // already written, backed up and broadcast by that point.
     // Returns the bytes stored on disk.
     const publishHostWrite = async ({ name, filePath, html }) => {
+      // Response-scoped root metadata (a save token, this host's own documentetag)
+      // comes back from clients and from a stored version, and none of it belongs in
+      // the bytes this writes: stripped here, once, so the data-loss writeBack and the
+      // restore route cannot each forget it.
+      html = stripSaveToken(html);
       const backupName = name.replace(/\.(html|htmlclay)$/, '');
       const formatted = formatHtml(scopeTailwindLink(name, html));
       await createBackup(baseDir, backupName, formatted);

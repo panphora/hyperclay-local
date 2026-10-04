@@ -23,6 +23,11 @@ const {
 } = require('../../src/main/server.js');
 const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 const { getConsentRegistry } = require('../../src/main/utils/path-resolver.js');
+const { documentEtag } = require('../../src/main/spec-wire');
+const {
+  servedDocumentEtag,
+  withoutInjectedDocumentEtag
+} = require('../helpers/served-metadata');
 
 // The data-loss guard writes into .hyperclay/guard detached from the request by
 // design, so it can still be running when a test finishes. Let it settle and
@@ -283,7 +288,11 @@ describe('A0 + A3: a name with %, # and a space survives listing, click and save
     // This is exactly what a browser sends when the user clicks the link.
     const res = await request(app).get(href);
     expect(res.status).toBe(200);
-    expect(res.text).toBe('<html>original</html>');
+    // The response differs from the file by the one root attribute this host injects, the
+    // stamp of these exact bytes, so the comparison takes only that attribute out.
+    const original = Buffer.from('<html>original</html>', 'utf8');
+    expect(servedDocumentEtag(res.text)).toBe(documentEtag(original));
+    expect(withoutInjectedDocumentEtag(res.text)).toBe(original.toString('utf8'));
   });
 
   test('saving back through that same URL writes the right file', async () => {
@@ -316,7 +325,7 @@ describe('A0 + A3: a name with %, # and a space survives listing, click and save
 
     const res = await request(app).get('/' + encodeURIComponent('café notes.html'));
     expect(res.status).toBe(200);
-    expect(res.text).toBe('<html>unicode</html>');
+    expect(withoutInjectedDocumentEtag(res.text)).toBe('<html>unicode</html>');
   });
 
   test('a malformed percent sequence is a 400, not a 500', async () => {
@@ -335,7 +344,10 @@ describe('A0 + A3: a name with %, # and a space survives listing, click and save
       r.on('end', () => cb(null, Buffer.concat(chunks)));
     });
 
-    expect(Buffer.compare(res.body, raw)).toBe(0);
+    // The response adds the stamp of these bytes on the root element and changes nothing
+    // else: remove only that attribute, by byte offset, and every other byte still matches.
+    expect(servedDocumentEtag(res.body)).toBe(documentEtag(raw));
+    expect(Buffer.compare(withoutInjectedDocumentEtag(res.body), raw)).toBe(0);
   });
 });
 
@@ -408,7 +420,7 @@ describe('A3: symlink escape blocked on both GET and POST', () => {
 
     const res = await request(app).get('/alias.html');
     expect(res.status).toBe(200);
-    expect(res.text).toBe('<html>real</html>');
+    expect(withoutInjectedDocumentEtag(res.text)).toBe('<html>real</html>');
   });
 
   test('a link present at open time is consented, not denied', async () => {
@@ -420,7 +432,7 @@ describe('A3: symlink escape blocked on both GET and POST', () => {
     const res = await request(consenting).get('/preexisting.html');
 
     expect(res.status).toBe(200);
-    expect(res.text).toBe('<html>victim</html>');
+    expect(withoutInjectedDocumentEtag(res.text)).toBe('<html>victim</html>');
   });
 });
 

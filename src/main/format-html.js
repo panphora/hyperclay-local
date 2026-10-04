@@ -54,8 +54,11 @@ function commentEnd(str, from) {
 // null when the bytes carry no complete root <html> start-tag: junk before the root, a root that
 // is not <html>, or a start-tag that never closes with '>'. That last case is a truncated
 // document — a real parser would synthesize an implied <html> root, but the bytes on the wire are
-// half a tag, so neither caller should trust it. Two callers ask two questions of this one scan,
-// so they can never disagree about what the document's root is.
+// half a tag, so neither caller should trust it. Every caller asks its question of this one scan,
+// so they can never disagree about what the document's root is. On success it also reports the
+// tag's own offsets: `start` is the index of its '<' and `end` the index of the '>' that closes
+// it, so a caller editing root attributes can slice the attribute text out of the whole tag
+// ([start + 5, end)) and put every byte outside those two offsets back unchanged.
 function scanRootHtmlTag(str) {
   const len = str.length;
   let i = str.charCodeAt(0) === 0xFEFF ? 1 : 0;
@@ -84,6 +87,7 @@ function scanRootHtmlTag(str) {
   if (str.substr(i, 5).toLowerCase() !== '<html') return null;
   const boundary = str[i + 5];
   if (boundary === undefined || !(isWs(boundary) || boundary === '>' || boundary === '/')) return null;
+  const start = i;
   i += 5;
 
   // Parse attributes, but only trust the result once the tag actually closes with '>'.
@@ -93,7 +97,7 @@ function scanRootHtmlTag(str) {
   let seen = false;
   while (i < len) {
     let c = str[i];
-    if (c === '>') return { optIn };
+    if (c === '>') return { optIn, start, end: i };
     if (isWs(c) || c === '/') { i++; continue; }
 
     const nameStart = i;
@@ -308,4 +312,8 @@ function formatHtml(str) {
 
 module.exports = formatHtml;
 module.exports.formatHtmlDetailed = formatHtmlDetailed;
+// Exported so the root-attribute handling in utils/root-attrs.js locates the same root this
+// file's opt-in gate and formatting do, instead of carrying a second tokenizer that could
+// drift from this one. It returns null for anything without a complete root <html> start-tag.
+module.exports.scanRootHtmlTag = scanRootHtmlTag;
 module.exports.hasHtmlRoot = hasHtmlRoot;

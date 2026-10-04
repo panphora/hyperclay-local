@@ -17,6 +17,7 @@ const request = require('supertest');
 const { createApp } = require('../../src/main/server.js');
 const { RootObserver } = require('../../src/main/root-observer.js');
 const { listenLoopback, closeLoopback } = require('../helpers/loopback');
+const { withoutInjectedDocumentEtag } = require('../helpers/served-metadata');
 
 const PAGE = '<!DOCTYPE html>\n<html><body>wire</body></html>';
 const MAX_TEXT = 4 << 10; // maxWireText, wire.go:35
@@ -493,7 +494,9 @@ describe('W1.2: the wire routes', () => {
   test('a folder named wire/ is still served statically', async () => {
     const page = await request(server).get('/wire/page.html');
     expect(page.status).toBe(200);
-    expect(page.text).toBe(PAGE);
+    // A served document carries the stamp of its own bytes as root response metadata, so
+    // only that attribute is taken out before the file's bytes are compared.
+    expect(withoutInjectedDocumentEtag(page.text)).toBe(PAGE);
 
     const bare = await request(server).get('/wire/subscribe');
     expect(bare.status).toBe(200);

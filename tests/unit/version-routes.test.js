@@ -15,6 +15,7 @@ const request = require('supertest');
 const { createApp } = require('../../src/main/server.js');
 const { createBackup } = require('../../src/main/utils/backup.js');
 const { listenLoopback, closeLoopback } = require('../helpers/loopback');
+const { withoutInjectedDocumentEtag } = require('../helpers/served-metadata');
 
 const PAGE = (n) => `<!DOCTYPE html><html lang="en"><body><p>${n}</p></body></html>`;
 
@@ -148,7 +149,9 @@ describe('version history routes', () => {
     const res = await request(server).get('/versions/board.html');
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toContain('text/html');
-    expect(res.text).toBe(served);
+    // Served documents carry the stamp of their own bytes as root response metadata, so
+    // only that attribute is taken out before the file's bytes are compared.
+    expect(withoutInjectedDocumentEtag(res.text)).toBe(served);
   });
 
   test('a nested document lists its own directory, not the folder root\'s', async () => {
