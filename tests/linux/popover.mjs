@@ -42,7 +42,7 @@ if (!/apps/.test(text)) fail('popover does not show the served folder; text was:
 note('popover shows the served folder');
 let up = false;
 for (let i = 0; i < 80 && !up; i++) {
-  up = await fetch('http://127.0.0.1:4321/_/meta').then((r) => r.ok).catch(() => false);
+  up = await fetch('http://127.0.0.1:4321/_/meta', { signal: AbortSignal.timeout(2000) }).then((r) => r.ok).catch(() => false);
   if (!up) await win.waitForTimeout(250);
 }
 if (!up) fail('the server did not answer on :4321 within 20s; popover text was: ' + text.slice(0, 300));
@@ -69,7 +69,7 @@ note('buttons: ' + labels.map((l) => JSON.stringify(l)).join(' '));
 let clicked = 0;
 let gone = 0;
 for (const label of labels) {
-  if (!label || /quit|stop server|open in browser|open folder|choose|select|change|disconnect|remove|more|⋯|use port|set up|hyperclay\.com/i.test(label)) continue;
+  if (!label || /quit|stop server|open in browser|localhost:|reveal|open folder|choose|select|change|disconnect|remove|more|⋯|···|use port|set up|hyperclay\.com/i.test(label)) continue;
   const b = win.locator('button:visible', { hasText: label }).first();
   if (!(await b.count())) { gone++; continue; }
   await b.click({ timeout: 3000 }).catch((e) => errors.push(label + ': ' + e.message));
@@ -81,4 +81,7 @@ if (errors.length) fail('renderer errors: ' + errors.join(' | '));
 await win.screenshot({ path: path.join(outDir, 'popover-after-clicks.png') });
 
 writeFileSync(path.join(outDir, 'popover-notes.txt'), notes.join('\n') + '\n');
+const closeDeadline = setTimeout(() => fail('app.close() did not finish within 30 seconds'), 30000);
 await app.close();
+clearTimeout(closeDeadline);
+note('app closed');
