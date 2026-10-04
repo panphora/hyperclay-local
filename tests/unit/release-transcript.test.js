@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 
 const { superviseRelease } = require('../../scripts/release-transcript');
+const { testPosix } = require('../helpers/platform');
 
 const TMP = os.tmpdir();
 const ownedDirs = new Set();
@@ -146,7 +147,26 @@ describe('release transcript supervisor', () => {
     expect(out.text()).not.toContain('stderr line');
     expect(err.text()).toContain('stderr line');
     expect(err.text()).not.toContain('stdout line');
+  });
 
+  testPosix('creates private POSIX transcript files and directories', async () => {
+    const dir = tempDir('modes');
+    const script = fixture(dir, 'child.js', [
+      "process.stdout.write('modes line\\n');"
+    ]);
+    const out = collector();
+    const err = collector();
+
+    const result = await withDeadline(superviseRelease({
+      scriptPath: script,
+      cwd: dir,
+      logRoot: path.join(dir, 'logs'),
+      stdout: out.stream,
+      stderr: err.stream
+    }), 'modes');
+
+    expect(result.complete).toBe(true);
+    expect(result.captureOwner).toBe('file');
     expect(fs.statSync(result.logPath).mode & 0o777).toBe(0o600);
     expect(fs.statSync(path.dirname(result.logPath)).mode & 0o777).toBe(0o700);
   });
@@ -374,7 +394,7 @@ describe('release transcript supervisor', () => {
     expect(text).toMatch(/# finished \S+ exit code=1 signal=null/);
   });
 
-  test('forwards SIGTERM to the child process group and removes its handlers', async () => {
+  testPosix('forwards SIGTERM to the child process group and removes its handlers', async () => {
     const dir = tempDir('signal');
     const grand = fixture(dir, 'grand.js', [
       'setInterval(() => {}, 1000);'

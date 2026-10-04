@@ -8,6 +8,7 @@ const { superviseRelease } = require('../../scripts/release-transcript');
 const TMP = os.tmpdir();
 const HELPER = path.join(__dirname, '..', '..', 'scripts', 'release-command.js');
 const ownedDirs = new Set();
+const trackedChildren = new Map();
 
 const RUNNER_SOURCE = [
   "const fs = require('fs');",
@@ -71,6 +72,23 @@ function withDeadline(promise, label, ms = 20000) {
   });
 }
 
+function trackChild(child, close) {
+  const tracked = close.catch(() => {});
+  trackedChildren.set(child, tracked);
+  tracked.then(() => { trackedChildren.delete(child); });
+  return tracked;
+}
+
+function shellQuote(value) {
+  const text = String(value);
+  if (text.includes('"')) throw new Error(`Refusing to shell-quote ${text}`);
+  return `"${text}"`;
+}
+
+function shellNode(script) {
+  return `${shellQuote(process.execPath)} ${shellQuote(script)}`;
+}
+
 function runHelper(dir, spec) {
   const runner = path.join(dir, 'runner.js');
   const recordPath = path.join(dir, 'record.json');
@@ -79,22 +97,35 @@ function runHelper(dir, spec) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [runner, recordPath], {
       cwd: dir,
-      env: Object.assign({}, process.env, { EXEC_SPEC: JSON.stringify(spec) })
+      env: Object.assign({}, process.env, { EXEC_SPEC: JSON.stringify(spec) }),
+      stdio: ['ignore', 'pipe', 'pipe']
     });
     const out = [];
     const err = [];
 
     child.stdout.on('data', chunk => out.push(chunk));
     child.stderr.on('data', chunk => err.push(chunk));
-    child.on('error', reject);
-    child.on('close', code => {
-      resolve({
-        code,
-        stdout: Buffer.concat(out).toString('utf8'),
-        stderr: Buffer.concat(err).toString('utf8'),
-        record: JSON.parse(fs.readFileSync(recordPath, 'utf8'))
+    const close = new Promise((closed) => {
+      child.on('close', code => {
+        const stdout = Buffer.concat(out).toString('utf8');
+        const stderr = Buffer.concat(err).toString('utf8');
+        let record;
+        try {
+          record = JSON.parse(fs.readFileSync(recordPath, 'utf8'));
+        } catch (error) {
+          reject(new Error(
+            `Could not read the helper record after exit code=${code}: ${error.message}`
+            + `\nstdout: ${stdout}\nstderr: ${stderr}`
+          ));
+          closed();
+          return;
+        }
+        resolve({ code, stdout, stderr, record });
+        closed();
       });
     });
+    trackChild(child, close);
+    child.on('error', reject);
   });
 }
 
@@ -141,7 +172,10 @@ function fileExitOnFailureFixture(dir, name, file, args) {
 
 function spawnNode(dir, scriptPath) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [scriptPath], { cwd: dir });
+    const child = spawn(process.execPath, [scriptPath], {
+      cwd: dir,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
     const out = [];
     const err = [];
     const swallow = () => {};
@@ -149,16 +183,31 @@ function spawnNode(dir, scriptPath) {
     child.stderr.on('error', swallow);
     child.stdout.on('data', chunk => out.push(chunk));
     child.stderr.on('data', chunk => err.push(chunk));
+    const close = new Promise((closed) => {
+      child.on('close', code => {
+        resolve({
+          code,
+          stdout: Buffer.concat(out).toString('utf8'),
+          stderr: Buffer.concat(err).toString('utf8')
+        });
+        closed();
+      });
+    });
+    trackChild(child, close);
     child.on('error', reject);
-    child.on('close', code => resolve({
-      code,
-      stdout: Buffer.concat(out).toString('utf8'),
-      stderr: Buffer.concat(err).toString('utf8')
-    }));
   });
 }
 
-afterEach(() => {
+afterEach(async () => {
+  const children = Array.from(trackedChildren.entries());
+  for (const [child] of children) {
+    try {
+      child.kill('SIGKILL');
+    } catch (error) {
+      // Already gone.
+    }
+  }
+  await Promise.all(children.map(([, close]) => close));
   for (const dir of ownedDirs) {
     try {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -172,7 +221,7 @@ afterEach(() => {
 describe('execCaptured', () => {
   test('keeps a JSON stdout parseable byte for byte while forwarding both streams', async () => {
     const dir = tempDir('json');
-    const command = `node -e "process.stdout.write(JSON.stringify({version:'1.2.3',ok:true}));process.stderr.write('note: reading the release channel')"`;
+    const command = `${shellQuote(process.execPath)} -e "process.stdout.write(JSON.stringify({version:'1.2.3',ok:true}));process.stderr.write('note: reading the release channel')"`;
     const run = await runHelper(dir, { command });
 
     expect(run.code).toBe(0);
@@ -186,7 +235,7 @@ describe('execCaptured', () => {
 
   test('retains captured stdout far past 8 KiB', async () => {
     const dir = tempDir('large');
-    const run = await runHelper(dir, { command: `node -e "process.stdout.write('x'.repeat(9000))"` });
+    const run = await runHelper(dir, { command: `${shellQuote(process.execPath)} -e "process.stdout.write('x'.repeat(9000))"` });
 
     expect(run.code).toBe(0);
     expect(run.record.ok).toBe(true);
@@ -197,7 +246,7 @@ describe('execCaptured', () => {
 
   test('preserves status, stdout and stderr on a nonzero exit and prints stderr once', async () => {
     const dir = tempDir('failure');
-    const command = `node -e "process.stdout.write('partial build output');process.stderr.write('boom: the signature check failed');process.exit(3)"`;
+    const command = `${shellQuote(process.execPath)} -e "process.stdout.write('partial build output');process.stderr.write('boom: the signature check failed');process.exit(3)"`;
     const run = await runHelper(dir, { command });
 
     expect(run.record.ok).toBe(false);
@@ -214,7 +263,7 @@ describe('execCaptured', () => {
   test('preserves a timeout as ETIMEDOUT with its signal', async () => {
     const dir = tempDir('timeout');
     const run = await runHelper(dir, {
-      command: `node -e "setTimeout(() => {}, 5000)"`,
+      command: `${shellQuote(process.execPath)} -e "setTimeout(() => {}, 5000)"`,
       options: { timeout: 300 }
     });
 
@@ -228,7 +277,7 @@ describe('execCaptured', () => {
   test('leaves inherited stdio inherited and returns nothing for it', async () => {
     const dir = tempDir('inherit');
     const run = await runHelper(dir, {
-      command: `node -e "process.stdout.write('inherited out\\n');process.stderr.write('inherited err\\n')"`,
+      command: `${shellQuote(process.execPath)} -e "process.stdout.write('inherited out\\n');process.stderr.write('inherited err\\n')"`,
       options: { stdio: 'inherit' }
     });
 
@@ -242,7 +291,7 @@ describe('execCaptured', () => {
   test('forwards a Buffer result without altering it', async () => {
     const dir = tempDir('buffer');
     const run = await runHelper(dir, {
-      command: `node -e "process.stdout.write('raw bytes')"`,
+      command: `${shellQuote(process.execPath)} -e "process.stdout.write('raw bytes')"`,
       options: { encoding: 'buffer' }
     });
 
@@ -255,8 +304,8 @@ describe('execCaptured', () => {
   test('delivers every forwarded stream into the transcript the supervisor writes', async () => {
     const dir = tempDir('transcript');
     const child = path.join(dir, 'child.js');
-    const okCommand = `node -e "process.stdout.write(JSON.stringify({captured:true}));process.stderr.write('captured stderr note')"`;
-    const failCommand = `node -e "process.stderr.write('failed stderr note');process.exit(4)"`;
+    const okCommand = `${shellQuote(process.execPath)} -e "process.stdout.write(JSON.stringify({captured:true}));process.stderr.write('captured stderr note')"`;
+    const failCommand = `${shellQuote(process.execPath)} -e "process.stderr.write('failed stderr note');process.exit(4)"`;
 
     fs.writeFileSync(child, [
       `const { execCaptured } = require(${JSON.stringify(HELPER)});`,
@@ -297,7 +346,7 @@ describe('execCaptured', () => {
   test('delivers all 250000 stdout bytes and all 250000 stderr bytes when the wrapper exits immediately', async () => {
     const dir = tempDir('immediate-exit');
     const inner = bigOutputFixture(dir, 'inner.js');
-    const wrapper = exitOnFailureFixture(dir, 'wrapper.js', `node ${inner}`);
+    const wrapper = exitOnFailureFixture(dir, 'wrapper.js', shellNode(inner));
     const run = await spawnNode(dir, wrapper);
 
     expect(run.code).toBe(3);
@@ -308,7 +357,7 @@ describe('execCaptured', () => {
   test('keeps both 250000 byte streams whole in the supervisor transcript and reports status 3', async () => {
     const dir = tempDir('immediate-exit-transcript');
     const inner = bigOutputFixture(dir, 'inner.js');
-    const wrapper = exitOnFailureFixture(dir, 'wrapper.js', `node ${inner}`);
+    const wrapper = exitOnFailureFixture(dir, 'wrapper.js', shellNode(inner));
     const out = collector();
     const err = collector();
 
@@ -332,7 +381,7 @@ describe('execCaptured', () => {
 
   test('hands inherited stdio straight through for output larger than a pipe buffer', async () => {
     const dir = tempDir('inherit-large');
-    const command = `node -e "process.stdout.write('o'.repeat(${BIG}));process.stderr.write('e'.repeat(${BIG}))"`;
+    const command = `${shellQuote(process.execPath)} -e "process.stdout.write('o'.repeat(${BIG}));process.stderr.write('e'.repeat(${BIG}))"`;
     const run = await runHelper(dir, { command, options: { stdio: 'inherit' } });
 
     expect(run.code).toBe(0);
@@ -360,7 +409,7 @@ describe('execCaptured', () => {
       '}',
       'let record;',
       'try {',
-      `  execCaptured(${JSON.stringify(`node ${inner}`)});`,
+      `  execCaptured(${JSON.stringify(shellNode(inner))});`,
       '  record = { ok: true };',
       '} catch (error) {',
       '  record = { ok: false, status: error.status === undefined ? null : error.status, message: error.message };',
@@ -369,7 +418,10 @@ describe('execCaptured', () => {
     ].join('\n') + '\n');
 
     const run = await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [runner], { cwd: dir });
+      const child = spawn(process.execPath, [runner], {
+        cwd: dir,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
       const out = [];
       const err = [];
       const swallow = () => {};
@@ -377,14 +429,20 @@ describe('execCaptured', () => {
       child.stderr.on('error', swallow);
       child.stdout.on('data', chunk => out.push(chunk));
       child.stderr.on('data', chunk => err.push(chunk));
+      const close = new Promise((closed) => {
+        child.on('close', code => {
+          resolve({
+            code,
+            stdout: Buffer.concat(out).toString('utf8'),
+            stderr: Buffer.concat(err).toString('utf8')
+          });
+          closed();
+        });
+      });
+      trackChild(child, close);
       child.on('error', reject);
       child.stdout.destroy();
       fs.writeFileSync(go, '1');
-      child.on('close', code => resolve({
-        code,
-        stdout: Buffer.concat(out).toString('utf8'),
-        stderr: Buffer.concat(err).toString('utf8')
-      }));
     });
 
     expect(run.code).toBe(0);
