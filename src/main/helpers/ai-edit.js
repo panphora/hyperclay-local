@@ -362,6 +362,20 @@ async function mockStream(payload, comment, label, progress, signal) {
   return { html, stopReason: stop ? stop[1] : 'end_turn', model: `mock(${label})` };
 }
 
+async function commandPresent(command, env) {
+  const value = key => Object.entries(env).find(([name]) => name.toUpperCase() === key)?.[1] || '';
+  const extensions = process.platform === 'win32'
+    ? ['', ...(value('PATHEXT') || '.COM;.EXE;.BAT;.CMD').split(';')]
+    : [''];
+  for (const dir of value('PATH').split(path.delimiter).filter(Boolean)) {
+    for (const extension of extensions) {
+      const info = await fs.stat(path.join(dir, command + extension)).catch(() => null);
+      if (info?.isFile()) return true;
+    }
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------- the helper
 
 const log = (...args) => console.log('[ai-edit]', ...args);
@@ -386,7 +400,8 @@ async function runAiEdit(payload, { file, baseDir, settings, signal, progress })
   } catch (err) {
     throw coded('unknown_engine', err.message);
   }
-  const { engine, comment: cleanComment } = routed;
+  const { comment: cleanComment } = routed;
+  let { engine } = routed;
   const label = engine.model || engine.name;
   if (engine.adapter === 'unsupported') {
     throw coded('engine_unsupported', `@${engine.name} can't be used for AI editing: it can read files without asking, and AI editing only runs agents with no tools`);
@@ -417,11 +432,30 @@ async function runAiEdit(payload, { file, baseDir, settings, signal, progress })
 
   let result;
   try {
-    result = isMock()
-      ? await mockStream(payload, cleanComment, label, report, abortSignal)
-      : await ADAPTERS[engine.adapter](engine, userPrompt, ctx);
+    if (isMock()) {
+      result = await mockStream(payload, cleanComment, label, report, abortSignal);
+    } else {
+      try {
+        result = await ADAPTERS[engine.adapter](engine, userPrompt, ctx);
+      } catch (err) {
+        const implicitClaude = cleanComment === payload.comment &&
+          ['claude', 'fable'].includes(defaultEngine) && engine.adapter === 'claude';
+        if (err.code !== 'ENOENT' || !implicitClaude || abortSignal.aborted) throw err;
+        if (engines.codex.adapter !== 'codex' || await commandPresent('claude', ctx.env)) throw err;
+        engine = engines.codex;
+        log(`[${payload.editId}] Claude Code isn't installed, editing with Codex`);
+        try {
+          result = await ADAPTERS.codex(engine, userPrompt, ctx);
+        } catch (fallbackError) {
+          if (fallbackError.code === 'ENOENT') {
+            throw coded('engine_unavailable', 'Neither Claude Code nor Codex is installed. Install one and sign in.');
+          }
+          throw fallbackError;
+        }
+      }
+    }
   } catch (err) {
-    if (err.name === 'AbortError') throw err;
+    if (err.name === 'AbortError' || err.code === 'engine_unavailable') throw err;
     if (err.code === 'ENOENT') {
       const binary = engine.adapter === 'generic' ? 'its command' : `\`${engine.adapter}\``;
       throw coded('engine_unavailable', `@${engine.name} isn't available: ${binary} was not found on this machine. Install it and sign in, or pick another agent with @claude, @fable or @codex.`);
