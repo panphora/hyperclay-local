@@ -436,4 +436,9 @@ function writeReleaseState(value, identity, { cacheRoot, expectedRevision, fs: i
   return value;
 }
 
-module.exports = { readReleaseState, writeReleaseState };
+module.exports = {
+  readReleaseState,
+  writeReleaseState,
+  publishDurableFile: writeLaneRecord,
+  fsyncDirectory,
+};

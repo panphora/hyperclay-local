@@ -5,7 +5,8 @@ const {
   retryRead,
   parseGithubResponse,
   readGithubJson,
-  readReleaseInfo
+  readReleaseInfo,
+  readReleaseInfoEvidence
 } = require('../../scripts/release-read-policy');
 
 const REPO = 'hyper/hyperclay-local';
@@ -114,6 +115,14 @@ function textResponse(text, options = {}) {
         };
       }
     }
+  };
+}
+
+function textOnlyResponse(text, options = {}) {
+  return {
+    status: options.status === undefined ? 200 : options.status,
+    headers: options.headers || {},
+    text: async () => text
   };
 }
 
@@ -1437,5 +1446,357 @@ describe('readReleaseInfo', () => {
       ).rejects.toMatchObject({ kind: 'invalid-operation' });
       expect(runner.calls).toHaveLength(0);
     }
+  });
+});
+
+describe('readReleaseInfoEvidence', () => {
+  test('returns the exact response bytes across a split multibyte code point, escapes and whitespace', async () => {
+    const clock = fakeClock();
+    const source = Buffer.from(
+      '  {"version":"1.28.0","notes":"caf\u00e9 \u2014 \u2615","escaped":"line\\n\\"quoted\\""}\n',
+      'utf8'
+    );
+    const split = source.indexOf(Buffer.from('\u00e9', 'utf8')) + 1;
+    expect(source[split - 1]).toBe(0xc3);
+    expect(source[split]).toBe(0xa9);
+    const urls = [];
+    const result = await readReleaseInfoEvidence({
+      fetch: async (url) => {
+        urls.push(url);
+        clock.wall += 5;
+        return chunkResponse([source.subarray(0, split), source.subarray(split)], {
+          headers: { 'content-type': 'application/json' }
+        });
+      },
+      now: clock.now,
+      wallNow: clock.wallNow,
+      sleep: clock.sleep,
+      logReadFailure: clock.log
+    });
+    expect(Buffer.isBuffer(result.bytes)).toBe(true);
+    expect(result.bytes.length).toBe(source.length);
+    expect(result.bytes.equals(source)).toBe(true);
+    expect(result.value).toEqual({
+      version: '1.28.0',
+      notes: 'caf\u00e9 \u2014 \u2615',
+      escaped: 'line\n"quoted"'
+    });
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toBe(`${RELEASE_INFO_URL}?t=1000000`);
+    expect(clock.sleeps).toEqual([]);
+    expect(clock.events).toEqual([]);
+  });
+
+  test('returns only the successful body bytes after a transient 503 retry', async () => {
+    const clock = fakeClock();
+    const urls = [];
+    const successBody = Buffer.from('\t{"version":"1.28.0"}\r\n', 'utf8');
+    const failureBody = '{"error":"unavailable"}';
+    const result = await readReleaseInfoEvidence({
+      fetch: async (url) => {
+        urls.push(url);
+        clock.wall += 5;
+        if (urls.length === 1) {
+          return chunkResponse([Buffer.from(failureBody)], {
+            status: 503,
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        return chunkResponse([successBody], { headers: { 'content-type': 'application/json' } });
+      },
+      now: clock.now,
+      wallNow: clock.wallNow,
+      sleep: clock.sleep,
+      logReadFailure: clock.log
+    });
+    expect(result.bytes.equals(successBody)).toBe(true);
+    expect(result.bytes.toString('utf8')).not.toContain('unavailable');
+    expect(result.value).toEqual({ version: '1.28.0' });
+    expect(urls).toEqual([`${RELEASE_INFO_URL}?t=1000000`, `${RELEASE_INFO_URL}?t=1000005`]);
+    expect(new Set(urls).size).toBe(2);
+    expect(clock.sleeps).toEqual([1000]);
+    expect(clock.events).toHaveLength(1);
+    expect(clock.events[0]).toMatchObject({
+      operation: 'desktop.release-info',
+      attempt: 1,
+      kind: 'http',
+      httpStatus: 503,
+      body: failureBody,
+      classification: 'transient',
+      delayMs: 1000,
+      retrying: true
+    });
+  });
+
+  test('keeps a malformed 2xx JSON permanent and cancels the stream after one fetch', async () => {
+    const clock = fakeClock();
+    let fetches = 0;
+    let canceled = 0;
+    let thrown = null;
+    try {
+      await readReleaseInfoEvidence({
+        fetch: async () => {
+          fetches++;
+          return chunkResponse([Buffer.from('{"version":')], {
+            headers: { 'content-type': 'application/json' },
+            onCancel: () => {
+              canceled++;
+            }
+          });
+        },
+        now: clock.now,
+        wallNow: clock.wallNow,
+        sleep: clock.sleep,
+        logReadFailure: clock.log
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(fetches).toBe(1);
+    expect(clock.sleeps).toEqual([]);
+    expect(thrown).toMatchObject({ attempts: 1, kind: 'invalid-json', body: '{"version":' });
+    expect(clock.events[0].classification).toBe('permanent');
+    expect(canceled).toBe(1);
+  });
+
+  test('refuses a declared oversize body once and cancels the stream without a second fetch', async () => {
+    const clock = fakeClock();
+    let fetches = 0;
+    let canceled = 0;
+    let thrown = null;
+    try {
+      await readReleaseInfoEvidence({
+        fetch: async () => {
+          fetches++;
+          return chunkResponse([Buffer.from('{}')], {
+            headers: { 'content-type': 'application/json', 'content-length': String(9 * 1024 * 1024) },
+            onCancel: () => {
+              canceled++;
+            }
+          });
+        },
+        now: clock.now,
+        wallNow: clock.wallNow,
+        sleep: clock.sleep,
+        logReadFailure: clock.log
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(fetches).toBe(1);
+    expect(clock.sleeps).toEqual([]);
+    expect(thrown).toMatchObject({ attempts: 1, kind: 'schema', bodyTooLarge: true });
+    expect(clock.events[0].classification).toBe('permanent');
+    expect(canceled).toBe(1);
+  });
+
+  test('cancels a stream that exceeds the body bound on its own before failing once', async () => {
+    const clock = fakeClock();
+    let fetches = 0;
+    let canceled = 0;
+    let thrown = null;
+    try {
+      await readReleaseInfoEvidence({
+        fetch: async () => {
+          fetches++;
+          return chunkResponse([Buffer.alloc(5 * 1024 * 1024, 120), Buffer.alloc(5 * 1024 * 1024, 120)], {
+            headers: { 'content-type': 'application/json' },
+            onCancel: () => {
+              canceled++;
+            }
+          });
+        },
+        now: clock.now,
+        wallNow: clock.wallNow,
+        sleep: clock.sleep,
+        logReadFailure: clock.log
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(fetches).toBe(1);
+    expect(clock.sleeps).toEqual([]);
+    expect(thrown).toMatchObject({ attempts: 1, kind: 'schema', bodyTooLarge: true });
+    expect(clock.events[0].classification).toBe('permanent');
+    expect(canceled).toBeGreaterThan(0);
+  });
+
+  test('fails an operator abort once and cancels the pending evidence stream', async () => {
+    const controller = new AbortController();
+    const clock = fakeClock();
+    let reading = false;
+    let canceled = false;
+    let seen = null;
+    const pending = readReleaseInfoEvidence({
+      fetch: (url, options) => {
+        seen = options;
+        return {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+          body: {
+            getReader() {
+              return {
+                read: () => {
+                  reading = true;
+                  return new Promise(() => {});
+                },
+                cancel: async () => {
+                  canceled = true;
+                }
+              };
+            }
+          }
+        };
+      },
+      now: clock.now,
+      wallNow: clock.wallNow,
+      sleep: clock.sleep,
+      signal: controller.signal,
+      logReadFailure: clock.log
+    });
+    for (let tick = 0; tick < 20 && !reading; tick++) await Promise.resolve();
+    expect(reading).toBe(true);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({
+      kind: 'operator-abort',
+      abortedByOperator: true,
+      attempts: 1
+    });
+    expect(seen.signal.aborted).toBe(true);
+    expect(canceled).toBe(true);
+    expect(clock.sleeps).toEqual([]);
+  });
+
+  test('rejects a text-only success once as a permanent schema failure while the legacy reader parses it', async () => {
+    const clock = fakeClock();
+    const urls = [];
+    const body = '{"version":"1.28.0"}';
+    let thrown = null;
+    try {
+      await readReleaseInfoEvidence(
+        {
+          fetch: async (url) => {
+            urls.push(url);
+            clock.wall += 5;
+            return textOnlyResponse(body, { headers: { 'content-type': 'application/json' } });
+          },
+          now: clock.now,
+          wallNow: clock.wallNow,
+          sleep: clock.sleep,
+          logReadFailure: clock.log
+        },
+        { requireBytes: false, evidence: false, bytes: false }
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(urls).toHaveLength(1);
+    expect(clock.sleeps).toEqual([]);
+    expect(thrown).toMatchObject({ attempts: 1, kind: 'schema', operation: 'desktop.release-info' });
+    expect(clock.events[0].classification).toBe('permanent');
+
+    const legacyClock = fakeClock();
+    const value = await readReleaseInfo({
+      fetch: async () => textOnlyResponse(body, { headers: { 'content-type': 'application/json' } }),
+      now: legacyClock.now,
+      wallNow: legacyClock.wallNow,
+      sleep: legacyClock.sleep,
+      logReadFailure: legacyClock.log
+    });
+    expect(value).toEqual({ version: '1.28.0' });
+    expect(legacyClock.events).toEqual([]);
+  });
+
+  test('keeps the status and body of a text-only non-2xx response for evidence reads', async () => {
+    const clock = fakeClock();
+    let fetches = 0;
+    let thrown = null;
+    try {
+      await readReleaseInfoEvidence({
+        fetch: async () => {
+          fetches++;
+          return textOnlyResponse('Not Found', { status: 404, headers: { 'content-type': 'text/plain' } });
+        },
+        now: clock.now,
+        wallNow: clock.wallNow,
+        sleep: clock.sleep,
+        logReadFailure: clock.log
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(fetches).toBe(1);
+    expect(clock.sleeps).toEqual([]);
+    expect(thrown).toMatchObject({ attempts: 1, kind: 'http', httpStatus: 404, body: 'Not Found' });
+    expect(clock.events[0].classification).toBe('permanent');
+  });
+
+  test('retains the byteLength bound for a text-only body in both readers', async () => {
+    const text = 'x'.repeat(9 * 1024 * 1024);
+    for (const reader of [readReleaseInfoEvidence, readReleaseInfo]) {
+      const clock = fakeClock();
+      let fetches = 0;
+      await expect(
+        reader({
+          fetch: async () => {
+            fetches++;
+            return textOnlyResponse(text, { headers: { 'content-type': 'application/json' } });
+          },
+          now: clock.now,
+          wallNow: clock.wallNow,
+          sleep: clock.sleep,
+          logReadFailure: clock.log
+        })
+      ).rejects.toMatchObject({ attempts: 1, kind: 'schema', bodyTooLarge: true });
+      expect(fetches).toBe(1);
+      expect(clock.sleeps).toEqual([]);
+      expect(clock.events[0].classification).toBe('permanent');
+    }
+  });
+
+  test('returns bytes that own their storage instead of aliasing the source chunks', async () => {
+    const clock = fakeClock();
+    const source = Buffer.from('{"version":"1.28.0"}', 'utf8');
+    const snapshot = Buffer.from(source);
+    const result = await readReleaseInfoEvidence({
+      fetch: async () => chunkResponse([source], { headers: { 'content-type': 'application/json' } }),
+      now: clock.now,
+      wallNow: clock.wallNow,
+      sleep: clock.sleep,
+      logReadFailure: clock.log
+    });
+    expect(result.bytes.equals(snapshot)).toBe(true);
+    expect(result.bytes).not.toBe(source);
+    expect(result.value).toEqual({ version: '1.28.0' });
+    result.bytes.fill(0x20);
+    expect(source.equals(snapshot)).toBe(true);
+  });
+
+  test('keeps the desktop operation allowlist for evidence reads', async () => {
+    let fetches = 0;
+    const fetchFn = async () => {
+      fetches++;
+      return chunkResponse([Buffer.from('{}')], { headers: { 'content-type': 'application/json' } });
+    };
+    for (const operation of ['github.run', 'shell.exec', 'desktop.release-info-latest']) {
+      await expect(readReleaseInfoEvidence({ fetch: fetchFn }, { operation })).rejects.toMatchObject({
+        kind: 'invalid-operation'
+      });
+    }
+    expect(fetches).toBe(0);
+    const clock = fakeClock();
+    const visible = await readReleaseInfoEvidence(
+      {
+        fetch: fetchFn,
+        now: clock.now,
+        wallNow: clock.wallNow,
+        sleep: clock.sleep,
+        logReadFailure: clock.log
+      },
+      { operation: 'desktop.release-info-visible' }
+    );
+    expect(visible.value).toEqual({});
+    expect(visible.bytes.equals(Buffer.from('{}'))).toBe(true);
+    expect(fetches).toBe(1);
   });
 });

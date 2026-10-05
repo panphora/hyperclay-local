@@ -798,18 +798,19 @@ async function readBoundedBody(response, cancels) {
       }
       chunks.push(bytes);
     }
-    return Buffer.concat(chunks).toString('utf8');
+    const bytes = Buffer.concat(chunks);
+    return { bytes, text: bytes.toString('utf8') };
   }
   if (typeof response.text === 'function') {
     const text = await response.text();
     const size = Buffer.byteLength(text);
     if (size > MAX_BODY_BYTES) throw oversizeFailure(size);
-    return text;
+    return { bytes: null, text };
   }
   throw readError('schema', 'Read response carried no readable body');
 }
 
-async function performReleaseInfoRead(operation, fetchFn, url, controller, cancels, wallNow, abortFailure) {
+async function performReleaseInfoRead(operation, fetchFn, url, controller, cancels, wallNow, abortFailure, requireBytes) {
   const response = await fetchFn(url, { method: 'GET', signal: controller.signal });
   if (controller.signal.aborted) throw abortFailure();
   if (!response || !Number.isInteger(response.status)) {
@@ -820,7 +821,8 @@ async function performReleaseInfoRead(operation, fetchFn, url, controller, cance
     let body = '';
     let bodyFailure = null;
     try {
-      body = await readBoundedBody(response, cancels);
+      const bounded = await readBoundedBody(response, cancels);
+      body = bounded.text;
     } catch (error) {
       bodyFailure = error || null;
       body = textOf(error && error.body);
@@ -839,10 +841,17 @@ async function performReleaseInfoRead(operation, fetchFn, url, controller, cance
   }
   const body = await readBoundedBody(response, cancels);
   if (controller.signal.aborted) throw abortFailure();
-  return parseJsonBody(body, { httpStatus: response.status, headers, responseHeaders: headers });
+  if (requireBytes && body.bytes === null) {
+    throw readError(
+      'schema',
+      `Read ${operation} returned a text-only response that cannot certify the response bytes`
+    );
+  }
+  const value = parseJsonBody(body.text, { httpStatus: response.status, headers, responseHeaders: headers });
+  return { value, bytes: body.bytes };
 }
 
-function readReleaseInfoOnce(operation, deps, wallNow, timeoutMs) {
+function readReleaseInfoOnce(operation, deps, wallNow, timeoutMs, requireBytes) {
   return (async () => {
     const fetchFn = typeof deps.fetch === 'function' ? deps.fetch : globalThis.fetch;
     if (typeof fetchFn !== 'function') {
@@ -908,7 +917,8 @@ function readReleaseInfoOnce(operation, deps, wallNow, timeoutMs) {
             controller,
             cancels,
             wallNow,
-            abortFailure
+            abortFailure,
+            requireBytes
           );
         } catch (error) {
           lastError = error;
@@ -927,7 +937,7 @@ function readReleaseInfoOnce(operation, deps, wallNow, timeoutMs) {
   })();
 }
 
-async function readReleaseInfo(deps = {}, options = {}) {
+async function readReleaseInfoResult(requireBytes, deps = {}, options = {}) {
   const runtime = deps || {};
   const settings = options || {};
   const operation = settings.operation === undefined ? 'desktop.release-info' : settings.operation;
@@ -937,10 +947,19 @@ async function readReleaseInfo(deps = {}, options = {}) {
   const wallNow = typeof runtime.wallNow === 'function' ? runtime.wallNow : Date.now;
   return retryRead(
     operation,
-    ({ timeoutMs }) => readReleaseInfoOnce(operation, runtime, wallNow, timeoutMs),
+    ({ timeoutMs }) => readReleaseInfoOnce(operation, runtime, wallNow, timeoutMs, requireBytes),
     runtime,
     settings
   );
+}
+
+async function readReleaseInfo(deps = {}, options = {}) {
+  const result = await readReleaseInfoResult(false, deps, options);
+  return result.value;
+}
+
+async function readReleaseInfoEvidence(deps = {}, options = {}) {
+  return readReleaseInfoResult(true, deps, options);
 }
 
 module.exports = {
@@ -948,5 +967,6 @@ module.exports = {
   retryRead,
   parseGithubResponse,
   readGithubJson,
-  readReleaseInfo
+  readReleaseInfo,
+  readReleaseInfoEvidence
 };
