@@ -25,6 +25,8 @@ const HYPERCLAY_EDGE = 'server-pages/hyperclay-local.edge';
 const VAULT_DOCS = 'vault/DOCS';
 const CONTENT_DOCS = 'content/docs';
 const LLMS_TXT = 'public/llms.txt';
+const DESKTOP_REPO = 'hyperclay-local';
+const SIZE_PATHS = ['README.md', 'website/index.html'];
 
 const NPM_INSTALL = ['ci', '--ignore-scripts', '--no-audit', '--no-fund', '--include=dev'];
 const WEBSITE_GENERATORS = [['run', 'sync-docs'], ['run', 'build:llms-txt']];
@@ -64,6 +66,46 @@ function requireVersion(version, label) {
   if (typeof version !== 'string' || !VERSION_PATTERN.test(version)) {
     throw new Error(`${label} must look like 1.2.3, received ${JSON.stringify(version)}`);
   }
+}
+
+function readSizeManifest(publication, { version, fs: io = fs } = {}) {
+  requireVersion(version, 'version');
+  const keys = ['manifestFile', 'manifestSha256', 'sourceSha'];
+  if (publication === null || typeof publication !== 'object' || Array.isArray(publication)
+    || Reflect.ownKeys(publication).length !== keys.length
+    || keys.some((key) => !Object.prototype.hasOwnProperty.call(publication, key)
+      || !Object.prototype.hasOwnProperty.call(Object.getOwnPropertyDescriptor(publication, key), 'value'))) {
+    throw new Error('publication must contain exactly manifestFile, manifestSha256 and sourceSha');
+  }
+  const { manifestFile, manifestSha256, sourceSha } = publication;
+  if (typeof manifestFile !== 'string' || !path.isAbsolute(manifestFile)
+    || path.normalize(manifestFile) !== manifestFile || manifestFile.includes('\0')) {
+    throw new Error('publication manifestFile must be a canonical absolute path');
+  }
+  if (typeof manifestSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(manifestSha256)) {
+    throw new Error('publication manifestSha256 must be a lowercase SHA-256');
+  }
+  if (typeof sourceSha !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sourceSha)) {
+    throw new Error('publication sourceSha must be a complete object ID');
+  }
+  if (io.realpathSync(manifestFile) !== manifestFile) {
+    throw new Error('publication manifestFile must be canonical without symlink parents');
+  }
+  let parent = path.dirname(manifestFile);
+  while (true) {
+    const stat = io.lstatSync(parent);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error('publication manifestFile parents must be ordinary directories');
+    }
+    const next = path.dirname(parent);
+    if (next === parent) break;
+    parent = next;
+  }
+  const { readBoundedOrdinaryFile } = require('./release-local-read');
+  const bytes = readBoundedOrdinaryFile(manifestFile, { maxBytes: 1024 * 1024, fs: io });
+  if (sha256(bytes) !== manifestSha256) throw new Error('publication manifest digest does not match');
+  const { validateReleaseManifest } = require('./release-publication');
+  return validateReleaseManifest(JSON.parse(bytes.toString('utf8')), { version, sourceSha });
 }
 
 function isInside(target, root) {
@@ -349,19 +391,7 @@ function copyCandidate(snapshot) {
   });
 }
 
-function prepareExternalDocs({ version, parentDir, runDir, targets }, { run = defaultRun } = {}) {
-  requireVersion(version, 'version');
-  if (typeof parentDir !== 'string' || typeof runDir !== 'string') {
-    throw new Error('parentDir and runDir are required');
-  }
-  const selected = requestedTargets(targets);
-
-  const parentRoot = requireDirectory(parentDir, 'parentDir');
-  const roots = selected.map((repo) => [
-    repo,
-    requireRepoRoot(path.join(parentRoot, repo), `${repo} repo`)
-  ]);
-
+function createRunRoot(runDir, parentRoot, roots) {
   const requestedRunDir = path.resolve(runDir);
   if (fs.existsSync(requestedRunDir)) {
     throw new Error(`run dir already exists: ${requestedRunDir}`);
@@ -379,6 +409,31 @@ function prepareExternalDocs({ version, parentDir, runDir, targets }, { run = de
     }
   }
   fs.mkdirSync(runRoot, { mode: 0o700 });
+  return runRoot;
+}
+
+function publishPrepared(runRoot, prepared) {
+  const preparedFile = path.join(runRoot, 'prepared.json');
+  const staging = `${preparedFile}.staging`;
+  fs.writeFileSync(staging, `${JSON.stringify(prepared, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(staging, preparedFile);
+  return prepared;
+}
+
+function prepareExternalDocs({ version, parentDir, runDir, targets }, { run = defaultRun } = {}) {
+  requireVersion(version, 'version');
+  if (typeof parentDir !== 'string' || typeof runDir !== 'string') {
+    throw new Error('parentDir and runDir are required');
+  }
+  const selected = requestedTargets(targets);
+
+  const parentRoot = requireDirectory(parentDir, 'parentDir');
+  const roots = selected.map((repo) => [
+    repo,
+    requireRepoRoot(path.join(parentRoot, repo), `${repo} repo`)
+  ]);
+
+  const runRoot = createRunRoot(runDir, parentRoot, roots);
 
   const snapshots = roots.map(([repo, repoRoot]) => snapshotRepo(run, repo, repoRoot, runRoot));
   const hyperclay = snapshots.find((snapshot) => snapshot.repo === HYPERCLAY_REPO);
@@ -462,11 +517,76 @@ function prepareExternalDocs({ version, parentDir, runDir, targets }, { run = de
     }))
   };
 
-  const preparedFile = path.join(runRoot, 'prepared.json');
-  const staging = `${preparedFile}.staging`;
-  fs.writeFileSync(staging, `${JSON.stringify(prepared, null, 2)}\n`, { mode: 0o600 });
-  fs.renameSync(staging, preparedFile);
-  return prepared;
+  return publishPrepared(runRoot, prepared);
 }
 
-module.exports = { prepareExternalDocs, prepareVersion };
+function prepareDownloadSizes({ version, parentDir, runDir, publication }, { run = defaultRun } = {}) {
+  requireVersion(version, 'version');
+  if (typeof parentDir !== 'string' || typeof runDir !== 'string') {
+    throw new Error('parentDir and runDir are required');
+  }
+  const manifest = readSizeManifest(publication, { version });
+
+  const parentRoot = requireDirectory(parentDir, 'parentDir');
+  const roots = [[DESKTOP_REPO, requireRepoRoot(path.join(parentRoot, DESKTOP_REPO), `${DESKTOP_REPO} repo`)]];
+  const runRoot = createRunRoot(runDir, parentRoot, roots);
+
+  const snapshot = snapshotRepo(run, DESKTOP_REPO, roots[0][1], runRoot);
+  snapshot.allowed = [...SIZE_PATHS];
+  snapshot.sourcePath = SIZE_PATHS[0];
+  for (const rel of snapshot.allowed) {
+    requireRegularFile(path.join(snapshot.beforeDir, rel), `${DESKTOP_REPO} size target ${rel}`);
+  }
+
+  const live = readLiveState(run, snapshot);
+  requireLiveMatchesSnapshot(snapshot, live);
+  snapshot.liveState = live;
+
+  const readme = fs.readFileSync(path.join(snapshot.beforeDir, 'README.md'), 'utf8');
+  const website = fs.readFileSync(path.join(snapshot.beforeDir, 'website/index.html'), 'utf8');
+  const { renderDownloadSizes } = require('./write-download-sizes');
+  const output = renderDownloadSizes({ readme, website, manifest }, { version, sourceSha: publication.sourceSha });
+  fs.writeFileSync(path.join(snapshot.sourceDir, 'README.md'), output.readme);
+  fs.writeFileSync(path.join(snapshot.sourceDir, 'website/index.html'), output.website);
+
+  const finalManifest = treeManifest(snapshot.sourceDir);
+  const changes = manifestDiff(snapshot.manifest, finalManifest);
+  const allowed = new Set(snapshot.allowed);
+  for (const change of changes) {
+    if (change.status !== 'modified') {
+      throw new Error(`${DESKTOP_REPO} ${change.status} ${change.path} is not permitted`);
+    }
+    if (!allowed.has(change.path)) {
+      throw new Error(`${DESKTOP_REPO} changed ${change.path}, which is outside the release targets`);
+    }
+  }
+  copyCandidate(snapshot);
+
+  requireLiveUnchanged(snapshot, snapshot.liveState, readLiveState(run, snapshot));
+  readSizeManifest(publication, { version });
+
+  const prepared = {
+    schema: SCHEMA,
+    version,
+    runDir: runRoot,
+    targets: [{
+      repo: DESKTOP_REPO,
+      repoRoot: snapshot.repoRoot,
+      beforeHead: snapshot.beforeHead,
+      indexFingerprint: snapshot.indexFingerprint,
+      sourcePath: snapshot.sourcePath,
+      oldVersion: version,
+      paths: snapshot.paths,
+      state: 'prepared',
+      publication: {
+        manifestFile: publication.manifestFile,
+        manifestSha256: publication.manifestSha256,
+        sourceSha: publication.sourceSha
+      }
+    }]
+  };
+
+  return publishPrepared(runRoot, prepared);
+}
+
+module.exports = { prepareExternalDocs, prepareDownloadSizes, prepareVersion, readSizeManifest };

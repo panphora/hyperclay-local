@@ -10,8 +10,9 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const { execFileCaptured, writeOutput } = require('./release-command');
+const { readBoundedOrdinaryFile } = require('./release-local-read');
 const { detectOldVersion } = require('./update-external-docs');
-const { prepareVersion } = require('./release-docs-prepare');
+const { prepareVersion, readSizeManifest } = require('./release-docs-prepare');
 
 const SCHEMA = 1;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
@@ -23,6 +24,7 @@ const PERMISSION_BITS = 0o777;
 const EXECUTABLE_BIT = 0o100;
 const SPECIAL_BITS = 0o7000;
 const PATCH_BUFFER_BYTES = 16 * 1024 * 1024;
+const EVIDENCE_JSON_BYTES = 8 * 1024 * 1024;
 const VERIFY_FORBIDDEN_COMMANDS = ['write-tree', 'read-tree', 'apply', 'update-index', 'hash-object'];
 
 const PREPARED_FILE = 'prepared.json';
@@ -33,11 +35,13 @@ const PRIVATE_INDEX_FILE = 'index';
 
 const HYPERCLAY_REPO = 'hyperclay';
 const WEBSITE_REPO = 'hyperclay-website';
-const REPO_NAMES = [HYPERCLAY_REPO, WEBSITE_REPO];
+const DESKTOP_REPO = 'hyperclay-local';
+const REPO_NAMES = [HYPERCLAY_REPO, WEBSITE_REPO, DESKTOP_REPO];
 const HYPERCLAY_EDGE = 'server-pages/hyperclay-local.edge';
 const VAULT_DOCS = 'vault/DOCS';
 const CONTENT_DOCS = 'content/docs';
 const LLMS_TXT = 'public/llms.txt';
+const SIZE_PATHS = ['README.md', 'website/index.html'];
 
 const APPLICATION_FIELDS = [
   'schema', 'version', 'repo', 'repoRoot', 'preparedFile', 'preparedSha256', 'beforeHead',
@@ -79,7 +83,7 @@ function sha256(value) {
 }
 
 function hashFile(file) {
-  return sha256(fs.readFileSync(file));
+  return sha256(readBoundedOrdinaryFile(file, { maxBytes: PATCH_BUFFER_BYTES }));
 }
 
 function fileMode(stat) {
@@ -239,7 +243,7 @@ function readDescriptor(preparedFile) {
   const staging = path.join(runDir, STAGING_FILE);
   if (fs.existsSync(staging)) throw new Error(`prepared run dir holds an unpublished staging file: ${staging}`);
   requireRegularLeaf(preparedFile, 'preparedFile');
-  const bytes = fs.readFileSync(preparedFile);
+  const bytes = readBoundedOrdinaryFile(preparedFile, { maxBytes: EVIDENCE_JSON_BYTES });
   let prepared;
   try {
     prepared = JSON.parse(bytes.toString('utf8'));
@@ -264,7 +268,7 @@ function selectTarget(prepared, repo, version) {
     throw new Error('prepared targets must be a nonempty array');
   }
   if (!REPO_NAMES.includes(repo)) {
-    throw new Error(`repo must be hyperclay or hyperclay-website, received ${JSON.stringify(repo)}`);
+    throw new Error(`repo must be hyperclay or hyperclay-website or hyperclay-local, received ${JSON.stringify(repo)}`);
   }
   const names = prepared.targets.map((target) => target && target.repo);
   for (const name of names) {
@@ -273,11 +277,20 @@ function selectTarget(prepared, repo, version) {
     }
   }
   if (new Set(names).size !== names.length) throw new Error('prepared targets must be unique');
+  if (names.includes(DESKTOP_REPO) && (names.length !== 1 || repo !== DESKTOP_REPO)) {
+    throw new Error('a desktop size descriptor must contain only the hyperclay-local target');
+  }
   const matches = prepared.targets.filter((target) => target.repo === repo);
   if (matches.length !== 1) throw new Error(`prepared targets must hold exactly one ${repo} target`);
   const target = matches[0];
   if (target.state !== 'prepared') throw new Error(`${repo} prepared target state must be prepared`);
   return target;
+}
+
+function readPreparedTarget(preparedFile, { repo, version }) {
+  const descriptor = readDescriptor(preparedFile);
+  const target = selectTarget(descriptor.prepared, repo, version);
+  return { ...descriptor, target };
 }
 
 function requireRepoRoot(target, repo, parentRoot, run) {
@@ -363,6 +376,10 @@ function expectedPathSet(target, repo, run, repoRoot) {
     }
     return { required: [HYPERCLAY_EDGE] };
   }
+  if (repo === DESKTOP_REPO) {
+    if (target.sourcePath !== 'README.md') throw new Error('hyperclay-local sourcePath must be README.md');
+    return { required: [...SIZE_PATHS] };
+  }
   const name = websiteSourceName(target.sourcePath);
   const candidates = vaultCandidates(run, repoRoot, target.beforeHead, observeEnv());
   if (candidates.length !== 1 || candidates[0] !== target.sourcePath) {
@@ -404,8 +421,8 @@ function requireSnapshotEntry(entry, repo, runDir, run, repoRoot, beforeHead) {
   if (fileMode(afterStat) !== entry.mode) {
     throw new Error(`${repo} ${entry.path} afterFile mode ${fileMode(afterStat)} does not match ${entry.mode}`);
   }
-  const beforeBytes = fs.readFileSync(beforeFile);
-  const afterBytes = fs.readFileSync(afterFile);
+  const beforeBytes = readBoundedOrdinaryFile(beforeFile, { maxBytes: PATCH_BUFFER_BYTES });
+  const afterBytes = readBoundedOrdinaryFile(afterFile, { maxBytes: PATCH_BUFFER_BYTES });
   const beforeHash = sha256(beforeBytes);
   const afterHash = sha256(afterBytes);
   if (beforeHash !== entry.beforeSha256) {
@@ -430,6 +447,24 @@ function requireSnapshotEntry(entry, repo, runDir, run, repoRoot, beforeHead) {
 function requireSourceAfter(entries, snapshots, target, version) {
   if (typeof target.oldVersion !== 'string' || !VERSION_PATTERN.test(target.oldVersion)) {
     throw new Error(`${target.repo} oldVersion must look like 1.2.3`);
+  }
+  if (target.repo === DESKTOP_REPO) {
+    if (target.oldVersion !== version) throw new Error('desktop size updates must preserve the version');
+    const manifest = readSizeManifest(target.publication, { version });
+    const byPath = new Map(snapshots.map((snapshot) => [snapshot.entry.path, snapshot]));
+    const readme = byPath.get('README.md');
+    const website = byPath.get('website/index.html');
+    const { renderDownloadSizes } = require('./write-download-sizes');
+    const output = renderDownloadSizes({
+      readme: readme.beforeBytes.toString('utf8'),
+      website: website.beforeBytes.toString('utf8'),
+      manifest,
+    }, { version, sourceSha: target.publication.sourceSha });
+    if (!readme.afterBytes.equals(Buffer.from(output.readme, 'utf8'))
+      || !website.afterBytes.equals(Buffer.from(output.website, 'utf8'))) {
+      throw new Error('desktop size after bytes do not match renderDownloadSizes');
+    }
+    return;
   }
   const index = entries.findIndex((entry) => entry.path === target.sourcePath);
   if (index < 0) throw new Error(`${target.repo} sourcePath ${target.sourcePath} is not a release target`);
@@ -500,7 +535,7 @@ function createOutDir(outDir, parentRoot, repoRoot, runDir) {
   return root;
 }
 
-function buildPatch(spawn, runDir, repo, entries) {
+function buildPatch(spawn, runDir, repo, entries, { echoStderr = true } = {}) {
   const cwd = path.join(runDir, repo);
   const parts = [];
   for (const entry of entries) {
@@ -508,7 +543,7 @@ function buildPatch(spawn, runDir, repo, entries) {
       'diff', '--no-index', '--binary', '--no-prefix', '--no-ext-diff', '--no-textconv',
       '--', `before/${entry.path}`, `after/${entry.path}`
     ], { cwd, encoding: null, maxBuffer: PATCH_BUFFER_BYTES, shell: false });
-    writeOutput(2, result.stderr);
+    if (echoStderr) writeOutput(2, result.stderr);
     if (result.error || result.signal || (result.status !== 0 && result.status !== 1)) {
       const error = new Error(`git diff --no-index failed for ${repo} ${entry.path}`);
       error.status = result.status;
@@ -603,8 +638,8 @@ function prepareDocsApplication(input, { run = execFileCaptured, spawn = spawnSy
   const { preparedFile, repo, parentDir, version, outDir } = input || {};
   requireVersion(version);
 
-  const descriptor = readDescriptor(preparedFile);
-  const target = selectTarget(descriptor.prepared, repo, version);
+  const descriptor = readPreparedTarget(preparedFile, { repo, version });
+  const target = descriptor.target;
   const parentRoot = realDirectory(parentDir, 'parentDir');
   const repoRoot = requireRepoRoot(target, repo, parentRoot, run);
   requireBeforeHead(target, repo, run, repoRoot);
@@ -726,9 +761,15 @@ function readApplication(applicationFile) {
   if (stat.isSymbolicLink() || !stat.isFile()) {
     throw docsInvalid(`application file must be a regular file: ${resolved}`);
   }
+  let bytes;
+  try {
+    bytes = readBoundedOrdinaryFile(resolved, { maxBytes: EVIDENCE_JSON_BYTES });
+  } catch {
+    throw docsInvalid(`application file could not be read: ${resolved}`);
+  }
   let record;
   try {
-    record = JSON.parse(fs.readFileSync(resolved, 'utf8'));
+    record = JSON.parse(bytes.toString('utf8'));
   } catch {
     throw docsInvalid('application file is not valid JSON');
   }
@@ -951,8 +992,8 @@ function verifyDocsApplication(applicationFile, { run = execFileCaptured, spawn 
   const patchRun = guardVerifyCommands(spawn);
   try {
     requireApplicationShape(record);
-    const descriptor = readDescriptor(record.preparedFile);
-    const target = selectTarget(descriptor.prepared, record.repo, record.version);
+    const descriptor = readPreparedTarget(record.preparedFile, { repo: record.repo, version: record.version });
+    const target = descriptor.target;
     const repoRoot = realDirectory(record.repoRoot, 'application repoRoot');
     const observe = observeEnv();
     const top = git(gitRun, repoRoot, observe, ['rev-parse', '--show-toplevel']).trim();
@@ -968,8 +1009,8 @@ function verifyDocsApplication(applicationFile, { run = execFileCaptured, spawn 
     requireApplicationMatch(record, descriptor, target, entries);
     requireOwnedOutRoot(resolved, record, repoRoot, descriptor.runDir);
 
-    const recordedPatch = fs.readFileSync(record.patchFile);
-    if (!buildPatch(patchRun, descriptor.runDir, record.repo, entries).equals(recordedPatch)) {
+    const recordedPatch = readBoundedOrdinaryFile(record.patchFile, { maxBytes: PATCH_BUFFER_BYTES });
+    if (!buildPatch(patchRun, descriptor.runDir, record.repo, entries, { echoStderr: false }).equals(recordedPatch)) {
       throw docsInvalid('patch file does not match the regenerated patch');
     }
     if (sha256(recordedPatch) !== record.patchSha256) {
@@ -1013,4 +1054,4 @@ function verifyDocsApplication(applicationFile, { run = execFileCaptured, spawn 
   }
 }
 
-module.exports = { prepareDocsApplication, verifyDocsApplication };
+module.exports = { prepareDocsApplication, readPreparedTarget, verifyDocsApplication };
