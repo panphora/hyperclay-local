@@ -559,3 +559,951 @@ describe('documentation updater', () => {
     expect(fs.existsSync(path.join(fixture.roots.get('hyperclay'), 'notes.txt'))).toBe(true);
   });
 });
+
+function expectCode(promise, code) {
+  return refusal(promise).then((error) => {
+    expect(error).not.toBeNull();
+    expect(error.code).toBe(code);
+    return error;
+  });
+}
+
+function expectRejection(promise) {
+  return refusal(promise).then((error) => {
+    expect(error).not.toBeNull();
+    return error;
+  });
+}
+
+function readJournalFor(fixture, repo) {
+  const slot = slotOf(readRun(fixture), repo);
+  return JSON.parse(fs.readFileSync(attemptPaths(fixture.runDir, repo, slot.attemptId).journalFile, 'utf8'));
+}
+
+function writeJournalFor(fixture, repo, journal) {
+  const slot = slotOf(readRun(fixture), repo);
+  fs.writeFileSync(attemptPaths(fixture.runDir, repo, slot.attemptId).journalFile, `${JSON.stringify(journal, null, 2)}\n`);
+}
+
+function attemptFor(fixture, repo) {
+  const slot = slotOf(readRun(fixture), repo);
+  return attemptPaths(fixture.runDir, repo, slot.attemptId);
+}
+
+function headOf(root) {
+  return git(root, ['rev-parse', 'HEAD']).trim();
+}
+
+function emptyParent() {
+  return fs.mkdtempSync(path.join(PARENTS, `empty-${++fixtureSeq}-`));
+}
+
+function failDirFsync(dir, nth) {
+  let seen = 0;
+  const owned = new Set();
+  return hookFs((prop, args, next) => {
+    if (prop === 'openSync' && args[0] === dir) {
+      const fd = next();
+      owned.add(fd);
+      return fd;
+    }
+    if (prop === 'closeSync') {
+      owned.delete(args[0]);
+      return next();
+    }
+    if (prop === 'fsyncSync' && owned.has(args[0])) {
+      seen += 1;
+      if (seen === nth) throw new Error(`injected directory fsync failure for ${dir}`);
+    }
+    return next();
+  });
+}
+
+function runCli(desktop, args, home) {
+  return childProcess.spawnSync(process.execPath, [path.join(desktop, 'scripts', 'update-external-docs.js'), ...args], {
+    env: { ...GIT_ENV, HOME: home },
+    encoding: 'utf8'
+  });
+}
+
+testPosix('keeps a durably complete target when the independent sibling is missing', async () => {
+  const fixture = makeFixture({ repos: ['hyperclay'] });
+  const deps = depsFor();
+  const result = await runUpdater(fixture, deps);
+
+  expect(result.targets[0].state).toBe('complete');
+  expect(result.targets[1].state).toBe('missing');
+  expect(result.targets[1].reason.code).toBe('DOCS_REPO_MISSING');
+  expect(readResult(fixture)).toEqual(result);
+  const journal = readJournalFor(fixture, 'hyperclay');
+  expect(journal.state).toBe('complete');
+  expect(remoteMain(fixture.remotes.get('hyperclay').push)).toBe(journal.commit);
+  expect(readRun(fixture).targets[1].attemptId).toBeNull();
+});
+
+testPosix('keeps the website complete when the hyperclay sibling is missing', async () => {
+  const fixture = makeFixture({ repos: ['hyperclay-website'] });
+  const deps = depsFor();
+  const result = await runUpdater(fixture, deps);
+
+  expect(result.targets[0].state).toBe('missing');
+  expect(result.targets[0].reason.code).toBe('DOCS_REPO_MISSING');
+  expect(result.targets[1].state).toBe('complete');
+  expect(readResult(fixture)).toEqual(result);
+  expect(remoteMain(fixture.remotes.get('hyperclay-website').push)).toBe(result.targets[1].commit);
+  expect(readRun(fixture).targets[0].attemptId).toBeNull();
+});
+
+testPosix('records both preparation failures without touching either live repository', async () => {
+  const fixture = makeFixture();
+  const hyperclayRoot = fixture.roots.get('hyperclay');
+  const before = new Map(REPOS.map((repo) => [repo, headOf(fixture.roots.get(repo))]));
+  const deps = depsFor({
+    hook: (command, args, opts) => {
+      if (command === 'npm') throw new Error('injected website generator failure');
+      if (command === 'git' && opts.cwd === hyperclayRoot && args[0] === 'rev-parse') {
+        throw new Error('injected hyperclay preparation failure');
+      }
+      return undefined;
+    }
+  });
+  const result = await runUpdater(fixture, deps);
+
+  expect(completeEntries(result)).toBe(0);
+  expect(result.targets.map((entry) => entry.state)).toEqual(['failed', 'failed']);
+  expect(result.targets[0].reason.code).toBe('DOCS_PREPARE_FAILED');
+  expect(result.targets[0].reason.message).toBe('injected hyperclay preparation failure');
+  expect(result.targets[1].reason.code).toBe('DOCS_PREPARE_FAILED');
+  expect(result.targets[1].reason.message).toBe('injected website generator failure');
+  expect(pushes(deps)).toBe(0);
+  for (const repo of REPOS) expect(headOf(fixture.roots.get(repo))).toBe(before.get(repo));
+  expect(readResult(fixture)).toEqual(result);
+});
+
+testPosix('loads the pure exports without acting and runs the real require.main entry', async () => {
+  const scratch = fs.mkdtempSync(path.join(OWNER, 'inert-'));
+  const bin = path.join(scratch, 'bin');
+  fs.mkdirSync(bin);
+  for (const name of ['git', 'npm']) {
+    fs.writeFileSync(path.join(bin, name), `#!/bin/sh\necho ran > "${path.join(scratch, `${name}-ran`)}"\nexit 7\n`, { mode: 0o755 });
+  }
+  const before = treeSnapshot(scratch);
+  const modulePath = path.join(__dirname, '..', '..', 'scripts', 'update-external-docs.js');
+  const probe = childProcess.spawnSync(process.execPath, ['-e', `
+    const m = require(${JSON.stringify(modulePath)});
+    const updated = m.updateVersionInContent('HyperclayLocal-1.2.3-arm64.dmg', '1.2.3', '1.2.4');
+    console.log(JSON.stringify({
+      old: m.detectOldVersion('HyperclayLocal-1.2.3-arm64.dmg'),
+      updated: updated.updated.includes('HyperclayLocal-1.2.4')
+    }));
+  `], { cwd: scratch, env: { ...GIT_ENV, HOME: scratch, PATH: `${bin}:${process.env.PATH}` }, encoding: 'utf8' });
+
+  expect(probe.status).toBe(0);
+  expect(JSON.parse(probe.stdout.trim())).toEqual({ old: '1.2.3', updated: true });
+  expect(fs.existsSync(path.join(scratch, 'git-ran'))).toBe(false);
+  expect(fs.existsSync(path.join(scratch, 'npm-ran'))).toBe(false);
+  expect(treeSnapshot(scratch)).toEqual(before);
+
+  const desktop = makeDesktop({ withModules: true });
+  const cli = runCli(desktop, ['--bogus'], scratch);
+  expect(cli.status).toBe(1);
+  expect(cli.stderr).toContain('Unknown option --bogus');
+});
+
+testPosix('reuses a selected attempt with no evidence and rotates an unpublished prepare directory', async () => {
+  const fixture = makeFixture({ repos: ['hyperclay'] });
+  const deps = depsFor();
+  const chosen = '11111111-1111-4111-8111-111111111111';
+  const handle = openRun(fixture, deps);
+  handle.selectAttempt('hyperclay', chosen);
+  expect(readRun(fixture).targets[0].attemptId).toBe(chosen);
+
+  const result = await runUpdater(fixture, deps);
+  expect(result.targets[0].state).toBe('complete');
+  expect(readRun(fixture).targets[0].attemptId).toBe(chosen);
+  expect(fs.existsSync(attemptPaths(fixture.runDir, 'hyperclay', chosen).preparedFile)).toBe(true);
+
+  const rotatedFixture = makeFixture({ repos: ['hyperclay'] });
+  const rotatedDeps = depsFor();
+  const stale = '22222222-2222-4222-8222-222222222222';
+  const rotatedHandle = openRun(rotatedFixture, rotatedDeps);
+  rotatedHandle.selectAttempt('hyperclay', stale);
+  const stalePaths = attemptPaths(rotatedFixture.runDir, 'hyperclay', stale);
+  fs.mkdirSync(stalePaths.prepareDir, { recursive: true });
+  const retained = treeSnapshot(stalePaths.root);
+  const rotatedResult = await runUpdater(rotatedFixture, rotatedDeps);
+
+  expect(rotatedResult.targets[0].state).toBe('complete');
+  expect(readRun(rotatedFixture).targets[0].attemptId).not.toBe(stale);
+  expect(treeSnapshot(stalePaths.root)).toEqual(retained);
+  expect(fs.existsSync(stalePaths.preparedFile)).toBe(false);
+});
+
+testPosix('rotates an unpublished apply directory to a fresh attempt', async () => {
+  const fixture = makeFixture({ repos: ['hyperclay'] });
+  const deps = depsFor();
+  const stale = '33333333-3333-4333-8333-333333333333';
+  const handle = openRun(fixture, deps);
+  handle.selectAttempt('hyperclay', stale);
+  const stalePaths = attemptPaths(fixture.runDir, 'hyperclay', stale);
+  fs.mkdirSync(stalePaths.applyDir, { recursive: true });
+  const retained = treeSnapshot(stalePaths.root);
+
+  const result = await runUpdater(fixture, deps);
+  expect(result.targets[0].state).toBe('complete');
+  expect(readRun(fixture).targets[0].attemptId).not.toBe(stale);
+  expect(treeSnapshot(stalePaths.root)).toEqual(retained);
+  expect(fs.existsSync(stalePaths.applicationFile)).toBe(false);
+});
+
+testPosix('reuses a published preparation and a published application without rerunning preparation', async () => {
+  const prepared = makeFixture({ repos: ['hyperclay'] });
+  const preparedDeps = depsFor();
+  const preparedId = '44444444-4444-4444-8444-444444444444';
+  const preparedHandle = openRun(prepared, preparedDeps);
+  preparedHandle.selectAttempt('hyperclay', preparedId);
+  const preparedPaths = attemptPaths(prepared.runDir, 'hyperclay', preparedId);
+  fs.mkdirSync(preparedPaths.root, { recursive: true });
+  prepareExternalDocs(
+    { version: NEW, parentDir: prepared.parentDir, runDir: preparedPaths.prepareDir, targets: ['hyperclay'] },
+    { run: preparedDeps.run }
+  );
+  expect(archiveCalls(preparedDeps, prepared.roots.get('hyperclay'))).toBe(1);
+  const preparedResult = await runUpdater(prepared, preparedDeps);
+  expect(preparedResult.targets[0].state).toBe('complete');
+  expect(archiveCalls(preparedDeps, prepared.roots.get('hyperclay'))).toBe(1);
+  expect(npmCalls(preparedDeps)).toBe(0);
+
+  const applied = makeFixture({ repos: ['hyperclay'] });
+  const appliedDeps = depsFor();
+  const appliedId = '55555555-5555-4555-8555-555555555555';
+  const appliedHandle = openRun(applied, appliedDeps);
+  appliedHandle.selectAttempt('hyperclay', appliedId);
+  const appliedPaths = attemptPaths(applied.runDir, 'hyperclay', appliedId);
+  fs.mkdirSync(appliedPaths.root, { recursive: true });
+  prepareExternalDocs(
+    { version: NEW, parentDir: applied.parentDir, runDir: appliedPaths.prepareDir, targets: ['hyperclay'] },
+    { run: appliedDeps.run }
+  );
+  prepareDocsApplication(
+    { preparedFile: appliedPaths.preparedFile, repo: 'hyperclay', parentDir: applied.parentDir, version: NEW, outDir: appliedPaths.applyDir },
+    { run: appliedDeps.run, spawn: appliedDeps.spawn }
+  );
+  const applicationBytes = fs.readFileSync(appliedPaths.applicationFile);
+  const appliedResult = await runUpdater(applied, appliedDeps);
+  expect(appliedResult.targets[0].state).toBe('complete');
+  expect(archiveCalls(appliedDeps, applied.roots.get('hyperclay'))).toBe(1);
+  expect(fs.readFileSync(appliedPaths.applicationFile).equals(applicationBytes)).toBe(true);
+});
+
+testPosix('adopts a published journal that was never bound to the run record', async () => {
+  const fixture = makeFixture({ repos: ['hyperclay'] });
+  const root = fixture.roots.get('hyperclay');
+  const desktop = makeDesktop();
+  const deps = depsFor({ desktop, fs: failRenameAt(path.join(fixture.runDir, RUN_FILE), 3) });
+  const beforeHead = headOf(root);
+  await expectCode(runUpdater(fixture, deps), 'DOCS_RUN_WRITE_FAILED');
+
+  const interrupted = readRun(fixture);
+  expect(interrupted.targets[0].attemptId).not.toBeNull();
+  expect(interrupted.targets[0].journalOperationId).toBeNull();
+  const paths = attemptFor(fixture, 'hyperclay');
+  const journal = JSON.parse(fs.readFileSync(paths.journalFile, 'utf8'));
+  expect(journal.candidateCommit).not.toBeNull();
+  expect(journal.commit).toBeNull();
+  expect(headOf(root)).toBe(beforeHead);
+  expect(pushes(deps)).toBe(0);
+  const commits = commitCount(root);
+
+  const resumedDeps = depsFor({ desktop });
+  const result = await runUpdater(fixture, resumedDeps);
+  expect(result.targets[0].state).toBe('complete');
+  expect(readRun(fixture).targets[0].journalOperationId).toBe(journal.operationId);
+  const resumedJournal = JSON.parse(fs.readFileSync(paths.journalFile, 'utf8'));
+  expect(resumedJournal.operationId).toBe(journal.operationId);
+  expect(resumedJournal.commit).toBe(journal.candidateCommit);
+  expect(commitCount(root)).toBe(commits + 1);
+  expect(archiveCalls(resumedDeps, root)).toBe(0);
+  expect(npmCalls(resumedDeps)).toBe(0);
+});
+
+testPosix('adopts an unchanged journal created directly by prepareCommitIntent', async () => {
+  const fixture = makeFixture({ repos: ['hyperclay'], docsVersion: NEW });
+  const desktop = makeDesktop();
+  const deps = depsFor({ desktop });
+  const chosen = '66666666-6666-4666-8666-666666666666';
+  const handle = openRun(fixture, deps);
+  handle.selectAttempt('hyperclay', chosen);
+  const paths = attemptPaths(fixture.runDir, 'hyperclay', chosen);
+  fs.mkdirSync(paths.root, { recursive: true });
+  prepareExternalDocs(
+    { version: NEW, parentDir: fixture.parentDir, runDir: paths.prepareDir, targets: ['hyperclay'] },
+    { run: deps.run }
+  );
+  prepareDocsApplication(
+    { preparedFile: paths.preparedFile, repo: 'hyperclay', parentDir: fixture.parentDir, version: NEW, outDir: paths.applyDir },
+    { run: deps.run, spawn: deps.spawn }
+  );
+  await prepareCommitIntent(
+    { applicationFile: paths.applicationFile, journalFile: paths.journalFile, message: `chore: update Hyperclay Local download links to v${NEW}` },
+    applyDepsFor(deps)
+  );
+  const journal = JSON.parse(fs.readFileSync(paths.journalFile, 'utf8'));
+  expect(journal.candidateCommit).toBeNull();
+  expect(journal.commit).not.toBeNull();
+  expect(journal.paths).toEqual([]);
+  const commits = commitCount(fixture.roots.get('hyperclay'));
+
+  const resumedDeps = depsFor({ desktop });
+  const result = await runUpdater(fixture, resumedDeps);
+  expect(result.targets[0].state).toBe('complete');
+  expect(readRun(fixture).targets[0].journalOperationId).toBe(journal.operationId);
+  const resumedJournal = JSON.parse(fs.readFileSync(paths.journalFile, 'utf8'));
+  expect(resumedJournal.operationId).toBe(journal.operationId);
+  expect(resumedJournal.candidateCommit).toBeNull();
+  expect(resumedJournal.commit).toBe(journal.commit);
+  expect(commitCount(fixture.roots.get('hyperclay'))).toBe(commits);
+  expect(archiveCalls(resumedDeps, fixture.roots.get('hyperclay'))).toBe(0);
+  expect(npmCalls(resumedDeps)).toBe(0);
+});
+
+testPosix('fails a bound target journal without rotating the attempt or mutating the live branch', async () => {
+  const fixture = makeFixture({ repos: ['hyperclay'] });
+  const root = fixture.roots.get('hyperclay');
+  const desktop = makeDesktop();
+  const deps = depsFor({ desktop });
+  const first = await runUpdater(fixture, deps);
+  expect(first.targets[0].state).toBe('complete');
+
+  const slot = readRun(fixture).targets[0];
+  const paths = attemptPaths(fixture.runDir, 'hyperclay', slot.attemptId);
+  const original = fs.readFileSync(paths.journalFile);
+  const originalHead = headOf(root);
+  const originalRemote = remoteMain(fixture.remotes.get('hyperclay').push);
+  const originalCommit = first.targets[0].commit;
+
+  const variants = [
+    ['missing', () => fs.rmSync(paths.journalFile)],
+    ['corrupt', () => fs.writeFileSync(paths.journalFile, '{not json\n')],
+    ['swapped version', () => {
+      const journal = JSON.parse(original.toString());
+      journal.version = OLD;
+      writeJournalFor(fixture, 'hyperclay', journal);
+    }],
+    ['swapped root', () => {
+      const journal = JSON.parse(original.toString());
+      journal.repoRoot = fixture.parentDir;
+      writeJournalFor(fixture, 'hyperclay', journal);
+    }],
+    ['swapped operation', () => {
+      const journal = JSON.parse(original.toString());
+      journal.operationId = '77777777-7777-4777-8777-777777777777';
+      writeJournalFor(fixture, 'hyperclay', journal);
+    }]
+  ];
+
+  for (const [label, mutate] of variants) {
+    fs.writeFileSync(paths.journalFile, original);
+    mutate();
+    const rerunDeps = depsFor({ desktop });
+    const rerun = await runUpdater(fixture, rerunDeps);
+    expect([label, rerun.targets[0].state]).toEqual([label, 'failed']);
+    expect(['DOCS_JOURNAL_INVALID', 'DOCS_RUN_TARGET_MISMATCH', 'DOCS_APPLICATION_INVALID'])
+      .toContain(rerun.targets[0].reason.code);
+    expect(readRun(fixture).targets[0].attemptId).toBe(slot.attemptId);
+    expect(headOf(root)).toBe(originalHead);
+    expect(remoteMain(fixture.remotes.get('hyperclay').push)).toBe(originalRemote);
+    expect(pushes(rerunDeps)).toBe(0);
+    expect(npmCalls(rerunDeps)).toBe(0);
+    expect(archiveCalls(rerunDeps, root)).toBe(0);
+  }
+
+  fs.writeFileSync(paths.journalFile, original);
+  write(root, 'later.txt', 'later work\n');
+  git(root, ['add', '-A']);
+  git(root, ['commit', '-q', '-m', 'later unrelated work']);
+  const laterHead = headOf(root);
+  const advancedDeps = depsFor({ desktop });
+  const advanced = await runUpdater(fixture, advancedDeps);
+  expect(advanced.targets[0].state).toBe('complete');
+  expect(advanced.targets[0].commit).toBe(originalCommit);
+  expect(readJournalFor(fixture, 'hyperclay').commit).toBe(originalCommit);
+  expect(headOf(root)).toBe(laterHead);
+  expect(remoteMain(fixture.remotes.get('hyperclay').push)).toBe(originalCommit);
+});
+
+testPosix('resumes the same local commit after a crash before the aggregate update', async () => {
+  const fixture = makeFixture({ repos: ['hyperclay'] });
+  const root = fixture.roots.get('hyperclay');
+  const desktop = makeDesktop();
+  const deps = depsFor({ desktop, fs: failRenameAt(fixture.resultFile, 3) });
+  await expectCode(runUpdater(fixture, deps), 'DOCS_RESULT_WRITE_FAILED');
+
+  const journal = readJournalFor(fixture, 'hyperclay');
+  expect(journal.commit).not.toBeNull();
+  expect(headOf(root)).toBe(journal.commit);
+  expect(pushes(deps)).toBe(0);
+  const commits = commitCount(root);
+
+  const resumedDeps = depsFor({ desktop });
+  const resumed = await runUpdater(fixture, resumedDeps);
+  expect(resumed.targets[0].state).toBe('complete');
+  expect(resumed.targets[0].commit).toBe(journal.commit);
+  expect(commitCount(root)).toBe(commits);
+  expect(pushes(resumedDeps)).toBe(1);
+  expect(remoteMain(fixture.remotes.get('hyperclay').push)).toBe(journal.commit);
+});
+
+testPosix('observes an already-accepted remote without another documentation commit', async () => {
+  const fixture = makeFixture({ repos: ['hyperclay'] });
+  const root = fixture.roots.get('hyperclay');
+  const desktop = makeDesktop();
+  const deps = depsFor({ desktop, fs: failRenameAt(fixture.resultFile, 4) });
+  await expectCode(runUpdater(fixture, deps), 'DOCS_RESULT_WRITE_FAILED');
+
+  expect(pushes(deps)).toBe(1);
+  const journal = readJournalFor(fixture, 'hyperclay');
+  expect(journal.state).toBe('complete');
+  expect(remoteMain(fixture.remotes.get('hyperclay').push)).toBe(journal.commit);
+  const commits = commitCount(root);
+
+  const resumedDeps = depsFor({ desktop });
+  const resumed = await runUpdater(fixture, resumedDeps);
+  expect(resumed.targets[0].state).toBe('complete');
+  expect(resumed.targets[0].commit).toBe(journal.commit);
+  expect(pushes(resumedDeps)).toBe(0);
+  expect(commitCount(root)).toBe(commits);
+});
+
+testPosix('re-verifies a previously complete target against a fresh remote observation', async () => {
+  const fixture = makeFixture({ repos: ['hyperclay'] });
+  const pushRemote = fixture.remotes.get('hyperclay').push;
+  const desktop = makeDesktop();
+  const deps = depsFor({ desktop });
+  const first = await runUpdater(fixture, deps);
+  expect(first.targets[0].state).toBe('complete');
+  const originalCommit = first.targets[0].commit;
+
+  const freshDeps = depsFor({ desktop });
+  const fresh = await runUpdater(fixture, freshDeps);
+  expect(fresh.targets[0].state).toBe('complete');
+  expect(fresh.targets[0].commit).toBe(originalCommit);
+  expect(fresh.targets[0].verifiedAt).not.toBe(first.targets[0].verifiedAt);
+  expect(readJournalFor(fixture, 'hyperclay').remoteObservation.observedAt).toBe(fresh.targets[0].verifiedAt);
+  expect(pushes(freshDeps)).toBe(0);
+
+  const divergent = path.join(OWNER, `remote-edit-${++fixtureSeq}`);
+  fs.mkdirSync(divergent, { recursive: true });
+  git(divergent, ['init', '-q', '-b', 'main']);
+  write(divergent, 'other.txt', 'someone else changed the site\n');
+  git(divergent, ['add', '-A']);
+  git(divergent, ['commit', '-q', '-m', 'unrelated remote change']);
+  git(divergent, ['push', '-q', '--force', pushRemote, 'main']);
+  const divergedDeps = depsFor({ desktop });
+  const diverged = await runUpdater(fixture, divergedDeps);
+  expect(diverged.targets[0].state).toBe('conflict');
+  expect(diverged.targets[0].commit).toBe(originalCommit);
+  expect(diverged.targets[0].verifiedAt).toBeNull();
+
+  fs.renameSync(pushRemote, `${pushRemote}.gone`);
+  const unreadableDeps = depsFor({ desktop });
+  const unreadable = await runUpdater(fixture, unreadableDeps);
+  expect(unreadable.targets[0].state).toBe('pending-push');
+  expect(unreadable.targets[0].commit).toBe(originalCommit);
+  expect(unreadable.targets[0].verifiedAt).toBeNull();
+});
+
+testPosix('stops before target work when the run record or initial result cannot be published', async () => {
+  const recordFailure = makeFixture({ repos: ['hyperclay'] });
+  const recordDeps = depsFor({ fs: failRenameAt(path.join(recordFailure.runDir, RUN_FILE), 1) });
+  await expectCode(runUpdater(recordFailure, recordDeps), 'DOCS_RUN_WRITE_FAILED');
+  expect(npmCalls(recordDeps)).toBe(0);
+  expect(pushes(recordDeps)).toBe(0);
+  expect(fs.existsSync(path.join(recordFailure.runDir, RUN_FILE))).toBe(false);
+  expect(fs.existsSync(path.join(recordFailure.runDir, 'attempts'))).toBe(false);
+  expect(fs.existsSync(recordFailure.resultFile)).toBe(false);
+
+  const rotation = makeFixture({ repos: ['hyperclay'] });
+  const rotationDesktop = makeDesktop();
+  const rotationDeps = depsFor({ desktop: rotationDesktop });
+  const stale = '88888888-8888-4888-8888-888888888888';
+  const rotationHandle = openRun(rotation, rotationDeps);
+  rotationHandle.selectAttempt('hyperclay', stale);
+  const stalePaths = attemptPaths(rotation.runDir, 'hyperclay', stale);
+  fs.mkdirSync(stalePaths.prepareDir, { recursive: true });
+  const rotationDeps2 = depsFor({ desktop: rotationDesktop, fs: failRenameAt(path.join(rotation.runDir, RUN_FILE), 1) });
+  await expectCode(runUpdater(rotation, rotationDeps2), 'DOCS_RUN_WRITE_FAILED');
+  expect(readRun(rotation).targets[0].attemptId).toBe(stale);
+  expect(npmCalls(rotationDeps2)).toBe(0);
+  expect(fs.existsSync(stalePaths.preparedFile)).toBe(false);
+
+  const resultFailure = makeFixture({ repos: ['hyperclay'] });
+  const resultDeps = depsFor({ fs: failRenameAt(resultFailure.resultFile, 1) });
+  await expectCode(runUpdater(resultFailure, resultDeps), 'DOCS_RESULT_WRITE_FAILED');
+  const durable = readRun(resultFailure);
+  expect(durable.targets.map((slot) => slot.attemptId)).toEqual([null, null]);
+  expect(durable.targets.map((slot) => slot.journalOperationId)).toEqual([null, null]);
+  expect(fs.existsSync(resultFailure.resultFile)).toBe(false);
+  expect(fs.existsSync(path.join(resultFailure.runDir, 'attempts'))).toBe(false);
+  expect(npmCalls(resultDeps)).toBe(0);
+  expect(pushes(resultDeps)).toBe(0);
+});
+
+testPosix('stops at journal binding or a result checkpoint before the corresponding mutation', async () => {
+  const binding = makeFixture({ repos: ['hyperclay'] });
+  const bindingRoot = binding.roots.get('hyperclay');
+  const bindingDeps = depsFor({ fs: failRenameAt(path.join(binding.runDir, RUN_FILE), 3) });
+  const beforeHead = headOf(bindingRoot);
+  await expectCode(runUpdater(binding, bindingDeps), 'DOCS_RUN_WRITE_FAILED');
+  expect(pushes(bindingDeps)).toBe(0);
+  expect(headOf(bindingRoot)).toBe(beforeHead);
+  expect(readJournalFor(binding, 'hyperclay').commit).toBeNull();
+  expect(readRun(binding).targets[0].journalOperationId).toBeNull();
+
+  const prePush = makeFixture({ repos: ['hyperclay'] });
+  const prePushRoot = prePush.roots.get('hyperclay');
+  const prePushDeps = depsFor({ fs: failRenameAt(prePush.resultFile, 3) });
+  await expectCode(runUpdater(prePush, prePushDeps), 'DOCS_RESULT_WRITE_FAILED');
+  expect(pushes(prePushDeps)).toBe(0);
+  const prePushJournal = readJournalFor(prePush, 'hyperclay');
+  expect(prePushJournal.commit).not.toBeNull();
+  expect(headOf(prePushRoot)).toBe(prePushJournal.commit);
+
+  const final = makeFixture({ repos: ['hyperclay'] });
+  const finalDeps = depsFor({ fs: failRenameAt(final.resultFile, 4) });
+  await expectCode(runUpdater(final, finalDeps), 'DOCS_RESULT_WRITE_FAILED');
+  expect(pushes(finalDeps)).toBe(1);
+  const finalJournal = readJournalFor(final, 'hyperclay');
+  expect(finalJournal.state).toBe('complete');
+  expect(remoteMain(final.remotes.get('hyperclay').push)).toBe(finalJournal.commit);
+
+  const second = makeFixture();
+  const secondDeps = depsFor({ fs: failRenameAt(second.resultFile, 3) });
+  await expectCode(runUpdater(second, secondDeps), 'DOCS_RESULT_WRITE_FAILED');
+  expect(npmCalls(secondDeps)).toBe(0);
+  expect(pushes(secondDeps)).toBe(0);
+});
+
+testPosix('stops after a parent-directory fsync failure and preserves retained evidence', async () => {
+  const fixture = makeFixture({ repos: ['hyperclay'] });
+  const desktop = makeDesktop();
+  const deps = depsFor({ desktop, fs: failDirFsync(fixture.runDir, 1) });
+  await expectCode(runUpdater(fixture, deps), 'DOCS_RUN_WRITE_FAILED');
+  const runFile = path.join(fixture.runDir, RUN_FILE);
+  const visible = fs.readFileSync(runFile);
+  const retained = JSON.parse(visible.toString());
+  expect(retained).toMatchObject({ schema: 1, version: NEW });
+  expect(retained.targets.map((slot) => slot.attemptId)).toEqual([null, null]);
+  expect(fs.readdirSync(fixture.runDir).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  expect(openRun(fixture, depsFor({ desktop })).snapshotRun()).toEqual(retained);
+
+  const resumedDeps = depsFor({ desktop });
+  const resumed = await runUpdater(fixture, resumedDeps);
+  expect(resumed.targets[0].state).toBe('complete');
+  expect(readRun(fixture).version).toBe(NEW);
+  expect(readRun(fixture).targets[0].attemptId).not.toBeNull();
+
+  const collision = makeFixture({ repos: ['hyperclay'] });
+  const firstUuid = '99999999-9999-4999-8999-999999999998';
+  const uuid = '99999999-9999-4999-8999-999999999999';
+  let uuidSeq = 0;
+  const collisionDeps = depsFor({
+    randomUUID: () => {
+      uuidSeq += 1;
+      return uuidSeq === 1 ? firstUuid : uuid;
+    }
+  });
+  fs.mkdirSync(collision.runDir, { recursive: true });
+  const colliding = path.join(collision.runDir, `docs-run.${firstUuid}.tmp`);
+  fs.writeFileSync(colliding, 'colliding writer bytes\n', { mode: 0o600 });
+  const error = await expectCode(runUpdater(collision, collisionDeps), 'DOCS_RUN_WRITE_FAILED');
+  expect(error.cause && error.cause.code).toBe('EEXIST');
+  expect(fs.readFileSync(colliding, 'utf8')).toBe('colliding writer bytes\n');
+  expect(fs.existsSync(path.join(collision.runDir, RUN_FILE))).toBe(false);
+  expect(fs.existsSync(collision.resultFile)).toBe(false);
+});
+
+testPosix('updater ordering and resume: persists the initial run record for a no-target fixture and reuses it on rerun', async () => {
+  const fixture = makeFixture({ repos: [] });
+  fs.mkdirSync(fixture.runDir, { recursive: true });
+  const retained = path.join(fixture.runDir, 'docs-run.11111111-1111-4111-8111-111111111111.tmp');
+  fs.writeFileSync(retained, 'interrupted initial publish bytes\n', { mode: 0o600 });
+  const desktop = makeDesktop();
+  const firstDeps = depsFor({ desktop });
+  const first = await runUpdater(fixture, firstDeps);
+
+  expect(first.targets.map((entry) => entry.state)).toEqual(['missing', 'missing']);
+  const runFile = path.join(fixture.runDir, RUN_FILE);
+  const persisted = fs.readFileSync(runFile);
+  const record = JSON.parse(persisted.toString());
+  expect(record.targets.map((slot) => slot.attemptId)).toEqual([null, null]);
+  expect(record.targets.map((slot) => slot.journalOperationId)).toEqual([null, null]);
+  expect(readResult(fixture)).toEqual(first);
+  expect(fs.readFileSync(retained, 'utf8')).toBe('interrupted initial publish bytes\n');
+  expect(npmCalls(firstDeps)).toBe(0);
+
+  const secondDeps = depsFor({ desktop });
+  const second = await runUpdater(fixture, secondDeps);
+  expect(second).toEqual(first);
+  expect(fs.readFileSync(runFile)).toEqual(persisted);
+  expect(fs.existsSync(path.join(fixture.runDir, 'attempts'))).toBe(false);
+  expect(npmCalls(secondDeps)).toBe(0);
+
+  const foreignTemp = makeFixture({ repos: [] });
+  fs.mkdirSync(foreignTemp.runDir, { recursive: true });
+  const foreign = path.join(foreignTemp.runDir, 'docs-run.json.22222222-2222-4222-8222-222222222222.tmp');
+  fs.writeFileSync(foreign, 'foreign temporary bytes\n', { mode: 0o600 });
+  await expectCode(runUpdater(foreignTemp, depsFor()), 'DOCS_RUN_INVALID');
+  expect(fs.readFileSync(foreign, 'utf8')).toBe('foreign temporary bytes\n');
+  expect(fs.existsSync(path.join(foreignTemp.runDir, RUN_FILE))).toBe(false);
+});
+
+testPosix('updater ordering and resume: reopens an existing result regular file and refuses symlink or file-as-directory leaves', async () => {
+  const reopen = makeFixture({ repos: [] });
+  const reopenDeps = depsFor();
+  const first = await runUpdater(reopen, reopenDeps);
+  expect(fs.statSync(reopen.resultFile).isFile()).toBe(true);
+  const reopened = openRun(reopen, reopenDeps);
+  expect(reopened.snapshotResult()).toEqual(first);
+  expect(reopened.snapshotRun().targets.map((slot) => slot.attemptId)).toEqual([null, null]);
+
+  const symlinkRun = makeFixture({ repos: [] });
+  const linkTarget = fs.mkdtempSync(path.join(OWNER, `resume-link-target-${++fixtureSeq}-`));
+  const link = path.join(OWNER, `resume-link-${++fixtureSeq}`);
+  fs.symlinkSync(linkTarget, link);
+  await expectCode(runUpdater(symlinkRun, depsFor(), { runDir: link, resultFile: path.join(link, 'result.json') }), 'DOCS_RUN_INVALID');
+  expect(fs.readdirSync(linkTarget)).toEqual([]);
+
+  const symlinkResult = makeFixture({ repos: [] });
+  fs.mkdirSync(symlinkResult.runDir, { recursive: true });
+  const resultTarget = path.join(OWNER, `resume-result-target-${++fixtureSeq}.json`);
+  fs.writeFileSync(resultTarget, '{}\n');
+  fs.symlinkSync(resultTarget, symlinkResult.resultFile);
+  await expectCode(runUpdater(symlinkResult, depsFor()), 'DOCS_RUN_INVALID');
+  expect(fs.readFileSync(resultTarget, 'utf8')).toBe('{}\n');
+
+  const fileFixture = makeFixture({ repos: [] });
+  const fileLeaf = path.join(OWNER, `resume-file-leaf-${++fixtureSeq}`);
+  fs.writeFileSync(fileLeaf, 'not a directory\n');
+  const fileDeps = depsFor();
+  const openWith = (options) => (async () => openDocsRun({
+    version: NEW,
+    parentDir: fileFixture.parentDir,
+    runDir: fileFixture.runDir,
+    resultFile: fileFixture.resultFile,
+    owner: ownerOf(fileDeps.repoRoot),
+    ...options
+  }, { fs, randomUUID: fileDeps.randomUUID }))();
+
+  await expectCode(openWith({ parentDir: fileLeaf }), 'DOCS_RUN_INVALID');
+  await expectCode(openWith({ owner: { ...ownerOf(fileDeps.repoRoot), root: fileLeaf } }), 'DOCS_RUN_INVALID');
+  await expectCode(openWith({ runDir: fileLeaf, resultFile: path.join(fileLeaf, 'result.json') }), 'DOCS_RUN_INVALID');
+  expect(fs.readFileSync(fileLeaf, 'utf8')).toBe('not a directory\n');
+  expect(fs.existsSync(fileFixture.runDir)).toBe(false);
+});
+
+testPosix('updater ordering and resume: initial run-record write failure creates no result and starts no preparation', async () => {
+  const fixture = makeFixture({ repos: ['hyperclay'] });
+  const root = fixture.roots.get('hyperclay');
+  const beforeHead = headOf(root);
+  const deps = depsFor({ fs: failRenameAt(path.join(fixture.runDir, RUN_FILE), 1) });
+  await expectCode(runUpdater(fixture, deps), 'DOCS_RUN_WRITE_FAILED');
+  expect(fs.existsSync(path.join(fixture.runDir, RUN_FILE))).toBe(false);
+  expect(fs.existsSync(fixture.resultFile)).toBe(false);
+  expect(fs.existsSync(path.join(fixture.runDir, 'attempts'))).toBe(false);
+  expect(fs.readdirSync(fixture.runDir)).toEqual([]);
+  expect(npmCalls(deps)).toBe(0);
+  expect(pushes(deps)).toBe(0);
+  expect(archiveCalls(deps, root)).toBe(0);
+  expect(headOf(root)).toBe(beforeHead);
+});
+
+testPosix('updater ordering and resume: awaits a delayed lock-backed journal operation before the next operation and checkpoints results in order', async () => {
+  const fixture = makeFixture({ repos: ['hyperclay'] });
+  const root = fixture.roots.get('hyperclay');
+  let openGate;
+  const gate = new Promise((resolve) => { openGate = resolve; });
+  let signalGate;
+  const reachedGate = new Promise((resolve) => { signalGate = resolve; });
+  let ferryCalls = 0;
+  let reconcileClosed = false;
+  let finished = false;
+  let finishedError = null;
+  const checkpoints = [];
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(reason); };
+  process.on('unhandledRejection', onUnhandled);
+  const deps = depsFor({
+    withFerryRepoLock: async (lockRoot, callback) => {
+      ferryCalls += 1;
+      if (ferryCalls === 2) {
+        signalGate();
+        await gate;
+        try {
+          return await callback();
+        } finally {
+          reconcileClosed = true;
+        }
+      }
+      return callback();
+    },
+    fs: hookFs((prop, args, next) => {
+      const value = next();
+      if (prop === 'renameSync' && args[1] === fixture.resultFile) {
+        checkpoints.push({
+          result: JSON.parse(fs.readFileSync(fixture.resultFile, 'utf8')),
+          reconcileClosed
+        });
+      }
+      return value;
+    })
+  });
+  try {
+    const pending = runUpdater(fixture, deps);
+    const settled = pending.then(
+      () => { finished = true; },
+      (error) => { finished = true; finishedError = error; }
+    );
+    await Promise.race([reachedGate, settled]);
+    if (finished) throw finishedError || new Error('the updater finished without reaching the deferred reconcile operation');
+    expect(ferryCalls).toBe(2);
+    expect(reconcileClosed).toBe(false);
+    expect(pushes(deps)).toBe(0);
+    expect(checkpoints.length).toBe(2);
+    expect(checkpoints[0].result.targets[0].state).toBe('pending');
+    expect(checkpoints[1].result.targets[0].state).toBe('failed');
+    expect(checkpoints[1].result.targets[0].commit).toBeNull();
+    expect(readRun(fixture).targets[0].journalOperationId).not.toBeNull();
+    expect(readJournalFor(fixture, 'hyperclay').commit).toBeNull();
+
+    openGate();
+    const result = await pending;
+    expect(result.targets[0].state).toBe('complete');
+    expect(pushes(deps)).toBe(1);
+    expect(ferryCalls).toBe(2);
+    expect(checkpoints.map((entry) => entry.result.targets.map((target) => target.state))).toEqual([
+      ['pending', 'pending'],
+      ['failed', 'pending'],
+      ['pending-push', 'pending'],
+      ['complete', 'pending'],
+      ['complete', 'missing']
+    ]);
+    expect(checkpoints.map((entry) => entry.reconcileClosed)).toEqual([false, false, true, true, true]);
+    expect(checkpoints[3].result.targets[0].commit).toBe(headOf(root));
+    expect(remoteMain(fixture.remotes.get('hyperclay').push)).toBe(headOf(root));
+  } finally {
+    process.removeListener('unhandledRejection', onUnhandled);
+  }
+  expect(unhandled).toEqual([]);
+});
+
+testPosix('composes with the release lock and refuses a busy docs lock without touching bytes', async () => {
+  const free = makeFixture({ repos: [] });
+  const freeDeps = depsFor();
+  const identity = resolveRepoIdentity(freeDeps.repoRoot, { readGit });
+  await withReleaseLock(identity, async () => {
+    const result = await runUpdater(free, freeDeps);
+    expect(result.targets.map((entry) => entry.state)).toEqual(['missing', 'missing']);
+  }, { cacheRoot: freeDeps.cacheRoot });
+
+  const busy = makeFixture({ repos: [] });
+  const busyDeps = depsFor();
+  const busyIdentity = resolveRepoIdentity(busyDeps.repoRoot, { readGit });
+  let release;
+  const held = withDocsLock(busyIdentity, () => new Promise((resolve) => { release = resolve; }), { cacheRoot: busyDeps.cacheRoot });
+  await expectCode(runUpdater(busy, busyDeps), 'DOCS_LOCK_BUSY');
+  expect(fs.existsSync(busy.runDir)).toBe(false);
+  expect(fs.existsSync(busy.resultFile)).toBe(false);
+  release();
+  await held;
+
+  const sibling = makeFixture();
+  const siblingDeps = depsFor();
+  const websiteIdentity = siblingLockIdentity(sibling.roots.get('hyperclay-website'));
+  let releaseSibling;
+  const heldSibling = withDocsLock(websiteIdentity, () => new Promise((resolve) => { releaseSibling = resolve; }), { cacheRoot: siblingDeps.cacheRoot });
+  const siblingResult = await runUpdater(sibling, siblingDeps);
+  releaseSibling();
+  await heldSibling;
+  expect(siblingResult.targets[0].state).toBe('complete');
+  expect(siblingResult.targets[1].state).toBe('conflict');
+  expect(siblingResult.targets[1].reason.code).toBe('DOCS_LOCK_BUSY');
+});
+
+testPosix('rejects conflicting run records, unowned paths and a nested desktop identity', async () => {
+  const version = makeFixture({ repos: [] });
+  const versionDeps = depsFor();
+  openRun(version, versionDeps).selectAttempt('hyperclay', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  await expectCode(runUpdater(version, versionDeps, { version: OLD }), 'DOCS_RUN_CONFLICT');
+  expect(npmCalls(versionDeps)).toBe(0);
+  expect(fs.existsSync(path.join(version.runDir, 'attempts'))).toBe(false);
+
+  const parent = makeFixture({ repos: [] });
+  const parentDeps = depsFor();
+  openRun(parent, parentDeps).selectAttempt('hyperclay', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+  await expectCode(runUpdater(parent, parentDeps, { parentDir: emptyParent() }), 'DOCS_RUN_CONFLICT');
+
+  const owner = makeFixture({ repos: [] });
+  const ownerDeps = depsFor();
+  openRun(owner, ownerDeps).selectAttempt('hyperclay', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc');
+  const otherDeps = depsFor({ desktop: makeDesktop() });
+  await expectCode(runUpdater(owner, otherDeps), 'DOCS_RUN_CONFLICT');
+
+  const result = makeFixture({ repos: [] });
+  const resultDeps = depsFor();
+  openRun(result, resultDeps).selectAttempt('hyperclay', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+  await expectCode(runUpdater(result, resultDeps, { resultFile: path.join(result.runDir, 'other.json') }), 'DOCS_RUN_CONFLICT');
+
+  const symlinkRun = makeFixture({ repos: [] });
+  const symlinkRunDeps = depsFor();
+  const linkTarget = fs.mkdtempSync(path.join(OWNER, 'link-target-'));
+  const link = path.join(OWNER, `link-${++fixtureSeq}`);
+  fs.symlinkSync(linkTarget, link);
+  await expectCode(runUpdater(symlinkRun, symlinkRunDeps, { runDir: link, resultFile: path.join(link, 'result.json') }), 'DOCS_RUN_INVALID');
+
+  const symlinkResult = makeFixture({ repos: [] });
+  const symlinkResultDeps = depsFor();
+  fs.mkdirSync(symlinkResult.runDir, { recursive: true });
+  const resultTarget = path.join(OWNER, `result-target-${++fixtureSeq}.json`);
+  fs.writeFileSync(resultTarget, '{}\n');
+  fs.symlinkSync(resultTarget, symlinkResult.resultFile);
+  await expectCode(runUpdater(symlinkResult, symlinkResultDeps), 'DOCS_RUN_INVALID');
+
+  const foreign = makeFixture({ repos: [] });
+  const foreignDeps = depsFor();
+  fs.mkdirSync(foreign.runDir, { recursive: true });
+  fs.writeFileSync(path.join(foreign.runDir, 'foreign.txt'), 'not ours\n');
+  await expectCode(runUpdater(foreign, foreignDeps), 'DOCS_RUN_INVALID');
+
+  const evidenceLink = makeFixture({ repos: ['hyperclay'] });
+  const evidenceDeps = depsFor();
+  const evidenceId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  openRun(evidenceLink, evidenceDeps).selectAttempt('hyperclay', evidenceId);
+  const evidencePaths = attemptPaths(evidenceLink.runDir, 'hyperclay', evidenceId);
+  const evidenceTarget = fs.mkdtempSync(path.join(OWNER, 'evidence-target-'));
+  fs.mkdirSync(evidencePaths.root, { recursive: true });
+  fs.symlinkSync(evidenceTarget, evidencePaths.prepareDir);
+  const evidenceResult = await runUpdater(evidenceLink, evidenceDeps);
+  expect(evidenceResult.targets[0].state).toBe('failed');
+  expect(npmCalls(evidenceDeps)).toBe(0);
+  expect(treeSnapshot(evidenceTarget)).toEqual([]);
+
+  const nested = makeFixture({ repos: ['hyperclay'] });
+  const nestedRoot = nested.roots.get('hyperclay');
+  git(nestedRoot, ['remote', 'set-url', 'origin', 'https://github.com/hyperclay-fixture/hyperclay.git']);
+  git(nestedRoot, ['remote', 'set-url', '--push', 'origin', 'https://github.com/hyperclay-fixture/hyperclay.git']);
+  const nestedDeps = depsFor({ desktop: nestedRoot });
+  await expectCode(runUpdater(nested, nestedDeps), 'DOCS_RUN_CONFLICT');
+  expect(npmCalls(nestedDeps)).toBe(0);
+});
+
+testPosix('classifies untyped preparation diagnostics and typed conflicts without message matching', async () => {
+  const prep = makeFixture({ repos: ['hyperclay'] });
+  const prepRoot = prep.roots.get('hyperclay');
+  const prepDeps = depsFor({
+    hook: (command, args, opts) => {
+      if (command === 'git' && opts.cwd === prepRoot && args[0] === 'rev-parse') {
+        throw new Error('injected conflict-looking preparation diagnostic');
+      }
+      return undefined;
+    }
+  });
+  const prepResult = await runUpdater(prep, prepDeps);
+  expect(prepResult.targets[0].state).toBe('failed');
+  expect(prepResult.targets[0].reason.code).toBe('DOCS_PREPARE_FAILED');
+  expect(prepResult.targets[0].reason.message).toBe('injected conflict-looking preparation diagnostic');
+
+  const plan = makeFixture({ repos: ['hyperclay'] });
+  const planRoot = plan.roots.get('hyperclay');
+  let mutated = false;
+  const planDeps = depsFor({
+    fs: hookFs((prop, args, next) => {
+      if (!mutated && prop === 'readFileSync' && path.basename(String(args[0])) === 'prepared.json') {
+        mutated = true;
+        fs.appendFileSync(path.join(planRoot, EDGE_PATH), '\nlocal edit during planning\n');
+      }
+      return next();
+    })
+  });
+  const planResult = await runUpdater(plan, planDeps);
+  expect(planResult.targets[0].state).toBe('conflict');
+  expect(planResult.targets[0].reason.code).toBe('DOCS_PREIMAGE_CONFLICT');
+
+  const apply = makeFixture({ repos: ['hyperclay'] });
+  const applyRoot = apply.roots.get('hyperclay');
+  let applyMutated = false;
+  const applyDeps = depsFor({
+    hook: (command, args, opts) => {
+      if (!applyMutated && command === 'git' && opts.cwd === applyRoot && args[0] === 'commit-tree') {
+        applyMutated = true;
+        fs.appendFileSync(path.join(applyRoot, EDGE_PATH), '\nlocal edit during apply\n');
+      }
+      return undefined;
+    }
+  });
+  const applyResult = await runUpdater(apply, applyDeps);
+  expect(applyResult.targets[0].state).toBe('conflict');
+  expect(applyResult.targets[0].reason.code).toBe('DOCS_PREIMAGE_CONFLICT');
+});
+
+testPosix('stops globally on a nested journal-write failure or lock-cleanup failure', async () => {
+  const journal = makeFixture();
+  const journalDeps = depsFor({
+    fs: hookFs((prop, args, next) => {
+      if (prop === 'renameSync' && path.basename(String(args[1])) === 'target.json') {
+        throw new Error('injected journal publication failure');
+      }
+      return next();
+    })
+  });
+  await expectCode(runUpdater(journal, journalDeps), 'DOCS_JOURNAL_WRITE_FAILED');
+  expect(npmCalls(journalDeps)).toBe(0);
+  expect(pushes(journalDeps)).toBe(0);
+
+  const cleanup = makeFixture({ repos: ['hyperclay'] });
+  const cleanupRoot = cleanup.roots.get('hyperclay');
+  const cleanupDeps = depsFor();
+  const cleanupIdentity = siblingLockIdentity(cleanupRoot);
+  const siblingLockDir = path.join(cleanupDeps.cacheRoot, 'locks', 'docs', `${cleanupIdentity.key}.lock`);
+  const originalRmdir = fs.rmdirSync;
+  fs.rmdirSync = (target, ...rest) => {
+    if (target === siblingLockDir) throw new Error('injected lock cleanup failure');
+    return originalRmdir.call(fs, target, ...rest);
+  };
+  try {
+    await expectCode(runUpdater(cleanup, cleanupDeps), 'DOCS_LOCK_IO_FAILED');
+    expect(npmCalls(cleanupDeps)).toBe(0);
+    expect(pushes(cleanupDeps)).toBe(0);
+  } finally {
+    fs.rmdirSync = originalRmdir;
+  }
+});
+
+testPosix('parses CLI options, falls back to the package version and exits nonzero for incomplete targets', async () => {
+  const desktop = makeDesktop({ withModules: true });
+  const home = fs.mkdtempSync(path.join(OWNER, 'cli-home-'));
+  const parent = emptyParent();
+  const runDir = path.join(OWNER, `cli-run-${++runSeq}`);
+  const resultFile = path.join(runDir, 'result.json');
+  const fallback = runCli(desktop, ['--parent-dir', parent, '--run-dir', runDir, '--result', resultFile], home);
+  expect(fallback.status).toBe(1);
+  const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+  expect(result.version).toBe(NEW);
+  expect(result.targets.map((entry) => entry.state)).toEqual(['missing', 'missing']);
+
+  const positionalRun = path.join(OWNER, `cli-run-${++runSeq}`);
+  const positionalResult = path.join(positionalRun, 'result.json');
+  const explicit = runCli(desktop, ['9.9.9', '--parent-dir', parent, '--run-dir', positionalRun, '--result', positionalResult], home);
+  expect(explicit.status).toBe(1);
+  expect(JSON.parse(fs.readFileSync(positionalResult, 'utf8')).version).toBe('9.9.9');
+
+  expect(runCli(desktop, ['--bogus'], home).stderr).toContain('Unknown option --bogus');
+  expect(runCli(desktop, ['--run-dir', '/tmp/a', '--run-dir', '/tmp/b'], home).stderr).toContain('Duplicate option --run-dir');
+  expect(runCli(desktop, ['--result'], home).stderr).toContain('needs an absolute value');
+  expect(runCli(desktop, ['1.2.3', 'extra'], home).stderr).toContain('Unexpected extra argument extra');
+
+  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'update-external-docs.js'), 'utf8');
+  expect(source).not.toMatch(/stashRepo|commitAndPushFile|popStash/);
+  expect(source).not.toMatch(/'stash'/);
+  expect(source).not.toMatch(/git add -A|add', '-A'/);
+});

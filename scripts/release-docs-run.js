@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 
 const RUN_FILE = 'docs-run.json';
+const TEMP_PREFIX = 'docs-run';
 const DEFAULT_RESULT_FILE = 'result.json';
 const ATTEMPTS_DIR = 'attempts';
 const SCHEMA = 1;
@@ -111,14 +112,24 @@ function canonicalPath(input, io, label) {
       } catch (error) {
         throw invalid(`${label} has no real parent: ${requested}`, error);
       }
-      if (!io.lstatSync(real).isDirectory()) throw invalid(`${label} parent is not a directory: ${real}`);
-      return path.join(real, ...suffix);
+      if (io.lstatSync(real).isDirectory()) return path.join(real, ...suffix);
+      suffix.unshift(path.basename(current));
+      current = path.dirname(current);
+      continue;
     }
     suffix.unshift(path.basename(current));
     const parent = path.dirname(current);
     if (parent === current) throw invalid(`${label} has no existing parent: ${requested}`);
     current = parent;
   }
+}
+
+function requireDirectoryPath(real, io, label) {
+  const stat = lstatOrNull(real, io);
+  if (stat === null || !stat.isDirectory()) {
+    throw invalid(`${label} must be a real directory: ${real}`);
+  }
+  return real;
 }
 
 function isInside(target, root) {
@@ -367,8 +378,8 @@ function validateResult(result, expected) {
   return result;
 }
 
-function createTemporary(dir, payload, io, randomUUID) {
-  const target = path.join(dir, `${RUN_FILE}.${randomUUID()}.tmp`);
+function createTemporary(dir, payload, io, randomUUID, fail) {
+  const target = path.join(dir, `${TEMP_PREFIX}.${randomUUID()}.tmp`);
   let fd = null;
   let owned = false;
   try {
@@ -376,7 +387,7 @@ function createTemporary(dir, payload, io, randomUUID) {
     owned = true;
     io.writeFileSync(fd, payload);
     if (io.fstatSync(fd).size !== payload.length) {
-      throw runWriteFailed(`temporary control record was written incompletely: ${target}`);
+      throw fail(`temporary control record was written incompletely: ${target}`);
     }
     io.fsyncSync(fd);
     const handle = fd;
@@ -402,15 +413,26 @@ function createTemporary(dir, payload, io, randomUUID) {
   return target;
 }
 
+function publicationError(error, fail, message) {
+  if (error && typeof error.code === 'string' && error.code.startsWith('DOCS_')) return error;
+  return fail(message, error);
+}
+
 function publishRecord(target, payload, io, expected, randomUUID, fail) {
   const dir = path.dirname(target);
-  const temporary = createTemporary(dir, payload, io, randomUUID);
+  const label = path.basename(target);
+  let temporary;
   try {
-    const current = readRecordBytes(target, io, path.basename(target));
+    temporary = createTemporary(dir, payload, io, randomUUID, fail);
+  } catch (error) {
+    throw publicationError(error, fail, `${label} temporary file could not be created`);
+  }
+  try {
+    const current = readRecordBytes(target, io, label);
     if (expected === null) {
-      if (current !== null) throw fail(`${path.basename(target)} appeared while this invocation held the lock`);
+      if (current !== null) throw fail(`${label} appeared while this invocation held the lock`);
     } else if (current === null || !current.equals(expected)) {
-      throw fail(`${path.basename(target)} changed while this invocation held the lock`);
+      throw fail(`${label} changed while this invocation held the lock`);
     }
     io.renameSync(temporary, target);
   } catch (error) {
@@ -419,12 +441,12 @@ function publishRecord(target, payload, io, expected, randomUUID, fail) {
     } catch {
       // The temporary file is this invocation's own.
     }
-    throw error;
+    throw publicationError(error, fail, `${label} could not be published`);
   }
   try {
     fsyncDirectory(dir, io);
   } catch (error) {
-    throw fail(`${path.basename(target)} directory could not be flushed: ${dir}`, error);
+    throw fail(`${label} directory could not be flushed: ${dir}`, error);
   }
 }
 
@@ -455,15 +477,19 @@ function openDocsRun(options, deps = {}) {
   }
   exactKeys(provided.owner, OWNER_FIELDS, 'docs run owner', invalid);
   const owner = {
-    root: canonicalPath(provided.owner.root, io, 'docs run owner root'),
-    commonDir: canonicalPath(provided.owner.commonDir, io, 'docs run owner commonDir'),
+    root: requireDirectoryPath(canonicalPath(provided.owner.root, io, 'docs run owner root'), io, 'docs run owner root'),
+    commonDir: requireDirectoryPath(canonicalPath(provided.owner.commonDir, io, 'docs run owner commonDir'), io, 'docs run owner commonDir'),
     key: provided.owner.key
   };
   if (typeof owner.key !== 'string' || !HASH_PATTERN.test(owner.key) || owner.key !== sha256(owner.commonDir)) {
     throw invalid('docs run owner key is not the canonical common directory digest');
   }
-  const parentDir = canonicalPath(provided.parentDir, io, 'docs run parentDir');
+  const parentDir = requireDirectoryPath(canonicalPath(provided.parentDir, io, 'docs run parentDir'), io, 'docs run parentDir');
   const runDir = canonicalPath(provided.runDir, io, 'docs run runDir');
+  const runDirLeaf = lstatOrNull(runDir, io);
+  if (runDirLeaf !== null && !runDirLeaf.isDirectory()) {
+    throw invalid(`docs run runDir is not a real directory: ${runDir}`);
+  }
   const resultFile = canonicalPath(provided.resultFile, io, 'docs run resultFile');
 
   for (const [label, root] of [['parentDir', parentDir], ['the desktop checkout', owner.root], ['the desktop common directory', owner.commonDir]]) {
@@ -515,6 +541,8 @@ function openDocsRun(options, deps = {}) {
     publishRecord(runFile, payload, io, runPreimage, randomUUID, runWriteFailed);
     runPreimage = payload;
   };
+
+  if (runBytes === null) writeRun();
 
   const slotFor = (repo) => {
     const index = TARGET_REPOS.indexOf(repo);

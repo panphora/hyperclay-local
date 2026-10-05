@@ -491,7 +491,7 @@ async function attemptTarget(context, repo, index) {
       { run: resolved.run, spawn: resolved.spawn }
     );
     assertApplicationBinding(verified, { version, repo, repoRoot: root, paths });
-    resolved.apply.prepareCommitIntent(
+    await resolved.apply.prepareCommitIntent(
       { applicationFile: paths.applicationFile, journalFile: paths.journalFile, message: commitMessageFor(version) },
       resolved.applyDeps
     );
@@ -507,13 +507,13 @@ async function attemptTarget(context, repo, index) {
   projectJournal(entry, journal, paths.journalFile);
   handle.writeResult(aggregate);
 
-  resolved.apply.reconcileTarget({ journalFile: paths.journalFile }, resolved.applyDeps);
+  await resolved.apply.reconcileTarget({ journalFile: paths.journalFile }, resolved.applyDeps);
   const settled = resolved.apply.readTargetJournal(paths.journalFile, { run: resolved.run, fs: io });
   assertJournalBinding(settled, handle.snapshotRun(), slot, paths);
   projectJournal(entry, settled, paths.journalFile);
   handle.writeResult(aggregate);
 
-  resolved.apply.reconcileTargetPush({ journalFile: paths.journalFile }, resolved.applyDeps);
+  await resolved.apply.reconcileTargetPush({ journalFile: paths.journalFile }, resolved.applyDeps);
   const verifiedRemote = resolved.apply.readTargetJournal(paths.journalFile, { run: resolved.run, fs: io });
   assertJournalBinding(verifiedRemote, handle.snapshotRun(), slot, paths);
   requireFreshRemoteProof(verifiedRemote, repo);
