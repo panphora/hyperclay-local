@@ -269,8 +269,10 @@ function transitionRelease(state, event, identity, options) {
     case 'artifacts-verified': {
       if (next.mode !== 'publish') refuse('artifacts-verified requires a publish release');
       if (next.phase !== 'workflow') refuse('artifacts-verified requires a workflow release phase');
-      const attempt = requireActiveDispatch(next, 'artifacts-verified');
-      if (!isCompletedSuccess(attempt)) refuse('artifacts-verified requires a successful identified run');
+      const attempt = activeAttempt(next);
+      if (attempt === null || !isCompletedSuccess(attempt)) {
+        refuse('artifacts-verified requires a successful identified run');
+      }
       if (!isObject(event.artifacts)) refuse('artifacts-verified requires an artifacts record');
       if (event.artifacts.state !== 'complete') refuse('artifacts-verified requires complete artifacts');
       if (event.artifacts.sourceSha !== next.sourceSha) {

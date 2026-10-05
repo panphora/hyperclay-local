@@ -542,7 +542,7 @@ describe('an unresolved dispatch', () => {
       type: 'run-observed', at: TIMES.later, runId: RUN_ID, runAttempt: 1, runStatus: 'completed', conclusion: 'success'
     }), 'STATE_TRANSITION_INVALID');
     expectRefusal(() => advance(legacy, { type: 'dispatch-requested', at: TIMES.later }), 'STATE_TRANSITION_INVALID');
-    expectRefusal(() => advance(legacy, { type: 'artifacts-verified', at: TIMES.later, artifacts: completeArtifacts() }), 'STATE_TRANSITION_INVALID');
+    expect(advance(legacy, { type: 'artifacts-verified', at: TIMES.later, artifacts: completeArtifacts() }).phase).toBe('tail');
   });
 
   test('a legacy proof release can still finish its independent tail', () => {

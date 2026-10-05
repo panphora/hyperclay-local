@@ -344,7 +344,7 @@ function validateAttempt(attempt, index, state, identity) {
     if (attempt.dispatch === 'identified') {
       validateWatchWindow(attempt, field);
       if (!isPositiveInteger(attempt.runId)) invalid(`${field}.runId`);
-      if (!isPositiveInteger(attempt.runAttempt)) invalid(`${field}.runAttempt`);
+      if (attempt.runAttempt !== 1) invalid(`${field}.runAttempt`);
       if (typeof attempt.runStatus !== 'string' || !RUN_STATES.includes(attempt.runStatus)) {
         invalid(`${field}.runStatus`);
       }

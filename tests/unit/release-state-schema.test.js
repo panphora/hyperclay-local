@@ -368,6 +368,7 @@ const INVALID_CASES = [
   ['attempt dispatch state unknown', 'running', s => { s.attempts[0].dispatch = 'waiting'; }],
   ['identified attempt without a run id', 'running', s => { s.attempts[0].runId = null; }],
   ['identified attempt without a run attempt', 'running', s => { s.attempts[0].runAttempt = null; }],
+  ['identified dispatch attempt carrying a second run attempt', 'running', s => { s.attempts[0].runAttempt = 2; }],
   ['identified attempt with an unknown run status', 'running', s => { s.attempts[0].runStatus = 'running'; }],
   ['running attempt carrying a conclusion', 'running', s => { s.attempts[0].conclusion = 'success'; }],
   ['completed attempt without a conclusion', 'failed-ci', s => { s.attempts[0].conclusion = null; }],
@@ -557,6 +558,14 @@ describe('release state schema', () => {
     const result = validateReleaseState(value, IDENTITY, { repoDir: REPO_DIR });
     expect(result).toBe(value);
     expect(value).toEqual(snapshot);
+  });
+
+  test('a legacy upload proof still accepts a later positive run attempt', () => {
+    const value = legacyImportRecord();
+    value.attempts[0].runAttempt = 2;
+    value.attempts[0].id = 'legacy:456:2';
+    value.activeAttemptId = 'legacy:456:2';
+    expect(validateReleaseState(value, IDENTITY, { repoDir: REPO_DIR })).toBe(value);
   });
 
   test('a sha256 object format repository uses 64 character object ids', () => {
