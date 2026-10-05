@@ -1,2 +1,4 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+tests/fixtures/release-ferry/lock.js text eol=lf
+tests/fixtures/release-ferry/paths.js text eol=lf
