@@ -183,12 +183,9 @@ function makeDesktop({ withModules = false } = {}) {
   if (withModules) {
     const scripts = path.join(root, 'scripts');
     fs.mkdirSync(scripts, { recursive: true });
-    for (const name of [
-      'release-command.js', 'release-docs-apply.js', 'release-docs-plan.js', 'release-docs-prepare.js',
-      'release-docs-run.js', 'release-ferry.js', 'release-lock.js', 'release-state.js',
-      'update-external-docs.js'
-    ]) {
-      fs.copyFileSync(path.join(__dirname, '..', '..', 'scripts', name), path.join(scripts, name));
+    const sourceScripts = path.join(__dirname, '..', '..', 'scripts');
+    for (const name of fs.readdirSync(sourceScripts).filter((name) => name.endsWith('.js'))) {
+      fs.copyFileSync(path.join(sourceScripts, name), path.join(scripts, name));
     }
   }
   git(root, ['add', '-A']);
@@ -1487,6 +1484,7 @@ testPosix('parses CLI options, falls back to the package version and exits nonze
   const resultFile = path.join(runDir, 'result.json');
   const fallback = runCli(desktop, ['--parent-dir', parent, '--run-dir', runDir, '--result', resultFile], home);
   expect(fallback.status).toBe(1);
+  expect(fallback.stderr).toBe('');
   const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
   expect(result.version).toBe(NEW);
   expect(result.targets.map((entry) => entry.state)).toEqual(['missing', 'missing']);
@@ -1495,6 +1493,7 @@ testPosix('parses CLI options, falls back to the package version and exits nonze
   const positionalResult = path.join(positionalRun, 'result.json');
   const explicit = runCli(desktop, ['9.9.9', '--parent-dir', parent, '--run-dir', positionalRun, '--result', positionalResult], home);
   expect(explicit.status).toBe(1);
+  expect(explicit.stderr).toBe('');
   expect(JSON.parse(fs.readFileSync(positionalResult, 'utf8')).version).toBe('9.9.9');
 
   expect(runCli(desktop, ['--bogus'], home).stderr).toContain('Unknown option --bogus');
