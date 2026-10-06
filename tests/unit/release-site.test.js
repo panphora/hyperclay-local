@@ -1449,6 +1449,10 @@ describe('site snapshot', () => {
         ],
         [
           () => write(ctx.fixture.repoRoot, 'website/.assetsignore', `${WEBSITE_IGNORE}.assetsignore\n`),
+          /exactly the four fixed exclusions/
+        ],
+        [
+          () => write(ctx.fixture.repoRoot, 'website/.assetsignore', WEBSITE_IGNORE.replace('.DS_Store\n', '.assetsignore\n')),
           /repeats an exclusion/
         ]
       ];
