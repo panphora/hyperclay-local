@@ -447,7 +447,7 @@ test('the callback is not invoked when the repository root argument is unusable'
   const { calls, loadModules } = recordingSeam(ferryRoot);
   const file = path.join(dir, 'repo-file');
   fs.writeFileSync(file, 'x\n');
-  const cases = [['a relative root', path.relative(process.cwd(), ferryRoot)], ['a file', file], ['a missing directory', path.join(dir, 'absent')]];
+  const cases = [['a relative root', 'relative-repo'], ['a file', file], ['a missing directory', path.join(dir, 'absent')]];
   for (const [name, repoRoot] of cases) {
     const error = await outcomeOf(withFerryRepoLock(repoRoot, async () => 'applied', {
       pathEnv: '',

@@ -59,7 +59,7 @@ function githubIdentity(raw) {
 function resolveRepoIdentity(repoRoot, { readGit = defaultReadGit, fs: io = fs } = {}) {
   const root = io.realpathSync(repoRoot);
   const top = io.realpathSync(readGit(root, ['rev-parse', '--show-toplevel']));
-  if (root !== top) throw stateError('REPO_ROOT_MISMATCH', 'Release root must be the checkout root');
+  if (path.relative(root, top) !== '') throw stateError('REPO_ROOT_MISMATCH', 'Release root must be the checkout root');
   const commonDir = io.realpathSync(path.resolve(root, readGit(root, ['rev-parse', '--git-common-dir'])));
   const branch = readGit(root, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
   if (branch !== 'main') throw stateError('REPO_BRANCH_MISMATCH', 'Desktop releases require main');
