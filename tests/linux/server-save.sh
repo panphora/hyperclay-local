@@ -7,7 +7,8 @@ command -v node >/dev/null || fail "node is required"
 RUNNER="$REPO/tests/conformance/host-test.mjs"
 home="$(fresh_home save)"
 port_free_or_fail
-pid="$(launch "$home" --appimage-extract-and-run --no-sandbox)"
+launch "$home" --appimage-extract-and-run --no-sandbox > /dev/null
+pid="$(cat "$LAB/app.pid")"
 wait_for_server 40 || fail "server did not come up"
 pass "server up on :$PORT"
 

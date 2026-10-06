@@ -127,6 +127,7 @@ id() { echo 1000; }
 setsid() { "$@"; }
 xvfb-run() { shift 3; "$@"; }
 source "$DIAGNOSTICS_LIBRARY"
+stop() { :; }
 launch "$DIAGNOSTICS_FIXTURE/home-a"
 launch "$DIAGNOSTICS_FIXTURE/home-b"
 wait

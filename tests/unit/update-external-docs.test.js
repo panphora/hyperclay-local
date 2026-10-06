@@ -446,7 +446,11 @@ function hookFs(hook) {
     get(target, prop) {
       const value = target[prop];
       if (typeof value !== 'function') return value;
-      return (...args) => hook(prop, args, () => value.apply(target, args));
+      const wrapped = (...args) => hook(prop, args, () => value.apply(target, args));
+      if (typeof value.native === 'function') {
+        wrapped.native = (...args) => hook(prop, args, () => value.native.apply(target, args));
+      }
+      return wrapped;
     }
   });
 }

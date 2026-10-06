@@ -13,11 +13,23 @@ SUMMARY="$LINUX_CHECK_OUT/summary.txt"; : > "$SUMMARY"
   for t in xvfb-run dbus-run-session node zenity gio; do printf '%-18s %s\n' "$t" "$(command -v $t || echo MISSING)"; done
 } > "$LINUX_CHECK_OUT/environment.txt"
 failed=0
+CHECK_TIMEOUT_MS="${LINUX_CHECK_TIMEOUT_MS:-300000}"
+CHECK_KILL_GRACE_MS="${LINUX_CHECK_KILL_GRACE_MS:-30000}"
 for check in ${CHECKS:-appimage-launch server-save popover autostart}; do
-  if bash "$HERE/$check.sh" > "$LINUX_CHECK_OUT/$check.out" 2>&1; then
+  if node "$HERE/run-check.mjs" "$CHECK_TIMEOUT_MS" "$CHECK_KILL_GRACE_MS" bash "$HERE/$check.sh" > "$LINUX_CHECK_OUT/$check.out" 2>&1; then
     echo "PASS $check" | tee -a "$SUMMARY"
   else
-    echo "FAIL $check" | tee -a "$SUMMARY"; failed=1
+    status=$?
+    if [ "$status" -eq 130 ] || [ "$status" -eq 143 ]; then
+      echo "INTERRUPTED $check" | tee -a "$SUMMARY"
+      exit "$status"
+    fi
+    if [ "$status" -eq 124 ]; then
+      echo "FAIL $check (timed out)" | tee -a "$SUMMARY"
+    else
+      echo "FAIL $check" | tee -a "$SUMMARY"
+    fi
+    failed=1
     sed 's/^/    /' "$LINUX_CHECK_OUT/$check.out" | tail -30
   fi
 done

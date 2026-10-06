@@ -7,12 +7,21 @@ source "$(dirname "$0")/lib.sh"
 command -v xvfb-run >/dev/null || fail "xvfb-run is required"
 SUMMARY="$OUT/$CHECK/variants.txt"; : > "$SUMMARY"
 overall=0
+previous_userns=""
+cleanup_extra() {
+  if [ -n "$previous_userns" ]; then
+    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns="$previous_userns" >/dev/null || return 1
+    previous_userns=""
+  fi
+}
 
 run_variant() {
   local name="$1"; shift
   local home; home="$(fresh_home "$name")"
   port_free_or_fail
-  local pid; pid="$(launch "$home" "$@")"
+  local pid
+  launch "$home" "$@" > /dev/null
+  pid="$(cat "$LAB/app.pid")"
   local result
   if wait_for_server 40; then
     result="PASS booted, server answered on :$PORT"
@@ -38,11 +47,11 @@ run_variant as-is || overall=1
 run_variant extract-and-run --appimage-extract-and-run || overall=1
 
 if [ "${SYSTEM_MUTATIONS:-0}" = "1" ] && sudo -n true 2>/dev/null; then
-  prev="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)"
+  previous_userns="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)"
   sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1 >/dev/null
   run_variant userns-restricted || overall=1
   run_variant userns-restricted-no-sandbox --no-sandbox || true
-  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns="$prev" >/dev/null
+  cleanup_extra
   if ldconfig -p | grep -q 'libfuse.so.2'; then
     sudo apt-get remove -y 'libfuse2*' >/dev/null 2>&1 || true
     run_variant no-libfuse2 || overall=1

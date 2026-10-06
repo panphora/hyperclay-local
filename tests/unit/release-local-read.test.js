@@ -335,7 +335,7 @@ describe('bounded silent child environment', () => {
     GIT_NO_LAZY_FETCH: '1',
     GIT_NO_REPLACE_OBJECTS: '1',
     GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: os.devNull
+    GIT_CONFIG_GLOBAL: '/dev/null'
   };
 
   test('builds a clean environment from a poisoned inherited env', () => {
@@ -361,7 +361,7 @@ describe('bounded silent child environment', () => {
       GIT_NO_LAZY_FETCH: '1',
       GIT_NO_REPLACE_OBJECTS: '1',
       GIT_CONFIG_NOSYSTEM: '1',
-      GIT_CONFIG_GLOBAL: os.devNull
+      GIT_CONFIG_GLOBAL: '/dev/null'
     });
   });
 
@@ -578,6 +578,24 @@ describe('typed failures and caller state', () => {
     expect(JSON.stringify(options)).toBe(optionsBefore);
     expect(recorder.calls).toHaveLength(3);
     expect(recorder.calls[0].options.env).not.toBe(suppliedEnv);
+  });
+});
+
+describe('isolated Git configuration across platforms', () => {
+  test('reads a real checkout using the Git null configuration path', () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(OWNER, 'portable-git-')));
+    const init = childProcess.spawnSync('git', ['init', '-q', '-b', 'main', root], {
+      env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
+      encoding: 'utf8',
+      timeout: 30000,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    expect(init.error).toBeUndefined();
+    expect(init.stderr).toBe('');
+    expect(init.status).toBe(0);
+    const reader = createLocalGitReader();
+    const top = reader.readGit(root, ['rev-parse', '--show-toplevel']);
+    expect(fs.realpathSync.native(top)).toBe(root);
   });
 });
 

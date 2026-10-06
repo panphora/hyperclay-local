@@ -6,8 +6,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { describePosix } = require('../helpers/platform');
+
 const { observePublication, verifyCurrentPublication } = require('../../scripts/release-publication-write');
 const { readPublicationEvidence } = require('../../scripts/release-publication');
+const { publicationAttemptDirectoryName } = require('../../scripts/release-publication-path');
 const { createLocalGitReader } = require('../../scripts/release-local-read');
 const { resolveRepoIdentity } = require('../../scripts/release-state');
 
@@ -69,7 +72,7 @@ function manifestFor(commit, options = {}) {
   };
 }
 
-const OWNER = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'hc-publication-observe-'));
+const OWNER = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'hc-publication-observe-'));
 const NO_HOOKS = path.join(OWNER, 'no-hooks');
 const GIT_CONFIG = path.join(OWNER, 'gitconfig');
 const READ_STDIO = ['ignore', 'pipe', 'pipe'];
@@ -116,7 +119,7 @@ function packageBody(version) {
 
 function makeCheckout(options = {}) {
   const branch = options.branch === undefined ? 'main' : options.branch;
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(OWNER, `checkout-${++seq}-`)));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(OWNER, `checkout-${++seq}-`)));
   git(root, ['init', '-q', '-b', branch]);
   fs.writeFileSync(path.join(root, 'package.json'), packageBody(options.version === undefined ? VERSION : options.version));
   fs.writeFileSync(path.join(root, 'README.md'), 'hyperclay local\n');
@@ -127,7 +130,7 @@ function makeCheckout(options = {}) {
   }
   return {
     root,
-    commonDir: fs.realpathSync(path.join(root, '.git')),
+    commonDir: fs.realpathSync.native(path.join(root, '.git')),
     sourceSha: git(root, ['rev-parse', 'HEAD']).trim()
   };
 }
@@ -487,7 +490,7 @@ function noisyManifestBytes(value) {
 }
 
 function retainedPaths(fixture) {
-  const dir = path.join(fixture.repoDir, 'records', RELEASE_ID, 'artifacts', fixture.attempt.id);
+  const dir = path.join(fixture.repoDir, 'records', RELEASE_ID, 'artifacts', publicationAttemptDirectoryName(fixture.attempt.id));
   return {
     dir,
     manifestFile: path.join(dir, 'release-info.json'),
@@ -1120,7 +1123,7 @@ describe('publication observation', () => {
     });
   });
 
-  describe('verifyCurrentPublication', () => {
+  describePosix('verifyCurrentPublication', () => {
     test('verifies a saved historical pair and returns the original result', async () => {
       const fixture = base();
       const retained = writeRetained(fixture);

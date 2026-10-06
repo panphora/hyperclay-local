@@ -5,7 +5,6 @@
 // lazy fetch, or echo a captured stream into the operator's terminal.
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { spawnSync: nodeSpawnSync } = require('child_process');
 
@@ -187,7 +186,7 @@ function buildChildEnv(baseEnv, indexFile) {
     if (typeof value === 'string') env[name] = value;
   }
   for (const name of Object.keys(FORCED_ENV)) env[name] = FORCED_ENV[name];
-  env.GIT_CONFIG_GLOBAL = os.devNull;
+  env.GIT_CONFIG_GLOBAL = '/dev/null';
   if (indexFile !== null) env.GIT_INDEX_FILE = indexFile;
   return env;
 }

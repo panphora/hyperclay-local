@@ -58,7 +58,10 @@ fail() {
   capture_failure "$*" || true
   [ ! -f "$LAB/app.log" ] || { echo "--- app.log (tail)" >&2; tail -40 "$LAB/app.log" >&2; }
   [ ! -f "$OUT/$CHECK/startup-diagnostics.txt" ] || cat "$OUT/$CHECK/startup-diagnostics.txt" >&2
-  [ ! -f "$LAB/app.pid" ] || stop "$(cat "$LAB/app.pid")"
+  if [ -s "$LAB/app.pid" ]; then
+    stop "$(cat "$LAB/app.pid")"
+    : > "$LAB/app.pid"
+  fi
   exit 1
 }
 
@@ -75,9 +78,12 @@ fresh_home() {
 }
 
 wait_for_server() {
-  local t="${1:-40}" i
-  for ((i=0; i<t*4; i++)); do
-    curl -s -o /dev/null -m 2 "http://127.0.0.1:$PORT/_/meta" && return 0
+  local deadline=$((SECONDS + ${1:-40}))
+  local remaining
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    remaining=$((deadline - SECONDS))
+    [ "$remaining" -le 2 ] || remaining=2
+    curl -s -o /dev/null -m "$remaining" "http://127.0.0.1:$PORT/_/meta" && return 0
     sleep 0.25
   done
   return 1
@@ -119,6 +125,27 @@ stop() {
   wait "$pid" 2>/dev/null || true
   # The server must be gone before the next variant binds the same port.
   for _ in 1 2 3 4 5 6 7 8 9 10; do curl -s -o /dev/null -m 1 "http://127.0.0.1:$PORT/_/meta" || break; sleep 0.5; done
+  [ ! -f "$LAB/app.pid" ] || : > "$LAB/app.pid"
 }
 
 startup_error() { grep -m1 -o -E "SUID sandbox helper[^.]*|libfuse\.so\.2[^\n]*|AppImages require FUSE[^\n]*|dlopen\(\): error loading[^\n]*|error while loading shared libraries: [^:]*" "$LAB/app.log"; }
+
+cleanup_extra() { :; }
+
+finish_check() {
+  local status=$?
+  trap - EXIT
+  trap '' TERM INT
+  if [ "$status" -ne 0 ] && [ -s "$LAB/app.pid" ]; then
+    capture_failure "check exited with status $status" || true
+  fi
+  if [ -s "$LAB/app.pid" ]; then
+    stop "$(cat "$LAB/app.pid")" || true
+  fi
+  cleanup_extra || status=1
+  exit "$status"
+}
+
+trap finish_check EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT

@@ -6,6 +6,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { describePosix, isWindows } = require('../helpers/platform');
+
 const {
   validateReleaseManifest,
   validatePublicationProof,
@@ -15,6 +17,7 @@ const {
   readPublicationPair,
   readPublicationEvidence
 } = require('../../scripts/release-publication');
+const { publicationAttemptDirectoryName } = require('../../scripts/release-publication-path');
 const { createLocalGitReader } = require('../../scripts/release-local-read');
 
 const FAILURE_CODE = 'PUBLICATION_EVIDENCE_INVALID';
@@ -322,6 +325,17 @@ function refusal(info, expected = EXPECTED_SHA1) {
 }
 
 describe('validateReleaseManifest acceptance', () => {
+  test('publication directory names encode legacy IDs only on Windows', () => {
+    const legacyId = 'legacy:789:2';
+    expect(publicationAttemptDirectoryName(legacyId, 'win32')).toBe('legacy%3A789%3A2');
+    expect(publicationAttemptDirectoryName(legacyId, 'linux')).toBe(legacyId);
+    expect(publicationAttemptDirectoryName(legacyId, 'darwin')).toBe(legacyId);
+    const dispatchId = '00000000-0000-4000-8000-000000000001';
+    for (const platform of ['win32', 'linux', 'darwin']) {
+      expect(publicationAttemptDirectoryName(dispatchId, platform)).toBe(dispatchId);
+    }
+  });
+
   test.each([
     ['sha1', SOURCE_SHA1],
     ['sha256', SOURCE_SHA256]
@@ -1250,7 +1264,7 @@ describe('publication proof upload job refusals', () => {
 
 jest.setTimeout(60000);
 
-const HISTORY_OWNER = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'hc-release-publication-history-'));
+const HISTORY_OWNER = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'hc-release-publication-history-'));
 const HISTORY_NO_HOOKS = path.join(HISTORY_OWNER, 'no-hooks');
 const HISTORY_GIT_CONFIG = path.join(HISTORY_OWNER, 'gitconfig');
 const HISTORY_STDIO = ['ignore', 'pipe', 'pipe'];
@@ -1303,7 +1317,7 @@ function historyTitle(sourceSha) {
 }
 
 function historyCheckout({ packageText = packageBody(VERSION), symlinkTo = null } = {}) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(HISTORY_OWNER, `checkout-${++historySeq}-`)));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(HISTORY_OWNER, `checkout-${++historySeq}-`)));
   historyGit(root, ['init', '-q', '-b', 'main']);
   fs.writeFileSync(path.join(root, 'README.md'), 'hyperclay local\n');
   if (symlinkTo === null) {
@@ -1316,7 +1330,7 @@ function historyCheckout({ packageText = packageBody(VERSION), symlinkTo = null 
   historyGit(root, ['commit', '-q', '-m', 'release source']);
   return {
     root,
-    commonDir: fs.realpathSync(path.join(root, '.git')),
+    commonDir: fs.realpathSync.native(path.join(root, '.git')),
     sourceSha: historyGit(root, ['rev-parse', 'HEAD']).trim()
   };
 }
@@ -1365,7 +1379,7 @@ function historyRunRow(sourceSha) {
 }
 
 function historyAttemptDir(repoDir, attemptId) {
-  return path.join(repoDir, 'records', RELEASE_ID, 'artifacts', attemptId);
+  return path.join(repoDir, 'records', RELEASE_ID, 'artifacts', publicationAttemptDirectoryName(attemptId));
 }
 
 function historyManifestPath(base) {
@@ -1444,7 +1458,7 @@ function sentinelFs() {
   io.lstatSync = (...args) => { seen.lstat += 1; return fs.lstatSync(...args); };
   io.openSync = (...args) => { seen.open += 1; return fs.openSync(...args); };
   io.readSync = (...args) => { seen.read += 1; return fs.readSync(...args); };
-  io.realpathSync = (...args) => { seen.realpath += 1; return fs.realpathSync(...args); };
+  io.realpathSync = (...args) => { seen.realpath += 1; return fs.realpathSync.native(...args); };
   return { io, seen };
 }
 
@@ -1625,7 +1639,29 @@ const HISTORY_REFUSALS = [
   }]
 ];
 
-describe('historical publication', () => {
+describe('Windows release-cache boundary', () => {
+  (isWindows ? test : test.skip)('refuses Windows release-cache metadata without changing retained files', () => {
+    const base = historyBase({ legacy: true });
+    const files = historyWrite(base);
+    const before = [
+      fs.readFileSync(files.manifestFile),
+      fs.readFileSync(files.proofFile),
+      historyStat(files.manifestFile),
+      historyStat(files.proofFile)
+    ];
+    expect(fs.statSync(base.repoDir).mode & 0o022).not.toBe(0);
+    const error = historyRefusal(() => historyRead(base));
+    expect(error.message).toMatch(/writable by group or other/);
+    expect([
+      fs.readFileSync(files.manifestFile),
+      fs.readFileSync(files.proofFile),
+      historyStat(files.manifestFile),
+      historyStat(files.proofFile)
+    ]).toEqual(before);
+  });
+});
+
+describePosix('historical publication', () => {
   test('accepts a real retained dispatch pair and its complete wrapper', () => {
     const base = historyBase();
     historyWrite(base);

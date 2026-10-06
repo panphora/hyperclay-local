@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { publicationAttemptDirectoryName } = require('./release-publication-path');
 
 const FAILURE_CODE = 'PUBLICATION_EVIDENCE_INVALID';
 const VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
@@ -729,7 +730,7 @@ function requireEvidenceLayout(io, state, attempt, repoDir) {
   if (real !== root) throw publicationInvalid('release evidence root must be canonical');
   requireOrdinaryDirectory(io, root, 'release evidence root');
   let attemptDir = root;
-  for (const segment of [RECORDS_DIR, state.releaseId, ARTIFACTS_DIR, attempt.id]) {
+  for (const segment of [RECORDS_DIR, state.releaseId, ARTIFACTS_DIR, publicationAttemptDirectoryName(attempt.id)]) {
     attemptDir = path.join(attemptDir, segment);
     requireOrdinaryDirectory(io, attemptDir, 'release evidence path');
   }

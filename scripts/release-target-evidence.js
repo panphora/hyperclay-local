@@ -123,7 +123,7 @@ function isAncestor(run, cwd, env, ancestor, descendant) {
 function requireRealDirectory(dir, label) {
   let real;
   try {
-    real = fs.realpathSync(dir);
+    real = fs.realpathSync.native(dir);
   } catch (error) {
     throw identityInvalid(`${label} is missing: ${dir}`, error);
   }
@@ -508,9 +508,9 @@ function readJournalRecord(journalFile, io) {
 function observeObjectStore(run, repoRoot) {
   const root = requireRealDirectory(repoRoot, 'target repository root');
   const env = observeEnv();
-  const top = fs.realpathSync(git(run, root, env, ['rev-parse', '--show-toplevel']).trim());
-  if (top !== root) throw identityInvalid(`target repository root is not the Git checkout root: ${root}`);
-  const commonDir = fs.realpathSync(path.resolve(root, git(run, root, env, ['rev-parse', '--git-common-dir']).trim()));
+  const top = fs.realpathSync.native(git(run, root, env, ['rev-parse', '--show-toplevel']).trim());
+  if (path.relative(root, top) !== '') throw identityInvalid(`target repository root is not the Git checkout root: ${root}`);
+  const commonDir = fs.realpathSync.native(path.resolve(root, git(run, root, env, ['rev-parse', '--git-common-dir']).trim()));
   const objectFormat = git(run, root, env, ['rev-parse', '--show-object-format']).trim();
   if (!OBJECT_FORMATS.includes(objectFormat)) {
     throw identityInvalid(`target repository object format is unsupported: ${objectFormat}`);

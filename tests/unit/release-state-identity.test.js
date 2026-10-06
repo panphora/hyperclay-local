@@ -14,7 +14,7 @@ const { testPosix } = require('../helpers/platform');
 
 jest.setTimeout(60000);
 
-const OWNER = fs.realpathSync(fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'hc-release-state-')));
+const OWNER = fs.realpathSync.native(fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'hc-release-state-')));
 const NO_HOOKS = path.join(OWNER, 'no-hooks');
 const GIT_GLOBAL = path.join(OWNER, 'empty-gitconfig');
 const SAVED_ENV = {
@@ -123,7 +123,7 @@ function findOnPath(name) {
     const candidate = path.join(dir, name);
     try {
       fs.accessSync(candidate, fs.constants.X_OK);
-      return fs.realpathSync(candidate);
+      return fs.realpathSync.native(candidate);
     } catch {
       continue;
     }
@@ -140,10 +140,41 @@ afterAll(() => {
 });
 
 describe('release repository identity', () => {
+  test('native canonicalization unifies short and long Windows aliases', () => {
+    const shortRoot = 'C:\\Users\\RUNNER~1\\checkout';
+    const longRoot = 'C:\\Users\\runneradmin\\checkout';
+    const root = path.resolve('native-checkout');
+    const commonDir = path.join(root, '.git');
+    const plain = jest.fn(() => { throw new Error('plain realpath must not be used'); });
+    plain.native = jest.fn((value) => {
+      if (value === shortRoot || value === longRoot) return root;
+      if (value === commonDir) return commonDir;
+      throw new Error('unexpected identity path');
+    });
+    const answers = ['rev-parse --show-toplevel', 'rev-parse --git-common-dir',
+      'symbolic-ref --quiet --short HEAD', 'rev-parse --show-object-format',
+      'remote get-url origin', 'remote get-url --push --all origin'];
+    const values = [longRoot, '.git', 'main', 'sha1',
+      'https://github.com/Owner/Repo.git', 'https://github.com/Owner/Repo.git'];
+    const readGit = jest.fn((cwd, args) => {
+      expect(cwd).toBe(root);
+      const index = answers.indexOf(args.join(' '));
+      if (index < 0) throw new Error('unexpected Git read');
+      return values[index];
+    });
+    const identity = resolveRepoIdentity(shortRoot, { readGit, fs: { realpathSync: plain } });
+    expect(identity.root).toBe(root);
+    expect(identity.commonDir).toBe(commonDir);
+    expect(identity.key).toBe(sha256(commonDir));
+    expect(plain).not.toHaveBeenCalled();
+    expect(plain.native.mock.calls).toEqual([[shortRoot], [longRoot], [commonDir]]);
+    expect(readGit).toHaveBeenCalledTimes(6);
+  });
+
   test('HTTPS and SCP/SSH origins yield one canonical credential-free identity', () => {
     const https = makeRepo({ url: 'https://GitHub.com/Owner/Repo.git' });
     const httpsIdentity = resolveRepoIdentity(https);
-    const commonDir = fs.realpathSync(path.join(https, '.git'));
+    const commonDir = fs.realpathSync.native(path.join(https, '.git'));
     const httpsPushUrl = git(https, ['remote', 'get-url', '--push', '--all', 'origin']);
 
     expect(httpsPushUrl).toBe('https://GitHub.com/Owner/Repo.git');
@@ -162,14 +193,14 @@ describe('release repository identity', () => {
     const scp = makeRepo({ url: 'git@github.com:Owner/Repo.git' });
     const scpIdentity = resolveRepoIdentity(scp);
     expect(scpIdentity.remoteRepo).toBe('github.com/owner/repo');
-    expect(scpIdentity.key).toBe(sha256(fs.realpathSync(path.join(scp, '.git'))));
+    expect(scpIdentity.key).toBe(sha256(fs.realpathSync.native(path.join(scp, '.git'))));
     expect(scpIdentity.pushUrlSha256).toBe(sha256('git@github.com:Owner/Repo.git'));
     expect(scpIdentity.root).toBe(scp);
 
     const ssh = makeRepo({ url: 'ssh://git@github.com/Owner/Repo.git' });
     const sshIdentity = resolveRepoIdentity(ssh);
     expect(sshIdentity.remoteRepo).toBe('github.com/owner/repo');
-    expect(sshIdentity.key).toBe(sha256(fs.realpathSync(path.join(ssh, '.git'))));
+    expect(sshIdentity.key).toBe(sha256(fs.realpathSync.native(path.join(ssh, '.git'))));
 
     expect(new Set([httpsIdentity.key, scpIdentity.key, sshIdentity.key]).size).toBe(3);
   });
@@ -211,7 +242,7 @@ describe('release repository identity', () => {
       const linked = resolveRepoIdentity(worktree);
       expect(linked.key).toBe(firstIdentity.key);
       expect(linked.commonDir).toBe(firstIdentity.commonDir);
-      expect(linked.root).toBe(fs.realpathSync(worktree));
+      expect(linked.root).toBe(fs.realpathSync.native(worktree));
       expect(linked.root).not.toBe(firstIdentity.root);
       expect(linked.branch).toBe('main');
     } finally {
@@ -342,10 +373,17 @@ describe('release state paths', () => {
       get(target, property) {
         const value = target[property];
         if (typeof value !== 'function') return value;
-        return (...args) => {
+        const wrapped = (...args) => {
           if (typeof property === 'string') seen.add(property);
           return value.apply(target, args);
         };
+        if (typeof value.native === 'function') {
+          wrapped.native = (...args) => {
+            if (typeof property === 'string') seen.add(property);
+            return value.native.apply(target, args);
+          };
+        }
+        return wrapped;
       }
     });
 

@@ -8,6 +8,7 @@ const { isDeepStrictEqual } = require('node:util');
 
 const readPolicy = require('./release-read-policy');
 const publication = require('./release-publication');
+const { publicationAttemptDirectoryName } = require('./release-publication-path');
 const localRead = require('./release-local-read');
 const releaseState = require('./release-state');
 const releaseStateStore = require('./release-state-store');
@@ -527,7 +528,7 @@ function requireEvidenceDirectories(io, repoDir, state, attempt) {
   if (real !== repoDir) throw publicationInvalid('release evidence root must be canonical');
   requirePrivateDirectory(io, repoDir, 'release evidence root');
   let current = repoDir;
-  for (const segment of [RECORDS_DIR, state.releaseId, ARTIFACTS_DIR, attempt.id]) {
+  for (const segment of [RECORDS_DIR, state.releaseId, ARTIFACTS_DIR, publicationAttemptDirectoryName(attempt.id)]) {
     const parent = current;
     current = path.join(current, segment);
     let stat = lstatOrMissing(io, current);

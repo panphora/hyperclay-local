@@ -57,10 +57,10 @@ function githubIdentity(raw) {
 }
 
 function resolveRepoIdentity(repoRoot, { readGit = defaultReadGit, fs: io = fs } = {}) {
-  const root = io.realpathSync(repoRoot);
-  const top = io.realpathSync(readGit(root, ['rev-parse', '--show-toplevel']));
+  const root = io.realpathSync.native(repoRoot);
+  const top = io.realpathSync.native(readGit(root, ['rev-parse', '--show-toplevel']));
   if (path.relative(root, top) !== '') throw stateError('REPO_ROOT_MISMATCH', 'Release root must be the checkout root');
-  const commonDir = io.realpathSync(path.resolve(root, readGit(root, ['rev-parse', '--git-common-dir'])));
+  const commonDir = io.realpathSync.native(path.resolve(root, readGit(root, ['rev-parse', '--git-common-dir'])));
   const branch = readGit(root, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
   if (branch !== 'main') throw stateError('REPO_BRANCH_MISMATCH', 'Desktop releases require main');
   const objectFormat = readGit(root, ['rev-parse', '--show-object-format']);
@@ -97,7 +97,7 @@ function canonicalFuturePath(input, io) {
       current = parent;
       continue;
     }
-    const real = io.realpathSync(current);
+    const real = io.realpathSync.native(current);
     if (!io.statSync(real).isDirectory()) {
       throw stateError('STATE_CACHE_INVALID', 'Release cache parent is not a directory');
     }

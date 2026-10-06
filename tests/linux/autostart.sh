@@ -14,7 +14,8 @@ set_autostart_setting() {
 
 set_autostart_setting true
 port_free_or_fail
-pid="$(launch "$home" --appimage-extract-and-run --no-sandbox)"
+launch "$home" --appimage-extract-and-run --no-sandbox > /dev/null
+pid="$(cat "$LAB/app.pid")"
 wait_for_server 40 || fail "server did not come up"
 [ -f "$entry" ] || fail "autoStartEnabled=true but $entry was not written"
 grep -q '^Type=Application$' "$entry" || fail "entry has no Type=Application"
@@ -26,7 +27,8 @@ stop "$pid"
 
 set_autostart_setting false
 port_free_or_fail
-pid="$(launch "$home" --appimage-extract-and-run --no-sandbox)"
+launch "$home" --appimage-extract-and-run --no-sandbox > /dev/null
+pid="$(cat "$LAB/app.pid")"
 wait_for_server 40 || fail "server did not come up on the second launch"
 [ ! -e "$entry" ] || fail "autoStartEnabled=false but the stale entry survived"
 pass "disabled: stale entry removed"

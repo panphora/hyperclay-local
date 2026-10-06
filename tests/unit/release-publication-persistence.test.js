@@ -11,8 +11,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { describePosix } = require('../helpers/platform');
+
 const { persistPublication } = require('../../scripts/release-publication-write');
 const { readPublicationPair } = require('../../scripts/release-publication');
+const { publicationAttemptDirectoryName } = require('../../scripts/release-publication-path');
 const { createLocalGitReader } = require('../../scripts/release-local-read');
 const { resolveRepoIdentity, statePaths } = require('../../scripts/release-state');
 const { readReleaseState, writeReleaseState } = require('../../scripts/release-state-store');
@@ -81,7 +84,7 @@ function manifestFor(commit, options = {}) {
   };
 }
 
-const OWNER = fs.realpathSync(fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'hc-publication-persist-')));
+const OWNER = fs.realpathSync.native(fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'hc-publication-persist-')));
 const NO_HOOKS = path.join(OWNER, 'no-hooks');
 const GIT_CONFIG = path.join(OWNER, 'gitconfig');
 
@@ -126,7 +129,7 @@ function packageBody(version) {
 }
 
 function makeCheckout(options = {}) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(OWNER, `checkout-${++seq}-`)));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(OWNER, `checkout-${++seq}-`)));
   git(root, ['init', '-q', '-b', 'main']);
   fs.writeFileSync(path.join(root, 'package.json'), packageBody(VERSION));
   fs.writeFileSync(path.join(root, 'README.md'), 'hyperclay local\n');
@@ -135,7 +138,7 @@ function makeCheckout(options = {}) {
   git(root, ['remote', 'add', 'origin', options.remote === undefined ? ORIGIN_URL : options.remote]);
   return {
     root,
-    commonDir: fs.realpathSync(path.join(root, '.git')),
+    commonDir: fs.realpathSync.native(path.join(root, '.git')),
     sourceSha: git(root, ['rev-parse', 'HEAD']).trim()
   };
 }
@@ -284,7 +287,7 @@ function noisyManifestBytes(value) {
 function makeFixture(options = {}) {
   const checkout = makeCheckout(options);
   const identity = resolvedIdentity(checkout);
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(OWNER, `persist-${++seq}-`)));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(OWNER, `persist-${++seq}-`)));
   const cacheRoot = path.join(dir, 'cache', 'releases');
   const repoDir = statePaths(identity, { cacheRoot }).repoDir;
   const attempt = options.legacy === true
@@ -296,7 +299,7 @@ function makeFixture(options = {}) {
     cacheRoot,
     repoDir,
     attempt,
-    attemptDir: path.join(repoDir, 'records', RELEASE_ID, 'artifacts', attempt.id)
+    attemptDir: path.join(repoDir, 'records', RELEASE_ID, 'artifacts', publicationAttemptDirectoryName(attempt.id))
   };
   fixture.manifestFile = path.join(fixture.attemptDir, MANIFEST_FILE);
   fixture.proofFile = path.join(fixture.attemptDir, PROOF_FILE);
@@ -342,7 +345,7 @@ function storedState(fixture) {
 
 function mkdirEvidence(fixture) {
   let current = fixture.repoDir;
-  for (const segment of ['records', RELEASE_ID, 'artifacts', fixture.attempt.id]) {
+  for (const segment of ['records', RELEASE_ID, 'artifacts', publicationAttemptDirectoryName(fixture.attempt.id)]) {
     current = path.join(current, segment);
     fs.mkdirSync(current, { mode: 0o700 });
   }
@@ -438,11 +441,11 @@ function flushOrder(fixture, events) {
     .map((event) => {
       if (event.op === 'rename') return `rename ${path.basename(event.to)}`;
       if (event.op === 'mkdir') {
-        const relative = path.relative(fixture.repoDir, event.target);
+        const relative = path.relative(fixture.repoDir, event.target).split(path.sep).join('/');
         return `mkdir ${relative === '' ? '.' : relative}`;
       }
       if (event.directory) {
-        const relative = path.relative(fixture.repoDir, event.target);
+        const relative = path.relative(fixture.repoDir, event.target).split(path.sep).join('/');
         return `fsync ${relative === '' ? '.' : relative}`;
       }
       return `fsync ${path.basename(event.target)}`;
@@ -491,7 +494,7 @@ function evidencePaths(fixture) {
   };
 }
 
-describe('publication persistence', () => {
+describePosix('publication persistence', () => {
   describe('initial publication', () => {
     test('publishes the manifest, then the proof, then the state, flushing every parent', async () => {
       const fixture = makeFixture();

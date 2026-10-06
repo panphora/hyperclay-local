@@ -87,7 +87,7 @@ const WEBSITE_IGNORE = [
 const BINARY_PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0xff, 0xfe, 0x00, 0x7f, 0x80, 0xc3, 0x28]);
 const BINARY_FONT = Buffer.from([0x77, 0x4f, 0x46, 0x32, 0x00, 0x00, 0x00, 0x00, 0xff, 0x00, 0x01, 0x02]);
 
-const TMP_BASE = fs.realpathSync(os.tmpdir());
+const TMP_BASE = fs.realpathSync.native(os.tmpdir());
 const OWNER = fs.mkdtempSync(path.join(TMP_BASE, 'hc-release-site-'));
 const NO_HOOKS = path.join(OWNER, 'no-hooks');
 const GIT_CONFIG = path.join(OWNER, 'gitconfig');
@@ -286,7 +286,7 @@ function makeRepoFixture() {
 
   const sourceSha = git(repoRoot, ['rev-parse', 'HEAD']).trim();
   const identity = resolveRepoIdentity(repoRoot, { readGit: createLocalGitReader().readGit, fs });
-  const cacheBase = fs.realpathSync(fs.mkdtempSync(path.join(OWNER, `cache-${++seq}-`)));
+  const cacheBase = fs.realpathSync.native(fs.mkdtempSync(path.join(OWNER, `cache-${++seq}-`)));
   const cacheRoot = path.join(cacheBase, 'releases');
   return {
     parentDir,
@@ -526,13 +526,15 @@ function recordingFs({ fail = () => false } = {}) {
   const byDescriptor = (op, fd) => {
     record(op, descriptors.has(fd) ? descriptors.get(fd) : `fd:${fd}`);
   };
+  const realpathSync = (target) => { record('realpath', label(target)); return fs.realpathSync.native(target); };
+  realpathSync.native = realpathSync;
   return {
     events,
     get faultMatches() { return faultMatches; },
     constants: fs.constants,
     lstatSync: (target) => { record('lstat', label(target)); return fs.lstatSync(target); },
     statSync: (target) => { record('stat', label(target)); return fs.statSync(target); },
-    realpathSync: (target) => { record('realpath', label(target)); return fs.realpathSync(target); },
+    realpathSync,
     readdirSync: (target) => { record('readdir', label(target)); return fs.readdirSync(target); },
     mkdirSync: (target, mode) => {
       record('mkdir', label(target));
@@ -614,7 +616,7 @@ function craftedRead(files, extra = []) {
   const reader = craftedReader({ listing: Buffer.concat([listing, ...extra]), blobs });
   return {
     reader,
-    read: () => readCommittedSite({ repoRoot: '/tmp/site-evidence', sourceSha: CRAFTED_SOURCE }, { run: reader.run })
+    read: () => readCommittedSite({ repoRoot: path.resolve('/tmp/site-evidence'), sourceSha: CRAFTED_SOURCE }, { run: reader.run })
   };
 }
 
@@ -768,21 +770,21 @@ describe('site snapshot', () => {
     };
     for (const state of [undefined, null, {}, { repo: null }]) {
       const error = expectSiteRefusal(
-        () => readSiteAttempt({ state, repoDir: '/tmp/site-evidence' }, { run: forbiddenRun, fs: forbiddenFs })
+        () => readSiteAttempt({ state, repoDir: path.resolve('/tmp/site-evidence') }, { run: forbiddenRun, fs: forbiddenFs })
       );
       expect(error.message).toMatch(/validated release state/);
     }
     expect(expectSiteRefusal(
       () => verifySiteSnapshot(
-        { repoRoot: 'relative', sourceSha: CRAFTED_SOURCE, treeSha: CRAFTED_TREE, snapshotDir: '/tmp' },
+        { repoRoot: 'relative', sourceSha: CRAFTED_SOURCE, treeSha: CRAFTED_TREE, snapshotDir: path.resolve('/tmp') },
         { run: forbiddenRun, fs: forbiddenFs }
       )
     ).message).toMatch(/absolute repository root/);
     expect(expectSiteRefusal(
-      () => readCommittedSite({ repoRoot: '/tmp', sourceSha: 'not-an-oid' }, { run: forbiddenRun })
+      () => readCommittedSite({ repoRoot: path.resolve('/tmp'), sourceSha: 'not-an-oid' }, { run: forbiddenRun })
     ).message).toMatch(/Git object identifier/);
     expect(expectSiteRefusal(
-      () => verifySiteSnapshot({ repoRoot: '/tmp', sourceSha: CRAFTED_SOURCE, treeSha: CRAFTED_TREE, snapshotDir: '/tmp' }, {
+      () => verifySiteSnapshot({ repoRoot: path.resolve('/tmp'), sourceSha: CRAFTED_SOURCE, treeSha: CRAFTED_TREE, snapshotDir: path.resolve('/tmp') }, {
         run: forbiddenRun, fs: forbiddenFs
       })
     )).toBeTruthy();
@@ -796,12 +798,12 @@ describe('site snapshot', () => {
     });
     for (const attemptId of [undefined, null, 'not-a-uuid', ATTEMPT_ID.toUpperCase(), '8b7c6d5e-4f3a-4b2c-9d1e-0a9b8c7d6e5']) {
       const error = expectAttemptRefusal(
-        () => prepareSiteAttempt({ state: {}, repoDir: '/tmp/site-evidence', attemptId }, { fs: forbiddenFs })
+        () => prepareSiteAttempt({ state: {}, repoDir: path.resolve('/tmp/site-evidence'), attemptId }, { fs: forbiddenFs })
       );
       expect(error.message).toMatch(/fresh attempt identifier/);
     }
     const retry = expectAttemptRefusal(() => prepareSiteAttempt(
-      { state: {}, repoDir: '/tmp/site-evidence', attemptId: ATTEMPT_ID, retrySite: 'yes' },
+      { state: {}, repoDir: path.resolve('/tmp/site-evidence'), attemptId: ATTEMPT_ID, retrySite: 'yes' },
       { fs: forbiddenFs }
     ));
     expect(retry.message).toMatch(/retrySite must be a boolean/);
@@ -876,7 +878,7 @@ describe('site snapshot', () => {
       }
       const reader = craftedReader({ listing: Buffer.concat(many) });
       const error = expectSiteRefusal(
-        () => readCommittedSite({ repoRoot: '/tmp/site-evidence', sourceSha: CRAFTED_SOURCE }, { run: reader.run })
+        () => readCommittedSite({ repoRoot: path.resolve('/tmp/site-evidence'), sourceSha: CRAFTED_SOURCE }, { run: reader.run })
       );
       expect(error.message).toMatch(/file count bound/);
       expect(reader.calls.filter((call) => call.args[0] === 'cat-file')).toHaveLength(0);
@@ -889,7 +891,7 @@ describe('site snapshot', () => {
       const { listing } = craftedTree(baseSiteFiles());
       const missing = craftedReader({ listing });
       expect(expectSiteRefusal(
-        () => readCommittedSite({ repoRoot: '/tmp/site-evidence', sourceSha: CRAFTED_SOURCE }, { run: missing.run })
+        () => readCommittedSite({ repoRoot: path.resolve('/tmp/site-evidence'), sourceSha: CRAFTED_SOURCE }, { run: missing.run })
       ).message).toMatch(/Git read failed/);
 
       const noIndex = craftedRead([['wrangler.jsonc', Buffer.from(WEBSITE_CONFIG)], ['.assetsignore', Buffer.from(WEBSITE_IGNORE)]]);
@@ -1151,7 +1153,7 @@ describe('site snapshot', () => {
         [{ attemptId: ATTEMPT_ID_2 }, /different attempt/],
         [{ sourceSha: '9'.repeat(40) }, /different site source/],
         [{ treeSha: '9'.repeat(40) }, /different site tree/],
-        [{ snapshotDir: '/tmp/elsewhere' }, /different snapshot/],
+        [{ snapshotDir: path.resolve('/tmp/elsewhere') }, /different snapshot/],
         [{ snapshotDir: path.join(ctx.attemptDir, 'elsewhere') }, /different snapshot/],
         [{ extra: true }, /exactly the supported fields/],
         [{ phase: undefined }, /exactly the supported fields/]
