@@ -13,6 +13,8 @@ const EVENT_KEYS = {
   'attempt-ready': ['type', 'at', 'attempt'],
   'dispatch-requested': ['type', 'at'],
   'dispatch-unknown': ['type', 'at', 'error'],
+  'dispatch-rejected': ['type', 'at', 'error'],
+  'workflow-unresolved': ['type', 'at', 'error'],
   'run-observed': ['type', 'at', 'runId', 'runAttempt', 'runStatus', 'conclusion'],
   'ci-failed': ['type', 'at', 'error'],
   'dry-run-complete': ['type', 'at'],
@@ -20,6 +22,7 @@ const EVENT_KEYS = {
   'target-observed': ['type', 'at', 'target', 'result'],
   'install-observed': ['type', 'at', 'install'],
   'tail-complete': ['type', 'at'],
+  'begin-rejected-attempt': ['type', 'at', 'previousAttemptId', 'attemptId'],
   'begin-repair-attempt': ['type', 'at', 'previousRunId', 'attempt'],
 };
 
@@ -135,6 +138,49 @@ function createReleaseState(input, identity, options) {
   return validateReleaseState(record, identity, options);
 }
 
+function createLegacyPublicationState(input, identity, options) {
+  requireExactKeys(input, ['releaseId', 'version', 'sourceSha', 'at', 'attempt'],
+    'Legacy publication construction input');
+  if (!isObject(input.attempt) || input.attempt.identityKind !== 'legacy-upload-proof') {
+    refuse('Legacy publication construction requires a successful legacy attempt');
+  }
+  const state = createReleaseState({
+    releaseId: input.releaseId,
+    version: input.version,
+    mode: 'publish',
+    at: input.at,
+    sourceSha: input.sourceSha,
+    versionIntent: null,
+  }, identity, options);
+  state.phase = 'workflow';
+  state.activeAttemptId = input.attempt.id;
+  state.attempts = [structuredClone(input.attempt)];
+  return validateReleaseState(state, identity, options);
+}
+
+function createLegacyFailedState(input, identity, options) {
+  requireExactKeys(input, ['releaseId', 'version', 'sourceSha', 'at', 'attempt'], 'Legacy failure construction input');
+  if (!isObject(input.attempt) || input.attempt.identityKind !== 'legacy-failed-run') {
+    refuse('Legacy failure construction requires a failed legacy attempt');
+  }
+  const state = createReleaseState({
+    releaseId: input.releaseId,
+    version: input.version,
+    mode: 'publish',
+    at: input.at,
+    sourceSha: input.sourceSha,
+    versionIntent: null,
+  }, identity, options);
+  state.phase = 'failed-ci';
+  state.activeAttemptId = input.attempt.id;
+  state.attempts = [structuredClone(input.attempt)];
+  state.lastError = {
+    code: 'WORKFLOW_CI_FAILED',
+    message: `Historical release workflow concluded ${input.attempt.conclusion}`,
+  };
+  return validateReleaseState(state, identity, options);
+}
+
 function transitionRelease(state, event, identity, options) {
   validateReleaseState(state, identity, options);
 
@@ -207,6 +253,39 @@ function transitionRelease(state, event, identity, options) {
         refuse('dispatch-unknown requires an attempt without a run identity');
       }
       attempt.dispatch = 'unknown';
+      attempt.error = structuredClone(event.error);
+      next.phase = 'unknown';
+      next.lastError = structuredClone(event.error);
+      break;
+    }
+
+    case 'dispatch-rejected': {
+      if (next.phase !== 'workflow') refuse('dispatch-rejected requires a workflow release phase');
+      const attempt = requireActiveDispatch(next, 'dispatch-rejected');
+      if (attempt.dispatch !== 'requested') refuse('dispatch-rejected requires an unresolved request');
+      if (!isObject(event.error) || event.error.code !== 'WORKFLOW_DISPATCH_REJECTED') {
+        refuse('dispatch-rejected requires a definitive rejection diagnostic');
+      }
+      if (attempt.runId !== null || attempt.runAttempt !== null || attempt.runStatus !== null ||
+          attempt.conclusion !== null || attempt.lastObservedAt !== null) {
+        refuse('dispatch-rejected cannot discard a run identity');
+      }
+      attempt.dispatch = 'rejected';
+      attempt.error = structuredClone(event.error);
+      next.phase = 'unknown';
+      next.lastError = structuredClone(event.error);
+      break;
+    }
+
+    case 'workflow-unresolved': {
+      if (next.phase !== 'workflow' && next.phase !== 'unknown') {
+        refuse('workflow-unresolved requires a workflow or unknown release phase');
+      }
+      const attempt = requireActiveDispatch(next, 'workflow-unresolved');
+      if (attempt.dispatch !== 'identified') {
+        refuse('workflow-unresolved requires an identified attempt');
+      }
+      if (!isObject(event.error)) refuse('workflow-unresolved requires an error diagnostic');
       attempt.error = structuredClone(event.error);
       next.phase = 'unknown';
       next.lastError = structuredClone(event.error);
@@ -321,10 +400,55 @@ function transitionRelease(state, event, identity, options) {
       break;
     }
 
+    case 'begin-rejected-attempt': {
+      if (next.phase !== 'unknown') refuse('begin-rejected-attempt requires an unknown release phase');
+      const previous = requireActiveDispatch(next, 'begin-rejected-attempt');
+      if (previous.id !== event.previousAttemptId || previous.dispatch !== 'rejected') {
+        refuse('begin-rejected-attempt requires the recorded rejected attempt');
+      }
+      if (previous.error === null || previous.error.code !== 'WORKFLOW_DISPATCH_REJECTED') {
+        refuse('begin-rejected-attempt requires a definitive rejection diagnostic');
+      }
+      if (previous.runId !== null || previous.runAttempt !== null || previous.runStatus !== null ||
+          previous.conclusion !== null || previous.lastObservedAt !== null) {
+        refuse('begin-rejected-attempt cannot replace a bound run');
+      }
+      if (next.artifacts.state !== 'pending' ||
+          [next.sizes, next.site, next.docs.hyperclay, next.docs['hyperclay-website']]
+            .some(target => target.state !== 'pending') || next.install.state !== 'not-attempted') {
+        refuse('begin-rejected-attempt requires an untouched release tail');
+      }
+      if (next.attempts.some(attempt => attempt.id === event.attemptId)) {
+        refuse('begin-rejected-attempt requires a fresh attempt id');
+      }
+      const attempt = {
+        ...structuredClone(previous),
+        id: event.attemptId,
+        expectedTitle: `release v${previous.version} ${previous.mode} sha=${previous.sourceSha} attempt=${event.attemptId}`,
+        dispatch: 'ready',
+        requestedAt: null,
+        watchDeadlineAt: null,
+        runId: null,
+        runAttempt: null,
+        runStatus: null,
+        conclusion: null,
+        lastObservedAt: null,
+        error: null,
+      };
+      next.attempts = next.attempts.concat([attempt]);
+      next.activeAttemptId = attempt.id;
+      next.phase = 'workflow';
+      next.lastError = null;
+      break;
+    }
+
     case 'begin-repair-attempt': {
       if (next.mode !== 'publish') refuse('begin-repair-attempt requires a publish release');
       if (next.phase !== 'failed-ci') refuse('begin-repair-attempt requires a failed-ci release phase');
-      const previous = requireActiveDispatch(next, 'begin-repair-attempt');
+      const previous = activeAttempt(next);
+      if (previous === null || !['dispatch', 'legacy-failed-run'].includes(previous.identityKind)) {
+        refuse('begin-repair-attempt requires a recorded dispatch or failed legacy attempt');
+      }
       if (!isCompletedNonSuccess(previous)) {
         refuse('begin-repair-attempt requires an identified completed nonsuccess run');
       }
@@ -355,4 +479,4 @@ function transitionRelease(state, event, identity, options) {
   return validateReleaseState(next, identity, options);
 }
 
-module.exports = { createReleaseState, transitionRelease };
+module.exports = { createReleaseState, createLegacyPublicationState, createLegacyFailedState, transitionRelease };

@@ -336,8 +336,9 @@ function assertSameRelease(previous, value) {
 }
 
 function assertReplaceableRelease(previous, value) {
-  if (previous.phase !== COMPLETE_PHASE) {
-    throw conflict('Only a completed release record can be replaced');
+  const failedDryRun = previous.mode === 'dry-run' && value.mode === 'dry-run' && previous.phase === 'failed-ci';
+  if (previous.phase !== COMPLETE_PHASE && !failedDryRun) {
+    throw conflict('Only a completed release record or terminal failed dry run can be replaced');
   }
   if (value.revision !== 0) throw conflict('A replacement release record must start at revision 0');
 }

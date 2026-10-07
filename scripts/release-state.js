@@ -138,7 +138,7 @@ const REMOTE_REPO_PATTERN = /^github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 const MODES = ['publish', 'dry-run'];
 const PHASES = ['version-preparing', 'source-ready', 'workflow', 'tail', 'complete', 'failed-ci', 'unknown'];
-const IDENTITY_KINDS = ['dispatch', 'legacy-upload-proof'];
+const IDENTITY_KINDS = ['dispatch', 'legacy-upload-proof', 'legacy-failed-run'];
 const DISPATCH_STATES = ['ready', 'requested', 'identified', 'unknown', 'rejected'];
 const RUN_STATES = ['queued', 'requested', 'waiting', 'pending', 'in_progress', 'completed'];
 const CONCLUSIONS = [
@@ -309,9 +309,8 @@ function validateAttempt(attempt, index, state, identity) {
   const field = `attempts[${index}]`;
   if (!isObject(attempt)) invalid(field);
   if (!IDENTITY_KINDS.includes(attempt.identityKind)) invalid(`${field}.identityKind`);
-  const keys = attempt.identityKind === 'legacy-upload-proof'
-    ? ATTEMPT_KEYS.concat(['legacyProof'])
-    : ATTEMPT_KEYS;
+  const keys = attempt.identityKind === 'legacy-upload-proof' ? ATTEMPT_KEYS.concat(['legacyProof'])
+    : attempt.identityKind === 'legacy-failed-run' ? ATTEMPT_KEYS.concat(['legacyFailureProof']) : ATTEMPT_KEYS;
   requireExactKeys(attempt, keys, field);
   if (!isVersion(attempt.version) || attempt.version !== state.version) invalid(`${field}.version`);
   if (!MODES.includes(attempt.mode) || attempt.mode !== state.mode) invalid(`${field}.mode`);
@@ -327,7 +326,12 @@ function validateAttempt(attempt, index, state, identity) {
     const repairedSource = previous && previous.dispatch === 'identified' &&
       previous.runStatus === 'completed' && previous.conclusion !== null &&
       previous.conclusion !== 'success' && previous.sourceSha !== attempt.sourceSha;
-    const mainAllowed = attempt.mode === 'dry-run' || repairedSource;
+    const repeatsRejectedMain = previous && previous.identityKind === 'dispatch' &&
+      previous.dispatch === 'rejected' && previous.dispatchRef === 'main' &&
+      previous.error !== null && previous.error.code === 'WORKFLOW_DISPATCH_REJECTED' &&
+      previous.sourceSha === attempt.sourceSha && previous.workflowId === attempt.workflowId &&
+      previous.workflowPath === attempt.workflowPath;
+    const mainAllowed = attempt.mode === 'dry-run' || repairedSource || repeatsRejectedMain;
     if (attempt.dispatchRef !== `v${attempt.version}` && !(attempt.dispatchRef === 'main' && mainAllowed)) {
       invalid(`${field}.dispatchRef`);
     }
@@ -363,6 +367,20 @@ function validateAttempt(attempt, index, state, identity) {
         attempt.conclusion !== null || attempt.lastObservedAt !== null) {
       invalid(field);
     }
+    return;
+  }
+
+  if (attempt.identityKind === 'legacy-failed-run') {
+    if (!isPositiveInteger(attempt.runId)) invalid(`${field}.runId`);
+    if (!isPositiveInteger(attempt.runAttempt)) invalid(`${field}.runAttempt`);
+    if (attempt.id !== `legacy-failed:${attempt.runId}:${attempt.runAttempt}`) invalid(`${field}.id`);
+    if (attempt.mode !== 'publish' || attempt.dispatch !== 'identified' || attempt.runStatus !== 'completed') invalid(field);
+    if (!CONCLUSIONS.includes(attempt.conclusion) || attempt.conclusion === 'success') invalid(`${field}.conclusion`);
+    if (attempt.dispatchRef !== null || attempt.expectedTitle !== null || attempt.requestedAt !== null || attempt.watchDeadlineAt !== null) invalid(field);
+    if (!isTimestamp(attempt.lastObservedAt)) invalid(`${field}.lastObservedAt`);
+    const proof = attempt.legacyFailureProof;
+    requireExactKeys(proof, ['observedHeadSha', 'observedConclusion'], `${field}.legacyFailureProof`);
+    if (proof.observedHeadSha !== attempt.sourceSha || proof.observedConclusion !== attempt.conclusion) invalid(`${field}.legacyFailureProof`);
     return;
   }
 

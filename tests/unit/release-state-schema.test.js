@@ -792,3 +792,236 @@ describe('workflow dispatch refs', () => {
     expect(error.code).toBe('STATE_INVALID');
   });
 });
+
+describe('explicit rejected continuation', () => {
+  const CONTINUED_ATTEMPT_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+  const REPAIR_ATTEMPT_ID = 'c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f';
+  const REPAIRED_SOURCE_SHA = '2'.repeat(40);
+  const REJECTION_ERROR = {
+    code: 'WORKFLOW_DISPATCH_REJECTED',
+    message: 'Release workflow dispatch was rejected by the provider'
+  };
+
+  function rejectedMainAttempt() {
+    return dispatchAttempt({
+      id: REPAIR_ATTEMPT_ID,
+      sourceSha: REPAIRED_SOURCE_SHA,
+      expectedTitle: `release v${VERSION} publish sha=${REPAIRED_SOURCE_SHA} attempt=${REPAIR_ATTEMPT_ID}`,
+      dispatchRef: 'main',
+      dispatch: 'rejected',
+      runId: null,
+      runAttempt: null,
+      runStatus: null,
+      conclusion: null,
+      lastObservedAt: null,
+      error: REJECTION_ERROR
+    });
+  }
+
+  function continuedMainAttempt(patch = {}) {
+    return dispatchAttempt(Object.assign({
+      id: CONTINUED_ATTEMPT_ID,
+      sourceSha: REPAIRED_SOURCE_SHA,
+      expectedTitle: `release v${VERSION} publish sha=${REPAIRED_SOURCE_SHA} attempt=${CONTINUED_ATTEMPT_ID}`,
+      dispatchRef: 'main',
+      dispatch: 'ready',
+      requestedAt: null,
+      watchDeadlineAt: null,
+      runId: null,
+      runAttempt: null,
+      runStatus: null,
+      conclusion: null,
+      lastObservedAt: null,
+      error: null
+    }, patch));
+  }
+
+  function rejectedMainContinuation() {
+    return Object.assign(newState(), {
+      sourceSha: REPAIRED_SOURCE_SHA,
+      phase: 'unknown',
+      activeAttemptId: CONTINUED_ATTEMPT_ID,
+      attempts: [dispatchAttempt({ conclusion: 'failure' }), rejectedMainAttempt(), continuedMainAttempt()],
+      lastError: REJECTION_ERROR
+    });
+  }
+
+  test('a rejected main repair carries forward to exactly one fresh uuid', () => {
+    const value = rejectedMainContinuation();
+    expect(value.attempts[1].dispatch).toBe('rejected');
+    expect(value.attempts[1].dispatchRef).toBe('main');
+    expect(value.attempts[2].dispatchRef).toBe('main');
+    expect(value.attempts[2].sourceSha).toBe(value.attempts[1].sourceSha);
+    expect(value.attempts[2].workflowId).toBe(value.attempts[1].workflowId);
+    expect(validateReleaseState(value, IDENTITY, { repoDir: REPO_DIR })).toBe(value);
+  });
+
+  test('an initial publish main is still refused', () => {
+    const value = Object.assign(newState(), { attempts: [dispatchAttempt({ dispatchRef: 'main' })] });
+    expect(refusal(() => validateReleaseState(value, IDENTITY, { repoDir: REPO_DIR })).code).toBe('STATE_INVALID');
+  });
+
+  test('a changed source, workflow or rejection diagnostic is refused across continuation', () => {
+    const changedSource = rejectedMainContinuation();
+    changedSource.sourceSha = '3'.repeat(40);
+    changedSource.attempts[2] = continuedMainAttempt({
+      sourceSha: '3'.repeat(40),
+      expectedTitle: `release v${VERSION} publish sha=${'3'.repeat(40)} attempt=${CONTINUED_ATTEMPT_ID}`
+    });
+    expect(refusal(() => validateReleaseState(changedSource, IDENTITY, { repoDir: REPO_DIR })).code).toBe('STATE_INVALID');
+
+    const changedWorkflow = rejectedMainContinuation();
+    changedWorkflow.attempts[2] = continuedMainAttempt({ workflowId: 54321 });
+    expect(refusal(() => validateReleaseState(changedWorkflow, IDENTITY, { repoDir: REPO_DIR })).code).toBe('STATE_INVALID');
+
+    const ambiguous = rejectedMainContinuation();
+    ambiguous.attempts[1].error = {
+      code: 'DISPATCH_REQUEST_UNRESOLVED',
+      message: 'Release dispatch request was not identified'
+    };
+    expect(refusal(() => validateReleaseState(ambiguous, IDENTITY, { repoDir: REPO_DIR })).code).toBe('STATE_INVALID');
+
+    const unknownDispatch = rejectedMainContinuation();
+    unknownDispatch.attempts[1].dispatch = 'unknown';
+    expect(refusal(() => validateReleaseState(unknownDispatch, IDENTITY, { repoDir: REPO_DIR })).code).toBe('STATE_INVALID');
+  });
+});
+
+describe('legacy failed repair', () => {
+  const FAILED_LEGACY_ATTEMPT_ID = `legacy-failed:${RUN_ID}:2`;
+  const FAILED_LEGACY_WORKFLOW_ID = 12345;
+
+  function legacyFailureProof(patch = {}) {
+    return Object.assign({ observedHeadSha: SOURCE_SHA, observedConclusion: 'failure' }, patch);
+  }
+
+  function legacyFailedAttempt(patch = {}) {
+    return Object.assign({
+      id: FAILED_LEGACY_ATTEMPT_ID,
+      identityKind: 'legacy-failed-run',
+      version: VERSION,
+      mode: 'publish',
+      sourceSha: SOURCE_SHA,
+      dispatchRef: null,
+      workflowPath: '.github/workflows/release.yml',
+      workflowId: FAILED_LEGACY_WORKFLOW_ID,
+      expectedTitle: null,
+      dispatch: 'identified',
+      requestedAt: null,
+      watchDeadlineAt: null,
+      runId: RUN_ID,
+      runAttempt: 2,
+      runStatus: 'completed',
+      conclusion: 'failure',
+      lastObservedAt: OBSERVED_AT,
+      error: null,
+      legacyFailureProof: legacyFailureProof()
+    }, patch);
+  }
+
+  function legacyFailedRecord(patch = {}) {
+    return Object.assign(newState(), {
+      phase: 'failed-ci',
+      activeAttemptId: FAILED_LEGACY_ATTEMPT_ID,
+      attempts: [legacyFailedAttempt()],
+      lastError: { code: 'WORKFLOW_CI_FAILED', message: 'Historical release workflow concluded failure' }
+    }, patch);
+  }
+
+  const FAILED_LEGACY_CASES = [
+    ['a failed legacy attempt without a proof', s => { delete s.attempts[0].legacyFailureProof; }],
+    ['a failed legacy proof carrying an unknown field', s => {
+      s.attempts[0].legacyFailureProof.observedMode = 'publish';
+    }],
+    ['a failed legacy proof carrying a successful upload proof', s => {
+      s.attempts[0].legacyFailureProof = {
+        uploadJobId: 789,
+        uploadJobConclusion: 'success',
+        observedHeadSha: SOURCE_SHA,
+        observedMode: 'publish'
+      };
+    }],
+    ['a failed legacy proof observing another head', s => {
+      s.attempts[0].legacyFailureProof.observedHeadSha = '7'.repeat(40);
+    }],
+    ['a failed legacy proof observing another conclusion', s => {
+      s.attempts[0].legacyFailureProof.observedConclusion = 'cancelled';
+    }],
+    ['a failed legacy proof that is not an object', s => { s.attempts[0].legacyFailureProof = 'failure'; }],
+    ['a failed legacy attempt with a successful conclusion', s => {
+      s.attempts[0].conclusion = 'success';
+      s.attempts[0].legacyFailureProof.observedConclusion = 'success';
+    }],
+    ['a failed legacy attempt with an unknown conclusion', s => { s.attempts[0].conclusion = 'flaky'; }],
+    ['a failed legacy attempt that is not completed', s => { s.attempts[0].runStatus = 'in_progress'; }],
+    ['a failed legacy attempt that is not identified', s => { s.attempts[0].dispatch = 'requested'; }],
+    ['a failed legacy attempt in a dry run', s => { s.attempts[0].mode = 'dry-run'; }],
+    ['a failed legacy attempt carrying a dispatch ref', s => { s.attempts[0].dispatchRef = `v${VERSION}`; }],
+    ['a failed legacy attempt carrying an expected title', s => {
+      s.attempts[0].expectedTitle = `release v${VERSION} publish`;
+    }],
+    ['a failed legacy attempt carrying a request time', s => { s.attempts[0].requestedAt = REQUESTED_AT; }],
+    ['a failed legacy attempt carrying a watch deadline', s => { s.attempts[0].watchDeadlineAt = WATCH_DEADLINE_AT; }],
+    ['a failed legacy attempt without an observation time', s => { s.attempts[0].lastObservedAt = null; }],
+    ['a failed legacy attempt with a non-canonical observation time', s => {
+      s.attempts[0].lastObservedAt = '2026-10-03T20:30:00Z';
+    }],
+    ['a failed legacy attempt id that is not derived', s => { s.attempts[0].id = `legacy-failed:${RUN_ID}:1`; }],
+    ['a failed legacy attempt id that is a uuid', s => { s.attempts[0].id = ATTEMPT_ID; }],
+    ['a failed legacy attempt without a run id', s => { s.attempts[0].runId = null; }],
+    ['a failed legacy attempt with a zero run id', s => { s.attempts[0].runId = 0; }],
+    ['a failed legacy attempt with a zero run attempt', s => {
+      s.attempts[0].runAttempt = 0;
+      s.attempts[0].id = `legacy-failed:${RUN_ID}:0`;
+    }],
+    ['a failed legacy attempt with a fractional run attempt', s => { s.attempts[0].runAttempt = 1.5; }],
+    ['a failed legacy attempt with an unsafe run id', s => { s.attempts[0].runId = Number.MAX_SAFE_INTEGER + 1; }],
+    ['a failed legacy attempt for another version', s => { s.attempts[0].version = PREVIOUS_VERSION; }],
+    ['a failed legacy attempt for another source', s => { s.attempts[0].sourceSha = '7'.repeat(40); }],
+    ['a failed legacy attempt without a workflow id', s => { s.attempts[0].workflowId = 0; }],
+    ['a failed legacy attempt for another workflow path', s => {
+      s.attempts[0].workflowPath = '.github/workflows/ci.yml';
+    }],
+    ['a failed legacy attempt with an unknown field', s => { s.attempts[0].observedAt = OBSERVED_AT; }],
+    ['a failed legacy attempt with a malformed error', s => { s.attempts[0].error = { code: 'WORKFLOW_CI_FAILED' }; }],
+    ['a failed legacy attempt with a mismatched active id', s => { s.activeAttemptId = ATTEMPT_ID; }],
+    ['complete artifacts on a failed legacy run', s => {
+      s.phase = 'tail';
+      s.artifacts = completeArtifacts();
+    }]
+  ];
+
+  test('a failed legacy run validates as a revision zero failure with a positive run attempt', () => {
+    const value = legacyFailedRecord();
+    expect(value.attempts[0].id).toBe(FAILED_LEGACY_ATTEMPT_ID);
+    expect(value.attempts[0].runAttempt).toBe(2);
+    expect(value.attempts[0].conclusion).toBe('failure');
+    expect(value.attempts[0].legacyProof).toBeUndefined();
+    expect(Object.keys(value.attempts[0].legacyFailureProof)).toEqual(['observedHeadSha', 'observedConclusion']);
+    const snapshot = JSON.parse(JSON.stringify(value));
+    expect(validateReleaseState(value, IDENTITY, { repoDir: REPO_DIR })).toBe(value);
+    expect(value).toEqual(snapshot);
+  });
+
+  test('the successful legacy upload proof keeps its own exact shape', () => {
+    const value = legacyImportRecord();
+    expect(validateReleaseState(value, IDENTITY, { repoDir: REPO_DIR })).toBe(value);
+    expect(value.attempts[0].identityKind).toBe('legacy-upload-proof');
+    expect(value.attempts[0].legacyFailureProof).toBeUndefined();
+    expect(Object.keys(value.attempts[0].legacyProof)).toEqual([
+      'uploadJobId', 'uploadJobConclusion', 'observedHeadSha', 'observedMode'
+    ]);
+  });
+
+  test.each(FAILED_LEGACY_CASES)('%s is refused', (name, patch) => {
+    const value = legacyFailedRecord();
+    patch(value);
+    const error = refusal(() => validateReleaseState(value, IDENTITY, { repoDir: REPO_DIR }));
+    expect(error).toBeInstanceOf(Error);
+    expect(error.code).toBe('STATE_INVALID');
+  });
+
+  test('the failed legacy refusal table is nonzero', () => {
+    expect(FAILED_LEGACY_CASES.length).toBeGreaterThan(25);
+  });
+});

@@ -10,8 +10,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { withReleaseLock } = require('../../scripts/release-lock');
 const { statePaths } = require('../../scripts/release-state');
 const { readReleaseState, writeReleaseState } = require('../../scripts/release-state-store');
+const { createReleaseState, transitionRelease } = require('../../scripts/release-transitions');
 const { isWindows, testPosix } = require('../helpers/platform');
 
 const MAX_STATE_BYTES = 8 * 1024 * 1024;
@@ -848,6 +850,202 @@ describe('storage boundary corrections', () => {
     expect(fs.readFileSync(fixture.paths.stateFile)).toEqual(laneBytes);
     expect(fs.readFileSync(archived)).toEqual(laneBytes);
     expect(read(fixture)).toEqual(completedRecord(fixture, firstId));
+  });
+});
+
+describe('failed rehearsal replacement', () => {
+  const AT = index => new Date(Date.parse('2026-10-03T19:00:00.000Z') + index * 10 * 60 * 1000).toISOString();
+
+  function laneFile(fixture, mode) {
+    return mode === 'dry-run' ? fixture.paths.dryRunFile : fixture.paths.stateFile;
+  }
+
+  function readyAttempt(mode, sourceSha, attemptId) {
+    return {
+      id: attemptId,
+      identityKind: 'dispatch',
+      version: VERSION,
+      mode,
+      sourceSha,
+      dispatchRef: mode === 'dry-run' ? 'main' : `v${VERSION}`,
+      workflowPath: '.github/workflows/release.yml',
+      workflowId: 12345,
+      expectedTitle: `release v${VERSION} ${mode} sha=${sourceSha} attempt=${attemptId}`,
+      dispatch: 'ready',
+      requestedAt: null,
+      watchDeadlineAt: null,
+      runId: null,
+      runAttempt: null,
+      runStatus: null,
+      conclusion: null,
+      lastObservedAt: null,
+      error: null
+    };
+  }
+
+  function construct(fixture, releaseId, mode, at, sourceSha) {
+    return createReleaseState({
+      releaseId, version: VERSION, mode, at, sourceSha, versionIntent: null
+    }, fixture.identity, { repoDir: fixture.paths.repoDir });
+  }
+
+  function persist(fixture, state, expectedRevision) {
+    expect(write(fixture, state, expectedRevision)).toEqual(state);
+    expect(fs.readFileSync(laneFile(fixture, state.mode), 'utf8')).toBe(`${JSON.stringify(state)}\n`);
+    expect(read(fixture, state.mode)).toEqual(state);
+    return state;
+  }
+
+  function advance(fixture, state, event) {
+    const next = transitionRelease(state, event, fixture.identity, { repoDir: fixture.paths.repoDir });
+    expect(next.revision).toBe(state.revision + 1);
+    return persist(fixture, next, state.revision);
+  }
+
+  function start(fixture, releaseId, mode) {
+    return persist(fixture, construct(fixture, releaseId, mode, AT(0), SOURCE_SHA), null);
+  }
+
+  function begin(fixture, state, mode, attemptId) {
+    return advance(fixture, state, {
+      type: 'attempt-ready', at: AT(1), attempt: readyAttempt(mode, state.sourceSha, attemptId)
+    });
+  }
+
+  function request(fixture, state) {
+    return advance(fixture, state, { type: 'dispatch-requested', at: AT(2) });
+  }
+
+  function observeFailure(fixture, state) {
+    const observed = advance(fixture, state, {
+      type: 'run-observed', at: AT(3), runId: RUN_ID, runAttempt: 1, runStatus: 'completed', conclusion: 'failure'
+    });
+    return advance(fixture, observed, {
+      type: 'ci-failed', at: AT(4), error: { code: 'WORKFLOW_CI_FAILED', message: 'Release workflow concluded failure' }
+    });
+  }
+
+  function failedRecord(fixture, mode, releaseId, attemptId) {
+    return observeFailure(fixture, request(fixture, begin(fixture, start(fixture, releaseId, mode), mode, attemptId)));
+  }
+
+  testPosix('a confirmed failed rehearsal is archived exactly and replaced by a fresh revision 0', async () => {
+    const fixture = makeFixture();
+
+    await withReleaseLock(fixture.identity, async () => {
+      const publish = start(fixture, uuidFor(301), 'publish');
+      const publishBytes = fs.readFileSync(fixture.paths.stateFile);
+
+      const failedId = uuidFor(302);
+      const failed = failedRecord(fixture, 'dry-run', failedId, uuidFor(303));
+      expect(failed.phase).toBe('failed-ci');
+      expect(failed.mode).toBe('dry-run');
+      expect(failed.revision).toBe(4);
+      const failedBytes = fs.readFileSync(fixture.paths.dryRunFile);
+      expect(failedBytes.toString('utf8')).toBe(`${JSON.stringify(failed)}\n`);
+
+      const replacement = construct(fixture, uuidFor(304), 'dry-run', AT(5), SOURCE_SHA);
+      expect(replacement.revision).toBe(0);
+      expect(replacement.phase).toBe('source-ready');
+      write(fixture, replacement, failed.revision);
+
+      const archived = path.join(fixture.paths.historyDir, `${failedId}.json`);
+      expect(fs.readFileSync(archived)).toEqual(failedBytes);
+      expect(fs.statSync(archived).mode & 0o777).toBe(0o600);
+      expect(fs.readdirSync(fixture.paths.historyDir)).toEqual([`${failedId}.json`]);
+
+      expect(fs.readFileSync(fixture.paths.dryRunFile, 'utf8')).toBe(`${JSON.stringify(replacement)}\n`);
+      const stored = read(fixture, 'dry-run');
+      expect(stored).toEqual(replacement);
+      expect(stored.releaseId).toBe(uuidFor(304));
+      expect(stored.revision).toBe(0);
+
+      expect(fs.readFileSync(fixture.paths.stateFile)).toEqual(publishBytes);
+      expect(read(fixture, 'publish')).toEqual(publish);
+    }, { cacheRoot: fixture.cacheRoot });
+  });
+
+  testPosix('a failed publish lane is not replaceable', async () => {
+    const fixture = makeFixture();
+
+    await withReleaseLock(fixture.identity, async () => {
+      const failed = failedRecord(fixture, 'publish', uuidFor(311), uuidFor(312));
+      expect(failed.phase).toBe('failed-ci');
+      expect(failed.mode).toBe('publish');
+      const before = fs.readFileSync(fixture.paths.stateFile);
+
+      const replacement = construct(fixture, uuidFor(313), 'publish', AT(5), SOURCE_SHA);
+      expect(refusalCode(() => write(fixture, replacement, failed.revision))).toBe('STATE_CONFLICT');
+      expect(fs.readFileSync(fixture.paths.stateFile)).toEqual(before);
+      expect(fs.existsSync(fixture.paths.historyDir)).toBe(false);
+      expect(read(fixture, 'publish')).toEqual(failed);
+    }, { cacheRoot: fixture.cacheRoot });
+  });
+
+  testPosix('an unresolved or requested rehearsal is not replaceable', async () => {
+    const unresolved = makeFixture();
+    await withReleaseLock(unresolved.identity, async () => {
+      const attemptId = uuidFor(322);
+      const started = request(unresolved, begin(unresolved, start(unresolved, uuidFor(321), 'dry-run'), 'dry-run', attemptId));
+      const unknown = advance(unresolved, started, {
+        type: 'dispatch-unknown', at: AT(3), error: { code: 'WORKFLOW_DISPATCH_UNKNOWN', message: 'Dispatch outcome is unresolved' }
+      });
+      expect(unknown.phase).toBe('unknown');
+      const before = fs.readFileSync(unresolved.paths.dryRunFile);
+
+      const replacement = construct(unresolved, uuidFor(323), 'dry-run', AT(4), SOURCE_SHA);
+      expect(refusalCode(() => write(unresolved, replacement, unknown.revision))).toBe('STATE_CONFLICT');
+      expect(fs.readFileSync(unresolved.paths.dryRunFile)).toEqual(before);
+      expect(fs.existsSync(unresolved.paths.historyDir)).toBe(false);
+      expect(read(unresolved, 'dry-run')).toEqual(unknown);
+    }, { cacheRoot: unresolved.cacheRoot });
+
+    const requested = makeFixture();
+    await withReleaseLock(requested.identity, async () => {
+      const attemptId = uuidFor(332);
+      const open = request(requested, begin(requested, start(requested, uuidFor(331), 'dry-run'), 'dry-run', attemptId));
+      expect(open.phase).toBe('workflow');
+      expect(open.attempts[0].dispatch).toBe('requested');
+      const before = fs.readFileSync(requested.paths.dryRunFile);
+
+      const replacement = construct(requested, uuidFor(333), 'dry-run', AT(3), SOURCE_SHA);
+      expect(refusalCode(() => write(requested, replacement, open.revision))).toBe('STATE_CONFLICT');
+      expect(fs.readFileSync(requested.paths.dryRunFile)).toEqual(before);
+      expect(fs.existsSync(requested.paths.historyDir)).toBe(false);
+      expect(read(requested, 'dry-run')).toEqual(open);
+    }, { cacheRoot: requested.cacheRoot });
+  });
+
+  testPosix('a stale expected revision refuses the failed rehearsal replacement', async () => {
+    const fixture = makeFixture();
+
+    await withReleaseLock(fixture.identity, async () => {
+      const failed = failedRecord(fixture, 'dry-run', uuidFor(341), uuidFor(342));
+      const before = fs.readFileSync(fixture.paths.dryRunFile);
+      const replacement = construct(fixture, uuidFor(343), 'dry-run', AT(5), SOURCE_SHA);
+
+      expect(refusalCode(() => write(fixture, replacement, failed.revision - 1))).toBe('STATE_CONFLICT');
+      expect(refusalCode(() => write(fixture, replacement, failed.revision + 1))).toBe('STATE_CONFLICT');
+      expect(refusalCode(() => write(fixture, replacement, null))).toBe('STATE_CONFLICT');
+      expect(fs.readFileSync(fixture.paths.dryRunFile)).toEqual(before);
+      expect(fs.existsSync(fixture.paths.historyDir)).toBe(false);
+      expect(read(fixture, 'dry-run')).toEqual(failed);
+    }, { cacheRoot: fixture.cacheRoot });
+  });
+
+  testPosix('a failed rehearsal replacement must still start at revision 0', async () => {
+    const fixture = makeFixture();
+
+    await withReleaseLock(fixture.identity, async () => {
+      const failed = failedRecord(fixture, 'dry-run', uuidFor(351), uuidFor(352));
+      const before = fs.readFileSync(fixture.paths.dryRunFile);
+      const replacement = { ...construct(fixture, uuidFor(353), 'dry-run', AT(5), SOURCE_SHA), revision: 1 };
+
+      expect(refusalCode(() => write(fixture, replacement, failed.revision))).toBe('STATE_CONFLICT');
+      expect(fs.readFileSync(fixture.paths.dryRunFile)).toEqual(before);
+      expect(fs.existsSync(fixture.paths.historyDir)).toBe(false);
+      expect(read(fixture, 'dry-run')).toEqual(failed);
+    }, { cacheRoot: fixture.cacheRoot });
   });
 });
 
