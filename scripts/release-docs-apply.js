@@ -16,7 +16,7 @@ const path = require('path');
 
 const releaseCommand = require('./release-command');
 const { execFileCaptured } = releaseCommand;
-const { runGitRemote, redactRemoteText, remoteFailureMessage } = require('./release-git-remote');
+const { runGitRemote, redactRemoteText, remoteLabel, remoteFailureMessage } = require('./release-git-remote');
 const { createLocalGitReader } = require('./release-local-read');
 const { withDocsLock } = require('./release-lock');
 const { withFerryRepoLock } = require('./release-ferry');

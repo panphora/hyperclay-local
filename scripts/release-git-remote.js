@@ -69,4 +69,4 @@ function runGitRemote({ repoRoot, destination, args, timeoutMs }, { spawnRemote 
   return { failed, diagnostic };
 }
 
-module.exports = { runGitRemote, redactRemoteText, remoteFailureMessage };
+module.exports = { runGitRemote, redactRemoteText, remoteLabel, remoteFailureMessage };
