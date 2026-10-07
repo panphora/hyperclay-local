@@ -464,13 +464,7 @@ function initializeRunDir(runDir, io) {
   }
 }
 
-function openDocsRun(options, deps = {}) {
-  const provided = options || {};
-  const io = deps.fs === undefined ? fs : deps.fs;
-  const randomUUID = deps.randomUUID === undefined ? () => crypto.randomUUID() : deps.randomUUID;
-  if (typeof io !== 'object' || io === null) throw invalid('docs run fs must be an object');
-  if (typeof randomUUID !== 'function') throw invalid('docs run randomUUID must be a function');
-
+function resolveRunOptions(provided, io) {
   requireVersion(provided.version, 'docs run version', invalid);
   if (provided.owner === null || typeof provided.owner !== 'object' || Array.isArray(provided.owner)) {
     throw invalid('docs run owner must be an object');
@@ -503,7 +497,33 @@ function openDocsRun(options, deps = {}) {
     throw invalid(`resultFile must be a safe JSON basename in runDir: ${basename}`);
   }
 
-  const expected = { version: provided.version, parentDir, runDir, resultFile, owner };
+  return { version: provided.version, parentDir, runDir, resultFile, owner };
+}
+
+function readDocsRun(options, deps = {}) {
+  const provided = options || {};
+  const io = deps.fs === undefined ? fs : deps.fs;
+  if (typeof io !== 'object' || io === null) throw invalid('docs run fs must be an object');
+  const expected = resolveRunOptions(provided, io);
+  if (lstatOrNull(expected.runDir, io) === null) return null;
+  const bytes = readRecordBytes(path.join(expected.runDir, RUN_FILE), io, RUN_FILE);
+  if (bytes === null) {
+    initializeRunDir(expected.runDir, io);
+    return null;
+  }
+  return validateRunRecord(decodeJson(bytes, 'docs run record', invalid), expected);
+}
+
+function openDocsRun(options, deps = {}) {
+  const provided = options || {};
+  const io = deps.fs === undefined ? fs : deps.fs;
+  const randomUUID = deps.randomUUID === undefined ? () => crypto.randomUUID() : deps.randomUUID;
+  if (typeof io !== 'object' || io === null) throw invalid('docs run fs must be an object');
+  if (typeof randomUUID !== 'function') throw invalid('docs run randomUUID must be a function');
+
+  const expected = resolveRunOptions(provided, io);
+  const { parentDir, runDir, resultFile, owner } = expected;
+  const basename = path.basename(resultFile);
   createRunDir(runDir, io);
 
   const runFile = path.join(runDir, RUN_FILE);
@@ -596,4 +616,4 @@ function openDocsRun(options, deps = {}) {
   };
 }
 
-module.exports = { openDocsRun, attemptPaths, canonicalRunPath: canonicalPath, DEFAULT_RESULT_FILE, RUN_FILE, TARGET_REPOS };
+module.exports = { openDocsRun, readDocsRun, attemptPaths, canonicalRunPath: canonicalPath, DEFAULT_RESULT_FILE, RUN_FILE, TARGET_REPOS };
