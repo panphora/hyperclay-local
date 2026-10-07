@@ -414,7 +414,7 @@ function requireJobRequestIdentity(job, request) {
   }
 }
 
-function selectUploadJob(pages, options) {
+function inspectUploadJobs(pages, options) {
   if (!isPlainRecord(options)) throw publicationInvalid('upload job selection needs an explicit request identity');
   const request = {
     runId: options.runId,
@@ -434,6 +434,7 @@ function selectUploadJob(pages, options) {
   let rows = 0;
   let named = 0;
   let upload = null;
+  let uploadRow = null;
   const ids = new Set();
   pages.forEach((page) => {
     if (!isPlainRecord(page)) throw publicationInvalid('upload jobs page must be a plain record');
@@ -459,6 +460,7 @@ function selectUploadJob(pages, options) {
       requireJobRequestIdentity(job, request);
       if (job.name !== UPLOAD_JOB_NAME) return;
       named += 1;
+      uploadRow = job;
       if (job.status === UPLOAD_JOB_STATUS && job.conclusion === UPLOAD_JOB_CONCLUSION) {
         upload = { id: job.id, name: job.name, status: job.status, conclusion: job.conclusion };
       }
@@ -466,10 +468,25 @@ function selectUploadJob(pages, options) {
   });
 
   if (rows !== total) throw publicationInvalid('upload jobs pages must carry exactly the complete total_count rows');
+  return { named, upload, uploadRow };
+}
+
+function selectUploadJob(pages, options) {
+  const { named, upload } = inspectUploadJobs(pages, options);
   if (named !== 1 || upload === null) {
     throw publicationInvalid('upload jobs response must carry exactly one completed successful upload job');
   }
   return upload;
+}
+
+function selectLegacyUploadJob(pages, options) {
+  const { named, upload, uploadRow } = inspectUploadJobs(pages, options);
+  if (named === 0) return null;
+  if (named === 1 && upload !== null) return upload;
+  if (named === 1 && uploadRow.status === 'completed' && uploadRow.conclusion === 'skipped') {
+    return null;
+  }
+  throw publicationInvalid('legacy successful run carries contradictory upload jobs');
 }
 
 
@@ -846,6 +863,7 @@ module.exports = {
   validatePublicationProof,
   validateLegacyPublicationProof,
   selectUploadJob,
+  selectLegacyUploadJob,
   readPublishedSourceVersion,
   readPublicationPair,
   readPublicationEvidence,

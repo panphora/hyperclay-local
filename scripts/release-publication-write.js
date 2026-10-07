@@ -806,4 +806,404 @@ function persistPublication(input, deps) {
   });
 }
 
-module.exports = { observePublication, persistPublication, verifyCurrentPublication };
+function legacyUnresolved(message) {
+  const error = new Error(message);
+  error.code = 'LEGACY_PUBLICATION_UNRESOLVED';
+  return error;
+}
+
+function requireLegacyContext({ identity, repoDir, version }, resolved) {
+  if (!isPlainRecord(identity)) throw publicationInvalid('legacy import needs repository identity');
+  requireEvidenceRoot(repoDir, identity);
+  const paths = releaseState.statePaths(identity, {
+    cacheRoot: path.dirname(repoDir), fs: resolved.local.fs
+  });
+  if (paths.repoDir !== repoDir) throw publicationInvalid('legacy import needs its exact repository cache');
+  requireCurrentIdentity({ repo: identity }, resolved.local);
+  const head = resolved.local.readGit(identity.root, ['rev-parse', 'HEAD']);
+  publication.readPublishedSourceVersion(
+    { repoRoot: identity.root, sourceSha: head, version }, resolved.local
+  );
+  const packageFile = path.join(identity.root, 'package.json');
+  const stat = resolved.local.fs.lstatSync(packageFile);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MANIFEST_MAX_BYTES) {
+    throw publicationInvalid('legacy import needs an ordinary bounded working package.json');
+  }
+  const bytes = resolved.local.fs.readFileSync(packageFile);
+  if (bytes.length > MANIFEST_MAX_BYTES) throw publicationInvalid('legacy working package.json exceeds the read bound');
+  let value;
+  try {
+    value = JSON.parse(bytes.toString('utf8'));
+  } catch (error) {
+    throw publicationCause('legacy working package.json is invalid JSON', error);
+  }
+  if (!isPlainRecord(value) || value.version !== version) {
+    throw publicationInvalid('legacy working and committed package versions must agree');
+  }
+}
+
+async function visitLegacyRuns({ identity, workflowId, github, end }, visit) {
+  const repo = identity.remoteRepo.slice(REMOTE_PREFIX.length);
+  let total = null;
+  const ids = new Set();
+  for (let page = 1; page <= 100; page += 1) {
+    const record = await readPolicy.readGithubJson('github.workflow-runs-page', {
+      repo,
+      endpoint: `repos/${repo}/actions/workflows/${workflowId}/runs?event=workflow_dispatch&per_page=100&page=${page}`
+    }, github, { deadline: end });
+    if (!isPlainRecord(record) || !isNonNegativeInteger(record.total_count) || record.total_count > 10000 ||
+        !Array.isArray(record.workflow_runs) || record.workflow_runs.length > 100) {
+      throw publicationInvalid('legacy workflow page must carry a bounded total and run array');
+    }
+    if (total === null) total = record.total_count;
+    else if (record.total_count !== total) throw publicationInvalid('legacy workflow page totals changed');
+    for (const run of record.workflow_runs) {
+      if (!isPlainRecord(run)) throw publicationInvalid('legacy workflow row must be a record');
+      workflowIdentity.requireWorkflowRunFacts({
+        remoteRepo: identity.remoteRepo, workflowId, sourceSha: run.head_sha,
+        runId: run.id, runAttempt: run.run_attempt, run
+      });
+      if (ids.has(run.id)) throw publicationInvalid('legacy workflow pages repeat a run id');
+      ids.add(run.id);
+      visit(run);
+    }
+    if (ids.size > total) throw publicationInvalid('legacy workflow pages exceed their declared count');
+    if (ids.size === total) return;
+    if (record.workflow_runs.length < 100) {
+      throw publicationInvalid('legacy workflow pages ended before their declared count');
+    }
+  }
+  throw legacyUnresolved('Legacy workflow discovery exceeded its bounded page count');
+}
+
+async function collectLegacyRuns({ identity, workflowId, sourceSha, github, end }) {
+  const candidates = [];
+  await visitLegacyRuns({ identity, workflowId, github, end }, run => {
+    if (run.head_sha !== sourceSha) return;
+    if (carriesNewFormatAttemptToken(run.display_title)) {
+      throw legacyUnresolved('A same-source workflow carries modern attempt identity; legacy import refuses it');
+    }
+    if (run.status !== 'completed') throw legacyUnresolved('A same-source workflow is not complete');
+    if (run.conclusion === 'success') candidates.push(run);
+  });
+  return candidates;
+}
+
+function legacyAttempt({ version, sourceSha, workflowId, run, uploadJob, at }) {
+  return {
+    id: `legacy:${run.id}:${run.run_attempt}`,
+    identityKind: 'legacy-upload-proof',
+    version, mode: 'publish', sourceSha,
+    dispatchRef: null,
+    workflowPath: '.github/workflows/release.yml', workflowId,
+    expectedTitle: null, dispatch: 'identified',
+    requestedAt: null, watchDeadlineAt: null,
+    runId: run.id, runAttempt: run.run_attempt,
+    runStatus: 'completed', conclusion: 'success',
+    lastObservedAt: at, error: null,
+    legacyProof: {
+      uploadJobId: uploadJob.id,
+      uploadJobConclusion: 'success',
+      observedHeadSha: sourceSha,
+      observedMode: 'publish'
+    }
+  };
+}
+
+async function discoverLegacyPublication(input, deps, options) {
+  if (!isPlainRecord(input)) throw publicationInvalid('legacy discovery needs explicit input');
+  const { identity, workflowId, version, repoDir } = input;
+  if (!Number.isSafeInteger(workflowId) || workflowId <= 0) {
+    throw publicationInvalid('legacy discovery needs a positive workflow id');
+  }
+  const resolved = resolveDeps(deps);
+  const end = freezeDeadline(options, resolved.now);
+  requireLegacyContext({ identity, repoDir, version }, resolved);
+  const evidence = await readPolicy.readReleaseInfoEvidence(resolved.manifest, { deadline: end });
+  if (!isPlainRecord(evidence) || !Buffer.isBuffer(evidence.bytes) || evidence.bytes.length > MANIFEST_MAX_BYTES) {
+    throw publicationInvalid('legacy manifest must carry bounded exact bytes');
+  }
+  const manifestBytes = Buffer.from(evidence.bytes);
+  let parsed;
+  try {
+    parsed = JSON.parse(manifestBytes.toString('utf8'));
+  } catch (error) {
+    throw publicationCause('legacy manifest bytes are invalid JSON', error);
+  }
+  const sourceSha = isPlainRecord(parsed) ? parsed.commit : null;
+  const manifest = publication.validateReleaseManifest(parsed, { version, sourceSha });
+  const expectedLength = identity.objectFormat === 'sha256' ? 64 : 40;
+  if (sourceSha.length !== expectedLength) throw publicationInvalid('legacy manifest source has the wrong object format');
+  publication.readPublishedSourceVersion({ repoRoot: identity.root, sourceSha, version }, resolved.local);
+  const candidates = await collectLegacyRuns({ identity, workflowId, sourceSha, github: resolved.github, end });
+  const qualifying = [];
+  const repo = identity.remoteRepo.slice(REMOTE_PREFIX.length);
+  for (const listed of candidates) {
+    const run = await readPolicy.readGithubJson('github.run', {
+      repo, endpoint: `repos/${repo}/actions/runs/${listed.id}`
+    }, resolved.github, { deadline: end });
+    const request = { runId: listed.id, runAttempt: listed.run_attempt, sourceSha };
+    requireRun({
+      attempt: { ...request, workflowId, identityKind: 'legacy-upload-proof' },
+      remoteRepo: identity.remoteRepo, run
+    });
+    const pages = await collectJobPages({ repo, attempt: request, github: resolved.github, end });
+    const uploadJob = publication.selectLegacyUploadJob(pages, request);
+    if (uploadJob !== null) qualifying.push({ run, uploadJob });
+  }
+  if (qualifying.length !== 1) {
+    throw legacyUnresolved(`Legacy publication needs exactly one proven upload; observed ${qualifying.length}`);
+  }
+  const selected = qualifying[0];
+  const attempt = legacyAttempt({
+    version, sourceSha, workflowId, ...selected,
+    at: new Date(resolved.wallNow()).toISOString()
+  });
+  requireLegacyContext({ identity, repoDir, version }, resolved);
+  return { attempt, manifestBytes, manifest };
+}
+
+async function reconcileLegacyRelease(input, deps, options) {
+  if (!isPlainRecord(input)) throw publicationInvalid('legacy import needs explicit input');
+  const { identity, repoDir, currentVersion } = input;
+  const resolved = resolveDeps(deps);
+  const end = freezeDeadline(options, resolved.now);
+  requireLegacyContext({ identity, repoDir, version: currentVersion }, resolved);
+  const cacheRoot = path.dirname(repoDir);
+  const storeOptions = { cacheRoot, mode: 'publish', fs: resolved.local.fs };
+  if (releaseStateStore.readReleaseState(identity, storeOptions) !== null) {
+    throw publicationInvalid('legacy import requires an absent publish lane');
+  }
+  const uuid = deps && deps.randomUUID !== undefined ? deps.randomUUID : crypto.randomUUID;
+  if (typeof uuid !== 'function') throw publicationInvalid('legacy import randomUUID must be a function');
+  const repo = identity.remoteRepo.slice(REMOTE_PREFIX.length);
+  const definition = await readPolicy.readGithubJson('github.workflow-definition', {
+    repo, endpoint: `repos/${repo}/actions/workflows/release.yml`
+  }, resolved.github, { deadline: end });
+  if (!isPlainRecord(definition) || !Number.isSafeInteger(definition.id) || definition.id <= 0 ||
+      definition.path !== '.github/workflows/release.yml') {
+    throw publicationInvalid('legacy workflow definition must identify the exact release workflow');
+  }
+  let discovered;
+  try {
+    discovered = await discoverLegacyPublication({
+      identity, repoDir, workflowId: definition.id, version: currentVersion
+    }, deps, { deadline: end });
+  } catch (error) {
+    if (error && error.code === 'LEGACY_PUBLICATION_UNRESOLVED') {
+      return { state: null, outcome: 'unresolved', error };
+    }
+    throw error;
+  }
+  const state = JSON.parse(JSON.stringify(transitions.createLegacyPublicationState({
+    releaseId: uuid(), version: currentVersion,
+    sourceSha: discovered.manifest.commit,
+    at: new Date(resolved.wallNow()).toISOString(),
+    attempt: discovered.attempt
+  }, identity, { repoDir })));
+  const observation = await observePublication({ state, repoDir }, deps, { deadline: end });
+  if (!observation.manifestBytes.equals(discovered.manifestBytes)) {
+    throw publicationInvalid('legacy manifest bytes changed during discovery and confirmation');
+  }
+  requireLegacyContext({ identity, repoDir, version: currentVersion }, resolved);
+  if (releaseStateStore.readReleaseState(identity, storeOptions) !== null) {
+    throw publicationInvalid('legacy publish lane appeared before initialization');
+  }
+  releaseStateStore.writeReleaseState(state, identity, {
+    cacheRoot, expectedRevision: null, fs: resolved.local.fs
+  });
+  const stored = releaseStateStore.readReleaseState(identity, storeOptions);
+  if (stored === null || !isDeepStrictEqual(stored, JSON.parse(JSON.stringify(state)))) {
+    throw publicationInvalid('legacy initial state was not acknowledged exactly');
+  }
+  const persisted = persistPublication({ state: stored, repoDir, observation }, deps);
+  const complete = releaseStateStore.readReleaseState(identity, storeOptions);
+  if (complete === null || !isDeepStrictEqual(complete, JSON.parse(JSON.stringify(persisted))) ||
+      complete.releaseId !== stored.releaseId || complete.revision !== stored.revision + 1 ||
+      complete.phase !== 'tail' || complete.sourceSha !== stored.sourceSha ||
+      complete.activeAttemptId !== stored.activeAttemptId || complete.version !== stored.version ||
+      !isDeepStrictEqual(complete.attempts, stored.attempts)) {
+    throw publicationInvalid('legacy publication state was not acknowledged');
+  }
+  publication.readPublicationEvidence({ state: complete, repoDir }, resolved.local);
+  return { state: complete, outcome: 'imported-publish', error: null };
+}
+
+function failedUnresolved(message) {
+  return Object.assign(new Error(message), { code: 'LEGACY_FAILURE_UNRESOLVED' });
+}
+
+function failedSaved(state, repoDir, io) {
+  if (!isPlainRecord(state) || !isPlainRecord(state.repo)) {
+    throw publicationInvalid('failure observation needs a release state');
+  }
+  requireEvidenceRoot(repoDir, state.repo);
+  if (releaseState.statePaths(state.repo, { cacheRoot: path.dirname(repoDir), fs: io }).repoDir !== repoDir) {
+    throw publicationInvalid('failure observation needs the exact repository cache');
+  }
+  releaseState.validateReleaseState(state, state.repo, { repoDir });
+  const saved = releaseStateStore.readReleaseState(state.repo, {
+    cacheRoot: path.dirname(repoDir), mode: 'publish', fs: io
+  });
+  if (saved === null || !isDeepStrictEqual(saved, JSON.parse(JSON.stringify(state)))) {
+    throw publicationInvalid('failed release is not the current durable publish lane');
+  }
+  return saved;
+}
+
+function legacyFailureSource(identity, version, local) {
+  const ref = `refs/tags/v${version}`;
+  const rows = local.run('git', ['for-each-ref', '--count=2',
+    '--format=%(objectname)%09%(objecttype)%09%(*objectname)%09%(*objecttype)%09%(refname)', ref], { cwd: identity.root }).trimEnd().split('\n');
+  const fields = rows.length === 1 ? rows[0].split('\t') : [];
+  const oid = new RegExp(`^[0-9a-f]{${identity.objectFormat === 'sha256' ? 64 : 40}}$`);
+  if (fields.length !== 5 || !oid.test(fields[0]) || fields[1] !== 'tag' || fields[4] !== ref) {
+    throw failedUnresolved('The original ordinary annotated version tag is unavailable');
+  }
+  const raw = local.run('git', ['cat-file', 'tag', fields[0]], {
+    cwd: identity.root, maxBuffer: PROOF_MAX_BYTES
+  });
+  const lines = raw.split('\n');
+  const sourceSha = lines[0].startsWith('object ') ? lines[0].slice(7) : '';
+  if (!oid.test(sourceSha) || lines[1] !== 'type commit') {
+    throw failedUnresolved('The original version tag must directly target a commit');
+  }
+  publication.readPublishedSourceVersion({ repoRoot: identity.root, sourceSha, version }, local);
+  return sourceSha;
+}
+
+function requireFailedRun(state, attempt, run) {
+  const observation = attempt.identityKind === 'legacy-failed-run'
+    ? workflowIdentity.requireWorkflowRunFacts({ remoteRepo: state.repo.remoteRepo,
+      workflowId: attempt.workflowId, sourceSha: attempt.sourceSha,
+      runId: attempt.runId, runAttempt: attempt.runAttempt, run })
+    : workflowIdentity.requireWorkflowRun({ attempt, remoteRepo: state.repo.remoteRepo, run });
+  if (observation.runStatus !== 'completed' || observation.conclusion === 'success' ||
+      observation.conclusion !== attempt.conclusion) {
+    throw failedUnresolved('The recorded historical failure is not confirmed');
+  }
+  if (attempt.identityKind === 'legacy-failed-run' && carriesNewFormatAttemptToken(run.display_title)) {
+    throw failedUnresolved('A modern attempt cannot be imported as legacy failure');
+  }
+  return observation;
+}
+
+function retainFailure(state, attempt, run, repoDir, resolved) {
+  const io = resolved.local.fs;
+  const layout = requireEvidenceDirectories(io, repoDir, state, attempt);
+  const file = path.join(layout.attemptDir, 'failure.json');
+  const validate = bytes => {
+    let proof;
+    try { proof = JSON.parse(bytes.toString('utf8')); }
+    catch (cause) { throw publicationCause('retained failure is invalid JSON', cause); }
+    const keys = ['schema', 'releaseId', 'attemptId', 'version', 'sourceSha', 'observedAt', 'run', 'runSha256'];
+    if (!isPlainRecord(proof) || Object.keys(proof).length !== keys.length ||
+        keys.some(key => !Object.prototype.hasOwnProperty.call(proof, key)) ||
+        proof.schema !== 1 || proof.releaseId !== state.releaseId || proof.attemptId !== attempt.id ||
+        proof.version !== state.version || proof.sourceSha !== attempt.sourceSha ||
+        typeof proof.observedAt !== 'string' || !Number.isFinite(Date.parse(proof.observedAt)) ||
+        new Date(proof.observedAt).toISOString() !== proof.observedAt ||
+        !isPlainRecord(proof.run) || !isPlainRecord(proof.run.repository) ||
+        !isDeepStrictEqual(proof.run, projectRun(proof.run)) ||
+        proof.runSha256 !== digestOf(Buffer.from(JSON.stringify(proof.run)))) {
+      throw publicationInvalid('retained failure has invalid bindings');
+    }
+    requireFailedRun(state, attempt, proof.run);
+    return proof;
+  };
+  if (lstatEvidenceLeaf(io, file, PROOF_MAX_BYTES, 'retained failure') === null) {
+    const projection = projectRun(run);
+    const proof = { schema: 1, releaseId: state.releaseId, attemptId: attempt.id,
+      version: state.version, sourceSha: attempt.sourceSha,
+      observedAt: new Date(resolved.wallNow()).toISOString(), run: projection,
+      runSha256: digestOf(Buffer.from(JSON.stringify(projection))) };
+    const bytes = serializeProof(proof);
+    validate(bytes);
+    publishEvidenceFile(io, file, bytes, 'retained failure');
+  }
+  validate(readEvidenceLeaf(io, file, PROOF_MAX_BYTES, 'retained failure'));
+  flushRetainedLeaf(io, file, 'retained failure');
+  fsyncEvidenceDirectory(io, layout.attemptDir);
+}
+
+async function reconcileLegacyFailure(input, deps, options) {
+  if (!isPlainRecord(input)) throw publicationInvalid('legacy failure needs explicit input');
+  const { identity, repoDir, currentVersion, repairedSourceSha } = input;
+  const resolved = resolveDeps(deps);
+  const end = freezeDeadline(options, resolved.now);
+  requireLegacyContext({ identity, repoDir, version: currentVersion }, resolved);
+  const cacheRoot = path.dirname(repoDir);
+  if (releaseStateStore.readReleaseState(identity, { cacheRoot, mode: 'publish', fs: resolved.local.fs }) !== null) {
+    throw publicationInvalid('legacy failure import requires an absent publish lane');
+  }
+  const oid = new RegExp(`^[0-9a-f]{${identity.objectFormat === 'sha256' ? 64 : 40}}$`);
+  if (typeof repairedSourceSha !== 'string' || !oid.test(repairedSourceSha)) throw publicationInvalid('repair source must have the repository object format');
+  const sourceSha = legacyFailureSource(identity, currentVersion, resolved.local);
+  if (sourceSha === repairedSourceSha) throw failedUnresolved('Repair requires a different committed source');
+  const repo = identity.remoteRepo.slice(REMOTE_PREFIX.length);
+  const definition = await readPolicy.readGithubJson('github.workflow-definition', {
+    repo, endpoint: `repos/${repo}/actions/workflows/release.yml`
+  }, resolved.github, { deadline: end });
+  if (!isPlainRecord(definition) || !Number.isSafeInteger(definition.id) || definition.id <= 0 ||
+      definition.path !== '.github/workflows/release.yml') throw publicationInvalid('Invalid legacy workflow identity');
+  const candidates = [];
+  await visitLegacyRuns({ identity, workflowId: definition.id, github: resolved.github, end }, run => {
+    if (run.head_sha !== sourceSha) return;
+    if (carriesNewFormatAttemptToken(run.display_title)) throw failedUnresolved('Same-source modern attempt exists');
+    candidates.push(run);
+  });
+  if (candidates.length !== 1 || candidates[0].status !== 'completed' || candidates[0].conclusion === 'success') {
+    throw failedUnresolved('Legacy failure needs exactly one independently bound completed nonsuccess run');
+  }
+  const listed = candidates[0];
+  const run = await readPolicy.readGithubJson('github.run', {
+    repo, endpoint: `repos/${repo}/actions/runs/${listed.id}`
+  }, resolved.github, { deadline: end });
+  const at = new Date(resolved.wallNow()).toISOString();
+  const attempt = { id: `legacy-failed:${listed.id}:${listed.run_attempt}`, identityKind: 'legacy-failed-run',
+    version: currentVersion, mode: 'publish', sourceSha, dispatchRef: null,
+    workflowPath: '.github/workflows/release.yml', workflowId: definition.id, expectedTitle: null,
+    dispatch: 'identified', requestedAt: null, watchDeadlineAt: null,
+    runId: listed.id, runAttempt: listed.run_attempt, runStatus: 'completed', conclusion: listed.conclusion,
+    lastObservedAt: at, error: null,
+    legacyFailureProof: { observedHeadSha: sourceSha, observedConclusion: listed.conclusion } };
+  const uuid = deps && deps.randomUUID !== undefined ? deps.randomUUID : crypto.randomUUID;
+  if (typeof uuid !== 'function') throw publicationInvalid('randomUUID must be callable');
+  const value = JSON.parse(JSON.stringify(transitions.createLegacyFailedState({
+    releaseId: uuid(), version: currentVersion, sourceSha, at, attempt
+  }, identity, { repoDir })));
+  requireFailedRun(value, attempt, run);
+  requireLegacyContext({ identity, repoDir, version: currentVersion }, resolved);
+  if (releaseStateStore.readReleaseState(identity, { cacheRoot, mode: 'publish', fs: resolved.local.fs }) !== null) {
+    throw publicationInvalid('legacy publish lane appeared before failure initialization');
+  }
+  releaseStateStore.writeReleaseState(value, identity, { cacheRoot, expectedRevision: null, fs: resolved.local.fs });
+  const state = failedSaved(value, repoDir, resolved.local.fs);
+  retainFailure(state, attempt, run, repoDir, resolved);
+  return { state, outcome: 'imported-failure', error: null };
+}
+
+async function reobserveFailedRelease(input, deps, options) {
+  if (!isPlainRecord(input)) throw publicationInvalid('failure observation needs explicit input');
+  const resolved = resolveDeps(deps);
+  const end = freezeDeadline(options, resolved.now);
+  const state = failedSaved(input.state, input.repoDir, resolved.local.fs);
+  const attempt = state.attempts.find(value => value.id === state.activeAttemptId);
+  if (state.phase !== 'failed-ci' || !attempt ||
+      !['dispatch', 'legacy-failed-run'].includes(attempt.identityKind)) {
+    throw publicationInvalid('Failure observation requires the bound failed attempt');
+  }
+  requireCurrentIdentity(state, resolved.local);
+  publication.readPublishedSourceVersion({ repoRoot: state.repo.root,
+    sourceSha: attempt.sourceSha, version: state.version }, resolved.local);
+  const repo = state.repo.remoteRepo.slice(REMOTE_PREFIX.length);
+  const run = await readPolicy.readGithubJson('github.run', {
+    repo, endpoint: `repos/${repo}/actions/runs/${attempt.runId}`
+  }, resolved.github, { deadline: end });
+  requireFailedRun(state, attempt, run);
+  requireCurrentIdentity(state, resolved.local);
+  if (attempt.identityKind === 'legacy-failed-run') retainFailure(state, attempt, run, input.repoDir, resolved);
+  return { state, run };
+}
+
+module.exports = { discoverLegacyPublication, reconcileLegacyRelease, reconcileLegacyFailure, reobserveFailedRelease, observePublication, persistPublication, verifyCurrentPublication };

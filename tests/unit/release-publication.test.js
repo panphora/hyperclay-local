@@ -13,6 +13,7 @@ const {
   validatePublicationProof,
   validateLegacyPublicationProof,
   selectUploadJob,
+  selectLegacyUploadJob,
   readPublishedSourceVersion,
   readPublicationPair,
   readPublicationEvidence
@@ -554,7 +555,7 @@ describe('validateReleaseManifest purity', () => {
     for (const name of FORBIDDEN_MODULES) expect(loaded).not.toContain(name);
     expect(Object.keys(require('../../scripts/release-publication'))).toEqual([
       'validateReleaseManifest', 'validatePublicationProof', 'validateLegacyPublicationProof', 'selectUploadJob',
-      'readPublishedSourceVersion', 'readPublicationPair', 'readPublicationEvidence'
+      'selectLegacyUploadJob', 'readPublishedSourceVersion', 'readPublicationPair', 'readPublicationEvidence'
     ]);
   });
 
@@ -1146,6 +1147,125 @@ describe('publication proof response page identity', () => {
     expect(CONTROLS.length).toBeGreaterThan(0);
   });
 });
+
+describe('legacy upload discovery selection', () => {
+  const SUCCESS_UPLOAD = { id: UPLOAD_JOB_ID, name: 'upload', status: 'completed', conclusion: 'success' };
+
+  function page(jobs, patch = {}) {
+    return Object.assign({ total_count: jobs.length, jobs }, patch);
+  }
+
+  test('real nonzero pages select the completed successful upload for both selectors', () => {
+    const pages = [
+      page([jobRow({ id: BUILD_JOB_ID, name: 'build' })], { total_count: 2 }),
+      page([jobRow({ id: UPLOAD_JOB_ID, name: 'upload' })], { total_count: 2 })
+    ];
+    expect(pages[0].total_count).toBeGreaterThan(0);
+    expect(pages.reduce((count, item) => count + item.jobs.length, 0)).toBe(pages[0].total_count);
+
+    const legacy = selectLegacyUploadJob(pages, UPLOAD_REQUEST);
+    expect(legacy).toEqual(SUCCESS_UPLOAD);
+    expect(Object.keys(legacy)).toEqual(['id', 'name', 'status', 'conclusion']);
+    expect(selectUploadJob(pages, UPLOAD_REQUEST)).toEqual(SUCCESS_UPLOAD);
+  });
+
+  test('a fresh selection never aliases or mutates the supplied pages', () => {
+    const pages = deepFreeze([page([jobRow({ id: UPLOAD_JOB_ID, name: 'upload', extra: { provider: true } })])]);
+    const before = JSON.stringify(pages);
+    const selected = selectLegacyUploadJob(pages, UPLOAD_REQUEST);
+    expect(selected).not.toBe(pages[0].jobs[0]);
+    expect(JSON.stringify(pages)).toBe(before);
+    expect(selected.extra).toBeUndefined();
+    expect(selected.provider).toBeUndefined();
+  });
+
+  test('a validated zero-upload page set returns null only for the legacy selector', () => {
+    const pages = [page([])];
+    expect(pages[0].total_count).toBe(0);
+    expect(selectLegacyUploadJob(pages, UPLOAD_REQUEST)).toBeNull();
+    proofRefusal(() => selectUploadJob(pages, UPLOAD_REQUEST));
+  });
+
+  test('a validated skipped upload returns null only for the legacy selector', () => {
+    const pages = [page([jobRow({ id: UPLOAD_JOB_ID, name: 'upload', conclusion: 'skipped' })])];
+    expect(selectLegacyUploadJob(pages, UPLOAD_REQUEST)).toBeNull();
+    proofRefusal(() => selectUploadJob(pages, UPLOAD_REQUEST));
+  });
+
+  test('a zero-upload page set that drops a reported row stays fatal', () => {
+    const pages = [page([], { total_count: 1 })];
+    proofRefusal(() => selectLegacyUploadJob(pages, UPLOAD_REQUEST));
+    proofRefusal(() => selectUploadJob(pages, UPLOAD_REQUEST));
+  });
+
+  const LEGACY_UPLOAD_REFUSALS = [
+    ['a successful upload beside a skipped upload', [
+      page([jobRow({ id: UPLOAD_JOB_ID, name: 'upload' }), jobRow({ id: 5002, name: 'upload', conclusion: 'skipped' })])
+    ], UPLOAD_REQUEST],
+    ['a completed failed upload in a successful run', [
+      page([jobRow({ id: UPLOAD_JOB_ID, name: 'upload', conclusion: 'failure' })])
+    ], UPLOAD_REQUEST],
+    ['an in-progress upload in a successful run', [
+      page([jobRow({ id: UPLOAD_JOB_ID, name: 'upload', status: 'in_progress', conclusion: null })])
+    ], UPLOAD_REQUEST],
+    ['a malformed build row beside a valid upload', [
+      page([jobRow({ id: BUILD_JOB_ID, name: 'build', status: 'running' }), jobRow({ id: UPLOAD_JOB_ID, name: 'upload' })])
+    ], UPLOAD_REQUEST],
+    ['a build row without a positive job id beside a valid upload', [
+      page([jobRow({ id: 0, name: 'build' }), jobRow({ id: UPLOAD_JOB_ID, name: 'upload' })])
+    ], UPLOAD_REQUEST],
+    ['a build row without a name beside a valid upload', [
+      page([jobRow({ id: BUILD_JOB_ID, name: '' }), jobRow({ id: UPLOAD_JOB_ID, name: 'upload' })])
+    ], UPLOAD_REQUEST],
+    ['a duplicate job id across pages', [
+      page([jobRow({ id: UPLOAD_JOB_ID, name: 'upload' })], { total_count: 2 }),
+      page([jobRow({ id: UPLOAD_JOB_ID, name: 'build' })], { total_count: 2 })
+    ], UPLOAD_REQUEST],
+    ['pages that disagree on total_count', [
+      page([jobRow({ id: UPLOAD_JOB_ID, name: 'upload' })], { total_count: 2 }),
+      page([jobRow({ id: BUILD_JOB_ID, name: 'build' })], { total_count: 1 })
+    ], UPLOAD_REQUEST],
+    ['a truncated page sequence that drops the upload row', [
+      page([jobRow({ id: BUILD_JOB_ID, name: 'build' })], { total_count: 2 })
+    ], UPLOAD_REQUEST],
+    ['a page whose run id contradicts the requested run', [
+      page([jobRow({ id: UPLOAD_JOB_ID, name: 'upload' })], { run_id: RUN_ID + 1 })
+    ], UPLOAD_REQUEST],
+    ['a page whose run attempt contradicts the requested attempt', [
+      page([jobRow({ id: UPLOAD_JOB_ID, name: 'upload' })], { run_attempt: 2 })
+    ], UPLOAD_REQUEST],
+    ['a page whose head sha contradicts the requested source', [
+      page([jobRow({ id: UPLOAD_JOB_ID, name: 'upload' })], { head_sha: SOURCE_SHA256 })
+    ], UPLOAD_REQUEST],
+    ['a row whose run attempt contradicts the requested attempt', [
+      page([jobRow({ id: UPLOAD_JOB_ID, name: 'upload', run_attempt: 2 })])
+    ], UPLOAD_REQUEST],
+    ['a row whose head sha contradicts the requested source', [
+      page([jobRow({ id: UPLOAD_JOB_ID, name: 'upload', head_sha: SOURCE_SHA256 })])
+    ], UPLOAD_REQUEST],
+    ['a skipped upload beside a malformed build row', [
+      page([jobRow({ id: UPLOAD_JOB_ID, name: 'upload', conclusion: 'skipped' }), jobRow({ id: BUILD_JOB_ID, name: '' })])
+    ], UPLOAD_REQUEST],
+    ['an empty page sequence', [], UPLOAD_REQUEST],
+    ['a page that is not a record', ['page'], UPLOAD_REQUEST],
+    ['a request without a positive run id', [
+      page([jobRow({ id: UPLOAD_JOB_ID, name: 'upload' })])
+    ], Object.assign({}, UPLOAD_REQUEST, { runId: 0 })],
+    ['a request without a full source object id', [
+      page([jobRow({ id: UPLOAD_JOB_ID, name: 'upload' })])
+    ], Object.assign({}, UPLOAD_REQUEST, { sourceSha: 'main' })]
+  ];
+
+  test.each(LEGACY_UPLOAD_REFUSALS)('%s is refused by both selectors', (label, pages, options) => {
+    proofRefusal(() => selectLegacyUploadJob(pages, options));
+    proofRefusal(() => selectUploadJob(pages, options));
+  });
+
+  test('the legacy refusal table is nonzero and covers every required class', () => {
+    expect(LEGACY_UPLOAD_REFUSALS.length).toBeGreaterThan(15);
+  });
+});
+
 
 const UPLOAD_REFUSALS = [
   ['a duplicate upload row beside a successful one', () => selectUploadJob([
