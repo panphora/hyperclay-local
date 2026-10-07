@@ -153,7 +153,7 @@ function git(run, cwd, args, options = {}) {
   return run('git', args, { cwd, ...options });
 }
 
-function treeFiles(root) {
+function treeFiles(root, { recordSymlinks = false } = {}) {
   const files = [];
   const visit = (relDir) => {
     const dir = relDir ? path.join(root, relDir) : root;
@@ -161,7 +161,11 @@ function treeFiles(root) {
       const rel = relDir ? `${relDir}/${name}` : name;
       const abs = path.join(root, rel);
       const stat = fs.lstatSync(abs);
-      if (stat.isSymbolicLink()) throw new Error(`snapshot entry is a symlink: ${rel}`);
+      if (stat.isSymbolicLink()) {
+        if (!recordSymlinks) throw new Error(`snapshot entry is a symlink: ${rel}`);
+        files.push({ path: rel, abs, link: fs.readlinkSync(abs) });
+        continue;
+      }
       if (stat.isDirectory()) {
         if (name !== NODE_MODULES) visit(rel);
         continue;
@@ -174,10 +178,12 @@ function treeFiles(root) {
   return files;
 }
 
-function treeManifest(root) {
+function treeManifest(root, options) {
   const manifest = new Map();
-  for (const entry of treeFiles(root)) {
-    manifest.set(entry.path, { sha256: hashFile(entry.abs), mode: entry.mode });
+  for (const entry of treeFiles(root, options)) {
+    manifest.set(entry.path, entry.link === undefined
+      ? { sha256: hashFile(entry.abs), mode: entry.mode }
+      : { sha256: sha256(`symlink\0${entry.link}`), mode: 'symlink' });
   }
   return manifest;
 }
@@ -236,7 +242,7 @@ function prepareVersion(content, version) {
   return { oldVersion, updated, proseChanges };
 }
 
-function snapshotRepo(run, repo, repoRoot, runRoot) {
+function snapshotRepo(run, repo, repoRoot, runRoot, { recordSymlinks = false } = {}) {
   const branch = git(run, repoRoot, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
   if (branch !== 'main') {
     throw new Error(`${repo} is on branch ${branch}; main is required`);
@@ -261,7 +267,8 @@ function snapshotRepo(run, repo, repoRoot, runRoot) {
   run('tar', ['-xf', archive, '-C', sourceDir], { cwd: repoRoot, stdio: 'inherit' });
   run('tar', ['-xf', archive, '-C', beforeDir], { cwd: repoRoot, stdio: 'inherit' });
 
-  const manifest = treeManifest(sourceDir);
+  const treeOptions = { recordSymlinks };
+  const manifest = treeManifest(sourceDir, treeOptions);
 
   return {
     repo,
@@ -272,6 +279,7 @@ function snapshotRepo(run, repo, repoRoot, runRoot) {
     beforeHead,
     indexFingerprint,
     manifest,
+    treeOptions,
     allowed: [],
     liveState: null,
     prepared: null,
@@ -372,7 +380,7 @@ function runWebsiteGenerators(run, website) {
 function copyCandidate(snapshot) {
   const afterDir = path.join(snapshot.repoDir, 'after');
   fs.mkdirSync(afterDir, { mode: 0o700 });
-  const finalManifest = treeManifest(snapshot.sourceDir);
+  const finalManifest = treeManifest(snapshot.sourceDir, snapshot.treeOptions);
   snapshot.paths = snapshot.allowed.map((rel) => {
     const before = snapshot.manifest.get(rel);
     const after = finalManifest.get(rel);
@@ -436,7 +444,10 @@ function prepareExternalDocs({ version, parentDir, runDir, targets }, { run = de
 
   const runRoot = createRunRoot(runDir, parentRoot, roots);
 
-  const snapshots = roots.map(([repo, repoRoot]) => snapshotRepo(run, repo, repoRoot, runRoot));
+  // No code runs in the hyperclay snapshot, only a rewrite of its one target file, so its tracked
+  // symlinks are recorded by link text and never followed. The website snapshot runs npm and its
+  // generators, where a symlink could reach outside the snapshot, so it still refuses them.
+  const snapshots = roots.map(([repo, repoRoot]) => snapshotRepo(run, repo, repoRoot, runRoot, { recordSymlinks: repo === HYPERCLAY_REPO }));
   const hyperclay = snapshots.find((snapshot) => snapshot.repo === HYPERCLAY_REPO);
   const website = snapshots.find((snapshot) => snapshot.repo === WEBSITE_REPO);
   selectTargets(hyperclay, website);
@@ -449,7 +460,7 @@ function prepareExternalDocs({ version, parentDir, runDir, targets }, { run = de
 
   if (website) {
     run('npm', NPM_INSTALL, { cwd: website.sourceDir, stdio: 'inherit' });
-    const installed = treeManifest(website.sourceDir);
+    const installed = treeManifest(website.sourceDir, website.treeOptions);
     const installChanges = manifestDiff(website.manifest, installed);
     if (installChanges.length > 0) {
       throw new Error(`npm ci modified the ${WEBSITE_REPO} snapshot: ${describeChanges(installChanges)}`);
@@ -457,7 +468,7 @@ function prepareExternalDocs({ version, parentDir, runDir, targets }, { run = de
 
     runWebsiteGenerators(run, website);
   }
-  for (const snapshot of snapshots) snapshot.baselineManifest = treeManifest(snapshot.sourceDir);
+  for (const snapshot of snapshots) snapshot.baselineManifest = treeManifest(snapshot.sourceDir, snapshot.treeOptions);
   if (website) {
     const baselineChanges = manifestDiff(website.manifest, website.baselineManifest);
     if (baselineChanges.length > 0) {
@@ -476,7 +487,7 @@ function prepareExternalDocs({ version, parentDir, runDir, targets }, { run = de
   if (website) runWebsiteGenerators(run, website);
 
   for (const snapshot of snapshots) {
-    const finalManifest = treeManifest(snapshot.sourceDir);
+    const finalManifest = treeManifest(snapshot.sourceDir, snapshot.treeOptions);
     const changes = manifestDiff(snapshot.baselineManifest, finalManifest);
     const allowed = new Set(snapshot.allowed);
     for (const change of changes) {
@@ -550,7 +561,7 @@ function prepareDownloadSizes({ version, parentDir, runDir, publication }, { run
   fs.writeFileSync(path.join(snapshot.sourceDir, 'README.md'), output.readme);
   fs.writeFileSync(path.join(snapshot.sourceDir, 'website/index.html'), output.website);
 
-  const finalManifest = treeManifest(snapshot.sourceDir);
+  const finalManifest = treeManifest(snapshot.sourceDir, snapshot.treeOptions);
   const changes = manifestDiff(snapshot.manifest, finalManifest);
   const allowed = new Set(snapshot.allowed);
   for (const change of changes) {
@@ -621,7 +632,7 @@ function prepareReleaseVersion({ previousVersion, version, parentDir, runDir }, 
   fs.writeFileSync(path.join(snapshot.sourceDir, 'README.md'), output.readme);
   fs.writeFileSync(path.join(snapshot.sourceDir, 'website/index.html'), output.website);
 
-  const finalManifest = treeManifest(snapshot.sourceDir);
+  const finalManifest = treeManifest(snapshot.sourceDir, snapshot.treeOptions);
   const changes = manifestDiff(snapshot.manifest, finalManifest);
   const allowed = new Set(snapshot.allowed);
   for (const change of changes) {

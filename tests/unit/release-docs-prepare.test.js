@@ -779,6 +779,21 @@ describe('prepareExternalDocs', () => {
     expect(fs.lstatSync(path.join(fixture.website, 'vault/DOCS/link.md')).isSymbolicLink()).toBe(true);
   });
 
+  testPosix('records a tracked hyperclay symlink without following it', () => {
+    const fixture = makeFixture();
+    fs.mkdirSync(path.join(fixture.hyperclay, 'public-assets/js/vendor'), { recursive: true });
+    fs.symlinkSync('/etc', path.join(fixture.hyperclay, 'public-assets/js/vendor/outside'));
+    git(fixture.hyperclay, ['add', '-A']);
+    git(fixture.hyperclay, ['commit', '-q', '-m', 'tracked symlink']);
+
+    const { prepared } = invoke(fixture, NEW);
+    expect(prepared.targets.map((target) => target.repo)).toEqual(['hyperclay', 'hyperclay-website']);
+    expect(prepared.targets.map((target) => target.state)).toEqual(['prepared', 'prepared']);
+    expect(prepared.targets[0].paths.map((entry) => entry.path)).toEqual(['server-pages/hyperclay-local.edge']);
+    expectLiveUntouched(fixture);
+    expect(fs.lstatSync(path.join(fixture.hyperclay, 'public-assets/js/vendor/outside')).isSymbolicLink()).toBe(true);
+  });
+
   test('rejects a run dir inside the parent dir or a sibling repo', () => {
     const fixture = makeFixture();
     const run = makeRun({ liveWebsite: fixture.website });
