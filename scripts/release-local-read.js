@@ -125,6 +125,13 @@ function normalizeDiff(argv) {
   return null;
 }
 
+function normalizeSourceTagRead(argv) {
+  if (argv.length !== 4 || argv[1] !== '--count=2'
+      || argv[2] !== '--format=%(objectname)%09%(objecttype)%09%(*objectname)%09%(*objecttype)%09%(refname)') return null;
+  const match = /^refs\/tags\/v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(argv[3]);
+  return match && match.slice(1).every(part => Number(part) <= 65535) ? argv : null;
+}
+
 function validateGitArgs(args, privateIndex) {
   if (!Array.isArray(args) || args.length === 0) return null;
   const argv = args.slice();
@@ -142,7 +149,7 @@ function validateGitArgs(args, privateIndex) {
     case 'ls-tree':
       return normalizeLsTree(argv);
     case 'cat-file':
-      return argv.length === 3 && ['blob', 'commit'].includes(argv[1]) && isOid(argv[2]) ? argv : null;
+      return argv.length === 3 && ['blob', 'commit', 'tag'].includes(argv[1]) && isOid(argv[2]) ? argv : null;
     case 'ls-files':
       return privateIndex && isExact(argv, ['ls-files', '--stage', '-z']) ? argv : null;
     case 'merge-base':
@@ -150,6 +157,8 @@ function validateGitArgs(args, privateIndex) {
         ? argv : null;
     case 'diff':
       return normalizeDiff(argv);
+    case 'for-each-ref':
+      return normalizeSourceTagRead(argv);
     default:
       return null;
   }

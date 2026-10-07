@@ -290,6 +290,81 @@ describe('bounded silent git argv', () => {
   });
 });
 
+describe('source ref read shapes', () => {
+  const format = '--format=%(objectname)%09%(objecttype)%09%(*objectname)%09%(*objecttype)%09%(refname)';
+  const tagRef = 'refs/tags/v1.2.3';
+  const args = ['for-each-ref', '--count=2', format, tagRef];
+
+  test('forwards the exact bounded source tag read with the safe environment', () => {
+    const recorder = recordingSpawn(statusResult(0, ''));
+    const reader = createLocalGitReader({
+      spawnSync: recorder.spawnSync,
+      env: {
+        PATH: '/usr/bin:/bin',
+        HOME: '/scratch/home',
+        GIT_DIR: '/poisoned/git-dir',
+        GIT_CONFIG_GLOBAL: '/poisoned/gitconfig'
+      }
+    });
+    expect(reader.run('git', args, { cwd: OWNER })).toBe('');
+    expect(recorder.calls).toHaveLength(1);
+    expect(recorder.calls[0].file).toBe('git');
+    expect(recorder.calls[0].args).toEqual(GIT_GLOBAL_ARGS.concat(args));
+    expect(recorder.calls[0].options.env).toEqual({
+      PATH: '/usr/bin:/bin',
+      HOME: '/scratch/home',
+      GIT_OPTIONAL_LOCKS: '0',
+      GIT_NO_LAZY_FETCH: '1',
+      GIT_NO_REPLACE_OBJECTS: '1',
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_GLOBAL: '/dev/null'
+    });
+  });
+
+  test.each([
+    ['a malformed count', ['for-each-ref', '--count=1', format, tagRef]],
+    ['a malformed format', ['for-each-ref', '--count=2', '--format=%(objectname)', tagRef]],
+    ['a different namespace', ['for-each-ref', '--count=2', format, 'refs/heads/v1.2.3']],
+    ['a leading zero version', ['for-each-ref', '--count=2', format, 'refs/tags/v01.2.3']],
+    ['an over-limit version component', ['for-each-ref', '--count=2', format, 'refs/tags/v1.65536.3']],
+    ['an extra argument', args.concat('--sort=refname')],
+    ['an object id instead of a tag ref', ['for-each-ref', '--count=2', format, OID_A]],
+    ['a tag body read by mutable ref', ['cat-file', 'tag', tagRef]]
+  ])('refuses %s before spawning', (label, refusedArgs) => {
+    const recorder = recordingSpawn(statusResult(0, ''));
+    const reader = createLocalGitReader({ spawnSync: recorder.spawnSync });
+    expect(failureOf(() => reader.run('git', refusedArgs, { cwd: OWNER })).code).toBe(FAILURE_CODE);
+    expect(failureOf(() => reader.spawn('git', refusedArgs, { cwd: OWNER })).code).toBe(FAILURE_CODE);
+    expect(recorder.calls).toHaveLength(0);
+  });
+
+  test('reads an immutable tag header with the requested small bound', () => {
+    const body = `object ${OID_B}\ntype commit\ntag v1.2.3\n\nfixture\n`;
+    const recorder = recordingSpawn(statusResult(0, body));
+    const reader = createLocalGitReader({ spawnSync: recorder.spawnSync });
+    const args = ['cat-file', 'tag', OID_A];
+    expect(reader.run('git', args, {
+      cwd: OWNER, encoding: 'utf8', maxBuffer: 256 * 1024
+    })).toBe(body);
+    expect(recorder.calls).toHaveLength(1);
+    expect(recorder.calls[0].args).toEqual(GIT_GLOBAL_ARGS.concat(args));
+    expect(recorder.calls[0].options.maxBuffer).toBe(256 * 1024);
+    expect(recorder.calls[0].options.shell).toBe(false);
+    expect(recorder.calls[0].options.stdio).toEqual(['ignore', 'pipe', 'pipe']);
+    expect(recorder.calls[0].options.env.GIT_NO_LAZY_FETCH).toBe('1');
+    expect(recorder.calls[0].options.env.GIT_NO_REPLACE_OBJECTS).toBe('1');
+    for (const refused of [
+      ['cat-file', 'tag', OID_A.slice(0, 8)],
+      ['cat-file', 'tag', `${OID_A}^{}`],
+      ['cat-file', 'tag', OID_A, '--filters'],
+      ['cat-file', '-p', OID_A]
+    ]) {
+      expect(failureOf(() => reader.run('git', refused, { cwd: OWNER })).code).toBe(FAILURE_CODE);
+    }
+    expect(recorder.calls).toHaveLength(1);
+  });
+});
+
 describe('bounded silent child environment', () => {
   const POISON = {
     PATH: '/usr/bin:/bin',
@@ -1147,7 +1222,7 @@ describe('immutable commit headers', () => {
     for (const args of [
       ['cat-file', '-p', OID_A],
       ['cat-file', 'tree', OID_A],
-      ['cat-file', 'tag', OID_A],
+      ['cat-file', 'tag', 'HEAD'],
       ['cat-file', 'commit', 'HEAD'],
       ['cat-file', 'commit', OID_A.slice(0, 8)],
       ['cat-file', 'commit', `${OID_A}~1`],
