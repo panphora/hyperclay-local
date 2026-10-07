@@ -42,6 +42,7 @@ const VAULT_DOCS = 'vault/DOCS';
 const CONTENT_DOCS = 'content/docs';
 const LLMS_TXT = 'public/llms.txt';
 const SIZE_PATHS = ['README.md', 'website/index.html'];
+const VERSION_PATHS = ['README.md', 'package.json', 'website/index.html'];
 
 const APPLICATION_FIELDS = [
   'schema', 'version', 'repo', 'repoRoot', 'preparedFile', 'preparedSha256', 'beforeHead',
@@ -259,6 +260,37 @@ function readDescriptor(preparedFile) {
   return { preparedFile, runDir, sha256: sha256(bytes), prepared };
 }
 
+const DESKTOP_TARGET_FIELDS = [
+  'repo', 'repoRoot', 'beforeHead', 'indexFingerprint',
+  'sourcePath', 'oldVersion', 'paths', 'state'
+];
+
+function desktopVariant(target) {
+  const has = key => Object.prototype.hasOwnProperty.call(target, key);
+  const sizes = has('publication');
+  const version = has('versionPreparation');
+  if (sizes === version) throw new Error('desktop target needs exactly one preparation variant');
+  const variant = sizes ? 'publication' : 'versionPreparation';
+  const fields = DESKTOP_TARGET_FIELDS.concat(variant);
+  const keys = Reflect.ownKeys(target);
+  if (keys.length !== fields.length || fields.some(key => {
+    const property = Object.getOwnPropertyDescriptor(target, key);
+    return property === undefined || !Object.prototype.hasOwnProperty.call(property, 'value');
+  })) throw new Error('desktop target fields do not match its preparation variant');
+  if (sizes) return 'sizes';
+  const value = target.versionPreparation;
+  if (value === null || typeof value !== 'object' || Array.isArray(value) ||
+      Reflect.ownKeys(value).length !== 1 ||
+      !Object.prototype.hasOwnProperty.call(value, 'previousVersion') ||
+      !Object.prototype.hasOwnProperty.call(Object.getOwnPropertyDescriptor(value, 'previousVersion'), 'value')) {
+    throw new Error('versionPreparation must contain exactly previousVersion');
+  }
+  if (value.previousVersion !== target.oldVersion) {
+    throw new Error('versionPreparation previousVersion must match oldVersion');
+  }
+  return 'version';
+}
+
 function selectTarget(prepared, repo, version) {
   if (prepared.schema !== SCHEMA) throw new Error(`prepared schema must be ${SCHEMA}`);
   if (prepared.version !== version) {
@@ -278,12 +310,13 @@ function selectTarget(prepared, repo, version) {
   }
   if (new Set(names).size !== names.length) throw new Error('prepared targets must be unique');
   if (names.includes(DESKTOP_REPO) && (names.length !== 1 || repo !== DESKTOP_REPO)) {
-    throw new Error('a desktop size descriptor must contain only the hyperclay-local target');
+    throw new Error('a desktop descriptor must contain only the hyperclay-local target');
   }
   const matches = prepared.targets.filter((target) => target.repo === repo);
   if (matches.length !== 1) throw new Error(`prepared targets must hold exactly one ${repo} target`);
   const target = matches[0];
   if (target.state !== 'prepared') throw new Error(`${repo} prepared target state must be prepared`);
+  if (repo === DESKTOP_REPO) desktopVariant(target);
   return target;
 }
 
@@ -377,8 +410,10 @@ function expectedPathSet(target, repo, run, repoRoot) {
     return { required: [HYPERCLAY_EDGE] };
   }
   if (repo === DESKTOP_REPO) {
-    if (target.sourcePath !== 'README.md') throw new Error('hyperclay-local sourcePath must be README.md');
-    return { required: [...SIZE_PATHS] };
+    const variant = desktopVariant(target);
+    const sourcePath = variant === 'sizes' ? 'README.md' : 'package.json';
+    if (target.sourcePath !== sourcePath) throw new Error(`hyperclay-local sourcePath must be ${sourcePath}`);
+    return { required: variant === 'sizes' ? [...SIZE_PATHS] : [...VERSION_PATHS] };
   }
   const name = websiteSourceName(target.sourcePath);
   const candidates = vaultCandidates(run, repoRoot, target.beforeHead, observeEnv());
@@ -449,6 +484,26 @@ function requireSourceAfter(entries, snapshots, target, version) {
     throw new Error(`${target.repo} oldVersion must look like 1.2.3`);
   }
   if (target.repo === DESKTOP_REPO) {
+    if (desktopVariant(target) === 'version') {
+      const byPath = new Map(snapshots.map((snapshot) => [snapshot.entry.path, snapshot]));
+      const packageFile = byPath.get('package.json');
+      const readme = byPath.get('README.md');
+      const website = byPath.get('website/index.html');
+      const { renderReleaseVersion } = require('./release-version-render');
+      const output = renderReleaseVersion({
+        packageJson: packageFile.beforeBytes.toString('utf8'),
+        readme: readme.beforeBytes.toString('utf8'),
+        website: website.beforeBytes.toString('utf8')
+      }, { previousVersion: target.versionPreparation.previousVersion, version });
+      for (const [snapshot, text] of [
+        [packageFile, output.packageJson], [readme, output.readme], [website, output.website]
+      ]) {
+        if (!snapshot.afterBytes.equals(Buffer.from(text, 'utf8'))) {
+          throw new Error('desktop version after bytes do not match renderReleaseVersion');
+        }
+      }
+      return;
+    }
     if (target.oldVersion !== version) throw new Error('desktop size updates must preserve the version');
     const manifest = readSizeManifest(target.publication, { version });
     const byPath = new Map(snapshots.map((snapshot) => [snapshot.entry.path, snapshot]));

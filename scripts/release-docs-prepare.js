@@ -27,6 +27,7 @@ const CONTENT_DOCS = 'content/docs';
 const LLMS_TXT = 'public/llms.txt';
 const DESKTOP_REPO = 'hyperclay-local';
 const SIZE_PATHS = ['README.md', 'website/index.html'];
+const VERSION_PATHS = ['README.md', 'package.json', 'website/index.html'];
 
 const NPM_INSTALL = ['ci', '--ignore-scripts', '--no-audit', '--no-fund', '--include=dev'];
 const WEBSITE_GENERATORS = [['run', 'sync-docs'], ['run', 'build:llms-txt']];
@@ -589,4 +590,70 @@ function prepareDownloadSizes({ version, parentDir, runDir, publication }, { run
   return publishPrepared(runRoot, prepared);
 }
 
-module.exports = { prepareExternalDocs, prepareDownloadSizes, prepareVersion, readSizeManifest };
+function prepareReleaseVersion({ previousVersion, version, parentDir, runDir }, { run = defaultRun } = {}) {
+  requireVersion(version, 'version');
+  if (typeof parentDir !== 'string' || typeof runDir !== 'string') {
+    throw new Error('parentDir and runDir are required');
+  }
+
+  const parentRoot = requireDirectory(parentDir, 'parentDir');
+  const roots = [[DESKTOP_REPO, requireRepoRoot(path.join(parentRoot, DESKTOP_REPO), `${DESKTOP_REPO} repo`)]];
+  const runRoot = createRunRoot(runDir, parentRoot, roots);
+
+  const snapshot = snapshotRepo(run, DESKTOP_REPO, roots[0][1], runRoot);
+  snapshot.allowed = [...VERSION_PATHS];
+  snapshot.sourcePath = VERSION_PATHS[1];
+  for (const rel of snapshot.allowed) {
+    requireRegularFile(path.join(snapshot.beforeDir, rel), `${DESKTOP_REPO} version target ${rel}`);
+  }
+
+  const live = readLiveState(run, snapshot);
+  requireLiveMatchesSnapshot(snapshot, live);
+  snapshot.liveState = live;
+
+  const { renderReleaseVersion } = require('./release-version-render');
+  const output = renderReleaseVersion({
+    packageJson: fs.readFileSync(path.join(snapshot.beforeDir, 'package.json'), 'utf8'),
+    readme: fs.readFileSync(path.join(snapshot.beforeDir, 'README.md'), 'utf8'),
+    website: fs.readFileSync(path.join(snapshot.beforeDir, 'website/index.html'), 'utf8')
+  }, { previousVersion, version });
+  fs.writeFileSync(path.join(snapshot.sourceDir, 'package.json'), output.packageJson);
+  fs.writeFileSync(path.join(snapshot.sourceDir, 'README.md'), output.readme);
+  fs.writeFileSync(path.join(snapshot.sourceDir, 'website/index.html'), output.website);
+
+  const finalManifest = treeManifest(snapshot.sourceDir);
+  const changes = manifestDiff(snapshot.manifest, finalManifest);
+  const allowed = new Set(snapshot.allowed);
+  for (const change of changes) {
+    if (change.status !== 'modified') {
+      throw new Error(`${DESKTOP_REPO} ${change.status} ${change.path} is not permitted`);
+    }
+    if (!allowed.has(change.path)) {
+      throw new Error(`${DESKTOP_REPO} changed ${change.path}, which is outside the release targets`);
+    }
+  }
+  copyCandidate(snapshot);
+
+  requireLiveUnchanged(snapshot, snapshot.liveState, readLiveState(run, snapshot));
+
+  const prepared = {
+    schema: SCHEMA,
+    version,
+    runDir: runRoot,
+    targets: [{
+      repo: DESKTOP_REPO,
+      repoRoot: snapshot.repoRoot,
+      beforeHead: snapshot.beforeHead,
+      indexFingerprint: snapshot.indexFingerprint,
+      sourcePath: snapshot.sourcePath,
+      oldVersion: previousVersion,
+      paths: snapshot.paths,
+      state: 'prepared',
+      versionPreparation: { previousVersion }
+    }]
+  };
+
+  return publishPrepared(runRoot, prepared);
+}
+
+module.exports = { prepareExternalDocs, prepareDownloadSizes, prepareReleaseVersion, prepareVersion, readSizeManifest };

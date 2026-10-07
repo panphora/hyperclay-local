@@ -589,7 +589,7 @@ describePosix('desktop size target', () => {
         descriptor.targets.push(Object.assign({}, target, { repo: 'hyperclay', sourcePath: 'server-pages/hyperclay-local.edge' }));
       }
     });
-    expectPlanRefusal(mixed, /a desktop size descriptor must contain only the hyperclay-local target/);
+    expectPlanRefusal(mixed, /a desktop descriptor must contain only the hyperclay-local target/);
     fs.writeFileSync(descriptorPath(fixture), pristine);
 
     const mixedDocs = planAttempt(fixture, {
@@ -598,7 +598,7 @@ describePosix('desktop size target', () => {
         descriptor.targets.push(Object.assign({}, target, { repo: 'hyperclay', sourcePath: 'server-pages/hyperclay-local.edge' }));
       }
     });
-    expectPlanRefusal(mixedDocs, /a desktop size descriptor must contain only the hyperclay-local target/);
+    expectPlanRefusal(mixedDocs, /a desktop descriptor must contain only the hyperclay-local target/);
     fs.writeFileSync(descriptorPath(fixture), pristine);
 
     const unknown = planAttempt(fixture, {
