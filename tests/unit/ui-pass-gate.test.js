@@ -113,43 +113,109 @@ describe('runUiPass', () => {
 
 describe('release.js wiring', () => {
   const source = fs.readFileSync(RELEASE, 'utf8');
-  const main = source.slice(source.indexOf('async function main()'), source.indexOf('\nmain().catch('));
 
-  test('calls the gate exactly twice inside main', () => {
-    expect(main.split('verifyUiPass();').length - 1).toBe(2);
-  });
+  function sourceBetween(start, end) {
+    const begin = source.indexOf(start);
+    const finish = source.indexOf(end, begin);
+    if (begin < 0 || finish <= begin) throw new Error(`Missing release adapter: ${start}`);
+    return source.slice(begin, finish);
+  }
 
-  test('calls the gate on the resume path, before anything leaves the machine', () => {
-    const resumeStart = main.indexOf('if (RESUME) {');
-    const resumeEnd = main.indexOf('} else {');
-    const call = main.indexOf('verifyUiPass();');
+  function adapter({ skip = false, verdict = { ok: true, summary: '16 passed, 16 total' } } = {}) {
+    const events = [];
+    const ui = jest.fn(() => { events.push('ui'); return verdict; });
+    const runRelease = jest.fn(async () => ({ outcome: 'complete', state: { version: '1.2.3' } }));
+    const context = {
+      path,
+      ROOT_DIR: '/fixture/hyperclay-local',
+      FILES_TO_UPDATE: ['package.json', 'README.md', 'website/index.html'],
+      SKIP_UI_PASS: skip,
+      TRANSCRIPT: '/fixture/release.log',
+      flags: { skipUiPass: skip },
+      colors: { cyan: '', reset: '' },
+      AbortController,
+      process: { chdir: jest.fn(), once: jest.fn(), removeListener: jest.fn() },
+      console: { log: jest.fn() },
+      initLog: jest.fn(),
+      chooseBump: jest.fn(),
+      installLocally: jest.fn(),
+      log: jest.fn(),
+      logSection: jest.fn(),
+      logInfo: jest.fn(),
+      logSuccess: jest.fn(),
+      logWarn: jest.fn(),
+      logError: jest.fn(),
+      writeOutput: jest.fn(),
+      elapsed: () => 'fixture duration',
+      verifyLicenseAblation: jest.fn(() => { events.push('license'); }),
+      execSafe(command) {
+        if (!['git status --porcelain', 'gh auth status'].includes(command)) {
+          throw new Error(`Unexpected external command: ${command}`);
+        }
+        events.push(command);
+        return '';
+      },
+      require(request) {
+        if (request === 'dotenv') return { config: () => { events.push('dotenv'); } };
+        if (request === './ui-pass-gate') return { runUiPass: ui };
+        if (request === './release-coordinator') return { runRelease };
+        throw new Error(`Unexpected module: ${request}`);
+      },
+    };
+    require('vm').runInNewContext(
+      sourceBetween('function verifyUiPass() {', 'async function installLocally(') +
+      sourceBetween('async function newBuildGates({ kind }) {', '\nmain().catch('),
+      context,
+      { filename: RELEASE }
+    );
+    return { context, events, ui, runRelease };
+  }
 
-    expect(resumeStart).toBeGreaterThan(-1);
-    expect(resumeEnd).toBeGreaterThan(resumeStart);
-    expect(call).toBeGreaterThan(resumeStart);
-    expect(call).toBeLessThan(resumeEnd);
-  });
-
-  test('calls the gate on the release path, before the version bump commits anything', () => {
-    const auth = main.indexOf("logSuccess('GitHub CLI authenticated')");
-    const step2 = main.indexOf("logSection('Step 2: Version')");
-    const call = main.lastIndexOf('verifyUiPass();');
-
-    expect(auth).toBeGreaterThan(-1);
-    expect(step2).toBeGreaterThan(auth);
-    expect(call).toBeGreaterThan(auth);
-    expect(call).toBeLessThan(step2);
-  });
-
-  test('both calls come before the commit and the dispatch', () => {
-    const step3 = main.indexOf("logSection('Step 3: Update Files')");
-    const dispatch = main.indexOf('await dispatchRelease(');
-
-    expect(step3).toBeGreaterThan(-1);
-    expect(dispatch).toBeGreaterThan(-1);
-    for (const call of [main.indexOf('verifyUiPass();'), main.lastIndexOf('verifyUiPass();')]) {
-      expect(call).toBeLessThan(step3);
-      expect(call).toBeLessThan(dispatch);
+  test.each(['fresh', 'source-recovery', 'repair', 'dispatch'])(
+    'the %s build adapter runs the UI gate once after authentication and license checks',
+    async kind => {
+      const { context, events, ui } = adapter();
+      await context.newBuildGates({ kind });
+      expect(events).toEqual(['dotenv', 'git status --porcelain', 'gh auth status', 'license', 'ui']);
+      expect(ui).toHaveBeenCalledTimes(1);
+      expect(ui).toHaveBeenCalledWith({
+        localDir: '/fixture/hyperclay-local',
+        hyperclayDir: '/fixture/hyperclay',
+      });
     }
+  );
+
+  test('a failed UI verdict rejects the build adapter and preserves its output', async () => {
+    const { context, ui } = adapter({ verdict: {
+      ok: false, reason: 'one UI test failed', output: 'complete fixture suite output\n',
+    } });
+    await expect(context.newBuildGates({ kind: 'fresh' })).rejects.toMatchObject({
+      code: 'RELEASE_UI_FAILED',
+      message: 'The Electron UI suite did not pass: one UI test failed',
+    });
+    expect(ui).toHaveBeenCalledTimes(1);
+    expect(context.writeOutput).toHaveBeenCalledWith(1, 'complete fixture suite output\n');
+  });
+
+  test('an explicit skip warns and does not run the UI suite', async () => {
+    const { context, events, ui } = adapter({ skip: true });
+    await context.newBuildGates({ kind: 'dispatch' });
+    expect(events).toEqual(['dotenv', 'git status --porcelain', 'gh auth status', 'license']);
+    expect(ui).not.toHaveBeenCalled();
+    expect(context.logWarn).toHaveBeenCalledWith('Skipping the Electron UI suite because --skip-ui-pass was passed.');
+    expect(context.logWarn).toHaveBeenCalledWith("Nothing has clicked this build's popover.");
+  });
+
+  test('main supplies its actual build gate to the coordinator', async () => {
+    const { context, runRelease } = adapter();
+    await context.main();
+    expect(runRelease).toHaveBeenCalledTimes(1);
+    const [options, dependencies] = runRelease.mock.calls[0];
+    expect(options).toEqual({ repoRoot: context.ROOT_DIR, flags: context.flags });
+    expect(dependencies.newBuildGates).toBe(context.newBuildGates);
+    expect(dependencies.chooseBump).toBe(context.chooseBump);
+    expect(dependencies.install).toBe(context.installLocally);
+    expect(dependencies.signal.aborted).toBe(false);
+    expect(context.process.removeListener).toHaveBeenCalledTimes(2);
   });
 });

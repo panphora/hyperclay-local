@@ -5,7 +5,7 @@ const path = require('path');
 
 const REPO = path.resolve(__dirname, '..', '..');
 const ENTRY = path.join(REPO, 'scripts', 'release.js');
-const HELPERS = ['release-transcript.js', 'release-command.js'];
+const HELPERS = ['release-transcript.js', 'release-command.js', 'release-options.js'];
 const SENTINEL = '# sentinel release.log written before the transcript existed\nkept byte for byte\n';
 const TMP = os.tmpdir();
 const ownedDirs = new Set();
@@ -130,13 +130,20 @@ describe('release.js entry', () => {
     const run = await runEntry(scratch, ['--version=1.2'], { home });
 
     expect(run.code).toBe(1);
-    expect(run.stderr).toContain('--version needs X.Y.Z');
+    expect(run.stderr).toContain('Version must be X.Y.Z with plain numeric components from 0 through 65535');
 
     const transcripts = transcriptPaths(home);
     expect(transcripts).toHaveLength(1);
     const text = fs.readFileSync(transcripts[0], 'utf8');
-    expect(text).toContain('--version needs X.Y.Z');
-    expect(text).toContain("got '1.2'");
+    expect(text).toContain('Version must be X.Y.Z with plain numeric components from 0 through 65535');
+    const prefix = `Release transcript: ${transcripts[0]}\n`;
+    const suffix = `Release transcript complete: ${transcripts[0]}\n`;
+    expect(run.stderr.startsWith(prefix)).toBe(true);
+    expect(run.stderr.endsWith(suffix)).toBe(true);
+    const childStderr = run.stderr.slice(prefix.length, -suffix.length);
+    expect(childStderr.length).toBeGreaterThan(0);
+    expect(text).toContain(childStderr);
+    expect(text).toContain('Use --help for usage information');
     expect(text).toMatch(/exit code=1/);
 
     expect(fs.readFileSync(path.join(scratch, 'release.log'), 'utf8')).toBe(SENTINEL);
@@ -162,8 +169,8 @@ describe('release.js entry', () => {
 
     expect(run.code).toBe(1);
     const text = fs.readFileSync(capturePath, 'utf8');
-    expect(text).toContain('--version needs X.Y.Z');
-    expect(text).toContain("got '1.2'");
+    expect(text).toContain('Version must be X.Y.Z with plain numeric components from 0 through 65535');
+    expect(text).toContain('Use --help for usage information');
     expect(text).not.toContain('# Hyperclay release transcript');
 
     expect(fs.existsSync(transcriptDir(home))).toBe(false);
