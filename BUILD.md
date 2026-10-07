@@ -1,32 +1,32 @@
 # Building & Releasing HyperclayLocal
 
-## Release (One Command)
+## Release through Hypersave
 
-This is the only command you need to run for a full cross-platform release:
+For the full Hyperclay software train, use the established release entry point:
+
+```bash
+caffeinate -is hypersave --full-dangerous
+```
+
+For the desktop release alone, run this from the repository root:
 
 ```bash
 npm run release
 ```
 
-It handles everything end-to-end:
+The command first finishes any recorded release. It starts a new version only after the previous publication and downstream work are verified. A higher requested version stays deferred when there is unfinished work; invoke the command again after that work completes to start it.
 
-1. Checks for a clean working directory
-2. Prompts for version bump type (patch / minor / major)
-3. Updates version in `package.json`, `README.md`, and `src/main/main.js`
-4. Commits and pushes the version bump
-5. Triggers the Windows build on GitHub Actions (Azure Trusted Signing)
-6. Builds macOS and Linux locally in parallel
-7. Signs macOS builds with Developer ID certificate
-8. Submits to Apple for notarization and polls until accepted
-9. Staples notarization tickets to the macOS DMGs
-10. Moves all executables to `executables/`
-11. Updates README with actual file sizes
-12. Uploads all builds to the R2 CDN
-13. Updates the download page in `hyperclay/server-pages/hyperclay-local.edge`
+For a new release, the command checks the working tree, license and Electron UI gate, chooses a version without prompting, and records the source before dispatching GitHub Actions. Version advice comes from commit messages unless you supply `--major`, `--minor`, `--patch` or `--version=X.Y.Z`. The version update covers `package.json`, `README.md` and `website/index.html`.
 
-The Windows build on GitHub Actions automatically uploads to Cloudflare R2.
+GitHub Actions tests and builds macOS, Windows and Linux, signs and notarizes where required, and uploads the installers. Every job checks out the recorded source commit. The workflow checks that the source, version and attempt ID agree before building.
 
-The sections below document individual build commands for reference, but `npm run release` is the default workflow.
+After publication is proven, the local command finishes download sizes, the desktop website and both documentation targets. Only verified completion is reported as a successful release. Local installation is attempted separately and its failure is recorded without invalidating an otherwise complete publication.
+
+Commits, pushes, tags, workflow dispatches and site deployments wait outside Tuesday through Friday, 09:00 through 18:00 in `America/New_York`. The legacy `--ignore-window` option remains accepted but does not bypass this policy. A dry run still dispatches a workflow and is subject to that policy.
+
+To reserve a version for the next Hypersave release, add `"hyperclay-local": "X.Y.Z"` to `~/.config/hypersave/planned-versions.json`, preserving its other entries. Do not pre-bump `package.json` to reserve a desktop version.
+
+The individual platform commands below are standalone build tools. They do not replace the durable release coordinator or establish that a release is complete.
 
 ---
 
@@ -146,46 +146,55 @@ Output: AppImage in `dist/`
 
 ---
 
-## Release Process
+## Release status and recovery
 
-### 1. Update Version
-
-Update version in these files:
-- `package.json`
-- `README.md` (download links)
-- `src/main/main.js` (lines 21, 417)
-
-### 2. Build All Platforms
+Read local status without loading signing settings, contacting a provider or changing release state:
 
 ```bash
-# macOS (run on Mac)
-npm run mac-build:run
-
-# Linux (run on Mac or Linux)
-npm run linux-build:run
-
-# Windows (triggers GitHub Actions)
-npm run win-build:run
+node scripts/release.js --status-json
 ```
 
-### 3. Windows Installer
+Use `--status-json` alone. It prints one JSON object. A producer read error exits with status 2. A readable response can still describe unfinished or blocked work, so exit 0 alone does not mean the release is complete.
 
-The Windows build automatically uploads to Cloudflare R2 via GitHub Actions.
+Continue the recorded version:
 
 ```bash
-npm run win-build:status  # Check if the build is done
+npm run release -- --resume
 ```
 
-### 4. Upload to CDN
+Observe an existing attempt and finish a proven publication without preparing source or dispatching another build:
 
 ```bash
-npm run upload-to-r2
+npm run release -- --resume --reconcile-only
 ```
 
-### 5. Verify
+This second command may finish website and documentation work. It is not a read-only command. Missing or ambiguous historical evidence remains pending; it does not authorize a fresh release. Neither command needs a new version merely because the previous run stopped after publication.
 
-- Check uploads at `https://local.hyperclay.com/`
-- Update download page at `../hyperclay/server-pages/hyperclay-local.edge`
+If CI is independently confirmed failed, first commit and push the same-version fix. Then select that full source commit explicitly:
+
+```bash
+npm run release -- --resume --resume-source="$(git rev-parse HEAD)"
+```
+
+Repair requires a different source at the same version and the selected source to match remote `main`. It records a new attempt for that release. An unknown workflow outcome is reconciled against its existing attempt identity instead of being dispatched again.
+
+A website deployment whose outcome is unknown needs an explicit retry decision after inspection:
+
+```bash
+npm run release -- --resume --retry-site
+```
+
+This option only applies to the recorded unknown site attempt. It is not a general retry switch. Do not delete the release records or change the version to escape an unresolved outcome.
+
+A build rehearsal uses the current committed version without publishing installers:
+
+```bash
+npm run release -- --dry-run
+```
+
+A dry run can build, sign and notarize on GitHub Actions. Its evidence cannot complete the publication lane.
+
+Standalone command output is captured outside the checkout in a unique directory under `~/.cache/hyperclay-local/releases/`, with a temporary-directory fallback if necessary. The command prints the actual log path. When Hypersave owns capture, its run transcript is used instead. The checkout's old `release.log` is not used. A transcript failure remains visible as a failure.
 
 ---
 
