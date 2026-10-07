@@ -16,6 +16,7 @@ const path = require('path');
 
 const releaseCommand = require('./release-command');
 const { execFileCaptured } = releaseCommand;
+const { runGitRemote, redactRemoteText, remoteFailureMessage } = require('./release-git-remote');
 const { createLocalGitReader } = require('./release-local-read');
 const { withDocsLock } = require('./release-lock');
 const { withFerryRepoLock } = require('./release-ferry');
@@ -38,15 +39,11 @@ const APPLY_NOT_FINISHED = { code: 'APPLY_NOT_FINISHED', message: 'prepared appl
 const REF_NOT_ADVANCED = { code: 'REF_NOT_ADVANCED', message: 'documentation is applied but main has not advanced' };
 const REMOTE_READ_TIMEOUT_MS = 30000;
 const REMOTE_PUSH_TIMEOUT_MS = 120000;
-const REMOTE_OUTPUT_LIMIT = 1024 * 1024;
 const OBSERVATION_COMPLETE = 'complete';
 const OBSERVATION_CONTENT_CONFLICT = 'content-conflict';
 const OBSERVATION_DIVERGED = 'diverged';
 const OBSERVATION_BEHIND = 'behind';
 const OBSERVATION_UNRESOLVED = 'unresolved';
-const DESTINATION_PLACEHOLDER = '<push-destination>';
-const CREDENTIAL_PLACEHOLDER = '<redacted>';
-const USERINFO_PATTERN = /([a-zA-Z][a-zA-Z0-9+.\-]*:\/\/)[^/@\s]*@/g;
 
 const readOnlyPatchSpawn = createLocalGitReader().spawn;
 
@@ -566,6 +563,7 @@ function applyAndAdvance(context, facts) {
   }
   let applyError = null;
   try {
+    git(run, root, env, ['add', '--refresh', '--', ...application.requiredPaths]);
     git(run, root, env, ['apply', '--check', '--index', '-p1', application.patchFile]);
     git(run, root, env, ['apply', '--index', '-p1', application.patchFile]);
   } catch (error) {
@@ -789,65 +787,10 @@ function reconcileTarget(input, deps) {
   return runTargetOperation(input, deps);
 }
 
-function remoteEnv() {
-  return { ...observeEnv(), GIT_TERMINAL_PROMPT: '0' };
-}
-
-function redactRemoteText(destination, value) {
-  const text = value === undefined || value === null
-    ? ''
-    : (Buffer.isBuffer(value) ? value.toString('utf8') : String(value));
-  let redacted = text;
-  if (typeof destination === 'string' && destination.length > 0) {
-    redacted = redacted.split(destination).join(DESTINATION_PLACEHOLDER);
-  }
-  return redacted.replace(USERINFO_PATTERN, `$1${CREDENTIAL_PLACEHOLDER}@`);
-}
-
-function remoteDiagnostic(destination, result) {
-  const outcome = result === undefined || result === null ? {} : result;
-  const failure = outcome.error;
-  return {
-    status: typeof outcome.status === 'number' ? outcome.status : null,
-    signal: typeof outcome.signal === 'string' && outcome.signal.length > 0 ? outcome.signal : null,
-    code: failure && typeof failure.code === 'string' ? failure.code : null,
-    stdout: redactRemoteText(destination, outcome.stdout),
-    stderr: redactRemoteText(destination, outcome.stderr)
-  };
-}
-
-function remoteLabel(destination, args) {
-  return redactRemoteText(destination, `git ${args.join(' ')}`);
-}
-
-function remoteFailureMessage(destination, args, diagnostic) {
-  const details = [];
-  if (diagnostic.status !== null) details.push(`exit ${diagnostic.status}`);
-  if (diagnostic.signal !== null) details.push(`signal ${diagnostic.signal}`);
-  if (diagnostic.code !== null) details.push(`code ${diagnostic.code}`);
-  const suffix = details.length > 0 ? ` (${details.join(', ')})` : '';
-  return `${remoteLabel(destination, args)} failed${suffix}`;
-}
-
 function runRemote(context, destination, args, timeoutMs) {
-  let result;
-  try {
-    result = context.deps.spawnRemote('git', args, {
-      cwd: context.journal.repoRoot,
-      env: remoteEnv(),
-      encoding: 'utf8',
-      shell: false,
-      timeout: timeoutMs,
-      maxBuffer: REMOTE_OUTPUT_LIMIT
-    });
-  } catch (error) {
-    result = { status: null, signal: null, stdout: '', stderr: '', error };
-  }
-  const diagnostic = remoteDiagnostic(destination, result);
-  releaseCommand.writeOutput(1, diagnostic.stdout);
-  releaseCommand.writeOutput(2, diagnostic.stderr);
-  const failed = diagnostic.code !== null || diagnostic.signal !== null || diagnostic.status !== 0;
-  return { failed, diagnostic };
+  return runGitRemote({
+    repoRoot: context.journal.repoRoot, destination, args, timeoutMs
+  }, { spawnRemote: context.deps.spawnRemote });
 }
 
 function parseRemoteListing(stdout, objectFormat) {

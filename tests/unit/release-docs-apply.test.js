@@ -749,6 +749,96 @@ describe('release docs apply', () => {
     expect(journal.state).toBe('conflict');
   });
 
+  testPosix('refreshes restored selected preimage metadata without staging unrelated edits', async () => {
+    const fixture = makeFixture();
+    prepareFixture(fixture, NEW);
+    const repoRoot = fixture.hyperclay;
+    const record = planTarget(fixture, 'hyperclay', NEW);
+    const journalFile = journalFileFor(record);
+    const deps = depsFor({});
+
+    const prepared = await prepareCommitIntent({
+      applicationFile: record.applicationFile,
+      journalFile,
+      message: MESSAGE
+    }, deps);
+    const candidateCommit = prepared.candidateCommit;
+    const requiredPaths = record.requiredPaths.slice();
+    const selected = record.files.find((file) => file.path === EDGE_PATH);
+    const preimage = fs.readFileSync(path.join(repoRoot, EDGE_PATH));
+
+    write(repoRoot, EDGE_PATH, `${preimage.toString('utf8')}editor edit restored below\n`);
+    fs.writeFileSync(path.join(repoRoot, EDGE_PATH), preimage);
+    write(repoRoot, 'README.md', 'unrelated editor README during the refresh\n');
+
+    const past = new Date(Date.now() - 60000);
+    fs.utimesSync(path.join(repoRoot, EDGE_PATH), past, past);
+    const future = new Date(Date.now() + 10000);
+    fs.utimesSync(path.join(repoRoot, '.git', 'index'), future, future);
+
+    const staged = git(repoRoot, ['ls-files', '--stage', '-z', '--', EDGE_PATH]).split('\0').filter(Boolean)[0];
+    expect(staged.split(' ')[1]).toBe(git(repoRoot, ['rev-parse', `${record.beforeHead}:${EDGE_PATH}`]).trim());
+    expect(sha256(git(repoRoot, ['ls-files', '--stage', '-z']))).toBe(record.beforeIndexFingerprint);
+    expect(sha256(fs.readFileSync(path.join(repoRoot, EDGE_PATH)))).toBe(selected.beforeSha256);
+
+    let staleStat = null;
+    try {
+      git(repoRoot, ['apply', '--check', '--index', '-p1', record.patchFile]);
+    } catch (error) {
+      staleStat = error;
+    }
+    expect(staleStat).not.toBeNull();
+    expect(staleStat.stderr).toMatch(/does not match index/);
+
+    const result = await applyPreparedTarget({ journalFile }, deps);
+
+    expect(result.candidateCommit).toBe(candidateCommit);
+    expect(result.commit).toBe(candidateCommit);
+    expect(result.phase).toBe('committed');
+    expect(result.state).toBe('pending-push');
+    expect(result.reason).toBeNull();
+    expect(git(repoRoot, ['rev-parse', `${result.commit}^{tree}`]).trim()).toBe(record.expectedTree);
+    expect(fs.readFileSync(path.join(repoRoot, 'README.md'), 'utf8')).toBe('unrelated editor README during the refresh\n');
+    const changed = git(repoRoot, ['diff', '--name-only', '-z', record.beforeHead, result.commit]).split('\0').filter(Boolean).sort();
+    expect(changed).toEqual(record.paths.slice().sort());
+    const refreshes = deps.run.calls.filter((call) => call[0] === 'git' && call[1] === 'add' && call[2] === '--refresh');
+    expect(refreshes).toEqual([['git', 'add', '--refresh', '--', ...requiredPaths]]);
+  });
+
+  testPosix('keeps editor bytes that race the metadata refresh out of the index', async () => {
+    const fixture = makeFixture();
+    prepareFixture(fixture, NEW);
+    const repoRoot = fixture.hyperclay;
+    const record = planTarget(fixture, 'hyperclay', NEW);
+    const journalFile = journalFileFor(record);
+    const deps = depsFor({});
+    await prepareCommitIntent({ applicationFile: record.applicationFile, journalFile, message: MESSAGE }, deps);
+
+    const original = deps.run;
+    const calls = original.calls;
+    const editorBytes = 'editor bytes racing the metadata refresh\n';
+    const run = (command, args, opts = {}) => {
+      if (command === 'git' && args[0] === 'add' && args[1] === '--refresh') {
+        write(repoRoot, EDGE_PATH, editorBytes);
+      }
+      return original(command, args, opts);
+    };
+    run.calls = calls;
+    deps.run = run;
+
+    const error = await refusal(applyPreparedTarget({ journalFile }, deps));
+
+    expect(error.code).toBe('DOCS_PREIMAGE_CONFLICT');
+    expect(git(repoRoot, ['rev-parse', 'HEAD']).trim()).toBe(record.beforeHead);
+    expect(fs.readFileSync(path.join(repoRoot, EDGE_PATH), 'utf8')).toBe(editorBytes);
+    expect(sha256(git(repoRoot, ['ls-files', '--stage', '-z']))).toBe(record.beforeIndexFingerprint);
+    expect(calls.filter((call) => call[1] === 'update-ref')).toEqual([]);
+    const journal = readJournal(journalFile);
+    expect(journal.phase).toBe('conflict');
+    expect(journal.state).toBe('conflict');
+    expect(journal.commit).toBeNull();
+  });
+
   testPosix('adopts an older unpushed docs boundary under unrelated commits', async () => {
     const fixture = makeFixture({ docsVersion: OLD });
     const repoRoot = fixture.hyperclay;
