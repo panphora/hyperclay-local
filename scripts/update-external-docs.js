@@ -412,13 +412,26 @@ function requireFreshRemoteProof(journal, repo) {
   }
 }
 
-function invocationStartResult(run, prior, version) {
+function requestedTargets(value) {
+  if (value === undefined) return TARGET_REPOS.slice();
+  if (!Array.isArray(value) || value.length === 0
+    || Array.from(value).some(repo => !TARGET_REPOS.includes(repo))
+    || new Set(value).size !== value.length) {
+    throw docsError('DOCS_RUN_INVALID', 'targets must be a nonempty unique subset of the two documentation repositories');
+  }
+  return TARGET_REPOS.filter(repo => value.includes(repo));
+}
+
+function invocationStartResult(run, prior, version, targets) {
   return {
     schema: RESULT_SCHEMA,
     version,
     targets: TARGET_REPOS.map((repo, index) => {
       const entry = emptyTarget(repo);
       const previous = prior === null ? null : prior.targets[index];
+      if (!targets.includes(repo) && previous !== null) {
+        return JSON.parse(JSON.stringify(previous));
+      }
       if (previous === null) {
         entry.reason = NOT_ATTEMPTED;
         return entry;
@@ -576,6 +589,7 @@ async function updateExternalDocs(input, deps) {
   if (typeof version !== 'string' || !VERSION_PATTERN.test(version)) {
     throw docsError('DOCS_RUN_INVALID', `version must look like 1.2.3, received ${JSON.stringify(version)}`);
   }
+  const targets = requestedTargets(provided.targets);
   const parentDir = provided.parentDir === undefined ? PARENT_DIR : provided.parentDir;
 
   const resolved = resolveUpdaterDeps(deps);
@@ -669,7 +683,7 @@ async function updateExternalDocs(input, deps) {
       { version, parentDir: parentRoot, runDir: runRoot, resultFile: resultRoot, owner },
       { fs: io, randomUUID: resolved.randomUUID }
     );
-    const aggregate = invocationStartResult(handle.snapshotRun(), handle.snapshotResult(), version);
+    const aggregate = invocationStartResult(handle.snapshotRun(), handle.snapshotResult(), version, targets);
     handle.writeResult(aggregate);
 
     const context = {
@@ -684,7 +698,9 @@ async function updateExternalDocs(input, deps) {
       pathsFor: (slot) => resolved.runRecord.attemptPaths(runRoot, slot.repo, slot.attemptId)
     };
     for (let index = 0; index < TARGET_REPOS.length; index += 1) {
-      await runTarget(context, TARGET_REPOS[index], index);
+      const repo = TARGET_REPOS[index];
+      if (!targets.includes(repo)) continue;
+      await runTarget(context, repo, index);
     }
     handle.writeResult(aggregate);
     return aggregate;
