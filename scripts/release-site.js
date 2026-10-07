@@ -347,7 +347,7 @@ function publishDescriptor(io, attemptDir, descriptor) {
 function defaultDeploy(deployDir) {
   execFileCaptured('npx', ['wrangler', 'deploy'], {
     cwd: deployDir,
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', 'inherit', 'inherit']
   });
 }
 

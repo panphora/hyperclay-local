@@ -1503,6 +1503,105 @@ function siteActingDeps(fixture, { deploy, guard, now = NOW, fs: io = fs } = {})
   };
 }
 
+async function runDefaultDeployChild(ctx, status) {
+  const root = path.resolve(__dirname, '..', '..');
+  const dir = fs.mkdtempSync(path.join(OWNER, `default-deploy-${++seq}-`));
+  const bin = path.join(dir, 'bin');
+  const resultFile = path.join(dir, 'result.json');
+  const invocationFile = path.join(dir, 'invocation.json');
+  const stdoutFile = path.join(dir, 'stdout.log');
+  const stderrFile = path.join(dir, 'stderr.log');
+  const runner = path.join(dir, 'runner.js');
+  const shim = path.join(bin, 'npx');
+  const outputBytes = (2 * 1024 * 1024) + 137;
+  const stdoutMarker = `STDOUT-END-${status}`;
+  const stderrMarker = `STDERR-END-${status}`;
+
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(shim, [
+    '#!/usr/bin/env node',
+    "const fs = require('fs');",
+    "fs.writeFileSync(process.env.INVOCATION_FILE, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd() }));",
+    "if (process.argv.slice(2).join(' ') !== 'wrangler deploy') process.exit(91);",
+    "if (process.cwd() !== process.env.EXPECTED_DEPLOY_DIR) process.exit(92);",
+    "process.stdout.write('o'.repeat(Number(process.env.OUTPUT_BYTES)));",
+    "process.stdout.write(process.env.STDOUT_MARKER);",
+    "process.stderr.write('e'.repeat(Number(process.env.OUTPUT_BYTES)));",
+    "process.stderr.write(process.env.STDERR_MARKER);",
+    'process.exitCode = Number(process.env.SHIM_STATUS);',
+    ''
+  ].join('\n'), { mode: 0o755 });
+  fs.writeFileSync(runner, [
+    "const fs = require('fs');",
+    "const { runSiteAttempt } = require(process.env.RELEASE_SITE);",
+    "const { createLocalGitReader } = require(process.env.RELEASE_LOCAL_READ);",
+    'const input = JSON.parse(process.env.SITE_INPUT);',
+    'const reader = createLocalGitReader();',
+    'try {',
+    '  const state = runSiteAttempt(input, {',
+    '    run: reader.run,',
+    '    spawn: reader.spawn,',
+    '    fs,',
+    '    now: () => process.env.NOW,',
+    '    assertPublishWindow: () => {}',
+    '  });',
+    "  fs.writeFileSync(process.env.RESULT_FILE, JSON.stringify({ ok: true, state }));",
+    '} catch (error) {',
+    '  const cause = error.cause;',
+    '  fs.writeFileSync(process.env.RESULT_FILE, JSON.stringify({',
+    '    ok: false,',
+    '    error: { code: error.code, message: error.message },',
+    '    cause: cause && { code: cause.code, status: cause.status, signal: cause.signal, message: cause.message }',
+    '  }));',
+    '}',
+    ''
+  ].join('\n'));
+
+  const stdout = fs.createWriteStream(stdoutFile);
+  const stderr = fs.createWriteStream(stderrFile);
+  const child = childProcess.spawn(process.execPath, [runner], {
+    cwd: root,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      ...GIT_ENV,
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      RELEASE_SITE: path.join(root, 'scripts/release-site.js'),
+      RELEASE_LOCAL_READ: path.join(root, 'scripts/release-local-read.js'),
+      SITE_INPUT: JSON.stringify({ state: ctx.prepared, repoDir: ctx.fixture.repoDir }),
+      RESULT_FILE: resultFile,
+      INVOCATION_FILE: invocationFile,
+      EXPECTED_DEPLOY_DIR: deployDirOf(ctx.fixture),
+      OUTPUT_BYTES: String(outputBytes),
+      STDOUT_MARKER: stdoutMarker,
+      STDERR_MARKER: stderrMarker,
+      SHIM_STATUS: String(status),
+      NOW
+    }
+  });
+  child.stdout.pipe(stdout);
+  child.stderr.pipe(stderr);
+  const exitPromise = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+  const finished = (stream) => new Promise((resolve, reject) => {
+    stream.once('finish', resolve);
+    stream.once('error', reject);
+  });
+  const [exit] = await Promise.all([exitPromise, finished(stdout), finished(stderr)]);
+
+  return {
+    exit,
+    outputBytes,
+    stdoutMarker,
+    stderrMarker,
+    stdout: fs.readFileSync(stdoutFile),
+    stderr: fs.readFileSync(stderrFile),
+    result: JSON.parse(fs.readFileSync(resultFile, 'utf8')),
+    invocation: JSON.parse(fs.readFileSync(invocationFile, 'utf8'))
+  };
+}
+
 function receiptPathOf(fixture) {
   return path.join(fixture.repoRoot, '.deploy');
 }
@@ -1534,6 +1633,43 @@ const UNRESOLVED_SITE = {
 };
 
 describe('site acting', () => {
+  testPosix('default deploy inherits complete output larger than the command capture limit and completes', async () => {
+    const ctx = await preparedContext();
+    const observed = await runDefaultDeployChild(ctx, 0);
+
+    expect(observed.exit).toEqual({ code: 0, signal: null });
+    expect(observed.invocation).toEqual({ args: ['wrangler', 'deploy'], cwd: deployDirOf(ctx.fixture) });
+    expect(observed.stdout.length).toBe(observed.outputBytes + Buffer.byteLength(observed.stdoutMarker));
+    expect(observed.stderr.length).toBe(observed.outputBytes + Buffer.byteLength(observed.stderrMarker));
+    expect(observed.stdout.subarray(-Buffer.byteLength(observed.stdoutMarker)).toString()).toBe(observed.stdoutMarker);
+    expect(observed.stderr.subarray(-Buffer.byteLength(observed.stderrMarker)).toString()).toBe(observed.stderrMarker);
+    expect(observed.result.ok).toBe(true);
+    expect(observed.result.state.site.state).toBe('complete');
+    expect(observed.result.state.site.receiptSha).toBe(ctx.state.sizes.commit);
+    expect(fs.readFileSync(receiptPathOf(ctx.fixture), 'utf8')).toBe(`${ctx.state.sizes.commit}\n`);
+  });
+
+  testPosix('default deploy retains complete diagnostic tails and leaves a nonzero command unresolved', async () => {
+    const ctx = await preparedContext();
+    const observed = await runDefaultDeployChild(ctx, 17);
+
+    expect(observed.exit).toEqual({ code: 0, signal: null });
+    expect(observed.invocation).toEqual({ args: ['wrangler', 'deploy'], cwd: deployDirOf(ctx.fixture) });
+    expect(observed.stdout.length).toBe(observed.outputBytes + Buffer.byteLength(observed.stdoutMarker));
+    expect(observed.stderr.length).toBe(observed.outputBytes + Buffer.byteLength(observed.stderrMarker));
+    expect(observed.stdout.subarray(-Buffer.byteLength(observed.stdoutMarker)).toString()).toBe(observed.stdoutMarker);
+    expect(observed.stderr.subarray(-Buffer.byteLength(observed.stderrMarker)).toString()).toBe(observed.stderrMarker);
+    expect(observed.result).toMatchObject({
+      ok: false,
+      error: { code: 'SITE_DEPLOY_UNRESOLVED', message: 'The site deployment outcome is unresolved' },
+      cause: { status: 17 }
+    });
+    expect(fs.existsSync(receiptPathOf(ctx.fixture))).toBe(false);
+    const live = readReleaseState(ctx.fixture.identity, { cacheRoot: ctx.fixture.cacheRoot, fs });
+    expect(live.site.state).toBe('unknown');
+    expect(live.site.error).toEqual(UNRESOLVED_SITE);
+  });
+
   testPosix('deploys once from the recorded snapshot and completes from the captured source receipt', async () => {
     const ctx = await preparedContext();
     const sourceSha = ctx.state.sizes.commit;
