@@ -1,4 +1,5 @@
 name: Release
+run-name: release v${{ inputs.version }} ${{ inputs.dry_run && 'dry-run' || 'publish' }} sha=${{ inputs.source_sha }} attempt=${{ inputs.attempt_id }}
 
 # Builds, signs, notarizes and publishes every platform. Dispatched by
 # `npm run release` after it has bumped the version and pushed the commit.
@@ -19,6 +20,14 @@ on:
         required: false
         default: false
         type: boolean
+      source_sha:
+        description: "Exact recorded release source commit"
+        required: true
+        type: string
+      attempt_id:
+        description: "Recorded durable dispatch attempt UUID"
+        required: true
+        type: string
 
 env:
   # Node 26 since 2026-08-31. This said 24 because `npm ci` on 26 produced a tree
@@ -42,23 +51,38 @@ env:
 
 jobs:
   # ── The dispatch and the commit must agree ──
-  # A dispatch runs against a branch, not a commit, so it can pick up something
-  # newer or older than the release that asked for it. Fails in seconds, before
-  # any runner spends time building the wrong thing.
+  # The workflow ref and pinned checkout must agree with the recorded source.
+  # Fails in seconds, before any runner spends time building the wrong thing.
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: package.json matches the dispatched version
+        with:
+          ref: ${{ inputs.source_sha }}
+      - name: Recorded source and version match the workflow identity
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_ATTEMPT_ID: ${{ inputs.attempt_id }}
         run: |
-          ACTUAL=$(node -p "require('./package.json').version")
-          if [ "$ACTUAL" != "${{ inputs.version }}" ]; then
-            echo "Dispatched ${{ inputs.version }}, but this commit is $ACTUAL."
-            echo "This run is building a different version than the one that asked for it."
-            exit 1
-          fi
-          echo "Releasing $ACTUAL"
+          node <<'NODE'
+          const fs = require('fs');
+          const { execFileSync } = require('child_process');
+          const version = process.env.RELEASE_VERSION;
+          const source = process.env.RELEASE_SOURCE_SHA;
+          const attempt = process.env.RELEASE_ATTEMPT_ID;
+          const versionPattern = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+          const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+          const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          if (!versionPattern.test(version) || version.split('.').some(n => Number(n) > 65535) ||
+              !/^[0-9a-f]{40}$/.test(source) || !uuidPattern.test(attempt) ||
+              head !== source || process.env.GITHUB_SHA !== source || pkg.version !== version) {
+            throw new Error('Workflow ref, checkout, source, version and durable attempt must agree');
+          }
+          console.log(`Releasing ${version} from ${source}, attempt ${attempt}`);
+          NODE
 
   # ── Test gate, one job per shipped platform ──
   # Deliberately three jobs rather than one matrix. Each build below waits only on its
@@ -73,6 +97,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
       - uses: ./.github/actions/install
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -90,6 +116,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
       - uses: ./.github/actions/install
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -113,6 +141,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
       - uses: ./.github/actions/install
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -134,6 +164,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
       - run: python3 scripts/ablation-check.py LICENSE
 
   # ── macOS: build both architectures, sign, notarize, staple ──
@@ -144,6 +176,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
       - uses: ./.github/actions/install
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -228,6 +262,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
       - uses: ./.github/actions/install
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -293,6 +329,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
       - uses: ./.github/actions/install
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -366,6 +404,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
       - uses: ./.github/actions/install
         with:
           node-version: ${{ env.NODE_VERSION }}
