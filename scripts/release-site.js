@@ -1,17 +1,21 @@
 'use strict';
 
-// Acting site preparation. This step materializes the immutable website subtree of
-// the recorded completed size commit into a private retained snapshot, publishes the
-// prepared descriptor last, and checkpoints the public site target as pending. It
-// never invokes a provider, never touches the live checkout and never writes outside
-// the derived release evidence path. The single deployment invocation and its
-// reconciliation are later work that reuses the same read leaf.
+// Acting site work. Preparation materializes the immutable website subtree of the
+// recorded completed size commit into a private retained snapshot, publishes the
+// prepared descriptor last, and checkpoints the public site target as pending. The
+// deployment records the requested descriptor and an unresolved public checkpoint
+// before it makes its one provider invocation from a private deployment copy, and
+// reconciliation recovers local completion from the captured-source receipt without
+// deploying again. The read leaf stays authoritative for every inventory, descriptor
+// and snapshot decision.
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { isDeepStrictEqual } = require('node:util');
 
-const { createLocalGitReader } = require('./release-local-read');
+const { createLocalGitReader, readBoundedOrdinaryFile } = require('./release-local-read');
+const { execFileCaptured } = require('./release-command');
 const { resolveRepoIdentity, statePaths, validateReleaseState } = require('./release-state');
 const { readReleaseState, writeReleaseState, publishDurableFile, fsyncDirectory } = require('./release-state-store');
 const { transitionRelease } = require('./release-transitions');
@@ -34,6 +38,15 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0
 const CONTROL_PATTERN = /[\u0000-\u001f\u007f]/;
 const DIRECTORY_MODE = 0o700;
 const GROUP_OR_OTHER_WRITE = 0o022;
+const DEPLOY_DIR = 'deploy';
+const WRANGLER_DIR = '.wrangler';
+const RECEIPT_NAME = '.deploy';
+const RECEIPT_MAX_BYTES = 128;
+const HEX_PATTERN = /^[0-9a-f]+$/;
+const SITE_DEPLOY_UNRESOLVED = {
+  code: 'SITE_DEPLOY_UNRESOLVED',
+  message: 'The site deployment is unresolved.'
+};
 
 function isPlainRecord(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -331,6 +344,401 @@ function publishDescriptor(io, attemptDir, descriptor) {
   }
 }
 
+function defaultDeploy(deployDir) {
+  execFileCaptured('npx', ['wrangler', 'deploy'], {
+    cwd: deployDir,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+}
+
+function resolveRunDeps(deps) {
+  const provided = deps === undefined || deps === null ? {} : deps;
+  const resolved = resolveDeps(provided);
+  const deploy = provided.deploy === undefined || provided.deploy === null ? defaultDeploy : provided.deploy;
+  const assertPublishWindow = provided.assertPublishWindow;
+  if (typeof deploy !== 'function') throw siteAttemptError('Site deployment must be a function');
+  if (typeof assertPublishWindow !== 'function') {
+    throw siteAttemptError('Site deployment requires a publish window guard');
+  }
+  return { ...resolved, deploy, assertPublishWindow };
+}
+
+function digestOf(bytes) {
+  return crypto.createHash('sha256').update(bytes).digest('hex');
+}
+
+function sameReceipt(left, right) {
+  if (left === null || right === null) return left === right;
+  return left.sha256 === right.sha256 && left.bytes.equals(right.bytes);
+}
+
+function receiptFile(root) {
+  return path.join(root, RECEIPT_NAME);
+}
+
+function readLiveReceipt(state, resolved) {
+  let bytes;
+  try {
+    bytes = readBoundedOrdinaryFile(receiptFile(state.repo.root), {
+      maxBytes: RECEIPT_MAX_BYTES, missing: true, fs: resolved.io
+    });
+  } catch (error) {
+    throw attemptFailure('The live site receipt is not readable', error);
+  }
+  if (bytes === null) return null;
+  const length = state.repo.objectFormat === 'sha256' ? 64 : 40;
+  const text = bytes.toString('latin1');
+  const body = text.endsWith('\n') ? text.slice(0, -1) : text;
+  if (body.length !== length || !HEX_PATTERN.test(body)) {
+    throw siteAttemptError('The live site receipt is not one recorded object identifier');
+  }
+  return { bytes, sha256: digestOf(bytes), oid: body };
+}
+
+function requireSameReceipt(current, preimage, message) {
+  if (!sameReceipt(current, preimage)) throw siteAttemptError(message);
+}
+
+function flushOrdinaryFile(io, target, label) {
+  const constants = io.constants === undefined || io.constants === null ? fs.constants : io.constants;
+  let fd = null;
+  let primary = null;
+  try {
+    fd = io.openSync(target, constants.O_RDONLY);
+    io.fsyncSync(fd);
+  } catch (error) {
+    primary = attemptFailure(`${label} could not be flushed`, error);
+  }
+  if (fd !== null) {
+    try {
+      io.closeSync(fd);
+    } catch (error) {
+      if (primary === null) primary = attemptFailure(`${label} could not be closed`, error);
+    }
+  }
+  if (primary !== null) throw primary;
+}
+
+function flushReceipt(io, target, label) {
+  flushOrdinaryFile(io, target, label);
+  fsyncDirectoryChecked(io, path.dirname(target), `The parent of ${label}`);
+}
+
+function requireSiteTuple(state, descriptor) {
+  if (descriptor.sourceSha !== state.site.sourceSha || descriptor.treeSha !== state.site.treeSha ||
+      descriptor.attemptId !== state.site.attemptId) {
+    throw siteAttemptError('The retained site descriptor is not the recorded site attempt');
+  }
+}
+
+function requireRetainedAttempt(state, repoDir, resolved) {
+  let attempt;
+  try {
+    attempt = readSiteAttempt({ state, repoDir }, { run: resolved.run, fs: resolved.io });
+  } catch (error) {
+    throw attemptFailure('The retained site attempt is not verifiable', error);
+  }
+  requireSiteTuple(state, attempt.descriptor);
+  return attempt;
+}
+
+function checkpointSite(state, repoDir, result, at, resolved) {
+  const next = transitionRelease(state, {
+    type: 'target-observed', target: 'site', at, result
+  }, state.repo, { repoDir });
+  const cacheRoot = path.dirname(repoDir);
+  writeReleaseState(next, state.repo, {
+    cacheRoot, expectedRevision: state.revision, fs: resolved.io
+  });
+  const stored = readReleaseState(state.repo, { cacheRoot, fs: resolved.io });
+  if (JSON.stringify(stored) !== JSON.stringify(next)) {
+    throw siteAttemptError('Site checkpoint does not match the persisted release state');
+  }
+  return stored;
+}
+
+function persistSiteCheckpoint(state, repoDir, result, at, resolved, label) {
+  try {
+    return checkpointSite(state, repoDir, result, at, resolved);
+  } catch (error) {
+    throw attemptFailure(`${label} could not persist the site checkpoint`, error);
+  }
+}
+
+function unresolvedSiteResult(descriptor) {
+  return {
+    state: 'unknown',
+    sourceSha: descriptor.sourceSha,
+    treeSha: descriptor.treeSha,
+    attemptId: descriptor.attemptId,
+    receiptSha: null,
+    verifiedAt: null,
+    error: { code: SITE_DEPLOY_UNRESOLVED.code, message: SITE_DEPLOY_UNRESOLVED.message }
+  };
+}
+
+function completedSiteResult(descriptor, receiptSha, verifiedAt) {
+  return {
+    state: 'complete',
+    sourceSha: descriptor.sourceSha,
+    treeSha: descriptor.treeSha,
+    attemptId: descriptor.attemptId,
+    receiptSha,
+    verifiedAt,
+    error: null
+  };
+}
+
+function prepareDeployDirectory(io, { repoRoot, sourceSha, treeSha, attemptDir, files, run }) {
+  const deployDir = path.join(attemptDir, DEPLOY_DIR);
+  createOwnedDirectory(io, deployDir, 'The site deployment directory');
+  materializeFiles(io, deployDir, files);
+  flushTree(io, deployDir);
+  verifySiteSnapshot({ repoRoot, sourceSha, treeSha, snapshotDir: deployDir }, { run, fs: io });
+  return deployDir;
+}
+
+function verifyDeployedCopy(state, descriptor, deployDir, resolved) {
+  const metadata = path.join(deployDir, WRANGLER_DIR);
+  const stat = lstatOrMissing(resolved.io, metadata);
+  if (stat !== null) assertOwnedDirectory(stat, 'The Wrangler working directory');
+  const postIo = Object.create(resolved.io);
+  postIo.readdirSync = (dir) => {
+    const names = resolved.io.readdirSync(dir);
+    return dir === deployDir ? names.filter((name) => name !== WRANGLER_DIR) : names;
+  };
+  try {
+    verifySiteSnapshot({
+      repoRoot: state.repo.root,
+      sourceSha: descriptor.sourceSha,
+      treeSha: descriptor.treeSha,
+      snapshotDir: deployDir
+    }, { run: resolved.run, fs: postIo });
+  } catch (error) {
+    throw attemptFailure('The deployed site copy changed while it was deployed', error);
+  }
+}
+
+function latestTimestamp(left, right) {
+  if (right === null || right === undefined) return left;
+  return new Date(left).getTime() >= new Date(right).getTime() ? left : right;
+}
+
+function requireRecordedSiteTarget(state, label) {
+  if (state.site.sourceSha === null || state.site.treeSha === null || state.site.attemptId === null) {
+    throw siteAttemptError(`${label} requires the recorded site attempt tuple`);
+  }
+}
+
+function runSiteAttempt(input, deps) {
+  const resolved = resolveRunDeps(deps);
+  const request = isPlainRecord(input) ? input : {};
+  const state = request.state;
+  const repoDir = request.repoDir;
+  if (typeof repoDir !== 'string' || !path.isAbsolute(repoDir) || CONTROL_PATTERN.test(repoDir)) {
+    throw siteAttemptError('Site deployment needs the release cache directory');
+  }
+
+  const validated = requireActingState(state, repoDir, resolved).state;
+  if (validated.phase !== 'tail') throw siteAttemptError('Site deployment requires a tail release phase');
+  if (validated.artifacts.state !== 'complete') {
+    throw siteAttemptError('Site deployment requires verified publish artifacts');
+  }
+  if (validated.sizes.state !== 'complete' || validated.sizes.commit === null) {
+    throw siteAttemptError('Site deployment requires the completed size source');
+  }
+  if (validated.site.state !== 'pending') {
+    throw siteAttemptError(`Site deployment requires a pending site target, found ${validated.site.state}`);
+  }
+  requireRecordedSiteTarget(validated, 'Site deployment');
+
+  const attempt = requireRetainedAttempt(validated, repoDir, resolved);
+  const descriptor = attempt.descriptor;
+  if (descriptor.phase !== 'prepared') {
+    throw siteAttemptError('Site deployment requires the prepared site descriptor');
+  }
+
+  let committed;
+  try {
+    committed = readCommittedSite({ repoRoot: validated.repo.root, sourceSha: descriptor.sourceSha }, { run: resolved.run });
+  } catch (error) {
+    throw attemptFailure('Site deployment could not read the committed site subtree', error);
+  }
+  if (committed.treeSha !== descriptor.treeSha) {
+    throw siteAttemptError('The committed site subtree is not the recorded site tree');
+  }
+
+  const at = requireClock(resolved.now, validated.updatedAt);
+  let deployDir;
+  try {
+    deployDir = prepareDeployDirectory(resolved.io, {
+      repoRoot: validated.repo.root,
+      sourceSha: descriptor.sourceSha,
+      treeSha: committed.treeSha,
+      attemptDir: attempt.attemptDir,
+      files: committed.files,
+      run: resolved.run
+    });
+  } catch (error) {
+    throw attemptFailure('Site deployment could not materialize the deployment copy', error);
+  }
+
+  const preimage = readLiveReceipt(validated, resolved);
+
+  publishDescriptor(resolved.io, attempt.attemptDir, {
+    ...descriptor,
+    phase: 'requested',
+    requestedAt: at,
+    receiptBeforeSha256: preimage === null ? null : preimage.sha256
+  });
+
+  const unknown = persistSiteCheckpoint(
+    validated, repoDir, unresolvedSiteResult(descriptor), at, resolved, 'Site deployment'
+  );
+
+  const confirmed = requireActingState(unknown, repoDir, resolved).state;
+  const requested = requireRetainedAttempt(confirmed, repoDir, resolved);
+  if (requested.descriptor.phase !== 'requested') {
+    throw siteAttemptError('The recorded site request did not persist before the deployment');
+  }
+  try {
+    verifySiteSnapshot({
+      repoRoot: confirmed.repo.root,
+      sourceSha: requested.descriptor.sourceSha,
+      treeSha: requested.descriptor.treeSha,
+      snapshotDir: deployDir
+    }, { run: resolved.run, fs: resolved.io });
+  } catch (error) {
+    throw attemptFailure('The site deployment copy changed before the deployment', error);
+  }
+  requireSameReceipt(
+    readLiveReceipt(confirmed, resolved), preimage, 'The live site receipt changed before the deployment'
+  );
+
+  resolved.assertPublishWindow();
+  let result;
+  try {
+    result = resolved.deploy(deployDir);
+  } catch (error) {
+    const failure = siteAttemptError('The site deployment outcome is unresolved', error);
+    failure.code = 'SITE_DEPLOY_UNRESOLVED';
+    throw failure;
+  }
+  if (result !== undefined) {
+    throw siteAttemptError('Site deployment must complete synchronously without a return value');
+  }
+
+  verifyDeployedCopy(confirmed, requested.descriptor, deployDir, resolved);
+  const retained = requireRetainedAttempt(confirmed, repoDir, resolved);
+
+  const current = requireActingState(confirmed, repoDir, resolved).state;
+  requireSameReceipt(
+    readLiveReceipt(current, resolved), preimage, 'The live site receipt changed while the site was deployed'
+  );
+
+  const completedAt = requireClock(resolved.now, confirmed.updatedAt);
+  try {
+    publishDurableFile(receiptFile(current.repo.root), Buffer.from(`${descriptor.sourceSha}\n`, 'utf8'), resolved.io);
+  } catch (error) {
+    throw attemptFailure('The captured site receipt could not be published', error);
+  }
+
+  publishDescriptor(resolved.io, attempt.attemptDir, {
+    ...retained.descriptor,
+    phase: 'complete',
+    completedAt,
+    receiptSha: descriptor.sourceSha
+  });
+
+  return persistSiteCheckpoint(
+    current, repoDir, completedSiteResult(descriptor, descriptor.sourceSha, completedAt), completedAt, resolved, 'Site deployment'
+  );
+}
+
+function reconcileSiteAttempt(input, deps) {
+  const resolved = resolveDeps(deps);
+  const request = isPlainRecord(input) ? input : {};
+  const state = request.state;
+  const repoDir = request.repoDir;
+  if (typeof repoDir !== 'string' || !path.isAbsolute(repoDir) || CONTROL_PATTERN.test(repoDir)) {
+    throw siteAttemptError('Site reconciliation needs the release cache directory');
+  }
+
+  const validated = requireActingState(state, repoDir, resolved).state;
+  if (validated.phase !== 'tail' && validated.phase !== 'complete') {
+    throw siteAttemptError('Site reconciliation requires a tail release phase');
+  }
+  if (validated.artifacts.state !== 'complete') {
+    throw siteAttemptError('Site reconciliation requires verified publish artifacts');
+  }
+  if (validated.sizes.state !== 'complete' || validated.sizes.commit === null) {
+    throw siteAttemptError('Site reconciliation requires the completed size source');
+  }
+  requireRecordedSiteTarget(validated, 'Site reconciliation');
+
+  const attempt = requireRetainedAttempt(validated, repoDir, resolved);
+  const descriptor = attempt.descriptor;
+  const receipt = readLiveReceipt(validated, resolved);
+
+  if (descriptor.phase === 'prepared') {
+    if (validated.site.state !== 'pending') {
+      throw siteAttemptError('A prepared site descriptor cannot reconcile a resolved site target');
+    }
+    return validated;
+  }
+
+  if (validated.site.state === 'complete') {
+    if (descriptor.phase !== 'complete' || descriptor.receiptSha !== descriptor.sourceSha ||
+        validated.site.receiptSha !== descriptor.receiptSha ||
+        validated.site.verifiedAt !== descriptor.completedAt) {
+      throw siteAttemptError('The completed site target does not match the retained site descriptor');
+    }
+    if (receipt === null || receipt.oid !== descriptor.receiptSha) {
+      throw siteAttemptError('The completed site receipt changed');
+    }
+    return validated;
+  }
+
+  if (descriptor.phase === 'complete') {
+    if (receipt === null || descriptor.receiptSha !== descriptor.sourceSha || receipt.oid !== descriptor.receiptSha) {
+      throw siteAttemptError('The completed site descriptor does not match the live receipt');
+    }
+    flushOrdinaryFile(resolved.io, path.join(attempt.attemptDir, DESCRIPTOR_FILE), 'The retained site descriptor');
+    fsyncDirectoryChecked(resolved.io, attempt.attemptDir, 'The site attempt directory');
+    const again = readLiveReceipt(validated, resolved);
+    requireSameReceipt(again, receipt, 'The live site receipt changed while it was flushed');
+    const at = requireClock(resolved.now, validated.updatedAt);
+    return persistSiteCheckpoint(
+      validated, repoDir,
+      completedSiteResult(descriptor, descriptor.receiptSha, descriptor.completedAt),
+      at, resolved, 'Site reconciliation'
+    );
+  }
+
+  if (receipt !== null && receipt.oid === descriptor.sourceSha && receipt.sha256 !== descriptor.receiptBeforeSha256) {
+    flushReceipt(resolved.io, receiptFile(validated.repo.root), 'The live site receipt');
+    const again = readLiveReceipt(validated, resolved);
+    requireSameReceipt(again, receipt, 'The live site receipt changed while it was flushed');
+    const at = requireClock(resolved.now, latestTimestamp(validated.updatedAt, descriptor.requestedAt));
+    publishDescriptor(resolved.io, attempt.attemptDir, {
+      ...descriptor,
+      phase: 'complete',
+      completedAt: at,
+      receiptSha: descriptor.sourceSha
+    });
+    return persistSiteCheckpoint(
+      validated, repoDir, completedSiteResult(descriptor, descriptor.sourceSha, at), at, resolved, 'Site reconciliation'
+    );
+  }
+
+  if (validated.site.state === 'unknown') return validated;
+
+  const at = requireClock(resolved.now, validated.updatedAt);
+  return persistSiteCheckpoint(
+    validated, repoDir, unresolvedSiteResult(descriptor), at, resolved, 'Site reconciliation'
+  );
+}
+
 function prepareSiteAttempt(input, deps) {
   const resolved = resolveDeps(deps);
   const request = isPlainRecord(input) ? input : {};
@@ -424,4 +832,4 @@ function prepareSiteAttempt(input, deps) {
   }
 }
 
-module.exports = { prepareSiteAttempt };
+module.exports = { prepareSiteAttempt, runSiteAttempt, reconcileSiteAttempt };

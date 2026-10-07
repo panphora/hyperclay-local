@@ -10,8 +10,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { readCommittedSite, readSiteAttempt, verifySiteSnapshot } = require('../../scripts/release-site-evidence');
-const { prepareSiteAttempt } = require('../../scripts/release-site');
+const {
+  readCommittedSite, readSiteAttempt, readSiteEvidence, verifySiteSnapshot
+} = require('../../scripts/release-site-evidence');
+const { prepareSiteAttempt, reconcileSiteAttempt, runSiteAttempt } = require('../../scripts/release-site');
 const { prepareDownloadSizes } = require('../../scripts/release-docs-prepare');
 const { prepareDocsApplication } = require('../../scripts/release-docs-plan');
 const { renderDownloadSizes } = require('../../scripts/write-download-sizes');
@@ -703,8 +705,9 @@ function expectNoSnapshot(attemptDir) {
 describe('site snapshot', () => {
   test('exposes only the shared read leaf and the preparation entry point', () => {
     expect(Object.keys(require('../../scripts/release-site-evidence')).sort())
-      .toEqual(['readCommittedSite', 'readSiteAttempt', 'verifySiteSnapshot']);
-    expect(Object.keys(require('../../scripts/release-site')).sort()).toEqual(['prepareSiteAttempt']);
+      .toEqual(['readCommittedSite', 'readSiteAttempt', 'readSiteEvidence', 'verifySiteSnapshot']);
+    expect(Object.keys(require('../../scripts/release-site')).sort())
+      .toEqual(['prepareSiteAttempt', 'reconcileSiteAttempt', 'runSiteAttempt']);
   });
 
   test('loads no acting entry, lock, Ferry or state-store module from the read leaf', () => {
@@ -1487,4 +1490,1010 @@ describe('site snapshot', () => {
       )).message).toMatch(/exactly one website tree/);
     });
   });
+
+function siteActingDeps(fixture, { deploy, guard, now = NOW, fs: io = fs } = {}) {
+  const reader = createLocalGitReader();
+  return {
+    run: reader.run,
+    spawn: reader.spawn,
+    fs: io,
+    now: () => now,
+    assertPublishWindow: guard === undefined ? () => {} : guard,
+    deploy
+  };
+}
+
+function receiptPathOf(fixture) {
+  return path.join(fixture.repoRoot, '.deploy');
+}
+
+function deployDirOf(fixture, attemptId = ATTEMPT_ID) {
+  return path.join(attemptDirOf(fixture, attemptId), 'deploy');
+}
+
+function stateFileOf(fixture) {
+  return statePaths(fixture.identity, { cacheRoot: fixture.cacheRoot, fs }).stateFile;
+}
+
+function topLevelNames(files) {
+  return Array.from(new Set(files.map((file) => file.path.split('/')[0]))).sort();
+}
+
+function expectStoppedAfter(adapter, entry) {
+  const ops = opsOf(adapter);
+  const index = ops.lastIndexOf(entry);
+  expect(index).toBeGreaterThan(-1);
+  expect(ops.slice(index + 1).every((next) =>
+    next.startsWith('close:') || next.startsWith('unlink:')
+  )).toBe(true);
+}
+
+const UNRESOLVED_SITE = {
+  code: 'SITE_DEPLOY_UNRESOLVED',
+  message: 'The site deployment is unresolved.'
+};
+
+describe('site acting', () => {
+  testPosix('deploys once from the recorded snapshot and completes from the captured source receipt', async () => {
+    const ctx = await preparedContext();
+    const sourceSha = ctx.state.sizes.commit;
+    const deployDir = deployDirOf(ctx.fixture);
+    const committed = readCommittedSite(
+      { repoRoot: ctx.fixture.repoRoot, sourceSha }, { run: createLocalGitReader().run }
+    );
+    const calls = [];
+    const order = [];
+    const observed = [];
+    const deploy = (dir) => {
+      order.push('deploy');
+      calls.push(dir);
+      const descriptor = readDescriptor(ctx.fixture, ATTEMPT_ID);
+      const live = readReleaseState(ctx.fixture.identity, { cacheRoot: ctx.fixture.cacheRoot, fs });
+      observed.push({
+        dir,
+        descriptor,
+        site: live.site,
+        revision: live.revision,
+        updatedAt: live.updatedAt,
+        receipt: fs.existsSync(receiptPathOf(ctx.fixture)),
+        entries: fs.readdirSync(dir).sort(),
+        index: fs.readFileSync(path.join(dir, 'index.html')),
+        snapshotIndex: fs.readFileSync(path.join(ctx.attemptDir, 'snapshot', 'index.html'))
+      });
+      fs.mkdirSync(path.join(dir, '.wrangler/tmp'), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(dir, '.wrangler/tmp/deployment.json'), '{}\n');
+      write(ctx.fixture.repoRoot, 'unrelated.txt', 'unrelated\n');
+      git(ctx.fixture.repoRoot, ['add', '-A']);
+      git(ctx.fixture.repoRoot, ['commit', '-q', '-m', 'unrelated work']);
+    };
+
+    const next = runSiteAttempt({ state: ctx.prepared, repoDir: ctx.fixture.repoDir }, siteActingDeps(ctx.fixture, {
+      deploy,
+      guard: () => order.push('guard')
+    }));
+
+    expect(order).toEqual(['guard', 'deploy']);
+    expect(calls).toEqual([deployDir]);
+    const seen = observed[0];
+    expect(seen.dir).toBe(deployDir);
+    expect(seen.descriptor.phase).toBe('requested');
+    expect(seen.descriptor.requestedAt).toBe(NOW);
+    expect(seen.descriptor.completedAt).toBeNull();
+    expect(seen.descriptor.receiptBeforeSha256).toBeNull();
+    expect(seen.site).toEqual({
+      state: 'unknown',
+      sourceSha,
+      treeSha: ctx.prepared.site.treeSha,
+      attemptId: ATTEMPT_ID,
+      receiptSha: null,
+      verifiedAt: null,
+      error: UNRESOLVED_SITE
+    });
+    expect(seen.revision).toBe(ctx.prepared.revision + 1);
+    expect(seen.updatedAt).toBe(NOW);
+    expect(seen.receipt).toBe(false);
+    expect(seen.entries).toEqual(topLevelNames(committed.files));
+    expect(seen.index.equals(committed.files.find((file) => file.path === 'index.html').bytes)).toBe(true);
+    expect(seen.snapshotIndex.equals(seen.index)).toBe(true);
+
+    expect(next.site.state).toBe('complete');
+    expect(next.site.sourceSha).toBe(sourceSha);
+    expect(next.site.treeSha).toBe(ctx.prepared.site.treeSha);
+    expect(next.site.attemptId).toBe(ATTEMPT_ID);
+    expect(next.site.receiptSha).toBe(sourceSha);
+    expect(next.site.verifiedAt).toBe(NOW);
+    expect(next.site.error).toBeNull();
+    expect(next.revision).toBe(ctx.prepared.revision + 2);
+    persistedSiteState(ctx.fixture, next);
+
+    const completed = readSiteAttempt({ state: next, repoDir: ctx.fixture.repoDir }, siteDeps());
+    expect(completed.descriptor.phase).toBe('complete');
+    expect(completed.descriptor.completedAt).toBe(NOW);
+    expect(completed.descriptor.receiptSha).toBe(sourceSha);
+    expect(completed.descriptor.receiptBeforeSha256).toBeNull();
+    expect(completed.attemptDir).toBe(ctx.attemptDir);
+
+    expect(fs.readFileSync(receiptPathOf(ctx.fixture), 'utf8')).toBe(`${sourceSha}\n`);
+    expect(git(ctx.fixture.repoRoot, ['rev-parse', 'HEAD']).trim()).not.toBe(sourceSha);
+    expect(git(ctx.fixture.repoRoot, ['status', '--porcelain=v1']).trim()).toBe('?? .deploy');
+
+    const settled = reconcileSiteAttempt({ state: next, repoDir: ctx.fixture.repoDir }, siteDeps(NOW_2));
+    expect(settled).toEqual(next);
+    expect(calls).toEqual([deployDir]);
+
+    const again = expectAttemptRefusal(() => runSiteAttempt(
+      { state: next, repoDir: ctx.fixture.repoDir }, siteActingDeps(ctx.fixture, { deploy })
+    ));
+    expect(again.message).toMatch(/pending site target|persisted release state/);
+    expect(calls).toEqual([deployDir]);
+  });
+
+  testPosix('records the request and the unresolved checkpoint without calling a closed publish window', async () => {
+    const ctx = await preparedContext();
+    const calls = [];
+    const error = refusal(() => runSiteAttempt(
+      { state: ctx.prepared, repoDir: ctx.fixture.repoDir },
+      siteActingDeps(ctx.fixture, {
+        deploy: (dir) => { calls.push(dir); },
+        guard: () => { throw new Error('the release window is closed'); }
+      })
+    ));
+    expect(error.message).toBe('the release window is closed');
+    expect(calls).toEqual([]);
+    const descriptor = readDescriptor(ctx.fixture, ATTEMPT_ID);
+    expect(descriptor.phase).toBe('requested');
+    expect(descriptor.requestedAt).toBe(NOW);
+    const live = readReleaseState(ctx.fixture.identity, { cacheRoot: ctx.fixture.cacheRoot, fs });
+    expect(live.site.state).toBe('unknown');
+    expect(live.site.error).toEqual(UNRESOLVED_SITE);
+    expect(live.revision).toBe(ctx.prepared.revision + 1);
+    expect(fs.existsSync(receiptPathOf(ctx.fixture))).toBe(false);
+    expect(fs.readdirSync(deployDirOf(ctx.fixture)).sort()).toEqual(['index.html', 'wrangler.jsonc', '.assetsignore', 'assets', 'fonts', 'scripts'].sort());
+
+    const unresolved = reconcileSiteAttempt({ state: live, repoDir: ctx.fixture.repoDir }, siteDeps(NOW_2));
+    expect(unresolved).toEqual(live);
+    expect(readDescriptor(ctx.fixture, ATTEMPT_ID).phase).toBe('requested');
+    expect(calls).toEqual([]);
+  });
+
+  testPosix('site acting boundary refuses copy drift after the unknown checkpoint', async () => {
+    const ctx = await preparedContext();
+    const deployDir = deployDirOf(ctx.fixture);
+    const snapshotDir = path.join(ctx.attemptDir, 'snapshot');
+    const retainedBefore = liveTreeDigest(snapshotDir);
+    const laneFile = stateFileOf(ctx.fixture);
+    const adapter = recordingFs();
+    const realRename = adapter.renameSync;
+    let injections = 0;
+    adapter.renameSync = (from, to) => {
+      const outcome = realRename(from, to);
+      if (to === laneFile && injections === 0) {
+        injections += 1;
+        fs.appendFileSync(path.join(deployDir, 'index.html'), '\n');
+      }
+      return outcome;
+    };
+    const calls = [];
+    const error = expectAttemptRefusal(() => runSiteAttempt(
+      { state: ctx.prepared, repoDir: ctx.fixture.repoDir },
+      siteActingDeps(ctx.fixture, { fs: adapter, deploy: (dir) => { calls.push(dir); } })
+    ));
+    expect(injections).toBe(1);
+    expect(calls).toEqual([]);
+    expect(error.message).toBe('The site deployment copy changed before the deployment');
+    expect(causeChain(error)).toMatch(/bytes changed: index.html/);
+    const descriptor = readDescriptor(ctx.fixture, ATTEMPT_ID);
+    expect(descriptor.phase).toBe('requested');
+    expect(descriptor.requestedAt).toBe(NOW);
+    expect(descriptor.completedAt).toBeNull();
+    const live = readReleaseState(ctx.fixture.identity, { cacheRoot: ctx.fixture.cacheRoot, fs });
+    expect(live.site.state).toBe('unknown');
+    expect(live.site.error).toEqual(UNRESOLVED_SITE);
+    expect(live.revision).toBe(ctx.prepared.revision + 1);
+    expect(fs.existsSync(receiptPathOf(ctx.fixture))).toBe(false);
+    expect(liveTreeDigest(snapshotDir)).toBe(retainedBefore);
+  });
+
+  testPosix('site acting boundary retains the thrown deployment error', async () => {
+    const ctx = await preparedContext();
+    const deployDir = deployDirOf(ctx.fixture);
+    const calls = [];
+    const thrown = new Error('wrangler deploy failed');
+    thrown.status = 17;
+    thrown.signal = 'SIGKILL';
+    thrown.stdout = 'deployed stdout marker';
+    thrown.stderr = 'deployed stderr marker';
+    const error = refusal(() => runSiteAttempt(
+      { state: ctx.prepared, repoDir: ctx.fixture.repoDir },
+      siteActingDeps(ctx.fixture, { deploy: (dir) => { calls.push(dir); throw thrown; } })
+    ));
+    expect(calls).toEqual([deployDir]);
+    expect(error.code).toBe('SITE_DEPLOY_UNRESOLVED');
+    expect(error.message).toBe('The site deployment outcome is unresolved');
+    expect(error.cause).toBe(thrown);
+    expect(error.cause.status).toBe(17);
+    expect(error.cause.signal).toBe('SIGKILL');
+    expect(error.cause.stdout).toBe('deployed stdout marker');
+    expect(error.cause.stderr).toBe('deployed stderr marker');
+    for (const detail of ['17', 'SIGKILL', 'deployed stdout marker', 'deployed stderr marker']) {
+      expect(error.message).not.toContain(detail);
+    }
+    const descriptor = readDescriptor(ctx.fixture, ATTEMPT_ID);
+    expect(descriptor.phase).toBe('requested');
+    expect(descriptor.requestedAt).toBe(NOW);
+    expect(descriptor.completedAt).toBeNull();
+    expect(descriptor.receiptSha).toBeNull();
+    expect(fs.existsSync(receiptPathOf(ctx.fixture))).toBe(false);
+    const live = readReleaseState(ctx.fixture.identity, { cacheRoot: ctx.fixture.cacheRoot, fs });
+    expect(live.site.state).toBe('unknown');
+    expect(live.site.error).toEqual(UNRESOLVED_SITE);
+    expect(live.revision).toBe(ctx.prepared.revision + 1);
+    expect(live.site.receiptSha).toBeNull();
+  });
+
+  testPosix('calls no deployment when the unresolved checkpoint cannot be published', async () => {
+    const ctx = await preparedContext();
+    const laneFile = stateFileOf(ctx.fixture);
+    const adapter = recordingFs({ fail: (op, target) => op === 'rename' && target === laneFile });
+    const calls = [];
+    const error = expectAttemptRefusal(() => runSiteAttempt(
+      { state: ctx.prepared, repoDir: ctx.fixture.repoDir },
+      siteActingDeps(ctx.fixture, { fs: adapter, deploy: (dir) => { calls.push(dir); } })
+    ));
+    expect(error.code).toBe('SITE_ATTEMPT_FAILED');
+    expect(causeChain(error)).toMatch(/STATE_IO_FAILED/);
+    expect(calls).toEqual([]);
+    expectStoppedAfter(adapter, `rename:${laneFile}`);
+    expect(readDescriptor(ctx.fixture, ATTEMPT_ID).phase).toBe('requested');
+    expect(fs.existsSync(receiptPathOf(ctx.fixture))).toBe(false);
+    expect(readReleaseState(ctx.fixture.identity, { cacheRoot: ctx.fixture.cacheRoot, fs })).toEqual(ctx.prepared);
+
+    const unresolved = reconcileSiteAttempt({ state: ctx.prepared, repoDir: ctx.fixture.repoDir }, siteDeps(NOW_2));
+    expect(unresolved.site.state).toBe('unknown');
+    expect(unresolved.site.error).toEqual(UNRESOLVED_SITE);
+    expect(unresolved.revision).toBe(ctx.prepared.revision + 1);
+    expect(unresolved.updatedAt).toBe(NOW_2);
+    persistedSiteState(ctx.fixture, unresolved);
+    expect(readDescriptor(ctx.fixture, ATTEMPT_ID).phase).toBe('requested');
+    expect(fs.existsSync(receiptPathOf(ctx.fixture))).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  const interruptions = [
+    ['a thrown command failure', { mode: 'throw', status: 1, message: 'wrangler deploy failed' }, /^The site deployment outcome is unresolved$/],
+    ['a killed command', { mode: 'throw', signal: 'SIGKILL', message: 'wrangler deploy was killed' }, /^The site deployment outcome is unresolved$/],
+    ['a thenable return', { mode: 'thenable' }, /synchronously without a return value/],
+    ['an unexpected status return', { mode: 'return' }, /synchronously without a return value/]
+  ];
+
+  testPosix.each(interruptions)('leaves an unresolved attempt for every interrupted deployment without retrying: %s', async (name, shape, pattern) => {
+    const ctx = await preparedContext();
+    const deployDir = deployDirOf(ctx.fixture);
+    const calls = [];
+    const thrown = new Error(shape.message);
+    if (shape.status !== undefined) thrown.status = shape.status;
+    if (shape.signal !== undefined) thrown.signal = shape.signal;
+    const deploy = (dir) => {
+      calls.push(dir);
+      if (shape.mode === 'throw') throw thrown;
+      if (shape.mode === 'thenable') return Promise.resolve('deployed');
+      return { status: 0, stdout: 'deployed' };
+    };
+
+    const error = refusal(() => runSiteAttempt(
+      { state: ctx.prepared, repoDir: ctx.fixture.repoDir }, siteActingDeps(ctx.fixture, { deploy })
+    ));
+    expect(error.code).toBe(shape.mode === 'throw' ? 'SITE_DEPLOY_UNRESOLVED' : 'SITE_ATTEMPT_FAILED');
+    expect(error.message).toMatch(pattern);
+    if (shape.mode === 'throw') {
+      expect(error.message).toBe('The site deployment outcome is unresolved');
+      expect(error.cause).toBe(thrown);
+    }
+    expect(calls).toEqual([deployDir]);
+
+    const descriptor = readDescriptor(ctx.fixture, ATTEMPT_ID);
+    expect(`${name}: ${descriptor.phase}`).toBe(`${name}: requested`);
+    expect(descriptor.completedAt).toBeNull();
+    expect(descriptor.receiptSha).toBeNull();
+    expect(fs.existsSync(receiptPathOf(ctx.fixture))).toBe(false);
+
+    const live = readReleaseState(ctx.fixture.identity, { cacheRoot: ctx.fixture.cacheRoot, fs });
+    expect(live.site).toEqual({
+      state: 'unknown',
+      sourceSha: ctx.state.sizes.commit,
+      treeSha: ctx.prepared.site.treeSha,
+      attemptId: ATTEMPT_ID,
+      receiptSha: null,
+      verifiedAt: null,
+      error: UNRESOLVED_SITE
+    });
+    expect(live.revision).toBe(ctx.prepared.revision + 1);
+
+    const reconciled = reconcileSiteAttempt({ state: live, repoDir: ctx.fixture.repoDir }, siteDeps(NOW_2));
+    expect(reconciled).toEqual(live);
+    const again = expectAttemptRefusal(() => runSiteAttempt(
+      { state: live, repoDir: ctx.fixture.repoDir }, siteActingDeps(ctx.fixture, { deploy })
+    ));
+    expect(`${name}: ${again.message}`).toMatch(/pending site target|persisted release state/);
+    expect(calls).toEqual([deployDir]);
+  });
+
+  testPosix('cannot reconcile a stale receipt that predates the request but recovers a distinguishable one', async () => {
+    const ctx = await preparedContext();
+    const sourceSha = ctx.state.sizes.commit;
+    const receiptFile = receiptPathOf(ctx.fixture);
+    fs.writeFileSync(receiptFile, `${sourceSha}\n`, { mode: 0o600 });
+    const calls = [];
+    const thrown = new Error('wrangler deploy was interrupted');
+    thrown.status = 1;
+    const error = refusal(() => runSiteAttempt(
+      { state: ctx.prepared, repoDir: ctx.fixture.repoDir },
+      siteActingDeps(ctx.fixture, { deploy: (dir) => { calls.push(dir); throw thrown; } })
+    ));
+    expect(error.code).toBe('SITE_DEPLOY_UNRESOLVED');
+    expect(error.message).toBe('The site deployment outcome is unresolved');
+    expect(error.cause).toBe(thrown);
+    expect(calls).toEqual([deployDirOf(ctx.fixture)]);
+    const recorded = readDescriptor(ctx.fixture, ATTEMPT_ID);
+    expect(recorded.phase).toBe('requested');
+    expect(recorded.receiptBeforeSha256).toBe(sha256(Buffer.from(`${sourceSha}\n`)));
+    const unknown = readReleaseState(ctx.fixture.identity, { cacheRoot: ctx.fixture.cacheRoot, fs });
+    expect(unknown.site.state).toBe('unknown');
+
+    const stale = reconcileSiteAttempt({ state: unknown, repoDir: ctx.fixture.repoDir }, siteDeps(NOW_2));
+    expect(stale).toEqual(unknown);
+    expect(stale.revision).toBe(unknown.revision);
+    expect(readDescriptor(ctx.fixture, ATTEMPT_ID).phase).toBe('requested');
+    expect(fs.readFileSync(receiptFile, 'utf8')).toBe(`${sourceSha}\n`);
+    expect(calls).toEqual([deployDirOf(ctx.fixture)]);
+
+    fs.writeFileSync(receiptFile, sourceSha, { mode: 0o600 });
+    const recovered = reconcileSiteAttempt({ state: unknown, repoDir: ctx.fixture.repoDir }, siteDeps(NOW_2));
+    expect(recovered.site.state).toBe('complete');
+    expect(recovered.site.sourceSha).toBe(sourceSha);
+    expect(recovered.site.treeSha).toBe(ctx.prepared.site.treeSha);
+    expect(recovered.site.attemptId).toBe(ATTEMPT_ID);
+    expect(recovered.site.receiptSha).toBe(sourceSha);
+    expect(recovered.site.verifiedAt).toBe(NOW_2);
+    expect(recovered.site.error).toBeNull();
+    expect(recovered.revision).toBe(unknown.revision + 1);
+    persistedSiteState(ctx.fixture, recovered);
+    const completed = readDescriptor(ctx.fixture, ATTEMPT_ID);
+    expect(completed.phase).toBe('complete');
+    expect(completed.completedAt).toBe(NOW_2);
+    expect(completed.requestedAt).toBe(NOW);
+    expect(completed.receiptSha).toBe(sourceSha);
+    expect(fs.readFileSync(receiptFile, 'utf8')).toBe(sourceSha);
+    expect(calls).toEqual([deployDirOf(ctx.fixture)]);
+  });
+
+  testPosix('stops before the descriptor and the complete checkpoint when the receipt flush fails, then recovers', async () => {
+    const ctx = await preparedContext();
+    const sourceSha = ctx.state.sizes.commit;
+    const adapter = recordingFs({ fail: (op, target) => op === 'fsync' && target === ctx.fixture.repoRoot });
+    const calls = [];
+    const error = expectAttemptRefusal(() => runSiteAttempt(
+      { state: ctx.prepared, repoDir: ctx.fixture.repoDir },
+      siteActingDeps(ctx.fixture, { fs: adapter, deploy: (dir) => { calls.push(dir); } })
+    ));
+    expect(causeChain(error)).toMatch(/STATE_IO_FAILED/);
+    expect(calls).toEqual([deployDirOf(ctx.fixture)]);
+    expectStoppedAfter(adapter, `fsync:${ctx.fixture.repoRoot}`);
+    expect(readDescriptor(ctx.fixture, ATTEMPT_ID).phase).toBe('requested');
+    expect(fs.readFileSync(receiptPathOf(ctx.fixture), 'utf8')).toBe(`${sourceSha}\n`);
+    const unknown = readReleaseState(ctx.fixture.identity, { cacheRoot: ctx.fixture.cacheRoot, fs });
+    expect(unknown.site.state).toBe('unknown');
+    expect(unknown.revision).toBe(ctx.prepared.revision + 1);
+
+    const recovered = reconcileSiteAttempt({ state: unknown, repoDir: ctx.fixture.repoDir }, siteDeps(NOW_2));
+    expect(recovered.site.state).toBe('complete');
+    expect(recovered.site.receiptSha).toBe(sourceSha);
+    expect(recovered.site.verifiedAt).toBe(NOW_2);
+    persistedSiteState(ctx.fixture, recovered);
+    expect(readDescriptor(ctx.fixture, ATTEMPT_ID).phase).toBe('complete');
+    expect(fs.readFileSync(receiptPathOf(ctx.fixture), 'utf8')).toBe(`${sourceSha}\n`);
+    expect(calls).toEqual([deployDirOf(ctx.fixture)]);
+  });
+
+  testPosix('stops before the complete checkpoint when the complete descriptor cannot be published, then recovers', async () => {
+    const ctx = await preparedContext();
+    const sourceSha = ctx.state.sizes.commit;
+    const descriptorFile = readDescriptorFile(ctx.fixture, ATTEMPT_ID);
+    let renames = 0;
+    const adapter = recordingFs({
+      fail: (op, target) => {
+        if (op !== 'rename' || target !== descriptorFile) return false;
+        renames += 1;
+        return renames === 2;
+      }
+    });
+    const calls = [];
+    const error = expectAttemptRefusal(() => runSiteAttempt(
+      { state: ctx.prepared, repoDir: ctx.fixture.repoDir },
+      siteActingDeps(ctx.fixture, { fs: adapter, deploy: (dir) => { calls.push(dir); } })
+    ));
+    expect(causeChain(error)).toMatch(/STATE_IO_FAILED/);
+    expect(calls).toEqual([deployDirOf(ctx.fixture)]);
+    expect(renames).toBe(2);
+    expectStoppedAfter(adapter, `rename:${descriptorFile}`);
+    expect(readDescriptor(ctx.fixture, ATTEMPT_ID).phase).toBe('requested');
+    expect(fs.readFileSync(receiptPathOf(ctx.fixture), 'utf8')).toBe(`${sourceSha}\n`);
+    const unknown = readReleaseState(ctx.fixture.identity, { cacheRoot: ctx.fixture.cacheRoot, fs });
+    expect(unknown.site.state).toBe('unknown');
+
+    const recovered = reconcileSiteAttempt({ state: unknown, repoDir: ctx.fixture.repoDir }, siteDeps(NOW_2));
+    expect(recovered.site.state).toBe('complete');
+    expect(recovered.site.verifiedAt).toBe(NOW_2);
+    persistedSiteState(ctx.fixture, recovered);
+    const descriptor = readDescriptor(ctx.fixture, ATTEMPT_ID);
+    expect(descriptor.phase).toBe('complete');
+    expect(descriptor.completedAt).toBe(NOW_2);
+    expect(fs.readFileSync(receiptPathOf(ctx.fixture), 'utf8')).toBe(`${sourceSha}\n`);
+    expect(calls).toEqual([deployDirOf(ctx.fixture)]);
+  });
+
+  testPosix('replays a completed descriptor into the state when the complete checkpoint cannot be published', async () => {
+    const ctx = await preparedContext();
+    const sourceSha = ctx.state.sizes.commit;
+    const laneFile = stateFileOf(ctx.fixture);
+    let renames = 0;
+    const adapter = recordingFs({
+      fail: (op, target) => {
+        if (op !== 'rename' || target !== laneFile) return false;
+        renames += 1;
+        return renames === 2;
+      }
+    });
+    const calls = [];
+    const error = expectAttemptRefusal(() => runSiteAttempt(
+      { state: ctx.prepared, repoDir: ctx.fixture.repoDir },
+      siteActingDeps(ctx.fixture, { fs: adapter, deploy: (dir) => { calls.push(dir); } })
+    ));
+    expect(causeChain(error)).toMatch(/STATE_IO_FAILED/);
+    expect(renames).toBe(2);
+    expect(calls).toEqual([deployDirOf(ctx.fixture)]);
+    expectStoppedAfter(adapter, `rename:${laneFile}`);
+    const complete = readDescriptor(ctx.fixture, ATTEMPT_ID);
+    expect(complete.phase).toBe('complete');
+    expect(complete.completedAt).toBe(NOW);
+    expect(fs.readFileSync(receiptPathOf(ctx.fixture), 'utf8')).toBe(`${sourceSha}\n`);
+    const unknown = readReleaseState(ctx.fixture.identity, { cacheRoot: ctx.fixture.cacheRoot, fs });
+    expect(unknown.site.state).toBe('unknown');
+    expect(unknown.revision).toBe(ctx.prepared.revision + 1);
+
+    const replayed = reconcileSiteAttempt({ state: unknown, repoDir: ctx.fixture.repoDir }, siteDeps(NOW_2));
+    expect(replayed.site.state).toBe('complete');
+    expect(replayed.site.sourceSha).toBe(sourceSha);
+    expect(replayed.site.receiptSha).toBe(sourceSha);
+    expect(replayed.site.verifiedAt).toBe(NOW);
+    expect(replayed.updatedAt).toBe(NOW_2);
+    expect(replayed.revision).toBe(unknown.revision + 1);
+    persistedSiteState(ctx.fixture, replayed);
+    expect(readDescriptor(ctx.fixture, ATTEMPT_ID).phase).toBe('complete');
+    expect(calls).toEqual([deployDirOf(ctx.fixture)]);
+  });
+
+  const mutations = [
+    ['an extra file', (dir) => fs.writeFileSync(path.join(dir, 'extra.txt'), 'extra\n'), /unexpected file: extra.txt/],
+    ['an environment file', (dir) => fs.writeFileSync(path.join(dir, '.env'), 'SECRET=1\n'), /unexpected file: .env/],
+    ['changed bytes', (dir) => fs.appendFileSync(path.join(dir, 'index.html'), '\n'), /bytes changed: index.html/],
+    [
+      'a file in place of generated metadata',
+      (dir) => fs.writeFileSync(path.join(dir, '.wrangler'), '{}\n'),
+      /Wrangler working directory must be a real directory/
+    ],
+    [
+      'nested generated metadata',
+      (dir) => fs.mkdirSync(path.join(dir, 'assets', '.wrangler', 'tmp'), { recursive: true }),
+      /unexpected directory: assets\/.wrangler/
+    ]
+  ];
+
+  testPosix.each(mutations)('refuses a deployment copy or receipt that changed while the site was deployed: %s', async (name, mutate, pattern) => {
+    const ctx = await preparedContext();
+    const deployDir = deployDirOf(ctx.fixture);
+    const calls = [];
+    const error = expectAttemptRefusal(() => runSiteAttempt(
+      { state: ctx.prepared, repoDir: ctx.fixture.repoDir },
+      siteActingDeps(ctx.fixture, { deploy: (dir) => { calls.push(dir); mutate(dir); } })
+    ));
+    expect(`${name}: ${causeChain(error)}`).toMatch(pattern);
+    expect(calls).toEqual([deployDir]);
+    const descriptor = readDescriptor(ctx.fixture, ATTEMPT_ID);
+    expect(`${name}: ${descriptor.phase}`).toBe(`${name}: requested`);
+    expect(descriptor.completedAt).toBeNull();
+    expect(fs.existsSync(receiptPathOf(ctx.fixture))).toBe(false);
+    const live = readReleaseState(ctx.fixture.identity, { cacheRoot: ctx.fixture.cacheRoot, fs });
+    expect(live.site.state).toBe('unknown');
+    expect(live.site.receiptSha).toBeNull();
+    expect(live.revision).toBe(ctx.prepared.revision + 1);
+  });
+
+  testPosix('refuses to overwrite a receipt that changed while the site was deployed', async () => {
+    const ctx = await preparedContext();
+    const sourceSha = ctx.state.sizes.commit;
+    const changed = `${'9'.repeat(40)}\n`;
+    const calls = [];
+    const error = expectAttemptRefusal(() => runSiteAttempt(
+      { state: ctx.prepared, repoDir: ctx.fixture.repoDir },
+      siteActingDeps(ctx.fixture, {
+        deploy: (dir) => {
+          calls.push(dir);
+          fs.writeFileSync(receiptPathOf(ctx.fixture), changed, { mode: 0o600 });
+        }
+      })
+    ));
+    expect(error.message).toMatch(/receipt changed while the site was deployed/);
+    expect(calls).toEqual([deployDirOf(ctx.fixture)]);
+    expect(fs.readFileSync(receiptPathOf(ctx.fixture), 'utf8')).toBe(changed);
+    expect(readDescriptor(ctx.fixture, ATTEMPT_ID).phase).toBe('requested');
+    const live = readReleaseState(ctx.fixture.identity, { cacheRoot: ctx.fixture.cacheRoot, fs });
+    expect(live.site.state).toBe('unknown');
+    expect(live.revision).toBe(ctx.prepared.revision + 1);
+    expect(live.site.receiptSha).toBeNull();
+    expect(sourceSha).toBe(ctx.state.sizes.commit);
+  });
+
+  testPosix('refuses an altered retained snapshot and an existing deployment directory before recording a request', async () => {
+    const altered = await preparedContext();
+    fs.appendFileSync(path.join(altered.attemptDir, 'snapshot', 'index.html'), '\n');
+    const alteredCalls = [];
+    const alteredError = expectAttemptRefusal(() => runSiteAttempt(
+      { state: altered.prepared, repoDir: altered.fixture.repoDir },
+      siteActingDeps(altered.fixture, { deploy: (dir) => { alteredCalls.push(dir); } })
+    ));
+    expect(causeChain(alteredError)).toMatch(/SITE_EVIDENCE_INVALID:.*bytes changed/);
+    expect(alteredCalls).toEqual([]);
+    expect(fs.existsSync(deployDirOf(altered.fixture))).toBe(false);
+    expect(readDescriptor(altered.fixture, ATTEMPT_ID).phase).toBe('prepared');
+    expect(fs.existsSync(receiptPathOf(altered.fixture))).toBe(false);
+    expect(readReleaseState(altered.fixture.identity, { cacheRoot: altered.fixture.cacheRoot, fs }))
+      .toEqual(altered.prepared);
+
+    const leftover = await preparedContext();
+    const leftoverDir = deployDirOf(leftover.fixture);
+    fs.mkdirSync(leftoverDir, { mode: 0o700 });
+    write(leftoverDir, 'partial.txt', 'partial\n');
+    const leftoverCalls = [];
+    const leftoverError = expectAttemptRefusal(() => runSiteAttempt(
+      { state: leftover.prepared, repoDir: leftover.fixture.repoDir },
+      siteActingDeps(leftover.fixture, { deploy: (dir) => { leftoverCalls.push(dir); } })
+    ));
+    expect(leftoverError.message).toMatch(/already exists/);
+    expect(leftoverCalls).toEqual([]);
+    expect(fs.readFileSync(path.join(leftoverDir, 'partial.txt'), 'utf8')).toBe('partial\n');
+    expect(readDescriptor(leftover.fixture, ATTEMPT_ID).phase).toBe('prepared');
+    expect(fs.existsSync(receiptPathOf(leftover.fixture))).toBe(false);
+
+    const unchanged = reconcileSiteAttempt({ state: leftover.prepared, repoDir: leftover.fixture.repoDir }, siteDeps(NOW_2));
+    expect(unchanged).toEqual(leftover.prepared);
+    expect(fs.readFileSync(path.join(leftoverDir, 'partial.txt'), 'utf8')).toBe('partial\n');
+    expect(readDescriptor(leftover.fixture, ATTEMPT_ID).phase).toBe('prepared');
+    expect(leftoverCalls).toEqual([]);
+  });
+
+  testPosix('refuses a malformed, oversized or symlinked live receipt without a deployment', async () => {
+    const ctx = await preparedContext();
+    const receiptFile = receiptPathOf(ctx.fixture);
+    const cases = [
+      ['plain text', 'not an object identifier\n', /not one recorded object identifier/],
+      ['uppercase digits', `${'A'.repeat(40)}\n`, /not one recorded object identifier/],
+      ['two newlines', `${ctx.state.sizes.commit}\n\n`, /not one recorded object identifier/],
+      ['an oversized body', `${'9'.repeat(200)}\n`, /receipt is not readable/]
+    ];
+    for (const [name, body, pattern] of cases) {
+      fs.writeFileSync(receiptFile, body, { mode: 0o600 });
+      const calls = [];
+      const error = expectAttemptRefusal(() => runSiteAttempt(
+        { state: ctx.prepared, repoDir: ctx.fixture.repoDir },
+        siteActingDeps(ctx.fixture, { deploy: (dir) => { calls.push(dir); } })
+      ));
+      expect(`${name}: ${causeChain(error)}`).toMatch(pattern);
+      expect(calls).toEqual([]);
+      expect(readDescriptor(ctx.fixture, ATTEMPT_ID).phase).toBe('prepared');
+      expect(fs.readFileSync(receiptFile, 'utf8')).toBe(body);
+      const reconcileError = expectAttemptRefusal(() => reconcileSiteAttempt(
+        { state: ctx.prepared, repoDir: ctx.fixture.repoDir }, siteDeps(NOW_2)
+      ));
+      expect(`${name}: ${causeChain(reconcileError)}`).toMatch(pattern);
+      expect(readReleaseState(ctx.fixture.identity, { cacheRoot: ctx.fixture.cacheRoot, fs })).toEqual(ctx.prepared);
+      const abandonedCopy = deployDirOf(ctx.fixture);
+      if (fs.existsSync(abandonedCopy)) fs.rmSync(abandonedCopy, { recursive: true });
+    }
+
+    fs.rmSync(receiptFile);
+    fs.symlinkSync(path.join(ctx.fixture.repoRoot, 'website/index.html'), receiptFile);
+    const symlinkCalls = [];
+    const symlinkError = expectAttemptRefusal(() => runSiteAttempt(
+      { state: ctx.prepared, repoDir: ctx.fixture.repoDir },
+      siteActingDeps(ctx.fixture, { deploy: (dir) => { symlinkCalls.push(dir); } })
+    ));
+    expect(causeChain(symlinkError)).toMatch(/receipt is not readable/);
+    expect(symlinkCalls).toEqual([]);
+    expect(readDescriptor(ctx.fixture, ATTEMPT_ID).phase).toBe('prepared');
+    expect(readReleaseState(ctx.fixture.identity, { cacheRoot: ctx.fixture.cacheRoot, fs })).toEqual(ctx.prepared);
+  });
+});
+
+// Historical site evidence is certified from the retained descriptor, the retained
+// snapshot and the recorded size commit alone. The live checkout, the origin, the
+// live receipt and the current clock are all irrelevant to that proof, so the read
+// boundary below exposes only the immutable local Git reads and the read-only
+// filesystem calls a pure read needs: anything else fails loudly.
+const READ_GIT_COMMANDS = ['cat-file', 'ls-tree', 'rev-parse'];
+
+function historicalFs(events) {
+  const realpathSync = (target) => { events.push(`realpath:${label(target)}`); return fs.realpathSync.native(target); };
+  realpathSync.native = realpathSync;
+  const allowed = {
+    constants: fs.constants,
+    lstatSync: (target) => { events.push(`lstat:${label(target)}`); return fs.lstatSync(target); },
+    statSync: (target) => { events.push(`stat:${label(target)}`); return fs.statSync(target); },
+    realpathSync,
+    readdirSync: (target) => { events.push(`readdir:${label(target)}`); return fs.readdirSync(target); },
+    openSync: (target, flags) => { events.push(`open:${label(target)}`); return fs.openSync(target, flags); },
+    fstatSync: (fd) => { events.push(`fstat:fd:${fd}`); return fs.fstatSync(fd); },
+    readSync: (fd, buffer, offset, length, position) => {
+      events.push(`read:fd:${fd}`);
+      return fs.readSync(fd, buffer, offset, length, position);
+    },
+    closeSync: (fd) => { events.push(`close:fd:${fd}`); return fs.closeSync(fd); }
+  };
+  return new Proxy(allowed, {
+    get(target, prop) {
+      if (typeof prop === 'symbol') return target[prop];
+      if (Object.prototype.hasOwnProperty.call(target, prop)) return target[prop];
+      throw new Error(`Historical site evidence must not use filesystem ${String(prop)}`);
+    }
+  });
+}
+
+function historicalDeps(fixture) {
+  const reader = createLocalGitReader();
+  const calls = [];
+  const objectReads = [];
+  const events = [];
+  const forbidden = (name) => () => {
+    throw new Error(`${name} must not be entered for a historical site read`);
+  };
+  return {
+    calls,
+    objectReads,
+    events,
+    deps: {
+      run: (command, args, options) => {
+        calls.push(args.slice());
+        if (args[0] === 'cat-file') objectReads.push(args[2]);
+        if (args[0] === 'ls-tree' && args.includes('-r')) objectReads.push(args[args.length - 1]);
+        return reader.run(command, args, options);
+      },
+      fs: historicalFs(events),
+      spawn: forbidden('spawn'),
+      now: forbidden('now'),
+      deploy: forbidden('deploy'),
+      fetch: forbidden('fetch'),
+      withReleaseLock: forbidden('withReleaseLock'),
+      withFerryRepoLock: forbidden('withFerryRepoLock')
+    }
+  };
+}
+
+async function completedSiteFixture() {
+  const ctx = await preparedContext();
+  const completed = runSiteAttempt(
+    { state: ctx.prepared, repoDir: ctx.fixture.repoDir },
+    siteActingDeps(ctx.fixture, { deploy: () => {} })
+  );
+  return { ...ctx, completed, state: persistedSiteState(ctx.fixture, completed) };
+}
+
+function stateVariant(state, mutate) {
+  const copy = JSON.parse(JSON.stringify(state));
+  mutate(copy);
+  return copy;
+}
+
+describe('site historical', () => {
+  let completed;
+
+  beforeAll(async () => {
+    if (process.platform === 'win32') return;
+    completed = await completedSiteFixture();
+  });
+
+  testPosix('certifies the retained completion without reading the current checkout', async () => {
+    const fixture = completed.fixture;
+    const state = completed.state;
+    const descriptorFile = readDescriptorFile(fixture, ATTEMPT_ID);
+    const descriptor = readDescriptor(fixture, ATTEMPT_ID);
+    const descriptorBytes = fs.readFileSync(descriptorFile);
+    const { deps, calls, objectReads, events } = historicalDeps(fixture);
+    const worktreeBefore = liveSnapshot(fixture);
+    const cacheBefore = liveTreeDigest(fixture.cacheRoot);
+    const receiptBefore = fs.readFileSync(receiptPathOf(fixture), 'utf8');
+
+    const proof = readSiteEvidence({ state, repoDir: fixture.repoDir }, deps);
+
+    expect(Object.keys(proof)).toEqual(['sourceSha', 'treeSha', 'attemptId', 'receiptSha', 'verifiedAt']);
+    expect(proof).toEqual({
+      sourceSha: descriptor.sourceSha,
+      treeSha: descriptor.treeSha,
+      attemptId: descriptor.attemptId,
+      receiptSha: descriptor.receiptSha,
+      verifiedAt: descriptor.completedAt
+    });
+    expect(proof).toEqual({
+      sourceSha: state.site.sourceSha,
+      treeSha: state.site.treeSha,
+      attemptId: state.site.attemptId,
+      receiptSha: state.site.receiptSha,
+      verifiedAt: state.site.verifiedAt
+    });
+    expect(descriptor.phase).toBe('complete');
+    expect(proof.sourceSha).toBe(state.sizes.commit);
+    expect(proof.verifiedAt).toBe(NOW);
+    expect(proof.attemptId).toBe(ATTEMPT_ID);
+
+    expect(objectReads.length).toBe(expectedInventory(fixture, state.sizes.commit).paths.length + 1);
+    expect(objectReads.length).toBeGreaterThan(0);
+    expect(calls.every((args) => READ_GIT_COMMANDS.includes(args[0]))).toBe(true);
+    expect(calls.map((args) => args[0])).toEqual(expect.arrayContaining(['cat-file', 'ls-tree', 'rev-parse']));
+    expect(events.some((event) => event.startsWith('read:fd:'))).toBe(true);
+    expect(events).toContain(`readdir:${path.join(completed.attemptDir, 'snapshot')}`);
+    expect(events.every((event) =>
+      /^(lstat|stat|realpath|readdir|open|fstat|read|close):/.test(event)
+    )).toBe(true);
+
+    expect(fs.readFileSync(descriptorFile)).toEqual(descriptorBytes);
+    expect(fs.readFileSync(receiptPathOf(fixture), 'utf8')).toBe(receiptBefore);
+    expect(liveSnapshot(fixture)).toEqual(worktreeBefore);
+    expect(liveTreeDigest(fixture.cacheRoot)).toBe(cacheBefore);
+  });
+
+  test('requires a complete saved site target before touching a read dependency', () => {
+    const forbiddenFs = new Proxy({}, {
+      get(target, prop) {
+        throw new Error(`filesystem ${String(prop)} must not be touched`);
+      }
+    });
+    const forbiddenRun = () => {
+      throw new Error('Git must not be read');
+    };
+    const repoDir = path.resolve('/tmp/site-evidence');
+    const states = [undefined, null, {}, { site: null }, { site: {} }, { site: { state: 'pending' } }, { site: { state: 'unknown' } }];
+    for (const state of states) {
+      const error = expectSiteRefusal(
+        () => readSiteEvidence({ state, repoDir }, { run: forbiddenRun, fs: forbiddenFs })
+      );
+      expect(error.message).toMatch(/Complete site evidence is required/);
+    }
+  });
+
+  testPosix('keeps the retained completion when the checkout, the origin and the live receipt move on', async () => {
+    const ctx = await completedSiteFixture();
+    const fixture = ctx.fixture;
+    const state = ctx.state;
+    const descriptorFile = readDescriptorFile(fixture, ATTEMPT_ID);
+    const descriptorBytes = fs.readFileSync(descriptorFile);
+    const first = readSiteEvidence({ state, repoDir: fixture.repoDir }, historicalDeps(fixture).deps);
+
+    write(fixture.repoRoot, 'website/index.html', websiteFixture(MB_NEW));
+    git(fixture.repoRoot, ['add', '-A']);
+    git(fixture.repoRoot, ['commit', '-q', '-m', 'later website']);
+    git(fixture.repoRoot, ['checkout', '-q', '-b', 'feature']);
+    git(fixture.repoRoot, ['remote', 'set-url', 'origin', fixture.pushRemote]);
+    fs.writeFileSync(receiptPathOf(fixture), 'not an object identifier\n', { mode: 0o600 });
+
+    expect(git(fixture.repoRoot, ['rev-parse', 'HEAD']).trim()).not.toBe(state.sizes.commit);
+    expect(git(fixture.repoRoot, ['symbolic-ref', '-q', 'HEAD']).trim()).toBe('refs/heads/feature');
+    expect(git(fixture.repoRoot, ['remote', 'get-url', 'origin']).trim()).toBe(fixture.pushRemote);
+
+    const worktreeBefore = liveSnapshot(fixture);
+    const cacheBefore = liveTreeDigest(fixture.cacheRoot);
+    const malformed = historicalDeps(fixture);
+    const despiteReceipt = readSiteEvidence({ state, repoDir: fixture.repoDir }, malformed.deps);
+    expect(liveSnapshot(fixture)).toEqual(worktreeBefore);
+    expect(liveTreeDigest(fixture.cacheRoot)).toBe(cacheBefore);
+    expect(despiteReceipt).toEqual(first);
+    expect(despiteReceipt.verifiedAt).toBe(NOW);
+    expect(despiteReceipt).toEqual({
+      sourceSha: state.site.sourceSha,
+      treeSha: state.site.treeSha,
+      attemptId: ATTEMPT_ID,
+      receiptSha: state.site.receiptSha,
+      verifiedAt: NOW
+    });
+    expect(malformed.objectReads.length).toBeGreaterThan(0);
+    expect(fs.readFileSync(receiptPathOf(fixture), 'utf8')).toBe('not an object identifier\n');
+
+    fs.rmSync(receiptPathOf(fixture));
+    const withoutWorktree = liveSnapshot(fixture);
+    const withoutCache = liveTreeDigest(fixture.cacheRoot);
+    const withoutReceipt = readSiteEvidence({ state, repoDir: fixture.repoDir }, historicalDeps(fixture).deps);
+    expect(withoutReceipt).toEqual(first);
+    expect(withoutReceipt.verifiedAt).toBe(NOW);
+    expect(fs.existsSync(receiptPathOf(fixture))).toBe(false);
+    expect(liveSnapshot(fixture)).toEqual(withoutWorktree);
+    expect(liveTreeDigest(fixture.cacheRoot)).toBe(withoutCache);
+
+    expect(fs.readFileSync(descriptorFile)).toEqual(descriptorBytes);
+  });
+
+  testPosix('refuses missing, altered or mismatched retained site evidence', async () => {
+    const fixture = completed.fixture;
+    const state = completed.state;
+    const attemptDir = completed.attemptDir;
+    const snapshotDir = path.join(attemptDir, 'snapshot');
+    const descriptorFile = readDescriptorFile(fixture, ATTEMPT_ID);
+    const descriptorBytes = fs.readFileSync(descriptorFile);
+    const descriptor = readDescriptor(fixture, ATTEMPT_ID);
+    const restoreDescriptor = () => fs.writeFileSync(descriptorFile, descriptorBytes, { mode: 0o600 });
+    const noop = () => {};
+    const retained = (relative) => {
+      const file = path.join(snapshotDir, relative);
+      const bytes = fs.readFileSync(file);
+      const mode = fs.lstatSync(file).mode & 0o777;
+      return {
+        file,
+        bytes,
+        mode,
+        remove: () => fs.rmSync(file),
+        restore: () => {
+          fs.rmSync(file, { force: true });
+          fs.writeFileSync(file, bytes, { mode });
+        }
+      };
+    };
+    const index = retained('index.html');
+    const serve = retained('scripts/serve.sh');
+    const moved = `${snapshotDir}.moved`;
+    const absent = 'f'.repeat(40);
+    const movedCommonDir = path.join(fixture.parentDir, 'other-common');
+    const worktreeBefore = liveSnapshot(fixture);
+    const snapshotBefore = liveTreeDigest(snapshotDir);
+    const proof = readSiteEvidence({ state, repoDir: fixture.repoDir }, historicalDeps(fixture).deps);
+
+    const scenarios = [
+      {
+        name: 'a missing descriptor',
+        pattern: /descriptor is missing/,
+        state: () => state,
+        apply: () => fs.rmSync(descriptorFile),
+        restore: restoreDescriptor
+      },
+      {
+        name: 'a missing snapshot',
+        pattern: /snapshot is missing/,
+        state: () => state,
+        apply: () => fs.renameSync(snapshotDir, moved),
+        restore: () => fs.renameSync(moved, snapshotDir)
+      },
+      {
+        name: 'a source object that is not in the object store',
+        pattern: /Git read failed/,
+        state: () => stateVariant(state, (copy) => {
+          copy.site.sourceSha = absent;
+          copy.site.receiptSha = absent;
+          copy.sizes.commit = absent;
+        }),
+        apply: () => writeDescriptorFile(fixture, ATTEMPT_ID, {
+          ...descriptor, sourceSha: absent, receiptSha: absent
+        }),
+        restore: restoreDescriptor
+      },
+      {
+        name: 'changed retained file bytes',
+        pattern: /bytes changed: index.html/,
+        state: () => state,
+        apply: () => fs.appendFileSync(index.file, '\n'),
+        restore: index.restore
+      },
+      {
+        name: 'an extra retained file',
+        pattern: /unexpected file: extra.txt/,
+        state: () => state,
+        apply: () => write(snapshotDir, 'extra.txt', 'extra\n', 0o644),
+        restore: () => fs.rmSync(path.join(snapshotDir, 'extra.txt'))
+      },
+      {
+        name: 'an extra retained directory',
+        pattern: /unexpected directory: extra-dir/,
+        state: () => state,
+        apply: () => fs.mkdirSync(path.join(snapshotDir, 'extra-dir'), { mode: 0o700 }),
+        restore: () => fs.rmdirSync(path.join(snapshotDir, 'extra-dir'))
+      },
+      {
+        name: 'a missing retained file',
+        pattern: /missing scripts\/serve.sh/,
+        state: () => state,
+        apply: () => serve.remove(),
+        restore: serve.restore
+      },
+      {
+        name: 'a symlinked retained leaf',
+        pattern: /holds a symlink: index.html/,
+        state: () => state,
+        apply: () => {
+          index.remove();
+          fs.symlinkSync(path.join(snapshotDir, 'wrangler.jsonc'), index.file);
+        },
+        restore: index.restore
+      },
+      {
+        name: 'a descriptor naming a different site tree',
+        pattern: /different site tree/,
+        state: () => stateVariant(state, (copy) => { copy.site.treeSha = '3'.repeat(40); }),
+        apply: noop,
+        restore: noop
+      },
+      {
+        name: 'a descriptor that is not the completed size source',
+        pattern: /not the completed size source/,
+        state: () => stateVariant(state, (copy) => { copy.sizes.commit = '4'.repeat(40); }),
+        apply: noop,
+        restore: noop
+      },
+      {
+        name: 'an unresolved descriptor phase',
+        pattern: /Site completion differs from its retained descriptor/,
+        state: () => state,
+        apply: () => writeDescriptorFile(fixture, ATTEMPT_ID, {
+          ...descriptor, phase: 'requested', requestedAt: NOW, completedAt: null, receiptSha: null
+        }),
+        restore: restoreDescriptor
+      },
+      {
+        name: 'a stale completion timestamp',
+        pattern: /Site completion differs from its retained descriptor/,
+        state: () => state,
+        apply: () => writeDescriptorFile(fixture, ATTEMPT_ID, {
+          ...descriptor, completedAt: '2026-02-03T09:00:00.000Z'
+        }),
+        restore: restoreDescriptor
+      },
+      {
+        name: 'a different recorded object store',
+        pattern: /different object store/,
+        state: () => stateVariant(state, (copy) => { copy.repo.commonDir = movedCommonDir; }),
+        apply: noop,
+        restore: noop
+      },
+      {
+        name: 'a different recorded cache key',
+        pattern: /validated release state/,
+        state: () => stateVariant(state, (copy) => { copy.repo.key = '5'.repeat(64); }),
+        apply: noop,
+        restore: noop
+      },
+      {
+        name: 'an unresolved saved site target',
+        pattern: /Complete site evidence is required/,
+        state: () => stateVariant(state, (copy) => {
+          copy.site.state = 'unknown';
+          copy.site.verifiedAt = null;
+          copy.site.error = UNRESOLVED_SITE;
+        }),
+        apply: noop,
+        restore: noop
+      }
+    ];
+
+    for (const scenario of scenarios) {
+      scenario.apply();
+      try {
+        const error = expectSiteRefusal(() => readSiteEvidence(
+          { state: scenario.state(), repoDir: fixture.repoDir }, historicalDeps(fixture).deps
+        ));
+        expect(`${scenario.name}: ${error.message}`).toMatch(scenario.pattern);
+      } finally {
+        scenario.restore();
+      }
+    }
+
+    expect(fs.readFileSync(descriptorFile)).toEqual(descriptorBytes);
+    expect(liveTreeDigest(snapshotDir)).toBe(snapshotBefore);
+    expect(liveSnapshot(fixture)).toEqual(worktreeBefore);
+    expect(readSiteEvidence({ state, repoDir: fixture.repoDir }, historicalDeps(fixture).deps)).toEqual(proof);
+  });
+});
 });

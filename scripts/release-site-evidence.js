@@ -567,4 +567,24 @@ function readSiteAttempt(input, deps) {
   return { descriptor, descriptorBytes, attemptDir };
 }
 
-module.exports = { readCommittedSite, readSiteAttempt, verifySiteSnapshot };
+function readSiteEvidence(input, deps) {
+  const request = isPlainRecord(input) ? input : {};
+  const state = request.state;
+  if (!isPlainRecord(state) || !isPlainRecord(state.site) || state.site.state !== 'complete') {
+    throw siteInvalid('Complete site evidence is required');
+  }
+  const { descriptor } = readSiteAttempt(request, deps);
+  if (descriptor.phase !== 'complete' || descriptor.receiptSha !== state.site.receiptSha ||
+      descriptor.completedAt !== state.site.verifiedAt) {
+    throw siteInvalid('Site completion differs from its retained descriptor');
+  }
+  return {
+    sourceSha: descriptor.sourceSha,
+    treeSha: descriptor.treeSha,
+    attemptId: descriptor.attemptId,
+    receiptSha: descriptor.receiptSha,
+    verifiedAt: descriptor.completedAt
+  };
+}
+
+module.exports = { readCommittedSite, readSiteAttempt, readSiteEvidence, verifySiteSnapshot };
