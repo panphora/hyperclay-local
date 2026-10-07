@@ -451,6 +451,10 @@ function endpointPatterns(operation, repo) {
     return [
       new RegExp(
         `^${base}workflows/${POSITIVE_INTEGER}/runs\\?event=workflow_dispatch&per_page=100&page=${POSITIVE_INTEGER}$`
+      ),
+      new RegExp(
+        `^${base}workflows/${POSITIVE_INTEGER}/runs\\?event=workflow_dispatch&per_page=100&page=${POSITIVE_INTEGER}` +
+        '&created=%3E%3D[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}%3A[0-9]{2}%3A[0-9]{2}Z$'
       )
     ];
   }
@@ -476,12 +480,23 @@ function validateEndpoint(operation, repo, endpoint) {
       `Read ${operation} does not allow endpoint ${JSON.stringify(endpoint)} for ${repo}`
     );
   }
+  if (operation === 'github.workflow-runs-page' && endpoint.includes('&created=')) {
+    const encoded = endpoint.slice(endpoint.indexOf('&created=') + '&created='.length);
+    const timestamp = decodeURIComponent(encoded).slice(2);
+    const instant = new Date(timestamp);
+    if (!Number.isFinite(instant.getTime()) ||
+        instant.toISOString().replace(/\.000Z$/, 'Z') !== timestamp) {
+      throw readError('invalid-endpoint', 'Workflow discovery requires a canonical UTC creation bound');
+    }
+  }
   return endpoint;
 }
 
 function ghArgs(endpoint) {
   return [
     'api',
+    '--hostname',
+    'github.com',
     '--method',
     'GET',
     '--include',

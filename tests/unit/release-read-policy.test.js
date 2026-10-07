@@ -735,6 +735,8 @@ describe('readGithubJson', () => {
     expect(runner.calls[0].file).toBe('gh');
     expect(runner.calls[0].args).toEqual([
       'api',
+      '--hostname',
+      'github.com',
       '--method',
       'GET',
       '--include',
@@ -1028,6 +1030,94 @@ describe('readGithubJson', () => {
       await expect(
         readGithubJson(operation, { repo: REPO, endpoint: runEndpoint }, { run: runner.run })
       ).rejects.toMatchObject({ kind: 'invalid-operation' });
+      expect(runner.calls).toHaveLength(0);
+    }
+  });
+});
+
+describe('workflow discovery endpoint', () => {
+  const runsPage = `repos/${REPO}/actions/workflows/73/runs?event=workflow_dispatch&per_page=100&page=2`;
+  const createdBound = '&created=%3E%3D2026-01-02T03%3A04%3A05Z';
+
+  async function readRunsPage(endpoint) {
+    const runner = fakeRunner([ghOk({ workflow_runs: [] })]);
+    const clock = fakeClock();
+    const value = await readGithubJson('github.workflow-runs-page', { repo: REPO, endpoint }, {
+      run: runner.run,
+      now: clock.now,
+      wallNow: clock.wallNow,
+      sleep: clock.sleep,
+      logReadFailure: clock.log
+    });
+    return { value, runner };
+  }
+
+  test('accepts the unfiltered page, a canonical creation bound and a leap day', async () => {
+    for (const endpoint of [
+      runsPage,
+      `${runsPage}${createdBound}`,
+      `${runsPage}&created=%3E%3D2028-02-29T23%3A59%3A59Z`
+    ]) {
+      const { value, runner } = await readRunsPage(endpoint);
+      expect(value).toEqual({ workflow_runs: [] });
+      expect(runner.calls).toHaveLength(1);
+      expect(runner.calls[0].args[runner.calls[0].args.length - 1]).toBe(endpoint);
+    }
+  });
+
+  test('pins the github.com host on every GitHub operation while GH_HOST points elsewhere', async () => {
+    const previous = process.env.GH_HOST;
+    process.env.GH_HOST = 'github.example.com';
+    try {
+      const operations = [
+        ['github.workflow-definition', `repos/${REPO}/actions/workflows/73`],
+        ['github.workflow-runs-page', `${runsPage}${createdBound}`],
+        ['github.run', `repos/${REPO}/actions/runs/1287`],
+        ['github.run-jobs-page', `repos/${REPO}/actions/runs/1287/attempts/2/jobs?per_page=100&page=3`]
+      ];
+      for (const [operation, endpoint] of operations) {
+        const runner = fakeRunner([ghOk({ ok: true })]);
+        await readGithubJson(operation, { repo: REPO, endpoint }, {
+          run: runner.run,
+          now: () => 0,
+          sleep: () => Promise.resolve()
+        });
+        expect(runner.calls).toHaveLength(1);
+        expect(runner.calls[0].file).toBe('gh');
+        expect(runner.calls[0].args[runner.calls[0].args.indexOf('--hostname') + 1]).toBe('github.com');
+        expect(runner.calls[0].options.env.GH_HOST).toBe('github.example.com');
+      }
+    } finally {
+      if (previous === undefined) delete process.env.GH_HOST;
+      else process.env.GH_HOST = previous;
+    }
+  });
+
+  test('refuses noncanonical creation bounds before gh runs', async () => {
+    const rejected = [
+      `${runsPage}&created=%3E%3D2026-02-30T00%3A00%3A00Z`,
+      `${runsPage}&created=%3E%3D2026-02-29T00%3A00%3A00Z`,
+      `${runsPage}&created=%3E%3D2026-01-02T24%3A00%3A00Z`,
+      `${runsPage}&created=%3E%3D2026-01-02T03%3A60%3A00Z`,
+      `${runsPage}&created=%3E%3D2026-01-02T03%3A04%3A60Z`,
+      `${runsPage}${createdBound}${createdBound}`,
+      `${runsPage}&created=>=2026-01-02T03:04:05Z`,
+      `${runsPage}&created=%3E%3D2026-01-02T03:04:05Z`,
+      `${runsPage}&created=%3e%3d2026-01-02T03%3a04%3a05Z`,
+      `${runsPage}&created=%3E%3D2026-01-02T03%3A04%3A05%2B00%3A00`,
+      `${runsPage}&created=%3E%3D2026-01-02T03%3A04%3A05.000Z`,
+      `repos/${REPO}/actions/workflows/73/runs?event=workflow_dispatch&per_page=100&created=%3E%3D2026-01-02T03%3A04%3A05Z&page=2`,
+      `${runsPage}&created=%3E%3D2026-01-02T03%3A04%3A05Z&extra=1`
+    ];
+    for (const endpoint of rejected) {
+      const runner = fakeRunner([]);
+      await expect(
+        readGithubJson('github.workflow-runs-page', { repo: REPO, endpoint }, {
+          run: runner.run,
+          now: () => 0,
+          sleep: () => Promise.resolve()
+        })
+      ).rejects.toMatchObject({ kind: 'invalid-endpoint' });
       expect(runner.calls).toHaveLength(0);
     }
   });

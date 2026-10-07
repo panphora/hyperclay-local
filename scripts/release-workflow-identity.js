@@ -95,7 +95,8 @@ function makeWorkflowAttempt(input) {
     const requiredRef = state.mode === 'dry-run' ? 'main' : `v${state.version}`;
     if (dispatchRef !== requiredRef) throw attemptError('An initial attempt must dispatch the ref allowed for its mode');
     event = { type: 'attempt-ready', at: state.updatedAt };
-  } else if (state.phase === 'failed-ci' && active !== null && active.identityKind === 'dispatch' &&
+  } else if (state.phase === 'failed-ci' && active !== null &&
+      ['dispatch', 'legacy-failed-run'].includes(active.identityKind) &&
       isCompletedNonSuccess(active)) {
     if (state.mode !== 'publish') throw attemptError('A repair attempt requires a publish release');
     if (sourceSha === active.sourceSha) throw attemptError('A repair attempt must dispatch a different source');

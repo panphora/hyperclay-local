@@ -5,7 +5,12 @@
 const crypto = require('crypto');
 const path = require('path');
 
-const { createReleaseState, transitionRelease } = require('../../scripts/release-transitions');
+const { validateReleaseState } = require('../../scripts/release-state');
+const {
+  createReleaseState,
+  createLegacyFailedState,
+  transitionRelease
+} = require('../../scripts/release-transitions');
 const {
   makeWorkflowAttempt,
   classifyWorkflowRun,
@@ -64,6 +69,7 @@ const TIMES = {
 };
 
 const CI_ERROR = { code: 'WORKFLOW_FAILED', message: 'Release workflow concluded failure' };
+const REJECTION_ERROR = { code: 'WORKFLOW_DISPATCH_REJECTED', message: 'Release workflow dispatch was rejected by the provider' };
 const CANONICAL_URL = `https://github.com/fixture-owner/hyperclay-local/actions/runs/${RUN_ID}`;
 
 const ATTEMPT_KEYS = [
@@ -925,5 +931,204 @@ describe('shared workflow run facts', () => {
 
   test('the shared facts refusal table is nonzero', () => {
     expect(FACTS_REFUSALS.length).toBeGreaterThan(20);
+  });
+});
+
+describe('explicit rejected continuation', () => {
+  const CONTINUED_ATTEMPT_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+  const REPAIR_REJECTED_AT = '2026-10-03T19:34:00.000Z';
+  const CONTINUED_AT = '2026-10-03T19:40:00.000Z';
+
+  function rejectedRepairState() {
+    const failed = failedCiState();
+    const attempt = repairAttempt({ state: failed });
+    const repaired = transitionRelease(failed, {
+      type: 'begin-repair-attempt', at: TIMES.repair, previousRunId: RUN_ID, attempt
+    }, IDENTITY, OPTIONS);
+    const requested = transitionRelease(repaired, {
+      type: 'dispatch-requested', at: TIMES.repairRequested
+    }, IDENTITY, OPTIONS);
+    return transitionRelease(requested, {
+      type: 'dispatch-rejected', at: REPAIR_REJECTED_AT, error: REJECTION_ERROR
+    }, IDENTITY, OPTIONS);
+  }
+
+  test('the real repair constructor feeds one explicit rejected continuation', () => {
+    const rejected = rejectedRepairState();
+    const previous = rejected.attempts[1];
+    const before = structuredClone(rejected);
+
+    const next = transitionRelease(rejected, {
+      type: 'begin-rejected-attempt', at: CONTINUED_AT,
+      previousAttemptId: previous.id, attemptId: CONTINUED_ATTEMPT_ID
+    }, IDENTITY, OPTIONS);
+
+    expect(rejected).toEqual(before);
+    expect(next.phase).toBe('workflow');
+    expect(next.activeAttemptId).toBe(CONTINUED_ATTEMPT_ID);
+    expect(next.sourceSha).toBe(REPAIR_SOURCE_SHA);
+    expect(next.attempts).toHaveLength(3);
+    expect(next.attempts.slice(0, 2)).toEqual(before.attempts);
+    expect(next.attempts[1].dispatch).toBe('rejected');
+    expect(next.attempts[1].error).toEqual(REJECTION_ERROR);
+    expect(next.attempts[1].requestedAt).toBe(TIMES.repairRequested);
+
+    const continued = next.attempts[2];
+    expect(continued.id).toBe(CONTINUED_ATTEMPT_ID);
+    expect(continued.identityKind).toBe('dispatch');
+    expect(continued.dispatch).toBe('ready');
+    expect(continued.sourceSha).toBe(previous.sourceSha);
+    expect(continued.dispatchRef).toBe('main');
+    expect(continued.workflowId).toBe(previous.workflowId);
+    expect(continued.workflowPath).toBe(previous.workflowPath);
+    expect(continued.expectedTitle).toBe(
+      `release v${VERSION} publish sha=${REPAIR_SOURCE_SHA} attempt=${CONTINUED_ATTEMPT_ID}`
+    );
+    expect(continued.requestedAt).toBeNull();
+    expect(continued.watchDeadlineAt).toBeNull();
+    expect(continued.error).toBeNull();
+    expect(validateReleaseState(next, IDENTITY, OPTIONS)).toBe(next);
+  });
+
+  test('a mismatched or duplicate continuation on the real repair chain is refused', () => {
+    const rejected = rejectedRepairState();
+    expectRefusal(() => transitionRelease(rejected, {
+      type: 'begin-rejected-attempt', at: CONTINUED_AT,
+      previousAttemptId: ATTEMPT_ID, attemptId: CONTINUED_ATTEMPT_ID
+    }, IDENTITY, OPTIONS), 'STATE_TRANSITION_INVALID');
+    expectRefusal(() => transitionRelease(rejected, {
+      type: 'begin-rejected-attempt', at: CONTINUED_AT,
+      previousAttemptId: rejected.activeAttemptId, attemptId: rejected.activeAttemptId
+    }, IDENTITY, OPTIONS), 'STATE_TRANSITION_INVALID');
+  });
+});
+
+describe('legacy failed repair', () => {
+  const FAILED_LEGACY_ATTEMPT_ID = `legacy-failed:${RUN_ID}:2`;
+  const REPAIRED_ATTEMPT_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+
+  function legacyFailureProof(patch = {}) {
+    return Object.assign({ observedHeadSha: SOURCE_SHA, observedConclusion: 'failure' }, patch);
+  }
+
+  function legacyFailedAttempt(patch = {}) {
+    return Object.assign({
+      id: FAILED_LEGACY_ATTEMPT_ID,
+      identityKind: 'legacy-failed-run',
+      version: VERSION,
+      mode: 'publish',
+      sourceSha: SOURCE_SHA,
+      dispatchRef: null,
+      workflowPath: WORKFLOW_PATH,
+      workflowId: WORKFLOW_ID,
+      expectedTitle: null,
+      dispatch: 'identified',
+      requestedAt: null,
+      watchDeadlineAt: null,
+      runId: RUN_ID,
+      runAttempt: 2,
+      runStatus: 'completed',
+      conclusion: 'failure',
+      lastObservedAt: TIMES.observed,
+      error: null,
+      legacyFailureProof: legacyFailureProof()
+    }, patch);
+  }
+
+  function legacyFailedState(patch = {}) {
+    return createLegacyFailedState({
+      releaseId: RELEASE_ID,
+      version: VERSION,
+      sourceSha: SOURCE_SHA,
+      at: TIMES.created,
+      attempt: legacyFailedAttempt(patch)
+    }, IDENTITY, OPTIONS);
+  }
+
+  function repairedAttempt(patch = {}) {
+    return makeWorkflowAttempt(Object.assign({
+      state: legacyFailedState(), repoDir: REPO_DIR, workflowId: WORKFLOW_ID,
+      attemptId: REPAIRED_ATTEMPT_ID, sourceSha: REPAIR_SOURCE_SHA, dispatchRef: 'main'
+    }, patch));
+  }
+
+  test('the real failed legacy constructor feeds one ordinary repaired dispatch attempt', () => {
+    const failed = legacyFailedState();
+    expect(failed.phase).toBe('failed-ci');
+    expect(failed.revision).toBe(0);
+    expect(failed.activeAttemptId).toBe(FAILED_LEGACY_ATTEMPT_ID);
+    expect(failed.attempts).toEqual([legacyFailedAttempt()]);
+    expect(failed.lastError).toEqual({
+      code: 'WORKFLOW_CI_FAILED', message: 'Historical release workflow concluded failure'
+    });
+
+    const attempt = repairedAttempt();
+    expect(attempt.identityKind).toBe('dispatch');
+    expect(attempt.id).toBe(REPAIRED_ATTEMPT_ID);
+    expect(attempt.sourceSha).toBe(REPAIR_SOURCE_SHA);
+    expect(attempt.dispatchRef).toBe('main');
+    expect(attempt.dispatch).toBe('ready');
+    expect(attempt.runAttempt).toBeNull();
+    expect(attempt.expectedTitle).toBe(
+      `release v${VERSION} publish sha=${REPAIR_SOURCE_SHA} attempt=${REPAIRED_ATTEMPT_ID}`
+    );
+
+    const repaired = transitionRelease(failed, {
+      type: 'begin-repair-attempt', at: TIMES.repair, previousRunId: RUN_ID, attempt
+    }, IDENTITY, OPTIONS);
+    expect(repaired.phase).toBe('workflow');
+    expect(repaired.revision).toBe(failed.revision + 1);
+    expect(repaired.sourceSha).toBe(REPAIR_SOURCE_SHA);
+    expect(repaired.activeAttemptId).toBe(REPAIRED_ATTEMPT_ID);
+    expect(repaired.lastError).toBeNull();
+    expect(repaired.attempts).toHaveLength(2);
+    expect(repaired.attempts[0]).toEqual(failed.attempts[0]);
+    expect(repaired.attempts[0].legacyFailureProof).toEqual({
+      observedHeadSha: SOURCE_SHA, observedConclusion: 'failure'
+    });
+    expect(repaired.attempts[1]).toEqual(attempt);
+    expect(repaired.artifacts).toEqual({ state: 'pending' });
+    expect(validateReleaseState(repaired, IDENTITY, OPTIONS)).toBe(repaired);
+    expect(failed.attempts).toHaveLength(1);
+  });
+
+  test('a repaired dispatch requires a new source, main, a fresh uuid and the exact failing run', () => {
+    expectRefusal(() => repairedAttempt({ sourceSha: SOURCE_SHA }), 'WORKFLOW_ATTEMPT_INVALID');
+    expectRefusal(() => repairedAttempt({ dispatchRef: `v${VERSION}` }), 'WORKFLOW_ATTEMPT_INVALID');
+    expectRefusal(() => repairedAttempt({ dispatchRef: 'develop' }), 'WORKFLOW_ATTEMPT_INVALID');
+    expectRefusal(() => repairedAttempt({ attemptId: FAILED_LEGACY_ATTEMPT_ID }), 'WORKFLOW_ATTEMPT_INVALID');
+    expectRefusal(() => repairedAttempt({ attemptId: 'not-a-version-4-uuid' }), 'WORKFLOW_ATTEMPT_INVALID');
+    expect(repairedAttempt().id).toBe(REPAIRED_ATTEMPT_ID);
+  });
+
+  test('a running, successful or successful-legacy predecessor never qualifies for repair', () => {
+    const running = structuredClone(legacyFailedState());
+    running.attempts[0].runStatus = 'in_progress';
+    expectRefusal(() => makeWorkflowAttempt({
+      state: running, repoDir: REPO_DIR, workflowId: WORKFLOW_ID,
+      attemptId: REPAIRED_ATTEMPT_ID, sourceSha: REPAIR_SOURCE_SHA, dispatchRef: 'main'
+    }), 'STATE_INVALID');
+
+    const successful = structuredClone(legacyFailedState());
+    successful.attempts[0].conclusion = 'success';
+    successful.attempts[0].legacyFailureProof.observedConclusion = 'success';
+    expectRefusal(() => makeWorkflowAttempt({
+      state: successful, repoDir: REPO_DIR, workflowId: WORKFLOW_ID,
+      attemptId: REPAIRED_ATTEMPT_ID, sourceSha: REPAIR_SOURCE_SHA, dispatchRef: 'main'
+    }), 'STATE_INVALID');
+
+    const successfulLegacy = legacyState();
+    expect(validateReleaseState(successfulLegacy, IDENTITY, OPTIONS)).toBe(successfulLegacy);
+    expectRefusal(() => makeWorkflowAttempt({
+      state: successfulLegacy, repoDir: REPO_DIR, workflowId: WORKFLOW_ID,
+      attemptId: REPAIRED_ATTEMPT_ID, sourceSha: REPAIR_SOURCE_SHA, dispatchRef: 'main'
+    }), 'WORKFLOW_ATTEMPT_INVALID');
+
+    const ambiguous = structuredClone(legacyFailedState());
+    ambiguous.phase = 'unknown';
+    expectRefusal(() => makeWorkflowAttempt({
+      state: ambiguous, repoDir: REPO_DIR, workflowId: WORKFLOW_ID,
+      attemptId: REPAIRED_ATTEMPT_ID, sourceSha: REPAIR_SOURCE_SHA, dispatchRef: 'main'
+    }), 'WORKFLOW_ATTEMPT_INVALID');
   });
 });
