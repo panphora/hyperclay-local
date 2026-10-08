@@ -206,6 +206,12 @@ function useRealWalkDescendants() {
   nodeMapModule.walkDescendants.mockImplementation(realWalkDescendants);
 }
 
+// The inode a path really has on this disk: only a real inode proves the folder
+// at the new path is the one that left.
+const realInode = async (p) => {
+  try { return fsSync.statSync(p).ino; } catch { return null; }
+};
+
 // The watcher kicks its correlation off without awaiting it.
 async function flush(times = 6) {
   for (let i = 0; i < times; i++) await Promise.resolve();
@@ -306,16 +312,18 @@ describe('the locked root uploads folder — watcher rename', () => {
       fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
       fsSync.writeFileSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'), 'x');
       fsSync.writeFileSync(nodePath.join(root, 'uploads', 'assets-a', 'y.png'), 'y');
+      const uploadsInode = fsSync.statSync(nodePath.join(root, 'uploads')).ino;
 
       syncEngine.syncFolder = root;
       syncEngine.repo.seed([
-        ['10', { type: 'folder', path: 'uploads', parentId: null }],
+        ['10', { type: 'folder', path: 'uploads', parentId: null, inode: uploadsInode }],
         ['11', { type: 'folder', path: 'uploads/assets-a', parentId: 10 }],
         ['12', { type: 'upload', path: 'uploads/assets-a/x.png', checksum: 'x', inode: 1 }],
         ['13', { type: 'upload', path: 'uploads/assets-a/y.png', checksum: 'y', inode: 2 }]
       ]);
       useRealWalkDescendants();
       fileOps.fileExists.mockImplementation(realFileExists);
+      nodeMapModule.getInode.mockImplementation(realInode);
       syncEngine.runner = { start: jest.fn() };
 
       // The rename-back is performed on the real directory the mock is handed,
@@ -387,10 +395,6 @@ describe('the locked root uploads folder — API backstop', () => {
 // Real directories, real inodes: only a real inode tells the folder that left
 // apart from a folder that merely appeared while its delete was pending.
 describe('the locked root uploads folder — rename-back identity', () => {
-  const realInode = async (p) => {
-    try { return fsSync.statSync(p).ino; } catch { return null; }
-  };
-
   it('does not rename an unrelated folder into uploads/ while its delete is pending', async () => {
     jest.useFakeTimers();
     const root = fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-locked-'));
@@ -479,6 +483,226 @@ describe('the locked root uploads folder — rename-back identity', () => {
       expect(syncEngine.pendingUnlinks.size).toBe(0);
     } finally {
       if (rename) rename.mockRestore();
+      fsSync.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('suppresses the child add when uploads/ and its child arrive back to back', async () => {
+    const root = fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-locked-'));
+    let rename = null;
+    try {
+      fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
+      fsSync.writeFileSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'), 'x');
+      const uploadsInode = fsSync.statSync(nodePath.join(root, 'uploads')).ino;
+
+      syncEngine.syncFolder = root;
+      syncEngine.repo.seed([
+        ['10', { type: 'folder', path: 'uploads', parentId: null, inode: uploadsInode }],
+        ['11', { type: 'folder', path: 'uploads/assets-a', parentId: 10, inode: 333 }],
+        ['12', { type: 'upload', path: 'uploads/assets-a/x.png', checksum: 'x', inode: 131 }]
+      ]);
+      useRealWalkDescendants();
+      fileOps.fileExists.mockImplementation(realFileExists);
+      nodeMapModule.getInode.mockImplementation(realInode);
+
+      rename = jest.spyOn(require('fs').promises, 'rename')
+        .mockImplementation(async (from, to) => fsSync.renameSync(from, to));
+
+      fsSync.renameSync(nodePath.join(root, 'uploads'), nodePath.join(root, 'uploads-old'));
+      syncEngine._onUnlinkDir('uploads');
+      // chokidar delivers the parent and then the child in the same burst.
+      syncEngine._onAddDir('uploads-old');
+      syncEngine._onAddDir('uploads-old/assets-a');
+
+      await waitFor(() => fsSync.existsSync(nodePath.join(root, 'uploads')));
+      await syncEngine.processQueue();
+
+      expect(rename).toHaveBeenCalledWith(nodePath.join(root, 'uploads-old'), nodePath.join(root, 'uploads'));
+      expect(fsSync.existsSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'))).toBe(true);
+      expect(fsSync.existsSync(nodePath.join(root, 'uploads-old'))).toBe(false);
+      expect(createNode).not.toHaveBeenCalled();
+      expect(renameNode).not.toHaveBeenCalled();
+      expect(moveNode).not.toHaveBeenCalled();
+      expect(deleteNode).not.toHaveBeenCalled();
+      expect(syncEngine.pendingUnlinks.size).toBe(0);
+      expect(syncEngine.repo.get('10').path).toBe('uploads');
+    } finally {
+      if (rename) rename.mockRestore();
+      syncEngine.syncQueue.clear();
+      fsSync.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not rename an unrelated folder into uploads/ when no inode was recorded', async () => {
+    const root = fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-locked-'));
+    try {
+      fsSync.mkdirSync(nodePath.join(root, 'uploads'));
+      fsSync.mkdirSync(nodePath.join(root, 'new-project'));
+      fsSync.writeFileSync(nodePath.join(root, 'new-project', 'notes.txt'), 'notes');
+
+      syncEngine.syncFolder = root;
+      syncEngine.repo.seed([
+        ['10', { type: 'folder', path: 'uploads', parentId: null }]
+      ]);
+      useRealWalkDescendants();
+      fileOps.fileExists.mockImplementation(realFileExists);
+      nodeMapModule.getInode.mockImplementation(realInode);
+
+      fsSync.rmSync(nodePath.join(root, 'uploads'), { recursive: true, force: true });
+      syncEngine._onUnlinkDir('uploads');
+      syncEngine._onAddDir('new-project');
+
+      // The rescan queues the folder's contents, which only happens once the
+      // rejected add was handed back to the ordinary path.
+      await waitFor(() => syncEngine.syncQueue.getQueuedItems()
+        .some((item) => item.type === 'add' && item.filename === 'new-project/notes.txt'));
+
+      expect(fsSync.existsSync(nodePath.join(root, 'new-project', 'notes.txt'))).toBe(true);
+      expect(fsSync.existsSync(nodePath.join(root, 'uploads'))).toBe(false);
+      expect(renameNode).not.toHaveBeenCalled();
+      expect(moveNode).not.toHaveBeenCalled();
+      expect(deleteNode).not.toHaveBeenCalled();
+      expect(syncEngine.syncQueue.getQueuedItems()).toContainEqual(
+        expect.objectContaining({ type: 'addDir', filename: 'new-project' })
+      );
+      // The pending delete stays armed: its timer asks for the reconcile that
+      // restores uploads/ by download.
+      expect(syncEngine.pendingUnlinks.has('uploads')).toBe(true);
+    } finally {
+      for (const { timerId } of syncEngine.pendingUnlinks.values()) clearTimeout(timerId);
+      syncEngine.pendingUnlinks.clear();
+      syncEngine.syncQueue.clear();
+      fsSync.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('correlates a rename beside the trashed uploads folder instead of deleting it', async () => {
+    jest.useFakeTimers();
+    const root = fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-locked-'));
+    try {
+      fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
+      fsSync.writeFileSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'), 'x');
+      fsSync.mkdirSync(nodePath.join(root, 'work'));
+      fsSync.writeFileSync(nodePath.join(root, 'work', 'page.html'), '<html>work</html>');
+      const uploadsInode = fsSync.statSync(nodePath.join(root, 'uploads')).ino;
+      const workInode = fsSync.statSync(nodePath.join(root, 'work')).ino;
+
+      syncEngine.syncFolder = root;
+      syncEngine.repo.seed([
+        ['10', { type: 'folder', path: 'uploads', parentId: null, inode: uploadsInode }],
+        ['11', { type: 'folder', path: 'uploads/assets-a', parentId: 10, inode: 333 }],
+        ['12', { type: 'upload', path: 'uploads/assets-a/x.png', checksum: 'x', inode: 131 }],
+        ['20', { type: 'folder', path: 'work', parentId: null, inode: workInode }],
+        ['21', { type: 'site', path: 'work/page.html', checksum: 'w', inode: 141 }]
+      ]);
+      useRealWalkDescendants();
+      fileOps.fileExists.mockImplementation(realFileExists);
+      nodeMapModule.getInode.mockImplementation(realInode);
+      syncEngine.runner = { start: jest.fn() };
+
+      fsSync.rmSync(nodePath.join(root, 'uploads'), { recursive: true, force: true });
+      fsSync.renameSync(nodePath.join(root, 'work'), nodePath.join(root, 'work2'));
+
+      syncEngine._onUnlinkDir('uploads');
+      syncEngine._onUnlinkDir('work');
+      syncEngine._onAddDir('work2');
+      await flush(20);
+
+      expect(renameNode).toHaveBeenCalledWith(
+        expect.objectContaining({ serverUrl: 'http://test', apiKey: 'test-key' }), 20, 'work2');
+      expect(deleteNode).not.toHaveBeenCalled();
+      expect(syncEngine.repo.get('20').path).toBe('work2');
+      expect(syncEngine.repo.get('21').path).toBe('work2/page.html');
+
+      // The uploads delete stays armed; its timer asks for the reconcile that
+      // restores the folder by download.
+      jest.advanceTimersByTime(3100);
+      await flush();
+
+      expect(syncEngine.runner.start).toHaveBeenCalledTimes(1);
+      expect(syncEngine.pendingUnlinks.size).toBe(0);
+    } finally {
+      jest.useRealTimers();
+      syncEngine.syncQueue.clear();
+      fsSync.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('sends only the work rename when uploads/ is trashed and work/ is renamed beside it', async () => {
+    jest.useFakeTimers();
+    const root = fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-locked-'));
+    try {
+      fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
+      fsSync.writeFileSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'), 'x');
+      fsSync.mkdirSync(nodePath.join(root, 'work', 'sub'), { recursive: true });
+      fsSync.writeFileSync(nodePath.join(root, 'work', 'page.html'), '<html>work</html>');
+      fsSync.writeFileSync(nodePath.join(root, 'work', 'sub', 'b.png'), 'b');
+      const uploadsInode = fsSync.statSync(nodePath.join(root, 'uploads')).ino;
+      const assetsInode = fsSync.statSync(nodePath.join(root, 'uploads', 'assets-a')).ino;
+      const xInode = fsSync.statSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png')).ino;
+      const workInode = fsSync.statSync(nodePath.join(root, 'work')).ino;
+      const pageInode = fsSync.statSync(nodePath.join(root, 'work', 'page.html')).ino;
+      const subInode = fsSync.statSync(nodePath.join(root, 'work', 'sub')).ino;
+      const bInode = fsSync.statSync(nodePath.join(root, 'work', 'sub', 'b.png')).ino;
+
+      syncEngine.syncFolder = root;
+      syncEngine.repo.seed([
+        ['10', { type: 'folder', path: 'uploads', parentId: null, inode: uploadsInode }],
+        ['11', { type: 'folder', path: 'uploads/assets-a', parentId: 10, inode: assetsInode }],
+        ['12', { type: 'upload', path: 'uploads/assets-a/x.png', checksum: 'x', inode: xInode }],
+        ['20', { type: 'folder', path: 'work', parentId: null, inode: workInode }],
+        ['21', { type: 'site', path: 'work/page.html', checksum: 'w', inode: pageInode }],
+        ['22', { type: 'folder', path: 'work/sub', parentId: 20, inode: subInode }],
+        ['23', { type: 'upload', path: 'work/sub/b.png', checksum: 'b', inode: bInode }]
+      ]);
+      useRealWalkDescendants();
+      fileOps.fileExists.mockImplementation(realFileExists);
+      // The renamed folder's inode takes longer to read than its child's: an
+      // identity check that waits on that read would let the child claim the
+      // parent's pending unlink first.
+      nodeMapModule.getInode.mockImplementation(async (p) => {
+        if (p === nodePath.join(root, 'work2')) {
+          for (let i = 0; i < 5; i++) await Promise.resolve();
+        }
+        return realInode(p);
+      });
+      syncEngine.runner = { start: jest.fn() };
+
+      fsSync.rmSync(nodePath.join(root, 'uploads'), { recursive: true, force: true });
+      fsSync.renameSync(nodePath.join(root, 'work'), nodePath.join(root, 'work2'));
+
+      syncEngine._onUnlinkDir('uploads');
+      syncEngine._onUnlinkDir('work');
+      // chokidar delivers the whole burst back to back: the renamed folder and
+      // then its children at the new paths.
+      syncEngine._onAddDir('work2');
+      syncEngine._onAdd('work2/page.html');
+      syncEngine._onAddDir('work2/sub');
+      syncEngine._onAdd('work2/sub/b.png');
+
+      await flush(20);
+      await syncEngine.processQueue();
+
+      expect(renameNode).toHaveBeenCalledTimes(1);
+      expect(renameNode).toHaveBeenCalledWith(
+        expect.objectContaining({ serverUrl: 'http://test', apiKey: 'test-key' }), 20, 'work2');
+      expect(deleteNode).not.toHaveBeenCalled();
+      expect(createNode).not.toHaveBeenCalled();
+      expect(syncEngine.repo.get('20').path).toBe('work2');
+      expect(syncEngine.repo.get('21').path).toBe('work2/page.html');
+      expect(syncEngine.repo.get('22').path).toBe('work2/sub');
+      expect(syncEngine.repo.get('23').path).toBe('work2/sub/b.png');
+
+      // The uploads delete stays armed; its timer asks for the reconcile that
+      // restores the folder by download.
+      jest.advanceTimersByTime(3100);
+      await flush();
+
+      expect(syncEngine.runner.start).toHaveBeenCalledTimes(1);
+      expect(syncEngine.pendingUnlinks.size).toBe(0);
+    } finally {
+      jest.useRealTimers();
+      syncEngine.syncQueue.clear();
       fsSync.rmSync(root, { recursive: true, force: true });
     }
   });

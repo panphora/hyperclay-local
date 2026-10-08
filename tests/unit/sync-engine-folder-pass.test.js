@@ -707,6 +707,7 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
     try { return fsSync.statSync(p).ino; } catch { return null; }
   };
   const realFileExists = jest.requireActual('../../src/sync-engine/file-operations').fileExists;
+  const realFileOps = jest.requireActual('../../src/sync-engine/file-operations');
 
   test('an empty uploads/ put back with a new inode restores its subtree instead of cascading it away', async () => {
     const root = fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-'));
@@ -793,7 +794,51 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
     }
   });
 
-  test('a file missing while its folder is present and unchanged is still deleted on the server', async () => {
+  test('a missing file under uploads/ is restored, never renamed from a lookalike elsewhere', async () => {
+    const root = fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-'));
+    try {
+      fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
+      fsSync.writeFileSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'), 'x');
+      const uploadsInode = fsSync.statSync(nodePath.join(root, 'uploads')).ino;
+      const assetsInode = fsSync.statSync(nodePath.join(root, 'uploads', 'assets-a')).ino;
+
+      // assets-a was renamed away while the app was closed: the file keeps its
+      // inode and its bytes, and only the folder pass may bring the subtree back.
+      fsSync.renameSync(nodePath.join(root, 'uploads', 'assets-a'), nodePath.join(root, 'elsewhere'));
+      const xInode = fsSync.statSync(nodePath.join(root, 'elsewhere', 'x.png')).ino;
+
+      syncEngine.syncFolder = root;
+      syncEngine.repo.seed([
+        ['10', { type: 'folder', path: 'uploads', parentId: null, inode: uploadsInode }],
+        ['11', { type: 'folder', path: 'uploads/assets-a', parentId: 10, inode: assetsInode }],
+        ['12', { type: 'upload', path: 'uploads/assets-a/x.png', parentId: 11, inode: xInode, remoteEtag: UPLOAD_ETAG, localChecksum: UPLOAD_ETAG }]
+      ]);
+      syncEngine.lastSyncedAt = Date.now();
+      fileOps.getLocalFolders.mockImplementation(realFileOps.getLocalFolders);
+      fileOps.getLocalUploads.mockImplementation(realFileOps.getLocalUploads);
+      fileOps.getLocalFiles.mockResolvedValue(new Map());
+      gone();
+      nodeMapModule.getInode.mockImplementation(realInode);
+      fileOps.fileExists.mockImplementation(realFileExists);
+
+      await syncEngine.reconcileAll(uploadsInventory(), { generation: 1 });
+
+      expect(apiClient.renameNode).not.toHaveBeenCalled();
+      expect(apiClient.moveNode).not.toHaveBeenCalled();
+      expect(fileOps.ensureDirectory).toHaveBeenCalledWith(nodePath.join(root, 'uploads', 'assets-a'));
+      expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 12);
+      // The executor writes through the resolved root, so the assertion is too.
+      expect(fileOps.writeFileBuffer).toHaveBeenCalledWith(
+        nodePath.join(fsSync.realpathSync(root), 'uploads', 'assets-a', 'x.png'),
+        expect.anything(),
+        expect.anything()
+      );
+    } finally {
+      fsSync.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a file missing while its folder is present is restored, not deleted', async () => {
     const root = fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-'));
     try {
       fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
@@ -825,11 +870,113 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
         node(13, 'upload', 'y.png', 'uploads/assets-a', 11, UPLOAD_ETAG)
       ]), { generation: 1 });
 
-      expect(apiClient.deleteNode).toHaveBeenCalledWith(expect.anything(), 13, expect.anything());
-      expect(apiClient.deleteNode).not.toHaveBeenCalledWith(expect.anything(), 11, expect.anything());
-      expect(apiClient.getNodeContent).not.toHaveBeenCalledWith(expect.anything(), 13);
+      // A tracked entry under uploads/ that is missing locally comes back by
+      // download: an attachment deleted while the app was closed reappears.
+      expect(apiClient.deleteNode).not.toHaveBeenCalled();
+      expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 13);
+      expect(fileOps.writeFileBuffer).toHaveBeenCalledWith(
+        nodePath.join(fsSync.realpathSync(root), 'uploads', 'assets-a', 'y.png'),
+        expect.anything(),
+        expect.anything()
+      );
     } finally {
       fsSync.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('a missing page under uploads/ whose folder is gone is restored, never renamed from a lookalike', async () => {
+    const root = fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-'));
+    try {
+      fsSync.mkdirSync(nodePath.join(root, 'uploads'), { recursive: true });
+      fsSync.mkdirSync(nodePath.join(root, 'elsewhere'), { recursive: true });
+      fsSync.writeFileSync(nodePath.join(root, 'elsewhere', 'page.html'), '<html>elsewhere</html>');
+      const uploadsInode = fsSync.statSync(nodePath.join(root, 'uploads')).ino;
+      const pageInode = fsSync.statSync(nodePath.join(root, 'elsewhere', 'page.html')).ino;
+
+      syncEngine.syncFolder = root;
+      syncEngine.repo.seed([
+        ['10', { type: 'folder', path: 'uploads', parentId: null, inode: uploadsInode }],
+        ['11', { type: 'folder', path: 'uploads/assets-a', parentId: 10, inode: 333 }],
+        ['12', { type: 'site', path: 'uploads/assets-a/page.html', parentId: 11, inode: pageInode, remoteEtag: SAME, localChecksum: SAME }]
+      ]);
+      syncEngine.lastSyncedAt = Date.now();
+      fileOps.getLocalFolders.mockImplementation(realFileOps.getLocalFolders);
+      fileOps.getLocalFiles.mockImplementation(realFileOps.getLocalFiles);
+      fileOps.getLocalUploads.mockImplementation(realFileOps.getLocalUploads);
+      gone();
+      nodeMapModule.getInode.mockImplementation(realInode);
+      fileOps.fileExists.mockImplementation(realFileExists);
+      apiClient.createNode.mockImplementation(async (conn, payload) => ({
+        id: payload.name === 'elsewhere' ? 98 : 99,
+        type: payload.type,
+        name: payload.name,
+        parentId: payload.parentId
+      }));
+
+      await syncEngine.reconcileAll(completeList([
+        node(10, 'folder', 'uploads', '', 0),
+        node(11, 'folder', 'assets-a', 'uploads', 10),
+        node(12, 'site', 'page.html', 'uploads/assets-a', 11, SAME)
+      ]), { generation: 1 });
+
+      // The lookalike elsewhere/page.html is a new local file, not where the
+      // page went: the page comes back by download.
+      expect(apiClient.renameNode).not.toHaveBeenCalled();
+      expect(apiClient.moveNode).not.toHaveBeenCalled();
+      expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 12);
+      expect(fileOps.writeFile).toHaveBeenCalledWith(
+        nodePath.join(fsSync.realpathSync(root), 'uploads', 'assets-a', 'page.html'),
+        expect.anything(),
+        expect.anything()
+      );
+    } finally {
+      fsSync.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a missing page under uploads/ is restored while its folder is gone, even with no restore planned', async () => {
+    // The site pass runs before the folder pass has planned anything: the parent
+    // that is not on disk is the only evidence, and it excludes pairing too.
+    const stat = require('fs').promises.stat;
+    stat.mockRestore();
+    const root = fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-'));
+    try {
+      fsSync.mkdirSync(nodePath.join(root, 'uploads'), { recursive: true });
+      fsSync.mkdirSync(nodePath.join(root, 'elsewhere'), { recursive: true });
+      fsSync.writeFileSync(nodePath.join(root, 'elsewhere', 'page.html'), '<html>elsewhere</html>');
+      const uploadsInode = fsSync.statSync(nodePath.join(root, 'uploads')).ino;
+      const pageInode = fsSync.statSync(nodePath.join(root, 'elsewhere', 'page.html')).ino;
+
+      syncEngine.syncFolder = root;
+      syncEngine.bootstrapPass = true;
+      syncEngine.restoredFolders = [];
+      syncEngine.repo.seed([
+        ['10', { type: 'folder', path: 'uploads', parentId: null, inode: uploadsInode }],
+        ['11', { type: 'folder', path: 'uploads/assets-a', parentId: 10, inode: 333 }],
+        ['12', { type: 'site', path: 'uploads/assets-a/page.html', parentId: 11, inode: pageInode, remoteEtag: SAME, localChecksum: SAME }]
+      ]);
+      nodeMapModule.getInode.mockImplementation(realInode);
+      fileOps.fileExists.mockImplementation(realFileExists);
+      apiClient.createNode.mockImplementation(async (conn, payload) => ({
+        id: 99,
+        type: payload.type,
+        name: payload.name,
+        parentId: payload.parentId
+      }));
+      const localFiles = await realFileOps.getLocalFiles(root);
+
+      await syncEngine.detectLocalChanges(completeList([
+        node(10, 'folder', 'uploads', '', 0),
+        node(11, 'folder', 'assets-a', 'uploads', 10),
+        node(12, 'site', 'page.html', 'uploads/assets-a', 11, SAME)
+      ]), localFiles);
+
+      expect(apiClient.renameNode).not.toHaveBeenCalled();
+      expect(apiClient.moveNode).not.toHaveBeenCalled();
+      expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 12);
+    } finally {
+      fsSync.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
 });

@@ -22,6 +22,7 @@ const { classifyPath, ancestorPaths } = require('./path-helpers');
 const { LOCKED_FOLDER, isLockedFolder } = require('./locked-folder');
 const nodeMap = require('./node-map');
 const fs = require('fs/promises');
+const fsSync = require('fs');
 const { RootObserver } = require('../main/root-observer');
 
 // C3.11: the states a session's feed is dropped in. What the user edits while a
@@ -318,50 +319,108 @@ module.exports = {
   },
 
   _tryCorrelatePendingUnlink(normalizedPath, type) {
-    const addBasename = path.basename(normalizedPath);
-    const addDirname = path.dirname(normalizedPath);
+    // Inode first: a folder add whose inode is one a pending folder unlink
+    // recorded is that folder, whatever its name or location, so an earlier
+    // unrelated unlink can never claim it by path shape. A folder back at its
+    // own path is the grace timer's to settle, and an inode match that does not
+    // confirm is not handed to the shape loop either.
+    if (type === 'folder') {
+      const addInode = this._statInode(normalizedPath);
+      if (addInode) {
+        for (const [oldPath, pending] of this.pendingUnlinks) {
+          if (pending.type !== type || !pending.entry || pending.entry.inode !== addInode) continue;
+
+          const shape = this._addShape(oldPath, normalizedPath);
+          if (!shape) return false;
+          return this._claimPendingUnlink(oldPath, pending, normalizedPath, shape, type);
+        }
+      }
+    }
 
     for (const [oldPath, pending] of this.pendingUnlinks) {
       if (pending.type !== type) continue;
 
-      const oldBasename = path.basename(oldPath);
-      const oldDirname = path.dirname(oldPath);
-
-      const isMove = oldBasename === addBasename && oldDirname !== addDirname;
-      const isRename = oldBasename !== addBasename && oldDirname === addDirname;
-      const isMoveRename = oldBasename !== addBasename && oldDirname !== addDirname;
-
-      if (!(isMove || isRename || isMoveRename)) continue;
-
-      // The locked uploads folder is renamed back, never sent: no provisional
-      // path is ever published and the folder keeps its name and its node. Only
-      // the folder that left is put back, so the pending delete stays armed until
-      // the folder is proven to be it; anything else is an ordinary add.
-      if (pending.locked && type === 'folder') {
-        this._correlateLockedUnlinkAdd(oldPath, normalizedPath, pending).catch(err =>
-          console.error(`[SYNC] Watcher: Failed to put ${oldPath} back:`, err)
-        );
-        return true;
-      }
-
-      clearTimeout(pending.timerId);
-      this.pendingUnlinks.delete(oldPath);
-
-      const shape = isMove ? 'move' : isRename ? 'rename' : 'move+rename';
-      if (type === 'folder') {
-        this._correlateFolderUnlinkAdd(oldPath, normalizedPath, pending, shape).catch(err =>
-          console.error(`[SYNC] Watcher: Folder correlation failed for ${oldPath}:`, err)
-        );
-      } else {
-        this._correlateFileUnlinkAdd(oldPath, normalizedPath, pending, shape, type).catch(err =>
-          console.error(`[SYNC] Watcher: ${type} correlation failed for ${oldPath}:`, err)
-        );
-      }
-
-      return true;
+      const shape = this._addShape(oldPath, normalizedPath);
+      if (!shape) continue;
+      if (this._claimPendingUnlink(oldPath, pending, normalizedPath, shape, type)) return true;
     }
 
     return false;
+  },
+
+  /**
+   * Correlate one add with the pending unlink it belongs to. The locked uploads
+   * folder is renamed back, never sent: no provisional path is ever published
+   * and the folder keeps its name and its node. The inode the add really has on
+   * disk proves that synchronously, before the add is claimed, so a folder that
+   * is not the one that left is handed to the ordinary add path and the pending
+   * delete stays armed until then. Anything else is an ordinary rename or move.
+   */
+  _claimPendingUnlink(oldPath, pending, newPath, shape, type) {
+    if (pending.locked && type === 'folder') {
+      if (!this._confirmsLockedFolderAdd(newPath, pending)) return false;
+
+      clearTimeout(pending.timerId);
+      this.pendingUnlinks.delete(oldPath);
+      this._putLockedFolderBack(oldPath, newPath, pending).catch(err =>
+        console.error(`[SYNC] Watcher: Failed to put ${oldPath} back:`, err)
+      );
+      return true;
+    }
+
+    clearTimeout(pending.timerId);
+    this.pendingUnlinks.delete(oldPath);
+
+    if (type === 'folder') {
+      this._correlateFolderUnlinkAdd(oldPath, newPath, pending, shape).catch(err =>
+        console.error(`[SYNC] Watcher: Folder correlation failed for ${oldPath}:`, err)
+      );
+    } else {
+      this._correlateFileUnlinkAdd(oldPath, newPath, pending, shape, type).catch(err =>
+        console.error(`[SYNC] Watcher: ${type} correlation failed for ${oldPath}:`, err)
+      );
+    }
+
+    return true;
+  },
+
+  /** The shape of an add relative to a pending unlink, or null when it is the same path. */
+  _addShape(oldPath, newPath) {
+    const oldBasename = path.basename(oldPath);
+    const newBasename = path.basename(newPath);
+    const oldDirname = path.dirname(oldPath);
+    const newDirname = path.dirname(newPath);
+    if (oldBasename === newBasename && oldDirname !== newDirname) return 'move';
+    if (oldBasename !== newBasename && oldDirname === newDirname) return 'rename';
+    if (oldBasename !== newBasename && oldDirname !== newDirname) return 'move+rename';
+    return null;
+  },
+
+  /** The inode a path really has on disk, or null when it cannot be read. */
+  _statInode(rel) {
+    try {
+      return fsSync.statSync(path.join(this.syncFolder, rel)).ino;
+    } catch {
+      return null;
+    }
+  },
+
+  /**
+   * Whether the folder that appeared at `rel` is the root uploads folder that
+   * left: its inode on disk is the one recorded for the pending entry and, when
+   * the entry has descendants, at least one of their relative paths is really
+   * under the candidate — a freed inode can be handed to a new folder. The read
+   * is synchronous, so the caller decides before claiming the add; a stat error
+   * or a missing recorded inode proves nothing.
+   */
+  _confirmsLockedFolderAdd(rel, pending) {
+    if (!pending.entry.inode) return false;
+    if (this._statInode(rel) !== pending.entry.inode) return false;
+
+    const descendants = this.repo.walkDescendants(pending.entry.path);
+    if (descendants.length === 0) return true;
+    return descendants.some(({ entry }) =>
+      fsSync.existsSync(path.join(this.syncFolder, rel, entry.path.slice(pending.entry.path.length + 1))));
   },
 
   async _correlateFileUnlinkAdd(oldPath, newPath, pending, shape, type) {
@@ -462,32 +521,6 @@ module.exports = {
       }
       return false;
     }
-  },
-
-  /**
-   * The root's `uploads` folder was unlinked and a folder appeared. Only the
-   * folder that actually left is renamed back: its inode is the one recorded for
-   * the pending entry, or, with no inode recorded, its content matches the
-   * ledger the way `_decideFolderIdentity` checks a folder relocate. A folder
-   * that is not proven to be it is an ordinary add — the pending unlink is
-   * left armed, so its timer asks for the reconcile that restores the folder.
-   */
-  async _correlateLockedUnlinkAdd(oldPath, newPath, pending) {
-    const plan = this._planFolderRelocate(oldPath, newPath, pending);
-    const newInode = await nodeMap.getInode(plan.newFullPath);
-    const identity = pending.entry.inode
-      ? { confirmed: Boolean(newInode && newInode === pending.entry.inode) }
-      : await this._decideFolderIdentity(plan);
-
-    if (!identity.confirmed) {
-      console.log(`[SYNC] Watcher: ${newPath} is not the uploads folder that left, treated as a new folder`);
-      this._handleFolderAdd(newPath);
-      return;
-    }
-
-    clearTimeout(pending.timerId);
-    this.pendingUnlinks.delete(oldPath);
-    await this._putLockedFolderBack(oldPath, newPath, pending);
   },
 
   /**

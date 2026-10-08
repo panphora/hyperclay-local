@@ -128,8 +128,9 @@ module.exports = {
       complete: complete === undefined ? this.completeForNode(remote, baseline) : complete,
       // A bootstrap pass (a legacy import, a lost map) must not delete on the
       // server: a node the local disk lost is downloaded instead. Nor may a pass
-      // delete anything under a folder it is restoring.
-      bootstrap: this.bootstrapPass === true || this.isUnderRestoredFolder(rel) ||
+      // delete anything under a folder it is restoring, or under the root's
+      // uploads folder: a missing attachment is always restored by download.
+      bootstrap: this.bootstrapPass === true || this.isUnderRestoredFolder(rel) || isUnderLockedFolder(rel) ||
         (key !== null && this.movedRemotely && this.movedRemotely.has(key))
     });
 
@@ -505,6 +506,9 @@ module.exports = {
       // File is GONE from expected path but still exists on server — find where it went
 
       const expectedBasename = path.basename(entry.path);
+      // Nothing under the root's uploads folder is paired with a lookalike: a
+      // missing attachment is restored by download, the lookalike is a new file.
+      const candidates = isUnderLockedFolder(entry.path) ? [] : localOnlySet;
 
       const strategies = [
         {
@@ -562,7 +566,7 @@ module.exports = {
 
       let handled = false;
       for (const strategy of strategies) {
-        for (const localFile of localOnlySet) {
+        for (const localFile of candidates) {
           if (await strategy.match(localFile)) {
             try {
               console.log(`[SYNC] Local ${strategy.name} detected: ${entry.path} → ${localFile} (nodeId ${nid})`);
@@ -639,6 +643,9 @@ module.exports = {
         if (localUploads.has(entry.path)) continue; // still at expected path
 
         const expectedBasename = path.basename(entry.path);
+        // Nothing under the root's uploads folder is paired with a lookalike: a
+        // missing attachment is restored by download, the lookalike is a new file.
+        const candidates = isUnderLockedFolder(entry.path) ? [] : localUploadOnlySet;
 
         const strategies = [
           {
@@ -694,7 +701,7 @@ module.exports = {
 
         let handled = false;
         for (const strategy of strategies) {
-          for (const localFile of localUploadOnlySet) {
+          for (const localFile of candidates) {
             if (await strategy.match(localFile)) {
               try {
                 console.log(`[SYNC] Local upload ${strategy.name}: ${entry.path} → ${localFile} (nodeId ${nid})`);
@@ -924,10 +931,10 @@ module.exports = {
 
         if (localFolders.has(entry.path)) {
           const inode = await nodeMap.getInode(path.join(this.syncFolder, entry.path));
-          // The root's uploads folder is the one the server knows by its children: a
-          // directory put back at its path with another inode is not it, so its
-          // subtree comes back by download instead of being cascaded away.
-          if (isLockedFolder(entry.path) && entry.inode && inode && inode !== entry.inode) {
+          // A folder under the root's uploads folder is one the server knows by its
+          // children: a directory put back at its path with another inode is not it,
+          // so its subtree comes back by download instead of being cascaded away.
+          if (isUnderLockedFolder(entry.path) && entry.inode && inode && inode !== entry.inode) {
             restoring.push(entry.path);
           }
           map.set(nid, { ...entry, parentId: node.parentId, inode });
@@ -1046,27 +1053,45 @@ module.exports = {
    * without stable ones, or none recorded) the folder is recognised by its
    * content instead — the one local-only folder holding its files unchanged.
    *
-   * The root's `uploads` folder is never sent a rename or a move: it is renamed
-   * back on disk, and a rename that fails returns false so the pass restores it
-   * by download.
+   * The root's `uploads` folder is never sent a rename or a move: only a
+   * positive inode match renames it back on disk, and a rename that fails
+   * returns false so the pass restores it by download.
    */
   async relocateFolderByInode(nid, entry, localOnly, map) {
     if (entry.inode) {
       for (const localFolder of localOnly) {
         const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFolder));
         if (localInode && localInode === entry.inode) {
-          if (isLockedFolder(entry.path)) return this.restoreLockedFolder(localFolder);
+          if (isLockedFolder(entry.path)) {
+            if (!this.lockedFolderDescendantsPresent(entry, localFolder)) continue;
+            return this.restoreLockedFolder(localFolder);
+          }
           return this.relocateFolderTo(nid, entry, localFolder, localInode, localOnly, map);
         }
       }
     }
+    // The root's uploads folder is renamed back only on a positive inode match: a
+    // local-only folder that merely holds the same files is not it, so the pass
+    // restores the folder by download instead.
+    if (isLockedFolder(entry.path)) return false;
     // No inode match (a filesystem without stable inodes, or none recorded): the one
     // local-only folder holding this folder's files, unchanged, is the same folder.
     const byContent = await this.folderMatchingContent(entry.path, localOnly);
     if (!byContent) return false;
-    if (isLockedFolder(entry.path)) return this.restoreLockedFolder(byContent);
     const inode = await nodeMap.getInode(path.join(this.syncFolder, byContent));
     return this.relocateFolderTo(nid, entry, byContent, inode, localOnly, map);
+  },
+
+  /**
+   * A freed inode can be handed to a new folder. When the tracked folder has
+   * descendants, an inode match is only trusted while at least one of their
+   * relative paths is really under the candidate folder.
+   */
+  lockedFolderDescendantsPresent(entry, candidate) {
+    const descendants = this.repo.walkDescendants(entry.path);
+    if (descendants.length === 0) return true;
+    return descendants.some(({ entry: descendant }) =>
+      fileExists(path.join(this.syncFolder, candidate, descendant.path.slice(entry.path.length + 1))));
   },
 
   /**
