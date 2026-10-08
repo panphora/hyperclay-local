@@ -44,6 +44,9 @@ const fileOps = require('../../src/sync-engine/file-operations');
 const utils = require('../../src/sync-engine/utils');
 const apiClient = require('../../src/sync-engine/api-client');
 const nodeMapModule = require('../../src/sync-engine/node-map');
+const fsSync = require('fs');
+const os = require('os');
+const nodePath = require('path');
 
 jest.mock('../../src/sync-engine/file-operations');
 jest.mock('../../src/sync-engine/utils', () => {
@@ -696,5 +699,137 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
     expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/uploads');
 
     rename.mockRestore();
+  });
+
+  // Real directories, real inodes: the pass decides from the inode the folder has
+  // on this disk, which a mocked one can never prove.
+  const realInode = async (p) => {
+    try { return fsSync.statSync(p).ino; } catch { return null; }
+  };
+  const realFileExists = jest.requireActual('../../src/sync-engine/file-operations').fileExists;
+
+  test('an empty uploads/ put back with a new inode restores its subtree instead of cascading it away', async () => {
+    const root = fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-'));
+    try {
+      fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
+      fsSync.writeFileSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'), 'x');
+      const originalInode = fsSync.statSync(nodePath.join(root, 'uploads')).ino;
+
+      // The folder was deleted and an empty uploads/ (a Local upload, or the user)
+      // is back at its path before this pass ran: same path, another directory.
+      fsSync.mkdirSync(nodePath.join(root, 'replacement'));
+      const replacementInode = fsSync.statSync(nodePath.join(root, 'replacement')).ino;
+      fsSync.rmSync(nodePath.join(root, 'uploads'), { recursive: true, force: true });
+      fsSync.renameSync(nodePath.join(root, 'replacement'), nodePath.join(root, 'uploads'));
+      expect(replacementInode).not.toBe(originalInode);
+
+      syncEngine.syncFolder = root;
+      syncEngine.repo.seed([
+        ['10', { type: 'folder', path: 'uploads', parentId: null, inode: originalInode }],
+        ['11', { type: 'folder', path: 'uploads/assets-a', parentId: 10, inode: 333 }],
+        ['12', { type: 'upload', path: 'uploads/assets-a/x.png', parentId: 11, inode: 131, remoteEtag: UPLOAD_ETAG, localChecksum: UPLOAD_ETAG }]
+      ]);
+      syncEngine.lastSyncedAt = Date.now();
+      fileOps.getLocalFolders.mockResolvedValue(new Map([localFolder('uploads')]));
+      fileOps.getLocalFiles.mockResolvedValue(new Map());
+      fileOps.getLocalUploads.mockResolvedValue(new Map());
+      gone();
+      nodeMapModule.getInode.mockImplementation(realInode);
+      fileOps.fileExists.mockImplementation(realFileExists);
+
+      await syncEngine.reconcileAll(uploadsInventory(), { generation: 1 });
+
+      expect(apiClient.deleteNode).not.toHaveBeenCalled();
+      expect(apiClient.moveNode).not.toHaveBeenCalled();
+      expect(apiClient.renameNode).not.toHaveBeenCalled();
+      expect(fileOps.ensureDirectory).toHaveBeenCalledWith(nodePath.join(root, 'uploads', 'assets-a'));
+      expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 12);
+    } finally {
+      fsSync.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('an uploads folder renamed away whose rename-back fails is restored, never moved', async () => {
+    const root = fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-'));
+    let rename = null;
+    try {
+      fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
+      fsSync.writeFileSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'), 'x');
+      const uploadsInode = fsSync.statSync(nodePath.join(root, 'uploads')).ino;
+      const assetsInode = fsSync.statSync(nodePath.join(root, 'uploads', 'assets-a')).ino;
+
+      // Renamed while the app was closed: the real directories moved, inodes and all.
+      fsSync.renameSync(nodePath.join(root, 'uploads'), nodePath.join(root, 'elsewhere'));
+
+      syncEngine.syncFolder = root;
+      syncEngine.repo.seed([
+        ['10', { type: 'folder', path: 'uploads', parentId: null, inode: uploadsInode }],
+        ['11', { type: 'folder', path: 'uploads/assets-a', parentId: 10, inode: assetsInode }],
+        ['12', { type: 'upload', path: 'uploads/assets-a/x.png', parentId: 11, inode: 131, remoteEtag: UPLOAD_ETAG, localChecksum: UPLOAD_ETAG }]
+      ]);
+      syncEngine.lastSyncedAt = Date.now();
+      fileOps.getLocalFolders.mockResolvedValue(new Map([localFolder('elsewhere'), localFolder('elsewhere/assets-a')]));
+      fileOps.getLocalFiles.mockResolvedValue(new Map());
+      fileOps.getLocalUploads.mockResolvedValue(new Map());
+      gone();
+      nodeMapModule.getInode.mockImplementation(realInode);
+      fileOps.fileExists.mockImplementation(realFileExists);
+
+      // The rename back is refused (a permission problem, a read-only volume).
+      rename = jest.spyOn(require('fs').promises, 'rename')
+        .mockRejectedValue(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
+
+      await syncEngine.reconcileAll(uploadsInventory(), { generation: 1 });
+
+      expect(apiClient.moveNode).not.toHaveBeenCalled();
+      expect(apiClient.renameNode).not.toHaveBeenCalled();
+      expect(apiClient.deleteNode).not.toHaveBeenCalled();
+      expect(fileOps.ensureDirectory).toHaveBeenCalledWith(nodePath.join(root, 'uploads'));
+      expect(fileOps.ensureDirectory).toHaveBeenCalledWith(nodePath.join(root, 'uploads', 'assets-a'));
+      expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 12);
+    } finally {
+      if (rename) rename.mockRestore();
+      fsSync.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a file missing while its folder is present and unchanged is still deleted on the server', async () => {
+    const root = fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-'));
+    try {
+      fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
+      fsSync.writeFileSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'), 'x');
+      const uploadsInode = fsSync.statSync(nodePath.join(root, 'uploads')).ino;
+      const assetsInode = fsSync.statSync(nodePath.join(root, 'uploads', 'assets-a')).ino;
+
+      syncEngine.syncFolder = root;
+      syncEngine.repo.seed([
+        ['10', { type: 'folder', path: 'uploads', parentId: null, inode: uploadsInode }],
+        ['11', { type: 'folder', path: 'uploads/assets-a', parentId: 10, inode: assetsInode }],
+        ['12', { type: 'upload', path: 'uploads/assets-a/x.png', parentId: 11, inode: 131, remoteEtag: SAME, localChecksum: SAME }],
+        ['13', { type: 'upload', path: 'uploads/assets-a/y.png', parentId: 11, inode: 132, remoteEtag: UPLOAD_ETAG, localChecksum: UPLOAD_ETAG }]
+      ]);
+      syncEngine.lastSyncedAt = Date.now();
+      fileOps.getLocalFolders.mockResolvedValue(new Map([localFolder('uploads'), localFolder('uploads/assets-a')]));
+      fileOps.getLocalFiles.mockResolvedValue(new Map());
+      fileOps.getLocalUploads.mockResolvedValue(new Map([
+        ['uploads/assets-a/x.png', { path: nodePath.join(root, 'uploads', 'assets-a', 'x.png') }]
+      ]));
+      gone();
+      nodeMapModule.getInode.mockImplementation(realInode);
+      fileOps.fileExists.mockImplementation(realFileExists);
+
+      await syncEngine.reconcileAll(completeList([
+        node(10, 'folder', 'uploads', '', 0),
+        node(11, 'folder', 'assets-a', 'uploads', 10),
+        node(12, 'upload', 'x.png', 'uploads/assets-a', 11, SAME),
+        node(13, 'upload', 'y.png', 'uploads/assets-a', 11, UPLOAD_ETAG)
+      ]), { generation: 1 });
+
+      expect(apiClient.deleteNode).toHaveBeenCalledWith(expect.anything(), 13, expect.anything());
+      expect(apiClient.deleteNode).not.toHaveBeenCalledWith(expect.anything(), 11, expect.anything());
+      expect(apiClient.getNodeContent).not.toHaveBeenCalledWith(expect.anything(), 13);
+    } finally {
+      fsSync.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

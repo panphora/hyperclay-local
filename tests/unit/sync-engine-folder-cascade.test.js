@@ -180,7 +180,7 @@ describe('the locked root uploads folder — rename back', () => {
     const { renameNode, moveNode, deleteNode } = require('../../src/sync-engine/api-client');
 
     syncEngine.repo.seed([
-      ['10', { type: 'folder', path: 'uploads', parentId: null }],
+      ['10', { type: 'folder', path: 'uploads', parentId: null, inode: 12345 }],
       ['11', { type: 'folder', path: 'uploads/assets-a', parentId: 10 }],
       ['12', { type: 'upload', path: 'uploads/assets-a/x.png', checksum: 'x', inode: 1 }]
     ]);
@@ -220,7 +220,7 @@ describe('the locked root uploads folder — rename back', () => {
 
   it('asks for a reconcile instead when the folder cannot be renamed back', async () => {
     syncEngine.repo.seed([
-      ['10', { type: 'folder', path: 'uploads', parentId: null }]
+      ['10', { type: 'folder', path: 'uploads', parentId: null, inode: 12345 }]
     ]);
     nodeMapModule.walkDescendants.mockImplementation(realWalkDescendants);
     fileOps.fileExists.mockImplementation((p) => p === syncEngine.syncFolder);

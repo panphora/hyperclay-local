@@ -261,6 +261,9 @@ module.exports = {
         if (this.logger) {
           this.logger.info('WATCHER', 'Path back on disk before the grace period ended, delete not sent', { path: normalizedPath, type });
         }
+        // The root's uploads folder coming back empty is not the folder that left:
+        // a reconcile brings its children back.
+        if (locked) this.requestReconcile();
         return;
       }
       if (locked) {
@@ -330,17 +333,19 @@ module.exports = {
 
       if (!(isMove || isRename || isMoveRename)) continue;
 
-      clearTimeout(pending.timerId);
-      this.pendingUnlinks.delete(oldPath);
-
       // The locked uploads folder is renamed back, never sent: no provisional
-      // path is ever published and the folder keeps its name and its node.
+      // path is ever published and the folder keeps its name and its node. Only
+      // the folder that left is put back, so the pending delete stays armed until
+      // the folder is proven to be it; anything else is an ordinary add.
       if (pending.locked && type === 'folder') {
-        this._putLockedFolderBack(oldPath, normalizedPath, pending).catch(err =>
+        this._correlateLockedUnlinkAdd(oldPath, normalizedPath, pending).catch(err =>
           console.error(`[SYNC] Watcher: Failed to put ${oldPath} back:`, err)
         );
         return true;
       }
+
+      clearTimeout(pending.timerId);
+      this.pendingUnlinks.delete(oldPath);
 
       const shape = isMove ? 'move' : isRename ? 'rename' : 'move+rename';
       if (type === 'folder') {
@@ -457,6 +462,32 @@ module.exports = {
       }
       return false;
     }
+  },
+
+  /**
+   * The root's `uploads` folder was unlinked and a folder appeared. Only the
+   * folder that actually left is renamed back: its inode is the one recorded for
+   * the pending entry, or, with no inode recorded, its content matches the
+   * ledger the way `_decideFolderIdentity` checks a folder relocate. A folder
+   * that is not proven to be it is an ordinary add — the pending unlink is
+   * left armed, so its timer asks for the reconcile that restores the folder.
+   */
+  async _correlateLockedUnlinkAdd(oldPath, newPath, pending) {
+    const plan = this._planFolderRelocate(oldPath, newPath, pending);
+    const newInode = await nodeMap.getInode(plan.newFullPath);
+    const identity = pending.entry.inode
+      ? { confirmed: Boolean(newInode && newInode === pending.entry.inode) }
+      : await this._decideFolderIdentity(plan);
+
+    if (!identity.confirmed) {
+      console.log(`[SYNC] Watcher: ${newPath} is not the uploads folder that left, treated as a new folder`);
+      this._handleFolderAdd(newPath);
+      return;
+    }
+
+    clearTimeout(pending.timerId);
+    this.pendingUnlinks.delete(oldPath);
+    await this._putLockedFolderBack(oldPath, newPath, pending);
   },
 
   /**

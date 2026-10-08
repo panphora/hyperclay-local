@@ -7,10 +7,15 @@ function isLockedFolder(rel) {
   return String(rel || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') === LOCKED_FOLDER;
 }
 
+function isUnderLockedFolder(rel) {
+  const clean = String(rel || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  return clean === LOCKED_FOLDER || clean.startsWith(`${LOCKED_FOLDER}/`);
+}
+
 function lockedFolderError() {
   const error = new Error('The uploads folder holds every attachment; it is never deleted, renamed or moved.');
   error.code = 'locked-folder';
   return error;
 }
 
-module.exports = { LOCKED_FOLDER, isLockedFolder, lockedFolderError };
+module.exports = { LOCKED_FOLDER, isLockedFolder, isUnderLockedFolder, lockedFolderError };

@@ -29,7 +29,7 @@ const { calculateChecksum, calculateFileChecksum } = require('./utils');
 const { ERROR_PRIORITY } = require('./constants');
 const { decide, decideFolder, A } = require('./reconcile/decide');
 const { ancestorPaths } = require('./path-helpers');
-const { isLockedFolder } = require('./locked-folder');
+const { isLockedFolder, isUnderLockedFolder } = require('./locked-folder');
 const { executeDecision } = require('./reconcile/execute');
 const { classifyError: classifySyncError } = require('./reconcile/classify-error');
 const nodeMap = require('./node-map');
@@ -924,13 +924,22 @@ module.exports = {
 
         if (localFolders.has(entry.path)) {
           const inode = await nodeMap.getInode(path.join(this.syncFolder, entry.path));
+          // The root's uploads folder is the one the server knows by its children: a
+          // directory put back at its path with another inode is not it, so its
+          // subtree comes back by download instead of being cascaded away.
+          if (isLockedFolder(entry.path) && entry.inode && inode && inode !== entry.inode) {
+            restoring.push(entry.path);
+          }
           map.set(nid, { ...entry, parentId: node.parentId, inode });
           continue;
         }
 
         // Missing from the scan: only an ENOENT proves the directory is gone.
         if ((await this.localDirState(entry.path)) !== 'absent') continue;
-        if (await this.relocateFolderByInode(nid, entry, localOnly, map)) {
+        // Nothing under the root's uploads folder is ever relocated or deleted because it
+        // is missing here: it is restored. The root itself keeps its rename-back above.
+        const underLocked = isUnderLockedFolder(entry.path) && !isLockedFolder(entry.path);
+        if (!underLocked && await this.relocateFolderByInode(nid, entry, localOnly, map)) {
           relocated.push(entry.path);
           continue;
         }
@@ -945,7 +954,7 @@ module.exports = {
           complete,
           bootstrap,
           firstPass,
-          remoteChanged: underRestore || isLockedFolder(entry.path) || this.folderSubtreeChangedRemotely(entry.path, allServerNodes)
+          remoteChanged: underRestore || underLocked || isLockedFolder(entry.path) || this.folderSubtreeChangedRemotely(entry.path, allServerNodes)
         });
         if (decision.action === A.DELETE_REMOTE) deleting.push(entry.path);
         if (decision.action === A.DOWNLOAD) restoring.push(entry.path);
