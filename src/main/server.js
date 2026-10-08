@@ -6,6 +6,7 @@ const { createBackup } = require('./utils/backup.js');
 const {
   PathError,
   RESERVED_ROOT_SEGMENTS,
+  isContained,
   getConsentRegistry,
   decodeOnce,
   validateSegments,
@@ -335,6 +336,12 @@ function assetsFolderName(docRelPath) {
     .replace(/-{2,}/g, '-')
     .replace(/^-+|-+$/g, '');
   return `assets-${slug || 'document'}`;
+}
+
+// Every byte outside the unreserved set escaped, `! ' ( ) *` included, so the link is one unbroken
+// run of `[A-Za-z0-9._~%/-]` that the zip exporter reads whole. hyperclay.com encodes the same way.
+function strictSegment(segment) {
+  return encodeURIComponent(segment).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
 // The legacy sibling folder an older upload went into, `blog/assets-app` for `blog/app.html`.
@@ -1835,7 +1842,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         // A host path, resolved by GET /_/uploads/ on whatever port this root is
         // served from. Percent-encoded per segment, while the stored name keeps its
         // own characters: a raw space breaks srcset, where a space separates candidates.
-        const url = `/_/uploads/${encodeURIComponent(path.basename(dirRel))}/${encodeURIComponent(stored.name)}`;
+        const url = `/_/uploads/${strictSegment(path.basename(dirRel))}/${strictSegment(stored.name)}`;
         return res.json({
           msg: 'Uploaded',
           msgType: 'success',
@@ -1864,6 +1871,14 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         const rel = `${UPLOADS_FOLDER}/${decodeOnce(req.path).slice('/uploads/'.length)}`;
         validateSegments(rel);
         const realPath = await resolveReadPath(paths, rel);
+        // The root's consented links are honoured elsewhere, but an upload is only ever a
+        // file inside the real `uploads/`: a link there may point anywhere the folder's
+        // owner consented to, which is not somewhere this route serves from.
+        let uploadsReal = null;
+        try {
+          uploadsReal = path.resolve(await fs.realpath(path.join(paths.baseReal, UPLOADS_FOLDER)));
+        } catch { /* no real uploads folder means no file inside it */ }
+        if (!uploadsReal || !isContained(uploadsReal, realPath)) throw new PathError(404, 'File not found');
         const stats = await fs.stat(realPath);
         if (!stats.isFile()) throw new PathError(404, 'File not found');
         res.setHeader('X-Content-Type-Options', 'nosniff');

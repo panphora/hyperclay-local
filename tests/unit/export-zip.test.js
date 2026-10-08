@@ -1,12 +1,20 @@
+jest.mock('../../src/main/utils/data-extractor', () => ({
+  extractData: jest.fn(),
+  extractViaTag: jest.fn().mockResolvedValue(null),
+  parseExtractionRules: jest.fn()
+}));
+
 const fsSync = require('fs');
 const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
 const { Readable } = require('stream');
 const yauzl = require('yauzl');
+const request = require('supertest');
 
 const { exportDocumentZip, hostUploadRefs } = require('../../src/main/export-zip');
-const { assetsDirFor } = require('../../src/main/server');
+const { assetsDirFor, createApp } = require('../../src/main/server');
+const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 
 function readZip(zipPath) {
   return new Promise((resolve, reject) => {
@@ -286,6 +294,53 @@ describe('exporting a document and its assets as a zip', () => {
     const entries = await readZip(outPath);
     expect(entries.map((entry) => entry.name)).toEqual(['solo/solo.html']);
     expect(entries[0].content).toEqual(bytes);
+  });
+});
+
+// The link a document carries comes from the upload route, so the round trip runs
+// through the real endpoint: upload, link the url that came back, export.
+describe('exporting a document that links an answered upload url', () => {
+  let dir;
+  let app;
+  let outPath;
+
+  beforeEach(async () => {
+    dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'export-zip-roundtrip-')));
+    outPath = path.join(dir, 'out.zip');
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    app = await listenLoopback(createApp(dir));
+    await fs.writeFile(path.join(dir, 'board.html'), '<html>board</html>');
+  });
+
+  afterEach(async () => {
+    await closeLoopback();
+    jest.restoreAllMocks();
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+
+  test('a name with the characters encodeURIComponent leaves raw is packaged whole', async () => {
+    const bytes = Buffer.from('PNGDATA');
+    const res = await request(app)
+      .post('/_/upload')
+      .set('Host', 'localhost')
+      .set('Origin', 'http://localhost:4321')
+      .set('Document-URL', 'http://localhost/board.html')
+      .attach('file', bytes, "image (1)'s*.png");
+    expect(res.status).toBe(200);
+    const [file] = res.body.uploads;
+    expect(file.url.split('/').pop()).not.toMatch(/[!'()*]/);
+
+    const documentPath = path.join(dir, 'board.html');
+    await fs.writeFile(documentPath, `<img src="${file.url}">`);
+
+    await exportDocumentZip(documentPath, outPath, { uploadsDir: path.join(dir, 'uploads') });
+
+    const entries = await readZip(outPath);
+    const inside = `board/uploads/assets-board/${file.name}`;
+    expect(entries.map((entry) => entry.name).sort()).toEqual(['board/board.html', inside]);
+    const byName = Object.fromEntries(entries.map((entry) => [entry.name, entry.content]));
+    expect(byName[inside]).toEqual(bytes);
+    expect(byName['board/board.html'].toString()).toBe(`<img src="uploads/assets-board/${file.url.split('/').pop()}">`);
   });
 });
 

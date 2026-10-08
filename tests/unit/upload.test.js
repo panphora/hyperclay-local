@@ -220,6 +220,46 @@ describe('uploads', () => {
     }
   });
 
+  test('a link out of uploads/ cannot serve a file outside the real uploads folder', async () => {
+    // The link target is inside the served root, so canonical containment and the
+    // root's symlink consent both allow it; only the uploads folder itself rules it out.
+    await fs.mkdir(path.join(dir, 'private'));
+    await fs.writeFile(path.join(dir, 'private', 'canary.txt'), 'CANARY');
+    await fs.mkdir(path.join(dir, 'uploads'), { recursive: true });
+    await fs.symlink(path.join(dir, 'private'), path.join(dir, 'uploads', 'assets-board'));
+
+    const served = await request(app).get('/_/uploads/assets-board/canary.txt').set('Host', 'localhost');
+    expect(served.status).toBe(404);
+    expect(served.text).not.toContain('CANARY');
+  });
+
+  test('a link inside uploads/ that stays inside uploads/ still serves', async () => {
+    await fs.mkdir(path.join(dir, 'uploads', 'assets-board'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'uploads', 'assets-board', 'real.png'), 'PNGDATA');
+    await fs.symlink(
+      path.join(dir, 'uploads', 'assets-board', 'real.png'),
+      path.join(dir, 'uploads', 'assets-board', 'alias.png')
+    );
+
+    const served = await request(app).get('/_/uploads/assets-board/alias.png').set('Host', 'localhost');
+    expect(served.status).toBe(200);
+    expect(Buffer.from(served.body).toString()).toBe('PNGDATA');
+  });
+
+  test('a name encodeURIComponent leaves characters raw still answers one unbroken link', async () => {
+    // `! ' ( ) *` survive encodeURIComponent, and the zip exporter stops a link at
+    // the first of them: `image (1).png` was exported as `image` and left out.
+    const res = await upload(Buffer.from('PNGDATA'), "image (1)'s*.png");
+    expect(res.status).toBe(200);
+    const [file] = res.body.uploads;
+    expect(file.url).toMatch(/^\/_\/uploads\/assets-index\/image%20%281%29%27s%2A-[0-9a-f]{6}\.png$/);
+    expect(decodeURIComponent(file.url.split('/').pop())).toBe(file.name);
+
+    const served = await request(app).get(file.url).set('Host', 'localhost');
+    expect(served.status).toBe(200);
+    expect(Buffer.from(served.body).toString()).toBe('PNGDATA');
+  });
+
   test('a page type hand-placed inside an assets folder is served as an attachment', async () => {
     await fs.mkdir(path.join(dir, 'assets-doc'));
     await fs.writeFile(path.join(dir, 'assets-doc', 'x.shtml'), '<html>payload</html>');
