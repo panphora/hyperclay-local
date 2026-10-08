@@ -939,6 +939,34 @@
     }
 
     {
+      // A file whose name says nothing about its type is the case extension lists miss:
+      // a host that sniffs it, or types .shtml as HTML, serves an attachment back as a
+      // page that runs on the host's origin (§9: nothing stored may execute).
+      const r = row('upload: a stored file never comes back as a page');
+      if (!caps.has('upload')) r.set('skip', 'Host does not declare `upload`.');
+      else {
+        try {
+          const html = new TextEncoder().encode('<!DOCTYPE html><html><body><script>1<\/script>mhf</body></html>');
+          const problems = [];
+          let read = 0;
+          for (const name of ['mhf-page.shtml', 'mhf-page']) {
+            const { res, entry } = await upload(name, html, { target, token });
+            if (!res.ok || !entry) continue;
+            let served;
+            try { served = await fetch(new URL(entry.url, target), { credentials: creds() }); } catch (_) { continue; }
+            read++;
+            const type = (served.headers.get('content-type') || '').toLowerCase();
+            if (/html|xml/.test(type) && !/attachment/i.test(served.headers.get('content-disposition') || '')) problems.push(`${name} is served as ${type}`);
+            else if ((served.headers.get('x-content-type-options') || '').toLowerCase() !== 'nosniff') problems.push(`${name} is served without nosniff`);
+          }
+          if (problems.length) r.set('fail', `${problems.join('; ')}. Refuse web-page types, and serve every upload with an explicit type and nosniff.`);
+          else if (!read) r.set('pass', 'Both probes were refused, or their headers cannot be read from this page.');
+          else r.set('pass', `Served inert (${read} read back): an explicit non-page type with nosniff.`);
+        } catch (e) { blockedOr(r, e); }
+      }
+    }
+
+    {
       const r = row('upload: a traversing filename cannot land outside the document’s scope');
       if (!caps.has('upload')) r.set('skip', 'Host does not declare `upload`.');
       else {
