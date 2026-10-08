@@ -67,7 +67,7 @@ function readBaseline(entry) {
     remoteEtag: entry.remoteEtag === undefined ? checksum : entry.remoteEtag,
     localChecksum: entry.localChecksum === undefined ? checksum : entry.localChecksum,
     structureVersion: entry.structureVersion === undefined ? null : entry.structureVersion,
-    uploadBlocked: entry.uploadBlocked === true
+    uploadBlocked: entry.uploadBlocked === true && entry.type !== 'upload'
   };
 }
 

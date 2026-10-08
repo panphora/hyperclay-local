@@ -31,7 +31,6 @@ const DISK_HEADROOM = 1.1;
 const DISK_RESERVE = 50 * MIB;
 const DOWNLOAD_CONCURRENCY = 4;
 const SITE_UPLOAD_LIMIT = 5 * MIB;
-const UPLOAD_LIMIT = 10 * MIB;
 const READY_TIMEOUT_MS = 30_000;
 const SITE_PATTERN = /\.(html|htmlclay)$/i;
 
@@ -50,10 +49,6 @@ function isSite(node, rel) {
   if (node && node.type === 'site') return true;
   if (node && node.type === 'upload') return false;
   return SITE_PATTERN.test(rel);
-}
-
-function uploadLimitFor(node, rel) {
-  return isSite(node, rel) ? SITE_UPLOAD_LIMIT : UPLOAD_LIMIT;
 }
 
 function rankOf(node) {
@@ -185,8 +180,8 @@ function openBindStream(engine, signal) {
 /**
  * One listed node, decided against the baseline and the disk and executed by the
  * executor: `adopt` when the bytes already match, `download` when they do not,
- * `conflict: unbound` when a file is in the way with different bytes. A file
- * over local outbound policy is downloaded and marked `uploadBlocked`.
+ * `conflict: unbound` when a file is in the way with different bytes. A site
+ * over the site size limit is downloaded and marked `uploadBlocked`.
  */
 async function bindNode(engine, node) {
   const rel = relPathOf(node);
@@ -202,7 +197,7 @@ async function bindNode(engine, node) {
 
   await executeDecision(engine, node.id, item.decision, item.context);
 
-  if (sizeOf(node) > uploadLimitFor(node, rel)) {
+  if (isSite(node, rel) && sizeOf(node) > SITE_UPLOAD_LIMIT) {
     await engine.repo.updateBaseline(node.id, { uploadBlocked: true });
   }
 

@@ -334,7 +334,7 @@ describe('firstBind', () => {
     expect(await fsp.readFile(path.join(root, 'notes.html'), 'utf8')).toBe('mine');
   });
 
-  it('downloads a file over local policy and marks it uploadBlocked', async () => {
+  it('downloads a large upload without marking it uploadBlocked', async () => {
     api.listNodes.mockResolvedValue(completeList([
       upload({ id: 902, name: 'movie.bin', etag: NOTES_SUM, size: 12 * 1024 * 1024 })
     ]));
@@ -347,8 +347,29 @@ describe('firstBind', () => {
     expect(engine.repo.get('902')).toMatchObject({
       path: 'movie.bin',
       remoteEtag: NOTES_SUM,
+      uploadBlocked: false
+    });
+
+    const baseline = JSON.parse(await fsp.readFile(path.join(metaDir, 'node-map.json'), 'utf8'));
+    expect(baseline['902'].uploadBlocked).toBe(false);
+  });
+
+  it('downloads a site over the site limit and marks it uploadBlocked', async () => {
+    api.listNodes.mockResolvedValue(completeList([
+      site({ id: 901, name: 'board.html', etag: BOARD_SUM, size: 6 * 1024 * 1024 })
+    ]));
+
+    const result = await firstBind(entry);
+
+    expect(result).toEqual({ ok: true, files: 1, bytes: 6 * 1024 * 1024 });
+    expect(engine.repo.get('901')).toMatchObject({
+      path: 'board.html',
+      remoteEtag: BOARD_SUM,
       uploadBlocked: true
     });
+
+    const baseline = JSON.parse(await fsp.readFile(path.join(metaDir, 'node-map.json'), 'utf8'));
+    expect(baseline['901'].uploadBlocked).toBe(true);
   });
 
   it('an aborted bind stops downloading, writes no identity and keeps its marker', async () => {

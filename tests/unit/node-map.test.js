@@ -270,6 +270,12 @@ describe('baseline entry format v2', () => {
     expect(readBaseline({ ...V2_ENTRY, uploadBlocked: true }).uploadBlocked).toBe(true);
   });
 
+  test('an upload entry reads back unblocked, so the next save drops the flag', () => {
+    const baseline = readBaseline({ ...V2_ENTRY, type: 'upload', path: 'movie.bin', uploadBlocked: true });
+    expect(baseline.uploadBlocked).toBe(false);
+    expect(applyBaseline({ ...V2_ENTRY, type: 'upload', path: 'movie.bin', uploadBlocked: true }).uploadBlocked).toBe(false);
+  });
+
   test('a map saved in the old shape loads and maps', async () => {
     await fs.mkdir(tmpDir, { recursive: true });
     await fs.writeFile(
