@@ -1,0 +1,8 @@
+# Runs the jest + node:test suites on a throwaway Hetzner box: `testbox run`.
+# See ~/Documents/GitHub/bash_commands/testbox/README.md.
+TESTBOX_REPO=hyperclay-local
+TESTBOX_SETUP='npm ci --no-audit --no-fund'
+# The Mac's umask is 022; the box user's default 002 makes release tests see 664 where they pin 644.
+# Everyday runs leave out the release tier; releases run it all: testbox run --command 'umask 022 && npm run test:full'
+TESTBOX_COMMAND='umask 022 && npm run test:app && npm run test:node'
+TESTBOX_TIMEOUT=85m

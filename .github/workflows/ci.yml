@@ -40,7 +40,7 @@ jobs:
       # flakiness was supertest binding its test servers on the wildcard address
       # (tests/helpers/loopback.js). Kept for one release so that a CI failure means
       # the code rather than the move to Node 26. Drop the flag once that holds.
-      - run: npm test -- --runInBand
+      - run: npm run test:app -- --runInBand
 
   # The conformance gate drives the Malleable HTML File host-test page against a real
   # listener, in a browser, from the host's own origin. That origin is the point: the
