@@ -1020,7 +1020,7 @@ async function exportFileAsZip(rootId) {
   if (saved.canceled || !saved.filePath) return { ok: false, error: 'canceled' };
 
   try {
-    const out = await exportDocumentZip(documentPath, saved.filePath);
+    const out = await exportDocumentZip(documentPath, saved.filePath, { uploadsDir: path.join(rootPath, 'uploads') });
     shell.showItemInFolder(out);
     return { ok: true };
   } catch (error) {

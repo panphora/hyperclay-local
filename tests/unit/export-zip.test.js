@@ -5,7 +5,7 @@ const os = require('os');
 const { Readable } = require('stream');
 const yauzl = require('yauzl');
 
-const { exportDocumentZip } = require('../../src/main/export-zip');
+const { exportDocumentZip, hostUploadRefs } = require('../../src/main/export-zip');
 const { assetsDirFor } = require('../../src/main/server');
 
 function readZip(zipPath) {
@@ -177,5 +177,146 @@ describe('exporting a document and its assets as a zip', () => {
 
     const entries = await readZip(outPath);
     expect(entries.map((entry) => entry.name)).toEqual(['board/board.html']);
+  });
+
+  test('a document that links uploads carries those files and links them relatively', async () => {
+    const documentPath = path.join(dir, 'board.html');
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]);
+    const text = [
+      '<img src="/_/uploads/assets-board/a.png">',
+      '<a href="/_/uploads/assets-board/b%20c.pdf">b</a>',
+    ].join('\n');
+    await fs.writeFile(documentPath, text);
+    const uploadsDir = path.join(dir, 'uploads');
+    await fs.mkdir(path.join(uploadsDir, 'assets-board'), { recursive: true });
+    await fs.writeFile(path.join(uploadsDir, 'assets-board', 'a.png'), pngBytes);
+    await fs.writeFile(path.join(uploadsDir, 'assets-board', 'b c.pdf'), 'pdf-bytes');
+    const before = await fs.readFile(documentPath);
+
+    const result = await exportDocumentZip(documentPath, outPath, { uploadsDir });
+    expect(result).toBe(outPath);
+
+    const entries = await readZip(outPath);
+    expect(entries.map((entry) => entry.name).sort()).toEqual([
+      'board/board.html',
+      'board/uploads/assets-board/a.png',
+      'board/uploads/assets-board/b c.pdf',
+    ]);
+    const byName = Object.fromEntries(entries.map((entry) => [entry.name, entry.content]));
+    expect(byName['board/uploads/assets-board/a.png']).toEqual(pngBytes);
+    expect(byName['board/uploads/assets-board/b c.pdf'].toString()).toBe('pdf-bytes');
+
+    const zipped = byName['board/board.html'].toString();
+    expect(zipped).toContain('src="uploads/assets-board/a.png"');
+    expect(zipped).toContain('href="uploads/assets-board/b%20c.pdf"');
+    expect(zipped).not.toContain('/_/uploads/');
+
+    expect(await fs.readFile(documentPath)).toEqual(before);
+  });
+
+  test('an upload linked twice lands in the zip once', async () => {
+    const documentPath = path.join(dir, 'board.html');
+    await fs.writeFile(documentPath, '<img src="/_/uploads/assets-board/a.png"><img src="/_/uploads/assets-board/a.png">');
+    const uploadsDir = path.join(dir, 'uploads');
+    await fs.mkdir(path.join(uploadsDir, 'assets-board'), { recursive: true });
+    await fs.writeFile(path.join(uploadsDir, 'assets-board', 'a.png'), 'png-bytes');
+
+    await exportDocumentZip(documentPath, outPath, { uploadsDir });
+
+    const entries = await readZip(outPath);
+    expect(entries.map((entry) => entry.name).sort()).toEqual([
+      'board/board.html',
+      'board/uploads/assets-board/a.png',
+    ]);
+    expect(entries.find((entry) => entry.name === 'board/board.html').content.toString()).toBe(
+      '<img src="uploads/assets-board/a.png"><img src="uploads/assets-board/a.png">'
+    );
+  });
+
+  test('a host path on another site is left alone', async () => {
+    const documentPath = path.join(dir, 'board.html');
+    const text = '<img src="https://x.hyperclay.com/_/uploads/assets-board/a.png">';
+    await fs.writeFile(documentPath, text);
+    const uploadsDir = path.join(dir, 'uploads');
+    await fs.mkdir(path.join(uploadsDir, 'assets-board'), { recursive: true });
+    await fs.writeFile(path.join(uploadsDir, 'assets-board', 'a.png'), 'png-bytes');
+
+    await exportDocumentZip(documentPath, outPath, { uploadsDir });
+
+    const entries = await readZip(outPath);
+    expect(entries.map((entry) => entry.name)).toEqual(['board/board.html']);
+    expect(entries[0].content).toEqual(Buffer.from(text));
+  });
+
+  test('a traversal, a symlink out of uploads and a missing file add nothing outside uploads', async () => {
+    const documentPath = path.join(dir, 'board.html');
+    const text = [
+      '<img src="/_/uploads/../secret.txt">',
+      '<img src="/_/uploads/assets-board/%2e%2e/x">',
+      '<img src="/_/uploads/assets-board/escape.txt">',
+      '<img src="/_/uploads/assets-board/gone.png">',
+    ].join('\n');
+    await fs.writeFile(documentPath, text);
+    await fs.writeFile(path.join(dir, 'secret.txt'), 'secret');
+    const uploadsDir = path.join(dir, 'uploads');
+    await fs.mkdir(path.join(uploadsDir, 'assets-board'), { recursive: true });
+    await fs.symlink(path.join(dir, 'secret.txt'), path.join(uploadsDir, 'assets-board', 'escape.txt'));
+    const logged = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+    await expect(exportDocumentZip(documentPath, outPath, { uploadsDir })).resolves.toBe(outPath);
+
+    const entries = await readZip(outPath);
+    expect(entries.map((entry) => entry.name)).toEqual(['board/board.html']);
+    const zipped = entries[0].content.toString();
+    expect(zipped).toContain('/_/uploads/../secret.txt');
+    expect(zipped).toContain('/_/uploads/assets-board/%2e%2e/x');
+    expect(logged).toHaveBeenCalledWith('[export] 2 linked uploads were not found');
+  });
+
+  test('a document with no host path exports byte-identical', async () => {
+    const documentPath = path.join(dir, 'solo.html');
+    const bytes = Buffer.from('<img src="https://example.com/pic.png"><a href="assets-solo/x.png">x</a>');
+    await fs.writeFile(documentPath, bytes);
+    const uploadsDir = path.join(dir, 'uploads');
+    await fs.mkdir(path.join(uploadsDir, 'assets-board'), { recursive: true });
+    await fs.writeFile(path.join(uploadsDir, 'assets-board', 'a.png'), 'png-bytes');
+
+    await exportDocumentZip(documentPath, outPath, { uploadsDir });
+
+    const entries = await readZip(outPath);
+    expect(entries.map((entry) => entry.name)).toEqual(['solo/solo.html']);
+    expect(entries[0].content).toEqual(bytes);
+  });
+});
+
+describe('finding the host upload paths in a document', () => {
+  const found = (text) => hostUploadRefs(text).map((ref) => ({ text: text.slice(ref.start, ref.end), segments: ref.segments }));
+  const ref = { text: '/_/uploads/assets-board/a.png', segments: ['assets-board', 'a.png'] };
+
+  test('a reference is free on the left and stops at the first character that is not part of a path', () => {
+    expect(found('/_/uploads/assets-board/a.png')).toEqual([ref]);
+    expect(found('src=/_/uploads/assets-board/a.png')).toEqual([ref]);
+    for (const stop of ['"', "'", ')', ' ', '?', '#']) {
+      expect(found(`/_/uploads/assets-board/a.png${stop}tail`)).toEqual([ref]);
+    }
+  });
+
+  test('a reference inside a longer token belongs to that host', () => {
+    expect(hostUploadRefs('https://x.hyperclay.com/_/uploads/assets-board/a.png')).toEqual([]);
+    expect(hostUploadRefs('x./_/uploads/assets-board/a.png')).toEqual([]);
+    expect(hostUploadRefs('%/_/uploads/assets-board/a.png')).toEqual([]);
+  });
+
+  test('a reference names at least two plain segments, decoded once each', () => {
+    expect(hostUploadRefs('/_/uploads/a.png')).toEqual([]);
+    expect(hostUploadRefs('/_/uploads/')).toEqual([]);
+    expect(hostUploadRefs('/_/uploads/../secret.txt')).toEqual([]);
+    expect(hostUploadRefs('/_/uploads/assets-board/%2e%2e/x')).toEqual([]);
+    expect(hostUploadRefs('/_/uploads/assets-board/.hidden')).toEqual([]);
+    expect(hostUploadRefs('/_/uploads/assets-board/%2fetc')).toEqual([]);
+    expect(hostUploadRefs('/_/uploads/assets-board/%')).toEqual([]);
+    expect(found('/_/uploads/assets-board/b%20c.pdf')).toEqual([
+      { text: '/_/uploads/assets-board/b%20c.pdf', segments: ['assets-board', 'b c.pdf'] },
+    ]);
   });
 });
