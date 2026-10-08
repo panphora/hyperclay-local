@@ -191,3 +191,29 @@ describe('executeDecision — a folder delete-remote', () => {
     expect(syncEngine.repo.size).toBe(0);
   });
 });
+
+describe('executeDecision — the locked root uploads folder', () => {
+  test('a delete-remote for it is refused and sends nothing', async () => {
+    syncEngine.repo.seed([
+      ['10', { type: 'folder', path: 'uploads', parentId: 0, inode: 1 }]
+    ]);
+
+    await expect(executeDecision(syncEngine, '10', { action: 'delete-remote' }, { path: 'uploads', type: 'folder' }))
+      .rejects.toMatchObject({ code: 'locked-folder' });
+
+    expect(apiClient.deleteNode).not.toHaveBeenCalled();
+    expect(syncEngine.repo.has('10')).toBe(true);
+    expect(syncEngine.outbox.has('delete', 10)).toBe(false);
+  });
+
+  test('a folder named uploads that is not at the root is still deleted', async () => {
+    syncEngine.repo.seed([
+      ['20', { type: 'folder', path: 'work/uploads', parentId: 0, inode: 1 }]
+    ]);
+
+    const result = await executeDecision(syncEngine, '20', { action: 'delete-remote' }, { path: 'work/uploads', type: 'folder' });
+
+    expect(result.action).toBe('delete-remote');
+    expect(apiClient.deleteNode).toHaveBeenCalledWith(expect.anything(), 20, { expectedVersion: 'sv-1', cascade: true });
+  });
+});

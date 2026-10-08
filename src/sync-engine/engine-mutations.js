@@ -12,8 +12,19 @@ const {
   moveNode,
   deleteNode
 } = require('./api-client');
+const { isLockedFolder, lockedFolderError } = require('./locked-folder');
 
 module.exports = {
+  /**
+   * The root's `uploads` folder is never sent a rename, move or delete: every
+   * document's attachments live under it. Refused before anything is marked in
+   * flight, so no request leaves and no outbox entry is left behind.
+   */
+  refuseLockedFolder(nodeId) {
+    const entry = this.repo.get(nodeId);
+    if (entry && isLockedFolder(entry.path)) throw lockedFolderError();
+  },
+
   // CONTRACTS §4-5: a file's baseline version is kept current by downloads, uploads and noop
   // passes; a folder's changes whenever anything under it does, so it is always read fresh, as
   // is a file whose baseline has none.
@@ -36,6 +47,7 @@ module.exports = {
   },
 
   async _apiRenameNode(nodeId, newName) {
+    this.refuseLockedFolder(nodeId);
     const gen = this.generation;
     const expectedVersion = await this._expectedVersion(nodeId);
     if (gen !== this.generation) return;
@@ -48,6 +60,7 @@ module.exports = {
   },
 
   async _apiMoveNode(nodeId, parentId, newName) {
+    this.refuseLockedFolder(nodeId);
     const gen = this.generation;
     const expectedVersion = await this._expectedVersion(nodeId);
     if (gen !== this.generation) return;
@@ -62,6 +75,7 @@ module.exports = {
   },
 
   async _apiDeleteNode(nodeId, { cascade = false } = {}) {
+    this.refuseLockedFolder(nodeId);
     this.assertRootPresent();
     const gen = this.generation;
     const expectedVersion = await this._expectedVersion(nodeId);

@@ -43,6 +43,7 @@ const dataGuard = require('../../main/data-loss-guard');
 const nodeMap = require('../node-map');
 const store = require('./conflicts');
 const { A } = require('./decide');
+const { isLockedFolder, lockedFolderError } = require('../locked-folder');
 
 const SITE_PATTERN = /\.(html|htmlclay)$/i;
 
@@ -427,8 +428,10 @@ async function trashLocal(engine, nodeId, entry, context) {
 }
 
 async function deleteRemote(engine, nodeId, entry, context) {
-  engine.assertRootPresent();
   const rel = relPathOf(entry, context, nodeId);
+  // The root's `uploads` folder is never deleted: it holds every attachment.
+  if (isLockedFolder(rel)) throw lockedFolderError();
+  engine.assertRootPresent();
   const type = typeOf(entry, context, rel);
   const id = idOf(nodeId);
   // A folder is deleted against the version the decision was made from: the server refuses a

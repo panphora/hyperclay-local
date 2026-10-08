@@ -5,6 +5,8 @@ const PAUSE_BY_CODE = {
 };
 
 function classifyError(error) {
+  // The root's `uploads` folder is never sent a rename, move or delete: the item is skipped, not retried.
+  if (error && error.code === 'locked-folder') return { kind: 'skip', reason: 'locked-folder' };
   if (error && (error.code === 'folder-missing' || error.code === 'folder-replaced')) return { kind: 'pause', reason: error.code };
   const status = error.statusCode;
   const code = error.code;

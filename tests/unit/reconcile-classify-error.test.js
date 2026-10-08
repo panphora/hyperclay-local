@@ -51,6 +51,11 @@ describe('classifyError', () => {
       .toEqual({ kind: 'skip', reason: 'managed' });
   });
 
+  it('a locked-folder refusal is a skip, never a retry or a backoff', () => {
+    expect(classifyError({ code: 'locked-folder' }))
+      .toEqual({ kind: 'skip', reason: 'locked-folder' });
+  });
+
   it('429 is backoff', () => {
     expect(classifyError({ statusCode: 429 })).toEqual({ kind: 'backoff', retryAfterMs: null });
     expect(classifyError({ statusCode: 429, retryAfterMs: 30000 }))

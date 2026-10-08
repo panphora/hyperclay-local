@@ -29,6 +29,7 @@ const { calculateChecksum, calculateFileChecksum } = require('./utils');
 const { ERROR_PRIORITY } = require('./constants');
 const { decide, decideFolder, A } = require('./reconcile/decide');
 const { ancestorPaths } = require('./path-helpers');
+const { isLockedFolder } = require('./locked-folder');
 const { executeDecision } = require('./reconcile/execute');
 const { classifyError: classifySyncError } = require('./reconcile/classify-error');
 const nodeMap = require('./node-map');
@@ -944,7 +945,7 @@ module.exports = {
           complete,
           bootstrap,
           firstPass,
-          remoteChanged: underRestore || this.folderSubtreeChangedRemotely(entry.path, allServerNodes)
+          remoteChanged: underRestore || isLockedFolder(entry.path) || this.folderSubtreeChangedRemotely(entry.path, allServerNodes)
         });
         if (decision.action === A.DELETE_REMOTE) deleting.push(entry.path);
         if (decision.action === A.DOWNLOAD) restoring.push(entry.path);
@@ -1035,12 +1036,17 @@ module.exports = {
    * and never falls through to a delete. With no inode to match (a filesystem
    * without stable ones, or none recorded) the folder is recognised by its
    * content instead — the one local-only folder holding its files unchanged.
+   *
+   * The root's `uploads` folder is never sent a rename or a move: it is renamed
+   * back on disk, and a rename that fails returns false so the pass restores it
+   * by download.
    */
   async relocateFolderByInode(nid, entry, localOnly, map) {
     if (entry.inode) {
       for (const localFolder of localOnly) {
         const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFolder));
         if (localInode && localInode === entry.inode) {
+          if (isLockedFolder(entry.path)) return this.restoreLockedFolder(localFolder);
           return this.relocateFolderTo(nid, entry, localFolder, localInode, localOnly, map);
         }
       }
@@ -1049,6 +1055,7 @@ module.exports = {
     // local-only folder holding this folder's files, unchanged, is the same folder.
     const byContent = await this.folderMatchingContent(entry.path, localOnly);
     if (!byContent) return false;
+    if (isLockedFolder(entry.path)) return this.restoreLockedFolder(byContent);
     const inode = await nodeMap.getInode(path.join(this.syncFolder, byContent));
     return this.relocateFolderTo(nid, entry, byContent, inode, localOnly, map);
   },

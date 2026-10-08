@@ -19,6 +19,7 @@ const {
 } = require('./file-operations');
 const { calculateChecksum } = require('./utils');
 const { classifyPath, ancestorPaths } = require('./path-helpers');
+const { LOCKED_FOLDER, isLockedFolder } = require('./locked-folder');
 const nodeMap = require('./node-map');
 const fs = require('fs/promises');
 const { RootObserver } = require('../main/root-observer');
@@ -152,6 +153,20 @@ module.exports = {
     this._registerPendingUnlink(normalizedPath, 'folder');
   },
 
+  /**
+   * Ask for a full reconcile: the session's runner restarts its generation and
+   * reconciles everything from scratch, the way the SSE watchdog and a
+   * rediscover do. A session without a runner falls back to a remote-change
+   * check, which brings back whatever the disk is missing.
+   */
+  requestReconcile() {
+    if (this.runner) {
+      this.runner.start();
+      return;
+    }
+    this.checkForRemoteChanges();
+  },
+
   // --- Type-tagged correlator ---
 
   _registerPendingUnlink(normalizedPath, type) {
@@ -172,6 +187,10 @@ module.exports = {
         break;
       }
     }
+
+    // The root's top-level `uploads` folder holds every attachment: its delete
+    // is never sent, and a reconcile pass puts the folder back instead.
+    const locked = type === 'folder' && isLockedFolder(normalizedPath);
 
     if (!foundNodeId) {
       console.log(`[SYNC] Watcher: ${type} unlink for untracked path: ${normalizedPath}`);
@@ -244,6 +263,14 @@ module.exports = {
         }
         return;
       }
+      if (locked) {
+        console.log(`[SYNC] Watcher: ${normalizedPath} is the locked uploads folder, delete not sent`);
+        if (this.logger) {
+          this.logger.warn('WATCHER', 'Root uploads folder deleted, no delete sent', { path: normalizedPath });
+        }
+        this.requestReconcile();
+        return;
+      }
       console.log(`[SYNC] Watcher: Local ${type} delete detected: ${normalizedPath} (nodeId ${foundNodeId})`);
       try {
         // Folder rm -rf requires cascade=true; the platform returns 400 for a non-empty folder otherwise.
@@ -282,7 +309,8 @@ module.exports = {
       nodeId: foundNodeId,
       type,
       entry: foundEntry,
-      ledger
+      ledger,
+      locked
     });
   },
 
@@ -304,6 +332,15 @@ module.exports = {
 
       clearTimeout(pending.timerId);
       this.pendingUnlinks.delete(oldPath);
+
+      // The locked uploads folder is renamed back, never sent: no provisional
+      // path is ever published and the folder keeps its name and its node.
+      if (pending.locked && type === 'folder') {
+        this._putLockedFolderBack(oldPath, normalizedPath, pending).catch(err =>
+          console.error(`[SYNC] Watcher: Failed to put ${oldPath} back:`, err)
+        );
+        return true;
+      }
 
       const shape = isMove ? 'move' : isRename ? 'rename' : 'move+rename';
       if (type === 'folder') {
@@ -395,6 +432,47 @@ module.exports = {
     } catch (err) {
       console.error(`[SYNC] Watcher: Failed to sync ${shape} for ${oldPath}:`, err.message);
     }
+  },
+
+  /**
+   * Put the root's `uploads` folder back after it was renamed or moved: the
+   * directory is renamed back and nothing is sent to the server. Returns true
+   * when the folder is back on disk, false when it could not be put back — the
+   * caller then restores it by download.
+   */
+  async restoreLockedFolder(fromRel) {
+    const target = path.join(this.syncFolder, LOCKED_FOLDER);
+    if (fileExists(target)) return true;
+    try {
+      await fs.rename(path.join(this.syncFolder, fromRel), target);
+      console.log(`[SYNC] ${fromRel} renamed back to ${LOCKED_FOLDER}`);
+      if (this.logger) {
+        this.logger.warn('WATCHER', 'Root uploads folder renamed back', { from: fromRel, to: LOCKED_FOLDER });
+      }
+      return true;
+    } catch (err) {
+      console.error(`[SYNC] Failed to rename ${fromRel} back to ${LOCKED_FOLDER}:`, err.message);
+      if (this.logger) {
+        this.logger.error('WATCHER', 'Failed to put the root uploads folder back', { from: fromRel, error: err.message });
+      }
+      return false;
+    }
+  },
+
+  /**
+   * The root's `uploads` folder came back under a new name or location. Nothing
+   * is sent to the server: the children of the operation are suppressed the way
+   * a folder relocate suppresses them, and the directory is renamed back. A
+   * rename that fails leaves the new folder alone and asks for a reconcile,
+   * whose folder pass restores the folder by download.
+   */
+  async _putLockedFolderBack(oldPath, newPath, pending) {
+    const plan = this._planFolderRelocate(oldPath, newPath, pending);
+    this._cancelDescendantPendingUnlinks(plan);
+    this._suppressFolderOpCascade(plan);
+
+    if (await this.restoreLockedFolder(newPath)) return;
+    this.requestReconcile();
   },
 
   // --- Folder identity (S5-Q2) ---
