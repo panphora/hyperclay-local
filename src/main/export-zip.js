@@ -14,24 +14,42 @@ async function exportDocumentZip(documentPath, outPath) {
   const folder = path.basename(assetsDirFor(path.basename(documentPath)));
   const top = folder.slice('assets-'.length);
   const assetsPath = path.join(path.dirname(documentPath), folder);
+  const assets = await assetsFolderIsReal(assetsPath) ? await listAssetFiles(assetsPath) : [];
 
+  // A name only this call uses, so two exports to the same place never remove
+  // each other's work, and a failure removes only what this call wrote.
+  const part = `${outPath}.${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.part`;
   const zip = new yazl.ZipFile();
-  zip.addFile(documentPath, `${top}/${path.basename(documentPath)}`);
-  for (const file of await listAssetFiles(assetsPath)) {
-    zip.addFile(path.join(assetsPath, file), `${top}/${folder}/${file.split(path.sep).join('/')}`);
-  }
-  zip.end();
-
-  const part = `${outPath}.part`;
-  await new Promise((resolve, reject) => {
-    const out = fs.createWriteStream(part, { flags: 'wx' });
-    zip.outputStream.on('error', reject).pipe(out).on('error', reject).on('close', resolve);
-  }).catch(async (error) => {
+  try {
+    await new Promise((resolve, reject) => {
+      zip.on('error', reject);
+      const out = fs.createWriteStream(part, { flags: 'wx' });
+      out.on('error', reject).on('close', resolve);
+      zip.outputStream.on('error', reject).pipe(out);
+      zip.addFile(documentPath, `${top}/${path.basename(documentPath)}`);
+      for (const file of assets) {
+        zip.addFile(path.join(assetsPath, file), `${top}/${folder}/${file.split(path.sep).join('/')}`);
+      }
+      zip.end();
+    });
+    await fsPromises.rename(part, outPath);
+  } catch (error) {
+    zip.outputStream.unpipe();
     await fsPromises.rm(part, { force: true });
     throw error;
-  });
-  await fsPromises.rename(part, outPath);
+  }
   return outPath;
+}
+
+// The assets folder itself must be a real folder, not a link to somewhere else:
+// export packages what sits beside the document, nothing more.
+async function assetsFolderIsReal(assetsPath) {
+  try {
+    return (await fsPromises.lstat(assetsPath)).isDirectory();
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
 }
 
 async function listAssetFiles(root, rel = '') {

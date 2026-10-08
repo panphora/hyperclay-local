@@ -1,6 +1,8 @@
+const fsSync = require('fs');
 const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
+const { Readable } = require('stream');
 const yauzl = require('yauzl');
 
 const { exportDocumentZip } = require('../../src/main/export-zip');
@@ -34,6 +36,10 @@ function readZip(zipPath) {
   });
 }
 
+async function partFiles(directory) {
+  return (await fs.readdir(directory)).filter((name) => name.endsWith('.part'));
+}
+
 describe('exporting a document and its assets as a zip', () => {
   let dir;
   let outPath;
@@ -44,6 +50,7 @@ describe('exporting a document and its assets as a zip', () => {
   });
 
   afterEach(async () => {
+    jest.restoreAllMocks();
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
@@ -106,5 +113,69 @@ describe('exporting a document and its assets as a zip', () => {
 
   test('assetsDirFor names the uploads folder after the document', () => {
     expect(assetsDirFor('board.html')).toBe('assets-board');
+  });
+
+  test('a failed export keeps the zip that was already there, and leaves no part file', async () => {
+    const documentPath = path.join(dir, 'board.html');
+    await fs.writeFile(documentPath, 'board');
+    const oldBytes = Buffer.from('the zip from last time');
+    await fs.writeFile(outPath, oldBytes);
+
+    const denied = Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+    jest.spyOn(fs, 'rename').mockRejectedValue(denied);
+
+    await expect(exportDocumentZip(documentPath, outPath)).rejects.toThrow('EPERM');
+
+    expect(await fs.readFile(outPath)).toEqual(oldBytes);
+    expect(await partFiles(dir)).toEqual([]);
+  });
+
+  test('an asset that cannot be read rejects instead of hanging, and leaves no part file', async () => {
+    const documentPath = path.join(dir, 'board.html');
+    await fs.writeFile(documentPath, 'board');
+    const assets = path.join(dir, 'assets-board');
+    await fs.mkdir(assets);
+    const assetPath = path.join(assets, 'photo-abc.png');
+    await fs.writeFile(assetPath, 'png-bytes');
+
+    const realCreateReadStream = fsSync.createReadStream;
+    jest.spyOn(fsSync, 'createReadStream').mockImplementation((target, options) => {
+      if (target !== assetPath) return realCreateReadStream.call(fsSync, target, options);
+      const stream = new Readable({ read() {} });
+      setImmediate(() => stream.destroy(new Error('asset vanished')));
+      return stream;
+    });
+
+    const started = Date.now();
+    await expect(exportDocumentZip(documentPath, outPath)).rejects.toThrow('asset vanished');
+    expect(Date.now() - started).toBeLessThan(2000);
+
+    expect(await partFiles(dir)).toEqual([]);
+  });
+
+  test('a part file belonging to another export is left untouched', async () => {
+    const documentPath = path.join(dir, 'board.html');
+    await fs.writeFile(documentPath, 'board');
+    const otherPart = `${outPath}.part`;
+    await fs.writeFile(otherPart, 'another export in flight');
+
+    await expect(exportDocumentZip(documentPath, outPath)).resolves.toBe(outPath);
+
+    expect((await fs.readFile(otherPart)).toString()).toBe('another export in flight');
+    expect(await partFiles(dir)).toEqual(['out.zip.part']);
+  });
+
+  test('a symlinked assets folder is skipped, so nothing outside the folder is packaged', async () => {
+    const documentPath = path.join(dir, 'board.html');
+    await fs.writeFile(documentPath, 'board');
+    const outside = path.join(dir, 'outside');
+    await fs.mkdir(outside);
+    await fs.writeFile(path.join(outside, 'secret.txt'), 'secret');
+    await fs.symlink(outside, path.join(dir, 'assets-board'));
+
+    await exportDocumentZip(documentPath, outPath);
+
+    const entries = await readZip(outPath);
+    expect(entries.map((entry) => entry.name)).toEqual(['board/board.html']);
   });
 });

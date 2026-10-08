@@ -1020,7 +1020,6 @@ async function exportFileAsZip(rootId) {
   if (saved.canceled || !saved.filePath) return { ok: false, error: 'canceled' };
 
   try {
-    await fsPromises.rm(saved.filePath, { force: true });
     const out = await exportDocumentZip(documentPath, saved.filePath);
     shell.showItemInFolder(out);
     return { ok: true };
