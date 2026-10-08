@@ -167,6 +167,45 @@ function createThrottle(fn, wait = ACTIVITY_THROTTLE_MS) {
   return throttled;
 }
 
+/** The only fields `set-profile` accepts from the renderer: `enabled` (boolean), `name` (string). */
+function profilePatch(input) {
+  if (!input || typeof input !== 'object') return null;
+  const patch = {};
+  if ('enabled' in input) {
+    if (typeof input.enabled !== 'boolean') return null;
+    patch.enabled = input.enabled;
+  }
+  if ('name' in input) {
+    if (typeof input.name !== 'string' || input.name.length > 1000) return null;
+    patch.name = input.name;
+  }
+  return Object.keys(patch).length ? patch : null;
+}
+
+/** Where to change the account's name: the connected server's own dashboard, never a URL a page supplied. */
+function accountSettingsUrl(serverUrl) {
+  try {
+    const url = new URL(serverUrl);
+    if (url.protocol !== 'https:' && url.hostname !== 'localhost' && !url.hostname.endsWith('.localhost') && url.hostname !== '127.0.0.1' && url.hostname !== 'localhyperclay.com') return null;
+    return `${url.origin}/dashboard`;
+  } catch {
+    return null;
+  }
+}
+
+const PROFILE_ERRORS = {
+  offline: "Couldn't reach Hyperclay to check your account. Try again when you're online.",
+  changed: 'Your account changed while checking. Try again.',
+  'server-update-required': 'Update the server to use your account profile.',
+  'credentials-rejected': 'Hyperclay rejected your sync key. Reconnect it in Options > Sync Key.',
+  'save-failed': "Couldn't save your profile settings.",
+};
+
+/** A user-facing message for a `setProfile` error: a name rule's own message passes through. */
+function profileErrorMessage(error) {
+  return PROFILE_ERRORS[error] || (typeof error === 'string' ? error : "Couldn't save your profile settings.");
+}
+
 module.exports = {
   EXTERNAL_URL_PREFIXES,
   unknownId,
@@ -182,4 +221,7 @@ module.exports = {
   flattenBlocked,
   ACTIVITY_THROTTLE_MS,
   createThrottle,
+  profilePatch,
+  accountSettingsUrl,
+  profileErrorMessage,
 };

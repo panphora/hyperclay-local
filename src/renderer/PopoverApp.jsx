@@ -303,6 +303,9 @@ const PopoverApp = () => {
       api.onShowCredentials(() => {
         setCurrentView('credentials');
       }),
+      api.onShowProfile(() => {
+        setCurrentView('profile');
+      }),
       api.onShowTeamSetup((data) => {
         if (!data || data.accountId == null) return;
         setSetupAccountId(data.accountId);
@@ -450,7 +453,8 @@ const PopoverApp = () => {
   const heading = currentView === 'home' ? 'Hyperclay Local'
     : currentView === 'notices' ? 'Notices'
       : currentView === 'setup' ? `Set up ${(setupCard && setupCard.title) || 'team'}`
-        : 'Connect';
+        : currentView === 'profile' ? 'Profile'
+          : 'Connect';
 
   const arrowOnBottom = arrowPosition === 'bottom';
   const arrowHidden = arrowPosition === 'none';
@@ -554,6 +558,8 @@ const PopoverApp = () => {
               onCancel={navigateHome}
             />
           )}
+
+          {currentView === 'profile' && <ProfileView onDone={navigateHome} />}
 
           {currentView === 'setup' && (
             <TeamSetupView
@@ -676,7 +682,7 @@ const Chip = ({ label, on, loading, onFlip, ariaLabel }) => (
     disabled={loading}
     onClick={onFlip}
     style={{
-      height: 36, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      height: 36, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
       padding: '0 8px 0 12px', fontSize: 13, color: on ? C.text : C.muted, opacity: loading ? 0.7 : 1,
     }}
   >
@@ -1287,6 +1293,94 @@ const CredentialsView = ({ username, apiKey, error, loading, onUsernameChange, o
         >
           Get API key
         </TextButton>
+      </div>
+    </div>
+  );
+};
+
+const ProfileView = ({ onDone }) => {
+  const [profile, setProfile] = useState(null);
+  const [name, setName] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const take = (result) => {
+    if (result?.profile) {
+      setProfile(result.profile);
+      if (result.ok) setName(result.profile.localName || '');
+    }
+    setMessage(result?.ok ? '' : (result?.message || ''));
+  };
+
+  useEffect(() => {
+    window.electronAPI?.getProfile().then(take);
+  }, []);
+
+  const run = async (call) => {
+    setBusy(true);
+    try { take(await call()); } finally { setBusy(false); }
+  };
+
+  if (!profile) return <div style={{ flex: 1, padding: '4px 16px 12px', fontSize: 12, color: C.soft }}>Loading…</div>;
+
+  const toggle = () => run(() => window.electronAPI.setProfile(
+    !profile.enabled && !profile.connected && !profile.localName ? { enabled: true, name } : { enabled: !profile.enabled }
+  ));
+  const saveName = () => run(() => window.electronAPI.setProfile({ name }));
+  const onKeyDown = (e) => { if (e.key === 'Enter' && !busy) saveName(); };
+
+  return (
+    <div style={{ flex: 1, padding: '4px 16px 12px' }}>
+      <div style={{ fontSize: 12, lineHeight: 1.5, color: C.soft, marginBottom: 12 }}>
+        Use this name in files opened with this app. Files can save your name and person ID, and anyone who receives those files can read them.
+      </div>
+
+      <Chip
+        label="Use my profile in files"
+        on={profile.enabled}
+        loading={false}
+        onFlip={busy ? undefined : toggle}
+        ariaLabel={profile.enabled ? 'Stop using my profile in files' : 'Use my profile in files'}
+      />
+
+      <div style={{ marginTop: 14, fontSize: 12, lineHeight: 1.5, color: C.soft }}>
+        {profile.connected ? (
+          <>
+            <div style={{ color: C.text, marginBottom: 6 }}>
+              {profile.enabled ? (profile.accountName ? `Using your Hyperclay account profile: ${profile.accountName}` : 'Using your Hyperclay account profile.') : (profile.accountName ? `When on, files use your Hyperclay account profile: ${profile.accountName}` : 'When on, files use your Hyperclay account profile.')}
+            </div>
+            {profile.unavailable && profile.enabled && (
+              <div style={{ color: C.red, marginBottom: 6 }}>Your account profile isn't available right now. Files won't record a name until it is.</div>
+            )}
+            <div style={{ display: 'flex', gap: 12 }}>
+              <TextButton onClick={() => window.electronAPI.openAccountSettings()} color={C.blue} style={{ fontSize: 12 }}>Change name on Hyperclay</TextButton>
+              <TextButton onClick={() => run(() => window.electronAPI.refreshProfile())} style={{ fontSize: 12 }}>Refresh profile</TextButton>
+            </div>
+          </>
+        ) : (
+          <>
+            <label style={{ display: 'block', marginBottom: 5 }}>Display name</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={onKeyDown}
+              placeholder="Your name"
+              style={fieldStyle}
+            />
+            <Press onClick={saveName} disabled={busy || !name.trim()} style={{ marginTop: 8, height: 30, padding: '0 12px', fontSize: 12 }}>Save name</Press>
+          </>
+        )}
+      </div>
+
+      {message && <div style={{ marginTop: 10, fontSize: 12, color: C.red }}>{message}</div>}
+
+      <div style={{ marginTop: 12, fontSize: 11, lineHeight: 1.5, color: C.muted }}>
+        Turning this off stops the app supplying your name. Names already saved in files stay there.
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <TextButton onClick={onDone} style={{ fontSize: 12 }}>Done</TextButton>
       </div>
     </div>
   );

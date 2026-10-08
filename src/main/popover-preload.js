@@ -32,6 +32,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showOptionsMenu: () => ipcRenderer.invoke('show-options-menu'),
   quitApp: () => ipcRenderer.invoke('quit-app'),
 
+  getProfile: () => ipcRenderer.invoke('get-profile'),
+  setProfile: (patch) => ipcRenderer.invoke('set-profile', patch),
+  refreshProfile: () => ipcRenderer.invoke('refresh-profile'),
+  openAccountSettings: () => ipcRenderer.invoke('open-account-settings'),
+
   onStateUpdate: (callback) => {
     const handler = (_event, state) => callback(state);
     ipcRenderer.on('update-state', handler);
@@ -90,6 +95,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = () => callback();
     ipcRenderer.on('show-credentials', handler);
     return () => ipcRenderer.removeListener('show-credentials', handler);
+  },
+
+  onShowProfile: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('show-profile', handler);
+    return () => ipcRenderer.removeListener('show-profile', handler);
   },
 
   onShowTeamSetup: (callback) => {

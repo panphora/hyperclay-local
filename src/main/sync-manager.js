@@ -79,7 +79,9 @@ class SyncManager extends EventEmitter {
     this.initialRunning = 0;
     this.initialWaiters = [];
     this.discoveryTimer = null;
+    this.discovery = null;
     this.lastDiscoveryAt = null;
+    this.keyGeneration = 0;
   }
 
   /** The session's own metadata directory, once its legacy one is behind it. */
@@ -606,7 +608,19 @@ class SyncManager extends EventEmitter {
    * comes from. Runs the reconnect sequence after every refresh.
    */
   async refreshAccounts() {
-    const res = await getAccounts({ serverUrl: this.serverUrl, apiKey: this.getApiKey() });
+    const generation = this.keyGeneration;
+    let res;
+    try {
+      res = await getAccounts({ serverUrl: this.serverUrl, apiKey: this.getApiKey() });
+    } catch (error) {
+      // An old key's failure says nothing about the key in use now.
+      if (generation !== this.keyGeneration) return this.discovery;
+      if (error && (error.statusCode === 401 || error.statusCode === 403)) this.emit('credentials-rejected', error);
+      throw error;
+    }
+    // An answer made with a key that has since changed or been removed describes someone
+    // who may no longer be signed in here.
+    if (generation !== this.keyGeneration) return this.discovery;
     this.discovery = res;
     this.lastDiscoveryAt = Date.now();
     this.emit('accounts', res);
@@ -630,7 +644,9 @@ class SyncManager extends EventEmitter {
    */
   startDiscoveryTimer() {
     if (this.discoveryTimer) return;
-    if (this.settingsStore.get().syncEnabled !== true || !this.getApiKey()) return;
+    const settings = this.settingsStore.get();
+    const profileOn = !!(settings.profile && settings.profile.enabled === true);
+    if ((settings.syncEnabled !== true && !profileOn) || !this.getApiKey()) return;
     this.discoveryTimer = setInterval(() => {
       this.refreshAccounts().catch((error) => {
         console.error('[SYNC] Discovery refresh failed:', error.message);
@@ -688,9 +704,17 @@ class SyncManager extends EventEmitter {
    * next discovery resumes what the old key paused.
    */
   adoptKey({ serverUrl } = {}) {
+    this.keyGeneration += 1;
     if (serverUrl) this.serverUrl = serverUrl;
     const apiKey = this.getApiKey();
     for (const entry of this.sessions.values()) entry.engine.apiKey = apiKey;
+  }
+
+  /** Sign-out: the next answer starts from nothing, and one already in flight is ignored. */
+  forgetKey() {
+    this.keyGeneration += 1;
+    this.discovery = null;
+    this.lastDiscoveryAt = 0;
   }
 
   pauseAll(reason) {

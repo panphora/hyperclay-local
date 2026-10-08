@@ -25,9 +25,12 @@ const { removeProgram, forgetDecisions } = require('./helpers/store');
 const { runAiEdit } = require('./helpers/ai-edit');
 const { rootAccountFor } = require('./helpers/root-account');
 const { aiEditEnabled, toggledAiEdit } = require('./helpers/ai-edit-setting');
+const { currentPerson, cachedCloudPerson, withDiscoveredActor, withoutCloudPerson, withProfile, connected } = require('./profile-state');
+const { writeJsonAtomic } = require('./settings-file');
+const { getAccounts } = require('../sync-engine/api-client');
 const { buildCards, worstState, trayIconVariant, trayTooltip, switchSublines, toLine, trayMenuModel } = require('./ui/card-model');
 const { createNewTeamNotifier } = require('./new-team-notifier');
-const { isAllowedExternalUrl, requireRoot, requireSession, requireAccount, cardMenuModel, disconnectDialog, removeFolderDialog, movePortDialog, flattenConflicts, flattenBlocked, ACTIVITY_THROTTLE_MS, createThrottle } = require('./ui/main-ipc');
+const { isAllowedExternalUrl, requireRoot, requireSession, requireAccount, cardMenuModel, disconnectDialog, removeFolderDialog, movePortDialog, flattenConflicts, flattenBlocked, ACTIVITY_THROTTLE_MS, createThrottle, profilePatch, accountSettingsUrl, profileErrorMessage } = require('./ui/main-ipc');
 
 let manager = null;
 const observers = new Map();
@@ -105,6 +108,7 @@ const pool = new RootServerPool({
   observerFor,
   helpersFor,
   syncEngineForRoot: (rootId) => engineRegistry.forRoot(rootId),
+  person: () => currentDocumentPerson(),
 });
 
 const userData = app.getPath('userData');
@@ -378,25 +382,70 @@ function loadSettings() {
   return { deviceId: crypto.randomUUID() };
 }
 
-function saveSettings(settings) {
-  try {
-    if (!fs.existsSync(userData)) {
-      fs.mkdirSync(userData, { recursive: true });
-    }
-
-    const settingsToSave = { ...settings };
-
-    // Only encrypt if the key is plaintext — avoid double-encrypting
-    if (settingsToSave.apiKey && settingsToSave.apiKey.startsWith('hcsk_')) {
-      settingsToSave.apiKey = encryptApiKey(settingsToSave.apiKey);
-    }
-
-    delete settingsToSave.hasApiKey;
-
-    fs.writeFileSync(settingsPath, JSON.stringify(settingsToSave, null, 2));
-  } catch (error) {
-    console.error('Failed to save settings:', error);
+function settingsForDisk(settings) {
+  const settingsToSave = { ...settings };
+  // Only encrypt if the key is plaintext — avoid double-encrypting
+  if (settingsToSave.apiKey && settingsToSave.apiKey.startsWith('hcsk_')) {
+    settingsToSave.apiKey = encryptApiKey(settingsToSave.apiKey);
   }
+  delete settingsToSave.hasApiKey;
+  return settingsToSave;
+}
+
+function saveSettings(settings) {
+  const result = writeJsonAtomic(settingsPath, settingsForDisk(settings));
+  if (!result.ok) console.error('Failed to save settings:', result.error);
+  return result;
+}
+
+// Other modules hold the `settings` object itself, so a committed change replaces its
+// contents rather than the variable.
+function replaceSettings(next) {
+  for (const key of Object.keys(settings)) if (!(key in next)) delete settings[key];
+  Object.assign(settings, next);
+}
+
+/** Write `next` and only then make it live. A failed write changes nothing. */
+function commitSettings(next) {
+  const result = saveSettings(next);
+  if (result.ok) replaceSettings(next);
+  return result;
+}
+
+// Bumped by every connection attempt and every sign-out, so a slower attempt that finishes
+// after a newer one, or after a sign-out, publishes nothing.
+let credentialGeneration = 0;
+
+/** What documents see as `me`: `{ me }` or `{ unavailable: true }` (profile-state.js). */
+function currentDocumentPerson() {
+  return currentPerson(settings);
+}
+
+/**
+ * The Profile view's change: `patch` may set `enabled` and `name`. Turning sharing on while
+ * connected first asks the server for the account's person, so it never turns on with no
+ * one to name. Returns `{ ok: true }` or `{ ok: false, error }` with error one of a name
+ * message, 'offline', 'changed', 'server-update-required', 'save-failed'.
+ */
+async function setProfile(patch = {}) {
+  const connectedNow = connected(settings);
+  if (patch.enabled === true && connectedNow) {
+    const keyGeneration = manager ? manager.keyGeneration : 0;
+    const generation = credentialGeneration;
+    try {
+      if (manager) await manager.refreshAccounts();
+    } catch (error) {
+      return { ok: false, error: error && (error.statusCode === 401 || error.statusCode === 403) ? 'credentials-rejected' : 'offline' };
+    }
+    if (generation !== credentialGeneration || (manager && keyGeneration !== manager.keyGeneration)) return { ok: false, error: 'changed' };
+    if (!cachedCloudPerson(settings)) return { ok: false, error: 'server-update-required' };
+  }
+  const changed = withProfile(settings, patch);
+  if (changed.error) return { ok: false, error: changed.error };
+  const saved = commitSettings(changed.settings);
+  if (!saved.ok) return { ok: false, error: 'save-failed' };
+  syncDiscoveryTimer();
+  return { ok: true };
 }
 
 // =============================================================================
@@ -1117,9 +1166,18 @@ function setupSyncEventHandlers() {
   });
 
   manager.on('accounts', discovery => {
+    if (connected(settings)) {
+      const next = withDiscoveredActor(settings, discovery);
+      if (next !== settings) commitSettings(next);
+    }
     if (!notifyNewTeam) return;
-    notifyNewTeam(discovery.accounts || [], { firstDiscoveryForKey });
+    notifyNewTeam(discovery.accounts || [], { firstDiscoveryForKey: firstDiscoveryForKey || settings.syncEnabled !== true });
     firstDiscoveryForKey = false;
+  });
+
+  manager.on('credentials-rejected', () => {
+    const next = withoutCloudPerson(settings);
+    if (next !== settings) commitSettings(next);
   });
 
   manager.on('sync-stats', data => {
@@ -1153,7 +1211,8 @@ function setupSyncEventHandlers() {
  * thrown into Electron.
  */
 function refreshDiscovery({ stale = false } = {}) {
-  if (!manager || settings.syncEnabled !== true || !settings.hasApiKey) return Promise.resolve();
+  const profileOn = settings.profile && settings.profile.enabled === true;
+  if (!manager || !settings.hasApiKey || (settings.syncEnabled !== true && !profileOn)) return Promise.resolve();
   const refresh = stale ? manager.refreshAccountsIfStale(DISCOVERY_STALE_MS) : manager.refreshAccounts();
   return refresh.catch(error => {
     console.error('[SYNC] Discovery refresh failed:', error.message);
@@ -1177,10 +1236,11 @@ async function handleRefreshAccounts() {
   return { ok: true };
 }
 
-/** The five minute timer follows sync: it runs while sync is on and stops with it. */
+/** The five minute timer follows sync or the profile: it runs while either is on and stops with them. */
 function syncDiscoveryTimer() {
   if (!manager) return;
-  if (settings.syncEnabled === true && settings.hasApiKey) manager.startDiscoveryTimer();
+  const profileOn = !!(settings.profile && settings.profile.enabled === true);
+  if (settings.hasApiKey && (settings.syncEnabled === true || profileOn)) manager.startDiscoveryTimer();
   else manager.stopDiscoveryTimer();
 }
 
@@ -1490,6 +1550,63 @@ ipcMain.handle('open-browser', (event, url) => {
 // The renderer names ids; ports, paths and keys stay in main.
 ipcMain.handle('set-server-enabled', (event, { on } = {}) => setServerEnabled(!!on));
 ipcMain.handle('set-sync-enabled', (event, { on } = {}) => setSyncEnabled(!!on));
+
+// Only the app's own popover may read or change the profile; a page served by a root
+// has no Electron bridge, and this check keeps it that way if one is ever added.
+function fromPopover(event) {
+  const win = popover.getPopoverWindow && popover.getPopoverWindow();
+  return !!(win && event && event.sender === win.webContents);
+}
+
+function profileView() {
+  const profile = settings.profile || {};
+  const isConnected = connected(settings);
+  const cloud = isConnected ? cachedCloudPerson(settings) : null;
+  const person = currentDocumentPerson();
+  return {
+    enabled: profile.enabled === true,
+    localName: profile.name || '',
+    connected: isConnected,
+    accountName: cloud ? cloud.name : null,
+    unavailable: !!person.unavailable,
+    sharedName: person.me ? person.me.name : null,
+  };
+}
+
+ipcMain.handle('get-profile', (event) => {
+  if (!fromPopover(event)) return { ok: false, error: 'forbidden' };
+  return { ok: true, profile: profileView() };
+});
+
+ipcMain.handle('set-profile', async (event, input) => {
+  if (!fromPopover(event)) return { ok: false, error: 'forbidden' };
+  const patch = profilePatch(input);
+  if (!patch) return { ok: false, error: 'invalid', message: "Couldn't save your profile settings." };
+  const result = await setProfile(patch);
+  if (!result.ok) return { ok: false, error: result.error, message: profileErrorMessage(result.error), profile: profileView() };
+  updateUI();
+  return { ok: true, profile: profileView() };
+});
+
+ipcMain.handle('refresh-profile', async (event) => {
+  if (!fromPopover(event)) return { ok: false, error: 'forbidden' };
+  try {
+    if (manager && settings.hasApiKey) await manager.refreshAccounts();
+  } catch (error) {
+    const code = error && (error.statusCode === 401 || error.statusCode === 403) ? 'credentials-rejected' : 'offline';
+    return { ok: false, error: code, message: profileErrorMessage(code), profile: profileView() };
+  }
+  return { ok: true, profile: profileView() };
+});
+
+ipcMain.handle('open-account-settings', (event) => {
+  if (!fromPopover(event)) return { ok: false, error: 'forbidden' };
+  const url = accountSettingsUrl(settings.serverUrl);
+  if (!url) return { ok: false, error: 'blocked' };
+  shell.openExternal(url);
+  return { ok: true };
+});
+
 ipcMain.handle('refresh-accounts', () => handleRefreshAccounts());
 ipcMain.handle('get-team-setup', (event, { accountId } = {}) => getTeamSetup(accountId));
 ipcMain.handle('choose-team-folder', (event, { accountId } = {}) => chooseTeamFolder(accountId));
@@ -1538,6 +1655,7 @@ ipcMain.handle('reveal-file', (event, { sessionId, path: filePath } = {}) => {
 // API key management IPC handlers
 ipcMain.handle('set-api-key', async (event, key, serverUrl) => {
   try {
+    const generation = ++credentialGeneration;
     if (!key || !key.startsWith('hcsk_')) {
       return { error: 'Invalid API key format' };
     }
@@ -1548,20 +1666,39 @@ ipcMain.handle('set-api-key', async (event, key, serverUrl) => {
     const response = await fetch(`${baseUrl}/_/sync/status`, {
       headers: { 'X-API-Key': key }
     });
+    if (generation !== credentialGeneration) return { error: 'Your connection changed while checking. Try again.' };
 
     if (!response.ok) {
       return { error: 'Invalid or expired API key' };
     }
 
     const data = await response.json();
+    if (generation !== credentialGeneration) return { error: 'Your connection changed while checking. Try again.' };
 
-    settings.apiKey = key;
-    settings.hasApiKey = true;
-    settings.syncUsername = data.username;
-    settings.serverUrl = baseUrl;
-    ensurePersonalSession(data.username);
+    // With sharing on, the account's person is checked with the new key before anything
+    // switches, so a failed check leaves the old connection and identity as they were.
+    const sharing = !!(settings.profile && settings.profile.enabled === true);
+    let discovery = null;
+    if (sharing) {
+      try {
+        discovery = await getAccounts({ serverUrl: baseUrl, apiKey: key });
+      } catch {
+        return { error: 'Could not check your account profile. Try again.' };
+      }
+    }
+    if (generation !== credentialGeneration) return { error: 'Your connection changed while checking. Try again.' };
+
+    let next = { ...withoutCloudPerson(settings), apiKey: key, hasApiKey: true, syncUsername: data.username, serverUrl: baseUrl };
+    if (sharing) {
+      next = withDiscoveredActor(next, discovery);
+      if (!cachedCloudPerson(next)) {
+        return { error: 'This server can’t share your account profile yet. Turn off Use my profile in files in Options > Profile to connect, or update the server.' };
+      }
+    }
+    if (!commitSettings(next).ok) return { error: 'Could not save settings' };
+
+    if (ensurePersonalSession(data.username)) saveSettings(settings);
     firstDiscoveryForKey = true;
-    saveSettings(settings);
     if (manager) manager.adoptKey({ serverUrl: baseUrl });
     refreshDiscovery();
 
@@ -1584,12 +1721,15 @@ ipcMain.handle('get-api-key-info', () => {
 });
 
 ipcMain.handle('remove-api-key', () => {
-  delete settings.apiKey;
-  settings.hasApiKey = false;
-  delete settings.syncUsername;
-  delete settings.serverUrl;
-  settings.syncEnabled = false;
-  saveSettings(settings);
+  const next = withoutCloudPerson({ ...settings });
+  delete next.apiKey;
+  next.hasApiKey = false;
+  delete next.syncUsername;
+  delete next.serverUrl;
+  next.syncEnabled = false;
+  if (!commitSettings(next).ok) return { success: false, error: 'Could not save settings' };
+  credentialGeneration += 1;
+  if (manager) manager.forgetKey();
   syncDiscoveryTimer();
   return { success: true };
 });
@@ -1644,6 +1784,12 @@ ipcMain.handle('show-options-menu', (event) => {
       ]
     },
     { type: 'separator' },
+    {
+      label: 'Profile…',
+      click: () => {
+        sendToPopover('show-profile', {});
+      }
+    },
     {
       label: 'Sync Key…',
       click: () => {
@@ -1856,6 +2002,9 @@ app.whenReady().then(async () => {
     // itself already discovered: `startEnabledSessions` refreshed the accounts
     // before it started every session (C3.11).
     syncDiscoveryTimer();
+
+    // Sync did not run, so nothing has discovered yet: refresh the account's name once.
+    if (settings.hasApiKey && settings.syncEnabled !== true && settings.profile && settings.profile.enabled === true) refreshDiscovery();
 
     if (settings.serverEnabled && personalRootPath()) {
       console.log('[APP] Auto-restarting server from previous session...');

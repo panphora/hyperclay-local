@@ -82,6 +82,10 @@ function installStub(cfg) {
   const emit = (ch, data) => (listeners[ch] || []).forEach((cb) => cb(data));
   const noop = async () => {};
   const ok = async () => ({ ok: true });
+  const profileResult = () => ({
+    ok: true,
+    profile: { enabled: false, localName: '', connected: false, accountName: null, unavailable: false, sharedName: null },
+  });
 
   window.electronAPI = {
     selectFolder: async () => ({ success: true, folder: cfg.personalFolder || null }),
@@ -117,6 +121,11 @@ function installStub(cfg) {
     showOptionsMenu: noop,
     quitApp: noop,
 
+    getProfile: async () => profileResult(),
+    setProfile: async () => profileResult(),
+    refreshProfile: async () => profileResult(),
+    openAccountSettings: ok,
+
     onStateUpdate: on('update-state'),
     onSyncUpdate: on('sync-update'),
     onFileSynced: on('file-synced'),
@@ -127,6 +136,10 @@ function installStub(cfg) {
     onArrowX: on('popover-arrow-x'),
     onArrowPosition: on('popover-arrow-position'),
     onShowCredentials: on('show-credentials'),
+    onShowProfile: (cb) => {
+      (listeners['show-profile'] = listeners['show-profile'] || []).push(cb);
+      return () => {};
+    },
     onShowTeamSetup: on('show-team-setup'),
     removeAllListeners: (ch) => { listeners[ch] = []; },
   };

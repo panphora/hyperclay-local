@@ -69,6 +69,18 @@ function documentUrlHeader(req) {
   return (req && req.headers && (req.headers['document-url'] || req.headers['page-url'])) || null;
 }
 
+// A person is named only to a page on this root's own origin. A request that says it
+// comes from elsewhere (an Origin header naming another origin, or the literal "null",
+// or Fetch Metadata saying cross-site or same-site) gets the document facts it always
+// got and no person.
+function sameOriginDiscovery(req) {
+  const site = req.get('sec-fetch-site');
+  if (site && site !== 'same-origin' && site !== 'none') return false;
+  const origin = req.get('origin');
+  if (!origin) return true;
+  return origin === `${req.protocol}://${req.get('host')}`;
+}
+
 // What each open file owes the platform on its next sync upload, keyed by filename
 // within its own root's store: the same relative path in two roots is two different
 // files, and one root's snapshot must never be uploaded as the other's. Two lanes
@@ -1767,6 +1779,9 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // `wire` because this host serves §11's two routes, so `clay.wire` pages and
       // the `htmlclay wire` CLI can drive a local process from a document here.
       const body = { spec: 1, extensions: ['conditional', 'data-read', 'data-write', 'format', 'receipts', 'scoped-stylesheet', 'sync', 'sync-worker', 'upload', 'wire'] };
+      // `people` (§9) when the app supplies a person: one app-wide profile, so the
+      // answer is the same in every root. Never `members`: a profile is not a directory.
+      if (ctx.person) body.extensions = [...body.extensions, 'people'].sort();
       const href = documentUrlHeader(req);
       if (href) {
         try {
@@ -1803,6 +1818,14 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
             if (helperDispatcher) body.document.helpers = await helperDispatcher.describe(filePath);
           }
         } catch { /* omission, never a different answer */ }
+      }
+      if (body.document && ctx.person && sameOriginDiscovery(req)) {
+        const person = ctx.person();
+        // Sharing is on but the account's person cannot be named right now. Said inside the
+        // People block, never as a failed answer: a failed discovery turns off every
+        // capability on the page, and the rest of this answer is still true.
+        body.document.people = person.unavailable ? { me: null, unavailable: true } : { me: person.me || null };
+        res.set('Cache-Control', 'private, no-store');
       }
       return res.json(body);
     });
