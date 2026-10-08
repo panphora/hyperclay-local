@@ -232,6 +232,22 @@ describe('SyncManager statuses', () => {
     ]);
   });
 
+  it('lists the attachments kept here only while their file is still on disk', async () => {
+    await manager.start(sessionA, rootA);
+    const engine = manager.get(sessionA.id);
+    const announcements = [];
+    manager.on('status-changed', (data) => announcements.push(data));
+
+    await engine.blockUpload('index.html', 5, 1);
+    await engine.blockUpload('gone.mp4', 6, 1);
+
+    expect(statusOf(sessionA.id).blocked).toEqual([{ path: 'index.html', bytes: 5, limit: 1 }]);
+    expect(announcements).toContainEqual({ sessionId: sessionA.id, rootId: rootA.id, accountId: 11 });
+
+    fs.rmSync(path.join(rootA.path, 'index.html'));
+    expect(statusOf(sessionA.id).blocked).toEqual([]);
+  });
+
   it('paused comes from settings and status is paused', async () => {
     await manager.start(sessionA, rootA);
     manager.sessions.get(sessionA.id).runner.pause('removed');

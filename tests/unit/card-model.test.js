@@ -383,6 +383,47 @@ describe('buildCards', () => {
     expect(many[1].detailLong).toBe('A file changed here and on hyperclay.com. Both copies are kept; see Notices.');
   });
 
+  test('attachments kept here say so and never read synced', () => {
+    const one = buildCards(snapshot({
+      roots: [personalRoot(), teamRoot()],
+      sessions: [session({ blocked: [{ path: 'a.mp4', bytes: 2, limit: 1 }] })],
+    }));
+    expect(one[1].state).toBe('unsynced');
+    expect(one[1].detail).toBe("1 file can't sync");
+    expect(one[1].detailLong).toBe('Stored on this computer. Too large for this plan to sync.');
+
+    const many = buildCards(snapshot({
+      roots: [personalRoot(), teamRoot()],
+      sessions: [session({ blocked: [{ path: 'a.mp4', bytes: 2, limit: 1 }, { path: 'b.mov', bytes: 3, limit: 1 }] })],
+    }));
+    expect(many[1].state).toBe('unsynced');
+    expect(many[1].detail).toBe("2 files can't sync");
+
+    const syncing = buildCards(snapshot({
+      roots: [personalRoot(), teamRoot()],
+      sessions: [session({ status: 'syncing', pendingCount: 1, blocked: [{ path: 'a.mp4', bytes: 2, limit: 1 }] })],
+    }));
+    expect(syncing[1].state).toBe('unsynced');
+  });
+
+  test('a conflict outranks attachments kept here, and an empty list stays synced', () => {
+    const conflicted = buildCards(snapshot({
+      roots: [personalRoot(), teamRoot()],
+      sessions: [session({
+        status: 'conflict',
+        conflicts: [{ path: 'board.html', kind: 'content' }],
+        blocked: [{ path: 'a.mp4', bytes: 2, limit: 1 }],
+      })],
+    }));
+    expect(conflicted[1].state).toBe('conflict');
+
+    const quiet = buildCards(snapshot({
+      roots: [personalRoot(), teamRoot()],
+      sessions: [session({ blocked: [] })],
+    }));
+    expect(quiet[1].state).toBe('synced');
+  });
+
   test('offline and error carry their own copy', () => {
     const offline = buildCards(snapshot({
       roots: [personalRoot(), teamRoot()],

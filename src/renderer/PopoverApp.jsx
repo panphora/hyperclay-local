@@ -126,6 +126,7 @@ const STATE_TONE = {
   syncing: 'blue',
   paused: 'amber',
   offline: 'amber',
+  unsynced: 'amber',
   conflict: 'red',
   error: 'red',
   'port-taken': 'red',
@@ -134,6 +135,7 @@ const STATE_TONE = {
 const NOTE_COLOR = {
   paused: C.amber,
   offline: C.amber,
+  unsynced: C.amber,
   conflict: C.red,
   error: C.red,
   'port-taken': C.red,
@@ -528,6 +530,7 @@ const PopoverApp = () => {
               unreadCount={unreadCount}
               errors={errorQueue}
               conflicts={state.conflicts || []}
+              blocked={state.blocked || []}
               cards={state.cards || []}
               lines={state.activity || []}
               onMarkErrorRead={markErrorRead}
@@ -535,6 +538,7 @@ const PopoverApp = () => {
               onMarkAllRead={markAllRead}
               onClearAll={clearAllErrors}
               onResolveConflict={(sessionId, path, choice) => window.electronAPI?.resolveConflict(sessionId, path, choice)}
+              onRevealFile={(sessionId, path) => window.electronAPI?.revealFile(sessionId, path)}
             />
           )}
 
@@ -762,7 +766,7 @@ const heroStatus = (card) => {
 
 const CardButtons = ({ card, keyRevoked, onAction }) => {
   const buttons = [];
-  if (card.state === 'conflict' || card.state === 'error') buttons.push(['notices', 'See notices']);
+  if (card.state === 'conflict' || card.state === 'error' || card.state === 'unsynced') buttons.push(['notices', 'See notices']);
   if (card.actions.includes('change-port') && card.nextPort) buttons.push(['change-port', `Use port ${card.nextPort}…`]);
   if (card.actions.includes('retry')) buttons.push(['retry', 'Retry']);
   if (card.state === 'paused' && !keyRevoked && card.actions.includes('disconnect')) buttons.push(['disconnect', 'Disconnect…']);
@@ -929,8 +933,8 @@ const FirstRun = ({ serverLoading, onChooseFolder }) => (
 // =============================================================================
 
 const NoticesView = ({
-  tab, onTab, unreadCount, errors, conflicts, cards, lines,
-  onMarkErrorRead, onDismissError, onMarkAllRead, onClearAll, onResolveConflict,
+  tab, onTab, unreadCount, errors, conflicts, blocked, cards, lines,
+  onMarkErrorRead, onDismissError, onMarkAllRead, onClearAll, onResolveConflict, onRevealFile,
 }) => {
   const [, setTick] = useState(0);
 
@@ -956,7 +960,7 @@ const NoticesView = ({
       </div>
       <div style={{ ...sunken(), flex: 1, minHeight: 0, overflowY: 'auto' }}>
         {tab === 'notices'
-          ? <NoticeRows errors={errors} conflicts={conflicts} cards={cards} onMarkErrorRead={onMarkErrorRead} onDismissError={onDismissError} onResolveConflict={onResolveConflict} />
+          ? <NoticeRows errors={errors} conflicts={conflicts} blocked={blocked} cards={cards} onMarkErrorRead={onMarkErrorRead} onDismissError={onDismissError} onResolveConflict={onResolveConflict} onRevealFile={onRevealFile} />
           : <ActivityRows lines={lines} />}
       </div>
       {tab === 'activity' && (
@@ -974,7 +978,7 @@ const NoticesView = ({
 
 const logRow = (first) => ({ padding: '7px 10px', boxShadow: first ? 'none' : `inset 0 1px 0 ${C.line}` });
 
-const NoticeRows = ({ errors, conflicts, cards, onMarkErrorRead, onDismissError, onResolveConflict }) => {
+const NoticeRows = ({ errors, conflicts, blocked, cards, onMarkErrorRead, onDismissError, onResolveConflict, onRevealFile }) => {
   const titleForSession = (sessionId) => {
     const card = (cards || []).find((candidate) => candidate.sessionId === sessionId);
     return card ? card.title : null;
@@ -982,7 +986,7 @@ const NoticeRows = ({ errors, conflicts, cards, onMarkErrorRead, onDismissError,
 
   const sortedErrors = [...errors].sort((a, b) => b.timestamp - a.timestamp);
 
-  if (sortedErrors.length === 0 && (conflicts || []).length === 0) {
+  if (sortedErrors.length === 0 && (conflicts || []).length === 0 && (blocked || []).length === 0) {
     return <div style={{ padding: '40px 0', textAlign: 'center', color: C.muted, fontSize: 13 }}>All quiet</div>;
   }
 
@@ -1005,12 +1009,30 @@ const NoticeRows = ({ errors, conflicts, cards, onMarkErrorRead, onDismissError,
           </div>
         );
       })}
+      {(blocked || []).map((file, i) => {
+        const label = titleForSession(file.sessionId);
+        const size = formatBytes(file.bytes) || 'too large for this plan';
+        const limit = Number.isFinite(file.limit) ? formatBytes(file.limit) : null;
+        return (
+          <div key={`blocked-${file.sessionId}-${file.path}`} style={logRow(i === 0 && !(conflicts || []).length)}>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <span style={{ color: C.amber, fontSize: 12 }}>!</span>
+              <span style={{ fontSize: 12, lineHeight: 1.4, color: C.text, wordBreak: 'break-word' }}>
+                {label ? `${label}: ` : ''}{file.path} is stored here but can't sync: {size}{limit ? `, and this plan allows ${limit}` : ''}
+              </span>
+            </div>
+            <div style={{ display: 'flex', gap: 6, marginTop: 6, paddingLeft: 16 }}>
+              <Press onClick={() => onRevealFile(file.sessionId, file.path)} style={small}>Show File</Press>
+            </div>
+          </div>
+        );
+      })}
       {sortedErrors.map((error, i) => {
         const label = error.sessionId ? titleForSession(error.sessionId) : null;
         return (
           <div
             key={error.id}
-            style={{ ...logRow(i === 0 && !(conflicts || []).length), display: 'flex', gap: 8, alignItems: 'flex-start' }}
+            style={{ ...logRow(i === 0 && !(conflicts || []).length && !(blocked || []).length), display: 'flex', gap: 8, alignItems: 'flex-start' }}
           >
             {!error.read ? (
               <button

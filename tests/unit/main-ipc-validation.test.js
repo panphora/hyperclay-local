@@ -8,6 +8,7 @@ const {
   movePortDialog,
   cardMenuModel,
   flattenConflicts,
+  flattenBlocked,
   createThrottle,
 } = require('../../src/main/ui/main-ipc');
 
@@ -197,6 +198,23 @@ describe('state payload (C4 §5.4)', () => {
     ]);
     expect(flattenConflicts([])).toEqual([]);
     expect(flattenConflicts(undefined)).toEqual([]);
+  });
+
+  test('flattens the attachments kept here from every session with their sessionId', () => {
+    const statuses = [
+      { sessionId: 'session-personal', blocked: [{ path: 'a.mp4', bytes: 20_000_000, limit: 10_000_000 }] },
+      { sessionId: 'session-acme', blocked: [] },
+      { sessionId: 'session-west', blocked: [{ path: 'clips/b.mov', bytes: 30_000_000, limit: 10_000_000 }, { path: 'c.zip', bytes: 40_000_000, limit: 10_000_000 }] },
+      { sessionId: 'session-north' },
+    ];
+
+    expect(flattenBlocked(statuses)).toEqual([
+      { sessionId: 'session-personal', path: 'a.mp4', bytes: 20_000_000, limit: 10_000_000 },
+      { sessionId: 'session-west', path: 'clips/b.mov', bytes: 30_000_000, limit: 10_000_000 },
+      { sessionId: 'session-west', path: 'c.zip', bytes: 40_000_000, limit: 10_000_000 },
+    ]);
+    expect(flattenBlocked([])).toEqual([]);
+    expect(flattenBlocked()).toEqual([]);
   });
 
   test('throttle sends at most once per 250 ms and always sends the trailing call', () => {

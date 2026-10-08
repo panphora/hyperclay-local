@@ -124,6 +124,15 @@ function flattenConflicts(statuses = []) {
   return conflicts;
 }
 
+/** One notice row per attachment kept here because the plan refuses its size. */
+function flattenBlocked(statuses = []) {
+  const rows = [];
+  for (const status of statuses) {
+    for (const file of status.blocked || []) rows.push({ sessionId: status.sessionId, path: file.path, bytes: file.bytes, limit: file.limit });
+  }
+  return rows;
+}
+
 const ACTIVITY_THROTTLE_MS = 250;
 
 /**
@@ -170,6 +179,7 @@ module.exports = {
   movePortDialog,
   cardMenuModel,
   flattenConflicts,
+  flattenBlocked,
   ACTIVITY_THROTTLE_MS,
   createThrottle,
 };

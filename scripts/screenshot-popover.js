@@ -103,6 +103,7 @@ function installStub(cfg) {
       : { ok: false }),
     setupTeam: ok,
     resolveConflict: ok,
+    revealFile: ok,
     disconnect: ok,
     removeFolder: ok,
     retryPort: ok,

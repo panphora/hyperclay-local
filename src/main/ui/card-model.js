@@ -8,7 +8,7 @@
  * URLs it builds are the `url` and `webUrl` fields CONTRACTS §8 defines.
  */
 
-const STATE_ORDER = ['error', 'port-taken', 'conflict', 'paused', 'offline', 'syncing',
+const STATE_ORDER = ['error', 'port-taken', 'conflict', 'paused', 'offline', 'unsynced', 'syncing',
   'synced', 'setup', 'viewer', 'serve-only'];
 
 // C4 §4.9 as data. `{team}` is the account username, `{Team}` its display name.
@@ -28,6 +28,7 @@ const CARD_COPY = {
     detailLong: 'A file changed here and on hyperclay.com. Both copies are kept; see Notices.',
   },
   offline: { detail: 'offline', detailLong: "Can't reach hyperclay.com. Changes sync when you're back online." },
+  unsynced: { one: "1 file can't sync", many: "{count} files can't sync", detailLong: 'Stored on this computer. Too large for this plan to sync.' },
   error: { detail: 'sync error', detailLong: '{error}' },
   'port-taken': {
     detail: 'Not served. Another program has :{port}.',
@@ -116,6 +117,7 @@ const TRAY_WORDS = {
   conflict: ['conflict', 'conflicts'],
   paused: ['paused', 'paused'],
   offline: ['offline', 'offline'],
+  unsynced: ["can't sync", "can't sync"],
   syncing: ['syncing', 'syncing'],
   setup: ['not set up', 'not set up'],
   viewer: ['viewer', 'viewers'],
@@ -157,7 +159,9 @@ function stateFor(root, session, snapshot) {
   }
   if (!session) return 'serve-only';
   if (snapshot.syncEnabled === false) return 'serve-only';
-  return STATUS_STATES[session.status] || 'synced';
+  const state = STATUS_STATES[session.status] || 'synced';
+  if ((state === 'synced' || state === 'syncing') && session.blocked && session.blocked.length) return 'unsynced';
+  return state;
 }
 
 function rootActions(state, root, session) {
@@ -174,6 +178,10 @@ function rootActions(state, root, session) {
 function rootCopy(state, { root, session, personal, username, displayName }) {
   const names = { team: username, Team: displayName, port: root.port };
   if (state === 'synced') return CARD_COPY.synced;
+  if (state === 'unsynced') {
+    const count = session.blocked.length;
+    return { detail: plural(count, CARD_COPY.unsynced.one, fillCopy(CARD_COPY.unsynced.many, { count })), detailLong: CARD_COPY.unsynced.detailLong };
+  }
   if (state === 'offline') return CARD_COPY.offline;
   if (state === 'syncing') {
     const count = session && Number.isFinite(session.pendingCount) ? session.pendingCount : 0;

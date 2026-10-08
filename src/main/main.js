@@ -27,7 +27,7 @@ const { rootAccountFor } = require('./helpers/root-account');
 const { aiEditEnabled, toggledAiEdit } = require('./helpers/ai-edit-setting');
 const { buildCards, worstState, trayIconVariant, trayTooltip, switchSublines, toLine, trayMenuModel } = require('./ui/card-model');
 const { createNewTeamNotifier } = require('./new-team-notifier');
-const { isAllowedExternalUrl, requireRoot, requireSession, requireAccount, cardMenuModel, disconnectDialog, removeFolderDialog, movePortDialog, flattenConflicts, ACTIVITY_THROTTLE_MS, createThrottle } = require('./ui/main-ipc');
+const { isAllowedExternalUrl, requireRoot, requireSession, requireAccount, cardMenuModel, disconnectDialog, removeFolderDialog, movePortDialog, flattenConflicts, flattenBlocked, ACTIVITY_THROTTLE_MS, createThrottle } = require('./ui/main-ipc');
 
 let manager = null;
 const observers = new Map();
@@ -682,6 +682,7 @@ function snapshotSessions() {
       status: status.status || 'idle',
       pendingCount: status.pendingCount || 0,
       conflicts: status.conflicts || [],
+      blocked: status.blocked || [],
       lastSyncAt: status.lastSyncAt ?? status.lastSync ?? null,
       lastError: status.lastError || null
     };
@@ -744,6 +745,7 @@ async function buildStatePayload() {
     cards: lastCards,
     sublines: switchSublines(snapshot, lastCards),
     conflicts: flattenConflicts(manager ? manager.statuses() : []),
+    blocked: flattenBlocked(manager ? manager.statuses() : []),
     home: os.homedir(),
     activity: [...activity]
   };
@@ -1518,6 +1520,20 @@ ipcMain.handle('resolve-conflict', (event, { sessionId, path: filePath, choice }
   if (!manager) return { ok: false, error: 'unavailable' };
 
   return manager.resolveConflict({ sessionId, path: filePath, choice });
+});
+
+// C4 §5.4: a notice row's "Show File" points at one file inside a folder this
+// computer holds; only a path that stays inside that folder is revealed.
+ipcMain.handle('reveal-file', (event, { sessionId, path: filePath } = {}) => {
+  const check = requireSession(settings.syncSessions, sessionId);
+  if (!check.ok) return check;
+  const root = (settings.roots || []).find((candidate) => candidate.id === check.session.rootId);
+  if (!root || typeof filePath !== 'string') return { ok: false, error: 'unknown' };
+  const target = path.resolve(root.path, filePath);
+  const rel = path.relative(root.path, target);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return { ok: false, error: 'unknown' };
+  shell.showItemInFolder(target);
+  return { ok: true };
 });
 
 // API key management IPC handlers

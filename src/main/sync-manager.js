@@ -3,6 +3,7 @@ const os = require('os');
 const path = require('upath');
 const crypto = require('crypto');
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const { SyncEngine } = require('../sync-engine');
 const { SyncLogger } = require('../sync-engine/logger');
 const { getAccounts, listNodes } = require('../sync-engine/api-client');
@@ -184,6 +185,13 @@ class SyncManager extends EventEmitter {
     };
     engine.on('file-synced', conflictListener);
     listeners.push(['file-synced', conflictListener]);
+    // An attachment kept here because the plan refuses its size changes the card,
+    // so the popover redraws on the engine's own event.
+    const blocksListener = () => this.emit('status-changed', {
+      sessionId: entry.session.id, rootId: entry.root.id, accountId: entry.session.accountId,
+    });
+    engine.on('upload-blocks-changed', blocksListener);
+    listeners.push(['upload-blocks-changed', blocksListener]);
     // The session's stream belongs to its runner (C3.7), so it is attached
     // before init: init opens the legacy transport only when no runner exists.
     this.attachRunner(entry);
@@ -457,9 +465,22 @@ class SyncManager extends EventEmitter {
         paused: session.paused ?? null,
         pendingCount: engine.syncQueue ? engine.syncQueue.length() : 0,
         conflicts: entry.conflicts || [],
+        blocked: this._blockedFor(entry),
         lastSyncAt: isoOrNull(engine.lastSyncedAt),
         lastError: (entry.runner && entry.runner.lastError) || null,
       };
+    });
+  }
+
+  /** Attachments kept here because the plan refuses their size, still on disk. */
+  _blockedFor(entry) {
+    const list = typeof entry.engine.blockedUploads === 'function' ? entry.engine.blockedUploads() : [];
+    return list.filter((file) => {
+      try {
+        return fsSync.statSync(path.join(entry.root.path, file.path)).isFile();
+      } catch {
+        return false;
+      }
     });
   }
 
