@@ -2493,5 +2493,6 @@ module.exports = {
   isLoopbackHostname,
   escapeHtml,
   encodePathSegments,
-  addWordBreaks
+  addWordBreaks,
+  assetsDirFor
 };

@@ -138,6 +138,7 @@ describe('card menu model', () => {
       { label: 'Copy Address', action: 'copy' },
       { label: 'Reveal Folder', action: 'reveal' },
       { label: 'Backups', action: 'backups' },
+      { label: 'Export a File as Zip…', action: 'export' },
       { type: 'separator' },
       { label: 'Disconnect…', action: 'disconnect' },
       { label: 'Remove Folder…', action: 'remove' },
@@ -152,6 +153,7 @@ describe('card menu model', () => {
       { label: 'Copy Address', action: 'copy' },
       { label: 'Reveal Folder', action: 'reveal' },
       { label: 'Backups', action: 'backups' },
+      { label: 'Export a File as Zip…', action: 'export' },
     ]);
   });
 
@@ -162,6 +164,7 @@ describe('card menu model', () => {
       { label: 'Open in Browser', action: 'open', enabled: false },
       { label: 'Reveal Folder', action: 'reveal' },
       { label: 'Backups', action: 'backups' },
+      { label: 'Export a File as Zip…', action: 'export' },
     ]);
   });
 

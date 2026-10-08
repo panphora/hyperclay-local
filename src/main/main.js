@@ -16,6 +16,7 @@ const { SyncManager } = require('./sync-manager');
 const { RootObserver } = require('./root-observer');
 const { createRootLive } = require('./utils/root-live');
 const { getAndClearSnapshot } = require('./server');
+const { exportDocumentZip } = require('./export-zip');
 const { realpathNearestParent } = require('./utils/path-resolver');
 const { VERSIONS_DIR } = require('./utils/artifact-paths');
 const { servedRootsPath, writeServedRoots, removeServedRoots } = require('./served-roots-file');
@@ -987,6 +988,47 @@ async function openBackups(rootId) {
   return failure ? { ok: false, error: 'open-failed' } : { ok: true };
 }
 
+// The ⋯ menu's "Export a File as Zip…": pick a document in this folder, choose
+// where the zip goes, write it, and reveal it.
+async function exportFileAsZip(rootId) {
+  const check = requireRoot(settings.roots, rootId);
+  if (!check.ok) return check;
+  const rootPath = check.root.path;
+
+  const picked = await dialog.showOpenDialog({
+    title: 'Export a File as Zip',
+    defaultPath: rootPath,
+    properties: ['openFile'],
+    filters: [{ name: 'Documents', extensions: ['html', 'htm', 'htmlclay'] }],
+  });
+  if (picked.canceled || !picked.filePaths.length) return { ok: false, error: 'canceled' };
+  const documentPath = picked.filePaths[0];
+  const rel = path.relative(rootPath, documentPath);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    await dialog.showMessageBox({ type: 'info', message: 'Choose a file inside this folder.', buttons: ['OK'] });
+    return { ok: false, error: 'outside-root' };
+  }
+
+  const stem = path.basename(documentPath).replace(/\.(html?|htmlclay|xhtml)$/i, '');
+  const saved = await dialog.showSaveDialog({
+    title: 'Save Zip',
+    defaultPath: path.join(app.getPath('downloads'), `${stem}.zip`),
+    filters: [{ name: 'Zip', extensions: ['zip'] }],
+  });
+  if (saved.canceled || !saved.filePath) return { ok: false, error: 'canceled' };
+
+  try {
+    await fsPromises.rm(saved.filePath, { force: true });
+    const out = await exportDocumentZip(documentPath, saved.filePath);
+    shell.showItemInFolder(out);
+    return { ok: true };
+  } catch (error) {
+    console.error('[export] zip failed:', error);
+    await dialog.showMessageBox({ type: 'warning', message: `Couldn't export ${path.basename(documentPath)}.`, buttons: ['OK'] });
+    return { ok: false, error: 'export-failed' };
+  }
+}
+
 async function revealRoot(rootId) {
   const check = requireRoot(settings.roots, rootId);
   if (!check.ok) return check;
@@ -1376,6 +1418,7 @@ function cardMenuClick(card, action) {
   if (action === 'copy') return () => clipboard.writeText(card.url);
   if (action === 'reveal') return () => revealRoot(card.rootId);
   if (action === 'backups') return () => openBackups(card.rootId);
+  if (action === 'export') return () => exportFileAsZip(card.rootId);
   if (action === 'disconnect') return () => confirmAndDisconnect(card.sessionId || sessionIdForRoot(card.rootId));
   if (action === 'remove') return () => confirmAndRemoveFolder(card.rootId);
   return null;

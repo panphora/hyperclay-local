@@ -8,12 +8,13 @@
 
 const EXTERNAL_URL_PREFIXES = ['https://hyperclay.com/', 'https://hyperclaylocal.com/'];
 
-const CARD_MENU_ACTIONS = ['open', 'copy', 'reveal', 'backups', 'disconnect', 'remove'];
+const CARD_MENU_ACTIONS = ['open', 'copy', 'reveal', 'backups', 'export', 'disconnect', 'remove'];
 const CARD_MENU_LABELS = {
   open: 'Open in Browser',
   copy: 'Copy Address',
   reveal: 'Reveal Folder',
   backups: 'Backups',
+  export: 'Export a File as Zip…',
   disconnect: 'Disconnect…',
   remove: 'Remove Folder…',
 };
@@ -98,7 +99,8 @@ function cardMenuModel(card, platform = process.platform) {
   }
   let separated = false;
   for (const action of CARD_MENU_ACTIONS) {
-    if (action === 'copy' ? !served : !actions.includes(action)) continue;
+    const shown = action === 'copy' ? served : action === 'export' ? actions.includes('reveal') : actions.includes(action);
+    if (!shown) continue;
     if (MENU_SEPARATOR_BEFORE.includes(action) && items.length && !separated) {
       items.push({ type: 'separator' });
       separated = true;
