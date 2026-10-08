@@ -541,6 +541,25 @@ describe('the manager', () => {
     expect(manager.startRunner).toHaveBeenCalledTimes(1);
   });
 
+  it('hands discovery’s per-file cap to the session start', async () => {
+    const { manager } = makeManager();
+    const discovered = discovery();
+    discovered.accounts[0].limits = { uploadBytes: 10 };
+    api.getAccounts.mockResolvedValue(discovered);
+    jest.spyOn(manager, 'start').mockImplementation(async (session, root) => {
+      manager.sessions.set(session.id, { session, root, engine: {}, runner: null });
+      return { success: true };
+    });
+    jest.spyOn(manager, 'startRunner').mockReturnValue(null);
+    jest.spyOn(manager, 'stop').mockResolvedValue({ success: true });
+    bindModule.firstBind.mockResolvedValue({ ok: true, files: 0, bytes: 0 });
+
+    await manager.setupTeam({ accountId: ACCOUNT_ID, folder: '/home/test/hyperclay/acme', trusted: true, ...paths });
+
+    expect(manager.start).toHaveBeenCalledWith(expect.anything(), expect.anything(),
+      expect.objectContaining({ firstBind: true, uploadLimit: 10 }));
+  });
+
   it('two concurrent setupTeam calls both keep their root and session', async () => {
     const { manager, settings } = makeManager();
     const created = [];

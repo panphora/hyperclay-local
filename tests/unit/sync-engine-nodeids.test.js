@@ -39,11 +39,16 @@ jest.mock('../../src/main/utils/utils', () => ({
 }));
 
 const fileOps = require('../../src/sync-engine/file-operations');
+const utils = require('../../src/sync-engine/utils');
 const apiClient = require('../../src/sync-engine/api-client');
 const nodeMapModule = require('../../src/sync-engine/node-map');
 const { liveSync } = require('livesync-hyperclay');
 
 jest.mock('../../src/sync-engine/file-operations');
+jest.mock('../../src/sync-engine/utils', () => {
+  const actual = jest.requireActual('../../src/sync-engine/utils');
+  return { ...actual, calculateFileChecksum: jest.fn() };
+});
 jest.mock('../../src/sync-engine/api-client');
 jest.mock('../../src/sync-engine/node-map', () => {
   const actual = jest.requireActual('../../src/sync-engine/node-map');
@@ -139,6 +144,7 @@ beforeEach(() => {
   // modifiedAt it stamps on a server write, so that is mocked with the rest.
   fileOps.readFileBuffer.mockImplementation(async (filePath) => Buffer.from(await fileOps.readFile(filePath)));
   fileOps.calculateBufferChecksum.mockImplementation(realBufferChecksum);
+  utils.calculateFileChecksum.mockImplementation(async (filePath) => fileOps.calculateBufferChecksum(await fileOps.readFileBuffer(filePath)));
   jest.spyOn(require('fs').promises, 'stat').mockResolvedValue(STUB_STAT);
 });
 

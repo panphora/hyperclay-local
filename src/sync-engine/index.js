@@ -131,6 +131,9 @@ class SyncEngine extends EventEmitter {
     if (!Number.isFinite(limit) || limit <= 0 || limit === this.uploadBlocks.limit) return;
     this.uploadBlocks = { ...this.uploadBlocks, limit };
     await this._saveUploadBlocks();
+    for (const [rel, record] of Object.entries(this.uploadBlocks.files)) {
+      if (record.bytes <= limit) this.queueSync('change', rel);
+    }
   }
 
   /** Remember an attachment kept local because the plan refuses its size. */
@@ -231,6 +234,7 @@ class SyncEngine extends EventEmitter {
     //   logger,      // a SyncLogger instance for this session
     //   rootId,      // settings root id, for the folder's marker (root-marker.js)
     //   rootMarker,  // identity.json's rootMarker: the folder must carry the marker
+    //   uploadLimit, // the account's per-file cap from discovery, before any pass runs
     // }
     this.sessionId = opts.sessionId || null;
     this.accountId = opts.accountId ?? null;
@@ -312,6 +316,7 @@ class SyncEngine extends EventEmitter {
       await this.repo.loadTombstones();
       const syncState = await this.repo.loadState();
       this.uploadBlocks = await uploadBlocks.load(metaDir);
+      if (Number.isFinite(opts.uploadLimit) && opts.uploadLimit > 0) this.uploadBlocks.limit = opts.uploadLimit;
       this.lastSyncedAt = syncState.lastSyncedAt || null;
       console.log(`[SYNC] Loaded node map: ${this.repo.size} entries, ${this.repo.tombstoneSize} tombstone(s), lastSyncedAt: ${this.lastSyncedAt || 'never'}`);
 

@@ -11,7 +11,8 @@ const path = require('upath');
 const { hasHiddenSegment, classifyPath } = require('./path-helpers');
 const { validateFileName, validateFullPath } = require('./validation');
 const { ERROR_PRIORITY } = require('./constants');
-const { fileExists, readFileBuffer, calculateBufferChecksum } = require('./file-operations');
+const { fileExists } = require('./file-operations');
+const { calculateFileChecksum } = require('./utils');
 const { decide } = require('./reconcile/decide');
 const { executeDecision } = require('./reconcile/execute');
 
@@ -118,7 +119,7 @@ module.exports = {
   async changedLocalView(rel) {
     const fullPath = path.join(this.syncFolder, rel);
     if (!fileExists(fullPath)) return null;
-    return { checksum: calculateBufferChecksum(await readFileBuffer(fullPath)) };
+    return { checksum: await calculateFileChecksum(fullPath) };
   },
 
   /**

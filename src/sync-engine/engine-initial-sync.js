@@ -25,7 +25,7 @@ const {
   calculateBufferChecksum,
   getFileStats
 } = require('./file-operations');
-const { calculateChecksum } = require('./utils');
+const { calculateChecksum, calculateFileChecksum } = require('./utils');
 const { ERROR_PRIORITY } = require('./constants');
 const { decide, decideFolder, A } = require('./reconcile/decide');
 const { ancestorPaths } = require('./path-helpers');
@@ -108,8 +108,7 @@ module.exports = {
 
   /** The bytes decide compares against the baseline. */
   async localView(rel) {
-    const buffer = await readFileBuffer(path.join(this.syncFolder, rel));
-    return { checksum: calculateBufferChecksum(buffer) };
+    return { checksum: await calculateFileChecksum(path.join(this.syncFolder, rel)) };
   },
 
   /**

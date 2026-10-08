@@ -287,6 +287,21 @@ describe('SyncManager.startEnabledSessions', () => {
     expect(streams).toHaveLength(2);
   });
 
+  it('discovery’s per-file cap reaches every engine before its first upload pass', async () => {
+    const caps = [];
+    initialSync.performInitialUploadSync.mockImplementation(async function () {
+      caps.push([this.sessionId, this.uploadLimit]);
+    });
+    apiClient.getAccounts.mockResolvedValue(discovery([
+      personalAccount({ limits: { uploadBytes: 10 } }),
+      teamAccount({ limits: { uploadBytes: 20 } })
+    ]));
+
+    await manager.startEnabledSessions();
+
+    expect(caps).toEqual([['session-personal', 10], ['session-team', 20]]);
+  });
+
   it("a legacy personal session (accountId null) starts with the personal account’s syncBase", async () => {
     personal.accountId = null;
     personal.legacyMetaDir = 'legacy-personal';

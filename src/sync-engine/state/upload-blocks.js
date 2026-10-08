@@ -8,16 +8,27 @@ const { withFileLock, atomicWriteFile } = require('../../main/utils/write-queue'
 const FILE = 'upload-blocks.json';
 
 async function load(metaDir) {
+  let raw;
   try {
-    const data = JSON.parse(await fs.readFile(path.join(metaDir, FILE), 'utf8'));
-    return {
-      limit: Number.isFinite(data.limit) && data.limit > 0 ? data.limit : null,
-      files: data.files && typeof data.files === 'object' ? data.files : {},
-    };
+    raw = await fs.readFile(path.join(metaDir, FILE), 'utf8');
   } catch (error) {
     if (error.code === 'ENOENT') return { limit: null, files: {} };
     throw error;
   }
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (error) {
+    console.warn(`[SYNC] Corrupt ${FILE}; starting with no blocked uploads`);
+    return { limit: null, files: {} };
+  }
+  if (!data || typeof data !== 'object') return { limit: null, files: {} };
+
+  return {
+    limit: Number.isFinite(data.limit) && data.limit > 0 ? data.limit : null,
+    files: data.files && typeof data.files === 'object' ? data.files : {},
+  };
 }
 
 function save(metaDir, data) {

@@ -50,13 +50,27 @@ jest.mock('../../src/sync-engine/api-client', () => ({
   deleteNode: jest.fn()
 }));
 
+jest.mock('../../src/sync-engine/file-operations', () => {
+  const actual = jest.requireActual('../../src/sync-engine/file-operations');
+  return { ...actual, readFileBuffer: jest.fn(actual.readFileBuffer) };
+});
+
+jest.mock('../../src/sync-engine/reconcile/execute', () => {
+  const actual = jest.requireActual('../../src/sync-engine/reconcile/execute');
+  return { ...actual, executeDecision: jest.fn(actual.executeDecision) };
+});
+
 const os = require('os');
 const fsp = require('fs').promises;
 const path = require('upath');
 const crypto = require('crypto');
 
+const fileOps = require('../../src/sync-engine/file-operations');
 const { SyncEngine } = require('../../src/sync-engine/index');
-const { executeDecision } = require('../../src/sync-engine/reconcile/execute');
+const execute = require('../../src/sync-engine/reconcile/execute');
+const { executeDecision, resolveConflict } = execute;
+const { calculateChecksum, calculateFileChecksum } = require('../../src/sync-engine/utils');
+const store = require('../../src/sync-engine/reconcile/conflicts');
 const uploadBlocks = require('../../src/sync-engine/state/upload-blocks');
 const { A } = require('../../src/sync-engine/reconcile/decide');
 
@@ -64,6 +78,7 @@ const checksum = (content) => crypto.createHash('sha256').update(content).digest
 
 const BIG = 'x'.repeat(20);
 const BIG_SUM = checksum(BIG);
+const EDITED = 'y'.repeat(20);
 const REMOTE_ETAG = 'aaaa1111bbbb2222';
 const REMOTE_ETAG_2 = 'cccc3333dddd4444';
 const SV_1 = 'st1';
@@ -108,6 +123,11 @@ function seedUpload({ rel = 'photo.png', content = BIG, remoteEtag = REMOTE_ETAG
   }]]);
   return writeLocalFile(rel, content);
 }
+
+const completeList = (nodes) => Object.assign([...nodes], { complete: true });
+
+const uploadNode = ({ id, name, etag = REMOTE_ETAG }) =>
+  ({ id, type: 'upload', name, parentId: 0, path: '', etag, checksum: etag, structureVersion: SV_1 });
 
 async function readBlockFile() {
   return JSON.parse(await fsp.readFile(path.join(metaDir, 'upload-blocks.json'), 'utf8'));
@@ -210,10 +230,173 @@ describe('an attachment over the cap stays local', () => {
     expect(engine.blockedUploads()).toEqual([]);
     expect((await readBlockFile()).files).toEqual({});
   });
+
+  it('a raised cap re-queues every blocked file the new cap admits', async () => {
+    await engine.setUploadLimit(10);
+    await writeLocalFile('photo.png', BIG);
+    await writeLocalFile('huge.mp4', 'x'.repeat(200));
+    await engine.blockUpload('photo.png', 20, 10);
+    await engine.blockUpload('huge.mp4', 200, 10);
+    engine.isRunning = true;
+    const queue = jest.spyOn(engine, 'queueSync').mockImplementation(() => {});
+
+    await engine.setUploadLimit(100);
+
+    expect(engine.uploadLimit).toBe(100);
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(queue).toHaveBeenCalledWith('change', 'photo.png');
+  });
+
+  it('a 413 with no cached cap teaches the cap so the next pass does not resend', async () => {
+    await writeLocalFile('photo.png', BIG);
+    api.createNode.mockRejectedValue(Object.assign(new Error('too large'), { statusCode: 413, code: 'too-large', limit: 15 }));
+
+    const first = await executeDecision(engine, null, { action: A.CREATE_REMOTE }, { path: 'photo.png', type: 'upload', parentId: 0 });
+    expect(first).toEqual({ action: A.NOOP, blocked: true });
+    expect(api.createNode).toHaveBeenCalledTimes(1);
+    expect(engine.uploadLimit).toBe(15);
+
+    const second = await executeDecision(engine, null, { action: A.CREATE_REMOTE }, { path: 'photo.png', type: 'upload', parentId: 0 });
+
+    expect(second).toEqual({ action: A.NOOP, blocked: true });
+    expect(api.createNode).toHaveBeenCalledTimes(1);
+    expect((await readBlockFile()).files['photo.png']).toMatchObject({ bytes: 20, limit: 15 });
+  });
+
+  it('keep mine on an oversize attachment sends nothing, stays local and is remembered', async () => {
+    await engine.setUploadLimit(10);
+    await seedUpload({ content: BIG });
+    await executeDecision(engine, '901', { action: A.CONFLICT, conflictKind: 'both-edited' });
+    api.putNodeContent.mockClear();
+
+    const result = await resolveConflict(engine, { path: 'photo.png', choice: 'mine' });
+
+    expect(result).toEqual({ ok: false, error: 'too-large' });
+    expect(api.putNodeContent).not.toHaveBeenCalled();
+    expect(api.createNode).not.toHaveBeenCalled();
+    expect(await fsp.readFile(path.join(root, 'photo.png'), 'utf8')).toBe(BIG);
+    expect(engine.blockedUploads()).toEqual([{ path: 'photo.png', bytes: 20, limit: 10 }]);
+    expect((await readBlockFile()).files['photo.png']).toMatchObject({ bytes: 20, limit: 10, reason: 'too-large' });
+    expect((await store.load(metaDir))['901']).toMatchObject({ kind: 'both-edited', path: 'photo.png' });
+  });
+
+  it('keep mine on a remote-deleted oversize attachment does not create the node', async () => {
+    await engine.setUploadLimit(10);
+    await seedUpload({ content: BIG });
+    await executeDecision(engine, '901', { action: A.CONFLICT, conflictKind: 'remote-deleted' });
+
+    const result = await resolveConflict(engine, { path: 'photo.png', choice: 'mine' });
+
+    expect(result).toEqual({ ok: false, error: 'too-large' });
+    expect(api.createNode).not.toHaveBeenCalled();
+    expect(await fsp.readFile(path.join(root, 'photo.png'), 'utf8')).toBe(BIG);
+    expect(engine.blockedUploads()).toEqual([{ path: 'photo.png', bytes: 20, limit: 10 }]);
+    expect((await store.load(metaDir))['901']).toMatchObject({ kind: 'remote-deleted', path: 'photo.png' });
+  });
+
+  it('keep theirs clears the record the file was kept under', async () => {
+    await engine.setUploadLimit(10);
+    await seedUpload({ content: BIG });
+    await engine.blockUpload('photo.png', 20, 10);
+    await executeDecision(engine, '901', { action: A.CONFLICT, conflictKind: 'both-edited' });
+
+    const result = await resolveConflict(engine, { path: 'photo.png', choice: 'theirs' });
+
+    expect(result).toEqual({ ok: true });
+    expect(engine.blockedUploads()).toEqual([]);
+    expect((await readBlockFile()).files).toEqual({});
+  });
+
+  it('a downgrade leaves a synced attachment that is unchanged here alone', async () => {
+    await engine.setUploadLimit(10);
+    await seedUpload();
+
+    const item = await engine.decideNode({
+      nodeId: '901',
+      rel: 'photo.png',
+      entry: engine.repo.get('901'),
+      remote: uploadNode({ id: 901, name: 'photo.png' }),
+      localPresent: true,
+      type: 'upload'
+    });
+
+    expect(item.decision.action).toBe(A.NOOP);
+    expect(engine.blockedUploads()).toEqual([]);
+    expect((await readBlockFile()).files).toEqual({});
+  });
+
+  it('a downgrade still downloads a newer remote version of an oversize attachment', async () => {
+    await engine.setUploadLimit(10);
+    await seedUpload();
+
+    const item = await engine.decideNode({
+      nodeId: '901',
+      rel: 'photo.png',
+      entry: engine.repo.get('901'),
+      remote: uploadNode({ id: 901, name: 'photo.png', etag: REMOTE_ETAG_2 }),
+      localPresent: true,
+      type: 'upload'
+    });
+
+    expect(item.decision.action).toBe(A.DOWNLOAD);
+    expect(engine.blockedUploads()).toEqual([]);
+  });
+
+  it('an edit to an oversize attachment is decided as an upload the executor keeps local', async () => {
+    await engine.setUploadLimit(10);
+    const full = await seedUpload({ content: EDITED });
+
+    const item = await engine.decideNode({
+      nodeId: '901',
+      rel: 'photo.png',
+      entry: engine.repo.get('901'),
+      remote: uploadNode({ id: 901, name: 'photo.png' }),
+      localPresent: true,
+      type: 'upload'
+    });
+    expect(item.decision.action).toBe(A.UPLOAD);
+
+    const result = await executeDecision(engine, item.nodeId, item.decision, item.context);
+
+    expect(result).toEqual({ action: A.NOOP, blocked: true });
+    expect(api.putNodeContent).not.toHaveBeenCalled();
+    expect(fileOps.readFileBuffer).not.toHaveBeenCalledWith(full);
+    expect(engine.blockedUploads()).toEqual([{ path: 'photo.png', bytes: 20, limit: 10 }]);
+    expect((await readBlockFile()).files['photo.png']).toMatchObject({ bytes: 20, limit: 10, reason: 'too-large' });
+  });
+
+  it('a watcher change on an oversize attachment is an upload, never a deletion', async () => {
+    await engine.setUploadLimit(10);
+    const full = await seedUpload({ content: EDITED });
+    api.listNodes.mockResolvedValue(completeList([uploadNode({ id: 901, name: 'photo.png' })]));
+
+    await engine.applyLocalChange({ type: 'change', filename: 'photo.png' });
+
+    expect(execute.executeDecision).toHaveBeenCalledWith(engine, '901', { action: A.UPLOAD }, expect.anything());
+    expect(api.deleteNode).not.toHaveBeenCalled();
+    expect(fileOps.readFileBuffer).not.toHaveBeenCalledWith(full);
+    expect(await fsp.readFile(full, 'utf8')).toBe(EDITED);
+    expect(engine.blockedUploads()).toEqual([{ path: 'photo.png', bytes: 20, limit: 10 }]);
+    expect((await readBlockFile()).files['photo.png']).toMatchObject({ bytes: 20, limit: 10, reason: 'too-large' });
+  });
+});
+
+describe('calculateFileChecksum', () => {
+  it('reads the same digest calculateChecksum gives for the same bytes', async () => {
+    const full = await writeLocalFile('photo.png', BIG);
+
+    expect(await calculateFileChecksum(full)).toBe(await calculateChecksum(Buffer.from(BIG)));
+  });
 });
 
 describe('upload-blocks.json', () => {
   it('a missing file is an empty state', async () => {
+    expect(await uploadBlocks.load(metaDir)).toEqual({ limit: null, files: {} });
+  });
+
+  it('a corrupt file is an empty state', async () => {
+    await fsp.writeFile(path.join(metaDir, 'upload-blocks.json'), '{ "limit": 10, "files": ');
+
     expect(await uploadBlocks.load(metaDir)).toEqual({ limit: null, files: {} });
   });
 

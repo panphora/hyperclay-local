@@ -238,14 +238,49 @@ describe('SyncManager statuses', () => {
     const announcements = [];
     manager.on('status-changed', (data) => announcements.push(data));
 
-    await engine.blockUpload('index.html', 5, 1);
+    const indexSize = fs.statSync(path.join(rootA.path, 'index.html')).size;
+    await engine.blockUpload('index.html', indexSize, 1);
     await engine.blockUpload('gone.mp4', 6, 1);
 
-    expect(statusOf(sessionA.id).blocked).toEqual([{ path: 'index.html', bytes: 5, limit: 1 }]);
+    expect(statusOf(sessionA.id).blocked).toEqual([{ path: 'index.html', bytes: indexSize, limit: 1 }]);
     expect(announcements).toContainEqual({ sessionId: sessionA.id, rootId: rootA.id, accountId: 11 });
 
     fs.rmSync(path.join(rootA.path, 'index.html'));
     expect(statusOf(sessionA.id).blocked).toEqual([]);
+  });
+
+  it('drops a record whose file is no longer the size it was kept under', async () => {
+    await manager.start(sessionA, rootA);
+    const engine = manager.get(sessionA.id);
+    await engine.blockUpload('index.html', 5, 1);
+    const clear = jest.spyOn(engine, 'clearUploadBlock');
+
+    expect(statusOf(sessionA.id).blocked).toEqual([]);
+    expect(clear).toHaveBeenCalledWith('index.html');
+    expect(engine.blockedUploads()).toEqual([]);
+  });
+
+  it('drops a record the cap has grown past', async () => {
+    await manager.start(sessionA, rootA);
+    const engine = manager.get(sessionA.id);
+    const size = fs.statSync(path.join(rootA.path, 'index.html')).size;
+    await engine.blockUpload('index.html', size, size);
+    const clear = jest.spyOn(engine, 'clearUploadBlock');
+
+    expect(statusOf(sessionA.id).blocked).toEqual([]);
+    expect(clear).toHaveBeenCalledWith('index.html');
+  });
+
+  it('the account\u2019s cap is in the engine before its first upload pass runs', async () => {
+    const caps = [];
+    initialSync.performInitialUploadSync.mockImplementation(async function () {
+      caps.push(this.uploadLimit);
+    });
+
+    await manager.start(sessionA, rootA, { uploadLimit: 10 });
+
+    expect(caps).toEqual([10]);
+    expect(manager.get(sessionA.id).uploadLimit).toBe(10);
   });
 
   it('paused comes from settings and status is paused', async () => {

@@ -3,6 +3,7 @@
  */
 
 const crypto = require('crypto');
+const fs = require('fs');
 const { SYNC_CONFIG } = require('./constants');
 const { syncUrl, authHeaders } = require('./api-client');
 
@@ -14,6 +15,17 @@ async function calculateChecksum(content) {
     .update(content)
     .digest('hex')
     .substring(0, 16);
+}
+
+/** The same checksum as calculateChecksum, read in chunks so a file of any size fits in memory. */
+function calculateFileChecksum(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    fs.createReadStream(filePath)
+      .on('error', reject)
+      .on('data', (chunk) => hash.update(chunk))
+      .on('end', () => resolve(hash.digest('hex').substring(0, 16)));
+  });
 }
 
 /**
@@ -107,6 +119,7 @@ function getLegacySnapshot(rel) {
 
 module.exports = {
   calculateChecksum,
+  calculateFileChecksum,
   generateTimestamp,
   isLocalNewer,
   isFutureFile,

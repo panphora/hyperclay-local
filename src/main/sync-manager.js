@@ -133,7 +133,7 @@ class SyncManager extends EventEmitter {
     return await pathExists(path.join(this.metaDirFor(session), BIND_MARKER)) ? 'bind' : null;
   }
 
-  async start(session, root, { syncBase = '/_/sync', protocol = 1, firstBind = false } = {}) {
+  async start(session, root, { syncBase = '/_/sync', protocol = 1, firstBind = false, uploadLimit = null } = {}) {
     if (this.sessions.has(session.id)) return { success: true };
     const apiKey = this.getApiKey();
     if (!apiKey) return { success: false, error: 'no-key' };
@@ -228,7 +228,7 @@ class SyncManager extends EventEmitter {
       const result = await engine.init(apiKey, session.cached?.username, root.path, this.serverUrl,
         this.deviceId, resumed === 'import' ? this.v2MetaDir(session) : metaDir, {
           sessionId: session.id, accountId, rootId: root.id, rootMarker,
-          syncBase, protocol: effectiveProtocol, firstBind: noInitPasses,
+          syncBase, protocol: effectiveProtocol, firstBind: noInitPasses, uploadLimit,
           createFolder: setup,
           live: createRootLive(root),
           snapshots: { take: (rel) => this.takeSnapshot(rel, root.id) },
@@ -342,7 +342,7 @@ class SyncManager extends EventEmitter {
       // C3.11: one session's failure is its own. The rest still start, and what
       // failed is logged rather than thrown out of the launch.
       try {
-        const result = await this.start(session, root, { syncBase, protocol: 2 });
+        const result = await this.start(session, root, { syncBase, protocol: 2, uploadLimit: account?.limits?.uploadBytes });
         const entry = this.sessions.get(session.id);
         if (entry) this.applyLimits(entry, account);
         if (!result.success) {
@@ -472,16 +472,29 @@ class SyncManager extends EventEmitter {
     });
   }
 
-  /** Attachments kept here because the plan refuses their size, still on disk. */
+  /**
+   * Attachments kept here because the plan refuses their size: a record counts
+   * only while the file it names is still on disk, unchanged and over the cap it
+   * was recorded under. Any other record is stale and dropped here.
+   */
   _blockedFor(entry) {
     const list = typeof entry.engine.blockedUploads === 'function' ? entry.engine.blockedUploads() : [];
-    return list.filter((file) => {
+    const blocked = [];
+    for (const file of list) {
+      let size = null;
       try {
-        return fsSync.statSync(path.join(entry.root.path, file.path)).isFile();
+        const stat = fsSync.statSync(path.join(entry.root.path, file.path));
+        if (stat.isFile()) size = stat.size;
       } catch {
-        return false;
+        size = null;
       }
-    });
+      if (size !== file.bytes || !(file.bytes > file.limit)) {
+        entry.engine.clearUploadBlock(file.path).catch(() => {});
+        continue;
+      }
+      blocked.push(file);
+    }
+    return blocked;
   }
 
   /**
@@ -781,7 +794,7 @@ class SyncManager extends EventEmitter {
 
     // The engine exists but reconciles nothing: this session's first pass is
     // the bind, which reports progress and checks the disk before it writes.
-    const started = await this.start(session, root, { syncBase: account.syncBase, protocol: 2, firstBind: true });
+    const started = await this.start(session, root, { syncBase: account.syncBase, protocol: 2, firstBind: true, uploadLimit: account?.limits?.uploadBytes });
     if (!started.success) {
       this._dropSession(session, root);
       return { ok: false, error: started.error || 'no-key' };

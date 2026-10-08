@@ -292,6 +292,7 @@ async function upload(engine, nodeId, entry, context, gen) {
       if (settled) return settled;
     }
     if (!isSite && error.statusCode === 413 && error.code === 'too-large') {
+      if (Number.isFinite(error.limit)) await engine.setUploadLimit(error.limit);
       return keepLocal(engine, rel, buffer.length, Number.isFinite(error.limit) ? error.limit : engine.uploadLimit);
     }
     throw error;
@@ -505,6 +506,7 @@ async function createRemote(engine, nodeId, entry, context, gen) {
       return { action: A.CONFLICT, kind: store.KINDS.NAME_TAKEN, record };
     }
     if (!isSite && error.statusCode === 413 && error.code === 'too-large') {
+      if (Number.isFinite(error.limit)) await engine.setUploadLimit(error.limit);
       return keepLocal(engine, rel, buffer.length, Number.isFinite(error.limit) ? error.limit : engine.uploadLimit);
     }
     throw error;
@@ -631,12 +633,22 @@ async function resolveConflict(session, { path: rel, choice } = {}) {
         localChecksum: (await readLocalBytes(localPath)).checksum,
       }, extra);
     }
+    await engine.clearUploadBlock(found.path);
     await store.clear(engine.metaDir, found.key);
     await removeCopy(engine, found);
     return { ok: true };
   }
 
+  const size = (await fs.stat(localPath)).size;
+  if (overLimit(engine, isSite, size)) {
+    await keepLocal(engine, found.path, size, engine.uploadLimit);
+    return { ok: false, error: 'too-large' };
+  }
   const { buffer, checksum: localChecksum } = await readLocalBytes(localPath);
+  if (overLimit(engine, isSite, buffer.length)) {
+    await keepLocal(engine, found.path, buffer.length, engine.uploadLimit);
+    return { ok: false, error: 'too-large' };
+  }
   const content = isSite ? buffer.toString('utf8') : buffer;
   const modifiedAt = (await fs.stat(localPath)).mtime;
 
