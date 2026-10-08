@@ -276,13 +276,26 @@ const SAVE_MAX_BYTES = 20 * 1024 * 1024;
 const API_WRITE_MAX_BYTES = 1024 * 1024;
 const UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 
-// Refused by extension. A document or a script stored beside a document and
-// served from the same origin is stored XSS: the file the person "just uploaded"
-// executes with the document's own authority. SVG is deliberately NOT in this
-// list — it is accepted and served inert instead, see the Content-Disposition on
-// the static lane below, because refusing it would break a legitimate and common
-// kind of image.
-const UPLOAD_REFUSED = /\.(html?|xhtml|htmlclay|js|mjs|cjs|xml|xht|xsl|xslt)$/i;
+// Refused by type. A document or a script stored beside a document and served
+// from the same origin is stored XSS: the file the person "just uploaded"
+// executes with the document's own authority. The enumerated set mirrors
+// hyperclay.com's DOCUMENT_UPLOAD_EXTENSIONS (server-lib/upload-safety.js), and
+// the type check is the belt for anything it misses. SVG is deliberately
+// accepted and served inert instead, see the Content-Disposition on the static
+// lane below. A file with no extension or an unknown one is accepted: send types
+// it application/octet-stream, which a browser downloads.
+const UPLOAD_REFUSED_EXTENSIONS = new Set([
+  '.html', '.htm', '.shtml', '.xhtml', '.xht', '.htmlclay',
+  '.xml', '.xsl', '.xslt', '.mathml', '.mml', '.rss', '.atom', '.rdf',
+  '.js', '.mjs', '.cjs',
+]);
+const DOCUMENT_TYPE = /^(?:text\/html|application\/xhtml\+xml|text\/xml|application\/xml|application\/[a-z0-9.+-]*\+xml|text\/mathml|text\/javascript|application\/javascript)$/i;
+
+function refusedUpload(fileName) {
+  const ext = path.extname(String(fileName || '')).toLowerCase();
+  if (!ext || ext === '.svg' || ext === '.svgz') return false;
+  return UPLOAD_REFUSED_EXTENSIONS.has(ext) || DOCUMENT_TYPE.test(express.static.mime.lookup(ext.slice(1)) || '');
+}
 
 // Split a client-supplied filename into the parts the stored name is built from.
 // A leading dot is stripped rather than preserved: validateSegments 404s any
@@ -1782,7 +1795,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         if (!part) {
           return res.status(400).json({ msg: 'No file to upload.', msgType: 'error', code: 'bad-request' });
         }
-        if (UPLOAD_REFUSED.test(part.filename || '')) {
+        if (refusedUpload(part.filename)) {
           return res.status(415).json({ msg: 'That kind of file cannot be uploaded.', msgType: 'error', code: 'unsupported-type' });
         }
 
@@ -2317,9 +2330,14 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         // file's provenance is not knowable at serve time — one uploaded through
         // /_/upload and one the person dropped in the folder look identical here.
         // `nosniff` stops a browser from second-guessing the type.
-        if (/\.svgz?$/i.test(realPath)) {
+        // `nosniff` on everything: the browser takes the type send sets from the
+        // extension and never second-guesses it from the bytes.
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        if (/\.svgz?$/i.test(realPath)) res.setHeader('Content-Disposition', 'attachment');
+        // A page type inside an uploads folder arrived as an attachment before
+        // this check existed: hand it over as a download.
+        else if (refusedUpload(realPath) && path.dirname(realPath).split(path.sep).some(p => p.startsWith('assets-'))) {
           res.setHeader('Content-Disposition', 'attachment');
-          res.setHeader('X-Content-Type-Options', 'nosniff');
         }
         return res.sendFile(realPath);
       } catch (error) {

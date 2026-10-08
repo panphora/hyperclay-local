@@ -119,6 +119,53 @@ describe('uploads', () => {
     expect(served.headers['x-content-type-options']).toBe('nosniff');
   });
 
+  test('a web-page upload is refused by type, whatever the extension says', async () => {
+    for (const name of ['x.shtml', 'x.rss', 'x.atom', 'x.rdf', 'x.mml', 'X.HTML']) {
+      const res = await upload(Buffer.from('<html>payload</html>'), name);
+      expect(res.status).toBe(415);
+      expect(res.body.code).toBe('unsupported-type');
+    }
+    await expect(fs.stat(assets())).rejects.toThrow();
+  });
+
+  test('a file with no extension, an unknown one, or a non-page type is accepted', async () => {
+    for (const name of ['note', 'note.foo', 'a.zip', 'a.pdf', 'a.svg']) {
+      const res = await upload(Buffer.from('<html>payload</html>'), name);
+      expect(res.status).toBe(200);
+    }
+  });
+
+  test('a file the browser cannot type is handed over as a download', async () => {
+    for (const name of ['note', 'note.foo']) {
+      const res = await upload(Buffer.from('<html>payload</html>'), name);
+      const served = await request(app)
+        .get('/' + res.body.uploads[0].url)
+        .set('Host', 'localhost');
+      expect(served.status).toBe(200);
+      expect(served.headers['content-type'].startsWith('application/octet-stream')).toBe(true);
+      expect(served.headers['x-content-type-options']).toBe('nosniff');
+    }
+  });
+
+  test('an image beside a document is typed by its extension and never sniffed', async () => {
+    const res = await upload(Buffer.from('PNGDATA'), 'cover.png');
+    const served = await request(app)
+      .get('/' + res.body.uploads[0].url)
+      .set('Host', 'localhost');
+    expect(served.status).toBe(200);
+    expect(served.headers['content-type']).toBe('image/png');
+    expect(served.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  test('a page type hand-placed inside an assets folder is served as an attachment', async () => {
+    await fs.mkdir(path.join(dir, 'assets-doc'));
+    await fs.writeFile(path.join(dir, 'assets-doc', 'x.shtml'), '<html>payload</html>');
+    const served = await request(app).get('/assets-doc/x.shtml').set('Host', 'localhost');
+    expect(served.status).toBe(200);
+    expect(served.headers['content-disposition']).toBe('attachment');
+    expect(served.headers['x-content-type-options']).toBe('nosniff');
+  });
+
   test('a name already taken by DIFFERENT bytes is never overwritten', async () => {
     // The one case the exclusive create exists for. Content-hash naming means
     // different bytes normally get different names and never contend, so without
