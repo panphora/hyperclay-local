@@ -321,9 +321,24 @@ function splitUploadName(fileName) {
   return { stem: base.slice(0, dot) || 'file', ext: base.slice(dot) };
 }
 
-// `blog/app.html` -> `blog/assets-app`. Beside the document, named after it, so a
-// folder of documents does not turn into one shared pile of files, and so the URL
-// the client writes into the page resolves relative to the document itself.
+// Every upload lands in this root's `uploads/assets-<stem>/`, never beside the document, and the
+// page links it as `/_/uploads/assets-<stem>/<name>`: the same layout and the same link
+// hyperclay.com uses, so a synced folder holds identical bytes on both sides, and renaming or
+// moving the document never strands its files. The stem is slugged to hyperclay.com's folder
+// alphabet so the folder can sync: `My Board.v2.html` -> `assets-my-board-v2`.
+const UPLOADS_FOLDER = 'uploads';
+
+function assetsFolderName(docRelPath) {
+  const stem = path.basename(docRelPath).replace(/\.(html?|htmlclay|xhtml)$/i, '');
+  const slug = stem.toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return `assets-${slug || 'document'}`;
+}
+
+// The legacy sibling folder an older upload went into, `blog/assets-app` for `blog/app.html`.
+// Still served by the static route, and still read by the zip export.
 function assetsDirFor(docRelPath) {
   const dir = path.dirname(docRelPath);
   const stem = path.basename(docRelPath).replace(/\.(html?|htmlclay|xhtml)$/i, '');
@@ -412,7 +427,7 @@ function stripSystemRouteMarker(url) {
 
 // Known `/_/` system routes on this host. Anything else under the marker is reserved
 // and 404s, so `/_/foo.html` can never reach the static catch-all and serve a document.
-const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'sync', 'wire', 'data-loss', 'api', 'meta', 'upload', 'versions', 'version', 'restore']);
+const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'sync', 'wire', 'data-loss', 'api', 'meta', 'upload', 'uploads', 'versions', 'version', 'restore']);
 
 // Spec §3's code registry, keyed by the status this host answers with, so a
 // status and its code can never drift apart. A status the registry does not name
@@ -1785,8 +1800,8 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       return res.json(body);
     });
 
-    // POST /_/upload — store a file beside the document instead of embedding it
-    // (spec §9). No body parser runs on this path: express.json/text are scoped
+    // POST /_/upload — store a file in this root's uploads folder instead of
+    // embedding it (spec §9). No body parser runs on this path: express.json/text are scoped
     // to '/save', so the multipart body arrives intact.
     app.post('/upload', async (req, res, next) => {
       if (!req.originalUrl.startsWith('/_/upload')) return next();
@@ -1812,15 +1827,15 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           return res.status(415).json({ msg: 'That kind of file cannot be uploaded.', msgType: 'error', code: 'unsupported-type' });
         }
 
-        const dirRel = assetsDirFor(docName);
+        const dirRel = `${UPLOADS_FOLDER}/${assetsFolderName(docName)}`;
         const dirAbs = await resolveWritePath(paths, dirRel);
         await fs.mkdir(dirAbs, { recursive: true });
         const stored = await storeUpload(paths, dirRel, part.filename, part.content);
 
-        // Percent-encoded per segment, while the stored name keeps its own
-        // characters. A raw space renders through img src, because the browser
-        // repairs it, and breaks in srcset, where a space separates candidates.
-        const url = `${encodeURIComponent(path.basename(dirRel))}/${encodeURIComponent(stored.name)}`;
+        // A host path, resolved by GET /_/uploads/ on whatever port this root is
+        // served from. Percent-encoded per segment, while the stored name keeps its
+        // own characters: a raw space breaks srcset, where a space separates candidates.
+        const url = `/_/uploads/${encodeURIComponent(path.basename(dirRel))}/${encodeURIComponent(stored.name)}`;
         return res.json({
           msg: 'Uploaded',
           msgType: 'success',
@@ -1834,6 +1849,31 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           msgType: 'error',
           code: UPLOAD_CODES[status] || 'error'
         });
+      }
+    });
+
+    // GET /_/uploads/<folder>/<name>: the host path every upload answers (spec §9).
+    // It names a file in this root's `uploads/`, so it resolves on any port this root
+    // is served from and survives the document being renamed or moved. Files only,
+    // never a listing, and always served as an upload: nosniff, an explicit type,
+    // and a download for anything a browser would run.
+    app.get(/^\/uploads\/(.+)$/, async (req, res, next) => {
+      if (!req.originalUrl.startsWith('/_/uploads/')) return next();
+      try {
+        await paths.ready();
+        const rel = `${UPLOADS_FOLDER}/${decodeOnce(req.path).slice('/uploads/'.length)}`;
+        validateSegments(rel);
+        const realPath = await resolveReadPath(paths, rel);
+        const stats = await fs.stat(realPath);
+        if (!stats.isFile()) throw new PathError(404, 'File not found');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        if (/\.svgz?$/i.test(realPath) || refusedUpload(realPath)) {
+          res.setHeader('Content-Disposition', 'attachment');
+        }
+        if (!path.extname(realPath)) res.type('application/octet-stream');
+        return res.sendFile(realPath);
+      } catch (error) {
+        return next(error);
       }
     });
 
@@ -2512,5 +2552,7 @@ module.exports = {
   encodePathSegments,
   addWordBreaks,
   assetsDirFor,
+  assetsFolderName,
+  UPLOADS_FOLDER,
   refusedUpload
 };

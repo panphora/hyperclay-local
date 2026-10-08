@@ -8,6 +8,7 @@ jest.mock('../../src/main/utils/data-extractor', () => ({
 }));
 
 const fs = require('fs').promises;
+const http = require('http');
 const path = require('path');
 const os = require('os');
 const request = require('supertest');
@@ -31,7 +32,7 @@ describe('uploads', () => {
     .set('Document-URL', docUrl)
     .attach('file', buffer, filename);
 
-  const assets = (name = 'assets-index') => path.join(dir, name);
+  const assets = (name = 'assets-index') => path.join(dir, 'uploads', name);
 
   beforeEach(async () => {
     dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'upl-')));
@@ -46,11 +47,11 @@ describe('uploads', () => {
     jest.restoreAllMocks();
   });
 
-  test('stores the file in assets-<stem>/ and returns a URL relative to the document', async () => {
+  test('stores the file in uploads/assets-<stem>/ and returns a host path', async () => {
     const res = await upload(Buffer.from('PNGDATA'), 'cover.png');
     expect(res.status).toBe(200);
     const [file] = res.body.uploads;
-    expect(file.url).toMatch(/^assets-index\/cover-[0-9a-f]{6}\.png$/);
+    expect(file.url).toMatch(/^\/_\/uploads\/assets-index\/cover-[0-9a-f]{6}\.png$/);
     expect(file.bytes).toBe(7);
     expect(await fs.readFile(path.join(assets(), file.name), 'utf8')).toBe('PNGDATA');
   });
@@ -58,17 +59,25 @@ describe('uploads', () => {
   test('the folder is named after the document, not shared across documents', async () => {
     await fs.writeFile(path.join(dir, 'about.html'), '<html>other</html>');
     const res = await upload(Buffer.from('X'), 'a.png', 'http://localhost/about.html');
-    expect(res.body.uploads[0].url).toMatch(/^assets-about\//);
+    expect(res.body.uploads[0].url).toMatch(/^\/_\/uploads\/assets-about\//);
     await expect(fs.stat(assets('assets-about'))).resolves.toBeTruthy();
   });
 
-  test('a document in a subfolder gets its assets folder beside it', async () => {
+  test('a document in a subfolder still uploads into the root\'s uploads folder', async () => {
     await fs.mkdir(path.join(dir, 'blog'));
     await fs.writeFile(path.join(dir, 'blog', 'post.html'), '<html>p</html>');
     const res = await upload(Buffer.from('X'), 'a.png', 'http://localhost/blog/post.html');
-    // Relative to /blog/post.html, so the browser resolves it to /blog/assets-post/…
-    expect(res.body.uploads[0].url).toMatch(/^assets-post\//);
-    await expect(fs.stat(path.join(dir, 'blog', 'assets-post'))).resolves.toBeTruthy();
+    // The host path names the root\'s uploads folder, so moving the document never strands it.
+    expect(res.body.uploads[0].url).toMatch(/^\/_\/uploads\/assets-post\//);
+    await expect(fs.stat(path.join(dir, 'uploads', 'assets-post'))).resolves.toBeTruthy();
+    await expect(fs.stat(path.join(dir, 'blog', 'assets-post'))).rejects.toThrow();
+  });
+
+  test('a document name is slugged to the folder alphabet hyperclay.com uses', async () => {
+    await fs.writeFile(path.join(dir, 'My Board.v2.html'), '<html>b</html>');
+    const res = await upload(Buffer.from('X'), 'a.png', 'http://localhost/My Board.v2.html');
+    expect(res.body.uploads[0].url).toMatch(/^\/_\/uploads\/assets-my-board-v2\//);
+    await expect(fs.stat(path.join(dir, 'uploads', 'assets-my-board-v2'))).resolves.toBeTruthy();
   });
 
   test('identical bytes converge on ONE file rather than piling up copies', async () => {
@@ -112,7 +121,7 @@ describe('uploads', () => {
     expect(res.status).toBe(200);
 
     const served = await request(app)
-      .get('/' + res.body.uploads[0].url)
+      .get(res.body.uploads[0].url)
       .set('Host', 'localhost');
     expect(served.status).toBe(200);
     expect(served.headers['content-disposition']).toBe('attachment');
@@ -139,7 +148,7 @@ describe('uploads', () => {
     for (const name of ['note', 'note.foo']) {
       const res = await upload(Buffer.from('<html>payload</html>'), name);
       const served = await request(app)
-        .get('/' + res.body.uploads[0].url)
+        .get(res.body.uploads[0].url)
         .set('Host', 'localhost');
       expect(served.status).toBe(200);
       expect(served.headers['content-type'].startsWith('application/octet-stream')).toBe(true);
@@ -150,11 +159,65 @@ describe('uploads', () => {
   test('an image beside a document is typed by its extension and never sniffed', async () => {
     const res = await upload(Buffer.from('PNGDATA'), 'cover.png');
     const served = await request(app)
-      .get('/' + res.body.uploads[0].url)
+      .get(res.body.uploads[0].url)
       .set('Host', 'localhost');
     expect(served.status).toBe(200);
     expect(served.headers['content-type']).toBe('image/png');
     expect(served.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  test('the answered host path serves the exact bytes back', async () => {
+    const res = await upload(Buffer.from('PNGDATA'), 'cover.png');
+    const served = await request(app).get(res.body.uploads[0].url).set('Host', 'localhost');
+    expect(served.status).toBe(200);
+    expect(Buffer.from(served.body).toString()).toBe('PNGDATA');
+  });
+
+  test('a page hand-placed in uploads/ is a download through /_/uploads/, never a page', async () => {
+    await fs.mkdir(path.join(dir, 'uploads', 'assets-x'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'uploads', 'assets-x', 'page.html'), '<html>payload</html>');
+    const served = await request(app).get('/_/uploads/assets-x/page.html').set('Host', 'localhost');
+    expect(served.status).toBe(200);
+    expect(served.headers['content-disposition']).toBe('attachment');
+    expect(served.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  test('a folder under /_/uploads/ is a 404, never a listing', async () => {
+    await fs.mkdir(path.join(dir, 'uploads', 'assets-x'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'uploads', 'assets-x', 'note.txt'), 'hi');
+    const served = await request(app).get('/_/uploads/assets-x/').set('Host', 'localhost');
+    expect(served.status).toBe(404);
+    expect(served.text).not.toContain('note.txt');
+  });
+
+  test('a missing file under /_/uploads/ is a 404', async () => {
+    const served = await request(app).get('/_/uploads/assets-x/missing.png').set('Host', 'localhost');
+    expect(served.status).toBe(404);
+  });
+
+  test('traversal out of uploads/ is refused, and the file outside it is never returned', async () => {
+    await fs.writeFile(path.join(dir, 'secret.txt'), 'SECRET');
+    // Sent raw: a client library rewrites `..` and `%2e%2e` before the request
+    // leaves, so going through one would test the client, not this route.
+    const raw = (target) => new Promise((resolve, reject) => {
+      const req = http.request(
+        { host: '127.0.0.1', port: app.address().port, path: target, headers: { Host: 'localhost' } },
+        (res) => {
+          let text = '';
+          res.on('data', (chunk) => { text += chunk; });
+          res.on('end', () => resolve({ status: res.statusCode, text }));
+        }
+      );
+      req.on('error', reject);
+      req.end();
+    });
+
+    for (const target of ['/_/uploads/../secret.txt', '/_/uploads/%2e%2e/secret.txt']) {
+      const served = await raw(target);
+      expect(served.status).toBeGreaterThanOrEqual(400);
+      expect(served.status).toBeLessThan(500);
+      expect(served.text).not.toContain('SECRET');
+    }
   });
 
   test('a page type hand-placed inside an assets folder is served as an attachment', async () => {
@@ -271,8 +334,11 @@ describe('uploads', () => {
     const res = await upload(Buffer.from('X'), 'header photo.png');
     const [file] = res.body.uploads;
     expect(file.url).toContain('%20');
-    expect(decodeURIComponent(file.url.split('/')[1])).toBe(file.name);
+    expect(file.url.split('/')[3]).toBe('assets-index');
+    expect(decodeURIComponent(file.url.split('/').pop())).toBe(file.name);
     await expect(fs.stat(path.join(assets(), file.name))).resolves.toBeTruthy();
+    const served = await request(app).get(file.url).set('Host', 'localhost');
+    expect(served.status).toBe(200);
   });
 
   test('a dot-prefixed filename is stored visibly rather than 404ing as a hidden file', async () => {
