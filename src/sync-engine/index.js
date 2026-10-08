@@ -21,6 +21,7 @@ const Outbox = require('./state/outbox');
 const CascadeSuppression = require('./state/cascade-suppression');
 const EchoWindow = require('./state/echo-window');
 const NodeRepository = require('./state/node-repository');
+const uploadBlocks = require('./state/upload-blocks');
 
 class SyncEngine extends EventEmitter {
   constructor() {
@@ -66,6 +67,7 @@ class SyncEngine extends EventEmitter {
     this.nodeListInFlight = null;
     this.bootstrapPass = false; // reconcileAll({ bootstrap: true }) deletes nothing
     this.repo = new NodeRepository(); // nodeId → { type, path, checksum?, inode?, parentId? }
+    this.uploadBlocks = { limit: null, files: {} };
     // Convenience: `this.metaDir = x` forwards to `this.repo.attach(x)` so
     // tests and init() can set the metadata directory in one place instead
     // of having to remember to call attach() separately.
@@ -117,6 +119,50 @@ class SyncEngine extends EventEmitter {
       accountId: this.accountId ?? null,
       protocol: this.protocol || 1,
     };
+  }
+
+  /** The account's per-file cap in bytes, or null when the server has not said. */
+  get uploadLimit() {
+    return this.uploadBlocks.limit;
+  }
+
+  /** Discovery reported this account's per-file cap. Persisted for a cold start offline. */
+  async setUploadLimit(limit) {
+    if (!Number.isFinite(limit) || limit <= 0 || limit === this.uploadBlocks.limit) return;
+    this.uploadBlocks = { ...this.uploadBlocks, limit };
+    await this._saveUploadBlocks();
+  }
+
+  /** Remember an attachment kept local because the plan refuses its size. */
+  async blockUpload(rel, bytes, limit) {
+    const current = this.uploadBlocks.files[rel];
+    if (current && current.bytes === bytes && current.limit === limit) return;
+    this.uploadBlocks = {
+      ...this.uploadBlocks,
+      files: { ...this.uploadBlocks.files, [rel]: { bytes, limit, reason: 'too-large', at: new Date().toISOString() } },
+    };
+    await this._saveUploadBlocks();
+  }
+
+  /** The attachment synced, shrank, or went away: it is no longer blocked. */
+  async clearUploadBlock(rel) {
+    if (!this.uploadBlocks.files[rel]) return;
+    const files = { ...this.uploadBlocks.files };
+    delete files[rel];
+    this.uploadBlocks = { ...this.uploadBlocks, files };
+    await this._saveUploadBlocks();
+  }
+
+  /** `[{ path, bytes, limit }]`, sorted by path. */
+  blockedUploads() {
+    return Object.entries(this.uploadBlocks.files)
+      .map(([rel, record]) => ({ path: rel, bytes: record.bytes, limit: record.limit }))
+      .sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  async _saveUploadBlocks() {
+    if (this.metaDir) await uploadBlocks.save(this.metaDir, this.uploadBlocks);
+    this.emit('upload-blocks-changed', this.blockedUploads());
   }
 
   /**
@@ -265,6 +311,7 @@ class SyncEngine extends EventEmitter {
       await this.repo.load();
       await this.repo.loadTombstones();
       const syncState = await this.repo.loadState();
+      this.uploadBlocks = await uploadBlocks.load(metaDir);
       this.lastSyncedAt = syncState.lastSyncedAt || null;
       console.log(`[SYNC] Loaded node map: ${this.repo.size} entries, ${this.repo.tombstoneSize} tombstone(s), lastSyncedAt: ${this.lastSyncedAt || 'never'}`);
 

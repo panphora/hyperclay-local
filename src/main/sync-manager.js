@@ -335,6 +335,8 @@ class SyncManager extends EventEmitter {
       // failed is logged rather than thrown out of the launch.
       try {
         const result = await this.start(session, root, { syncBase, protocol: 2 });
+        const entry = this.sessions.get(session.id);
+        if (entry) this.applyLimits(entry, account);
         if (!result.success) {
           console.error(`[SYNC] Session ${session.id} did not start:`, result.error);
         }
@@ -344,6 +346,14 @@ class SyncManager extends EventEmitter {
     }
 
     return this.statuses();
+  }
+
+  /** Discovery's per-file cap for this session's account, when the server sent one. */
+  applyLimits(entry, account) {
+    const bytes = account && account.limits && account.limits.uploadBytes;
+    if (Number.isFinite(bytes) && bytes > 0) {
+      entry.engine.setUploadLimit(bytes).catch((error) => entry.logger?.error?.('SYNC', 'Saving the upload cap failed', { error }));
+    }
   }
 
   /** The reason a session's runner starts paused for, if it is paused at all. */
@@ -661,6 +671,7 @@ class SyncManager extends EventEmitter {
    */
   onDiscovery(discovery) {
     for (const entry of this.sessions.values()) {
+      this.applyLimits(entry, accountFor(discovery, entry.session));
       if (!entry.runner || entry.runner.state !== 'paused') continue;
       const reason = entry.session.paused?.reason;
       if (reason === 'port-taken') continue;

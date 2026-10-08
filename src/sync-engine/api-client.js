@@ -76,6 +76,7 @@ async function apiFetch(url, init, { errorPrefix } = {}) {
     if (errorDetails) error.details = errorDetails;
     if (errorBody?.code) error.code = errorBody.code;
     if (errorBody?.etag) error.etag = errorBody.etag;
+    if (errorBody?.limit) error.limit = errorBody.limit;
     const retryAfter = response.headers.get('retry-after');
     if (retryAfter) error.retryAfterMs = Number(retryAfter) * 1000 || null;
     throw error;

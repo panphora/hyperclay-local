@@ -56,6 +56,34 @@ describe('requests through the connection object', () => {
     });
   });
 
+  test('a refusal copies the per-file cap from the body', async () => {
+    const originalFetch = global.fetch;
+    const conn = { serverUrl: 'http://test', syncBase: '/_/sync', apiKey: 'k', protocol: 2, accountId: 7 };
+    const body = { code: 'too-large', msg: 'File too large', limit: 15 };
+    global.fetch = jest.fn(async () => ({
+      ok: false,
+      status: 413,
+      clone: () => ({ json: async () => body }),
+      text: async () => JSON.stringify(body),
+      headers: { get: () => null }
+    }));
+    const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    let thrown = null;
+    try {
+      await apiClient.createNode(conn, { type: 'upload', name: 'photo.png', parentId: 0, content: 'x' });
+    } catch (error) {
+      thrown = error;
+    } finally {
+      global.fetch = originalFetch;
+      logged.mockRestore();
+    }
+
+    expect(thrown.statusCode).toBe(413);
+    expect(thrown.code).toBe('too-large');
+    expect(thrown.limit).toBe(15);
+  });
+
   test('createNode returns the response\'s etag, checksum and structureVersion', async () => {
     const originalFetch = global.fetch;
     const conn = { serverUrl: 'http://test', syncBase: '/_/sync', apiKey: 'k', protocol: 1 };

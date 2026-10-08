@@ -87,6 +87,19 @@ async function readLocalBytes(localPath) {
   return { buffer, checksum: await calculateChecksum(buffer) };
 }
 
+// An attachment over the account's per-file cap stays on this computer. The
+// baseline is left where it was, so the next pass asks again with the cap it
+// has then: an upgrade sends it without anything else happening.
+async function keepLocal(engine, rel, bytes, limit) {
+  await engine.blockUpload(rel, bytes, limit);
+  return { action: A.NOOP, blocked: true };
+}
+
+function overLimit(engine, isSite, bytes) {
+  const limit = engine.uploadLimit;
+  return !isSite && Number.isFinite(limit) && bytes > limit;
+}
+
 async function writeBytes(filePath, content) {
   await ensureDirectory(path.dirname(filePath));
   await atomicWriteFile(filePath, Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8'), null);
@@ -247,7 +260,10 @@ async function upload(engine, nodeId, entry, context, gen) {
 
   const isSite = SITE_PATTERN.test(rel);
   const localPath = await localPathFor(engine, rel);
+  const size = (await fs.stat(localPath)).size;
+  if (overLimit(engine, isSite, size)) return keepLocal(engine, rel, size, engine.uploadLimit);
   const { buffer, checksum: localChecksum } = await readLocalBytes(localPath);
+  if (overLimit(engine, isSite, buffer.length)) return keepLocal(engine, rel, buffer.length, engine.uploadLimit);
   const content = isSite ? buffer.toString('utf8') : buffer;
   const baseline = engine.repo.getBaseline(nodeId) || {};
 
@@ -275,6 +291,9 @@ async function upload(engine, nodeId, entry, context, gen) {
       const settled = await settleUpload(engine, nodeId, entry, context, localChecksum);
       if (settled) return settled;
     }
+    if (!isSite && error.statusCode === 413 && error.code === 'too-large') {
+      return keepLocal(engine, rel, buffer.length, Number.isFinite(error.limit) ? error.limit : engine.uploadLimit);
+    }
     throw error;
   }
   if (gen !== engine.generation) return { action: A.UPLOAD, stale: true };
@@ -285,6 +304,7 @@ async function upload(engine, nodeId, entry, context, gen) {
     localChecksum: etag,
     structureVersion: response.structureVersion,
   });
+  await engine.clearUploadBlock(rel);
   engine.emit('file-synced', { file: rel, action: 'upload', type: typeOf(entry, context, rel) });
   return { action: A.UPLOAD, etag, checksum: etag };
 }
@@ -459,7 +479,10 @@ async function createRemote(engine, nodeId, entry, context, gen) {
   const rel = relPathOf(entry, context, nodeId);
   const isSite = SITE_PATTERN.test(rel);
   const localPath = await localPathFor(engine, rel);
+  const size = (await fs.stat(localPath)).size;
+  if (overLimit(engine, isSite, size)) return keepLocal(engine, rel, size, engine.uploadLimit);
   const { buffer, checksum: localChecksum } = await readLocalBytes(localPath);
+  if (overLimit(engine, isSite, buffer.length)) return keepLocal(engine, rel, buffer.length, engine.uploadLimit);
   const content = isSite ? buffer.toString('utf8') : buffer;
   const type = typeOf(entry, context, rel);
 
@@ -481,6 +504,9 @@ async function createRemote(engine, nodeId, entry, context, gen) {
       });
       return { action: A.CONFLICT, kind: store.KINDS.NAME_TAKEN, record };
     }
+    if (!isSite && error.statusCode === 413 && error.code === 'too-large') {
+      return keepLocal(engine, rel, buffer.length, Number.isFinite(error.limit) ? error.limit : engine.uploadLimit);
+    }
     throw error;
   }
   if (gen !== engine.generation) return { action: A.CREATE_REMOTE, stale: true };
@@ -496,6 +522,7 @@ async function createRemote(engine, nodeId, entry, context, gen) {
   // The cached list predates this node; a later event must not read its absence as a delete.
   if (typeof engine.invalidateServerNodesCache === 'function') engine.invalidateServerNodesCache();
 
+  await engine.clearUploadBlock(rel);
   engine.emit('file-synced', { file: rel, action: 'upload', type });
   return { action: A.CREATE_REMOTE, nodeId: created.id, etag };
 }
