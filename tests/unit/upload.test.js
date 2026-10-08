@@ -12,7 +12,7 @@ const path = require('path');
 const os = require('os');
 const request = require('supertest');
 
-const { createApp } = require('../../src/main/server.js');
+const { createApp, refusedUpload } = require('../../src/main/server.js');
 const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 
 async function cleanup(dir) {
@@ -164,6 +164,80 @@ describe('uploads', () => {
     expect(served.status).toBe(200);
     expect(served.headers['content-disposition']).toBe('attachment');
     expect(served.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  test('a page type in an uploads folder is a download on the .html branch too', async () => {
+    // The URL names it as a page, so the SPA branch would render it before the
+    // Content-Disposition rule below was ever reached.
+    await fs.mkdir(path.join(dir, 'assets-board'));
+    await fs.writeFile(path.join(dir, 'assets-board', 'legacy.html'), '<html>payload</html>');
+    const served = await request(app).get('/assets-board/legacy.html').set('Host', 'localhost');
+    expect(served.status).toBe(200);
+    expect(served.headers['content-disposition']).toBe('attachment');
+    expect(served.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  test('a file with no extension is bytes, not the type its basename names', async () => {
+    // send reads the bare basename as if it were an extension, so `html` came
+    // back text/html and `svg` came back image/svg+xml, both inline.
+    await fs.mkdir(path.join(dir, 'assets-board'));
+    await fs.writeFile(path.join(dir, 'assets-board', 'html'), '<html>payload</html>');
+    await fs.writeFile(path.join(dir, 'assets-board', 'svg'), '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+    for (const name of ['html', 'svg']) {
+      const served = await request(app).get(`/assets-board/${name}`).set('Host', 'localhost');
+      expect(served.status).toBe(200);
+      expect(served.headers['content-type']).toBe('application/octet-stream');
+    }
+  });
+
+  test('only the immediate parent folder counts as an uploads folder', async () => {
+    await fs.mkdir(path.join(dir, 'assets-2024', 'site'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'assets-2024', 'site', 'page.xhtml'), '<html>payload</html>');
+    const served = await request(app).get('/assets-2024/site/page.xhtml').set('Host', 'localhost');
+    expect(served.status).toBe(200);
+    expect(served.headers['content-disposition']).toBeUndefined();
+  });
+
+  test('the uploads-folder rule does not care about case, because the disk does not', async () => {
+    await fs.mkdir(path.join(dir, 'Assets-Board'));
+    await fs.writeFile(path.join(dir, 'Assets-Board', 'legacy.html'), '<html>payload</html>');
+    const served = await request(app).get('/Assets-Board/legacy.html').set('Host', 'localhost');
+    expect(served.status).toBe(200);
+    expect(served.headers['content-disposition']).toBe('attachment');
+  });
+
+  test('a script or XML type the extension list misses is refused by its own type', () => {
+    const mime = require('express').static.mime;
+    if (!mime.lookup('x3d')) mime.define({ 'model/x3d+xml': ['x3d'] });
+    if (!mime.lookup('dae')) mime.define({ 'model/vnd.collada+xml': ['dae'] });
+    if (!mime.lookup('ecma')) mime.define({ 'application/ecmascript': ['ecma'] });
+
+    for (const name of ['x.x3d', 'x.dae', 'x.ecma']) expect(refusedUpload(name)).toBe(true);
+    for (const name of ['x.svg', 'x.png', 'x']) expect(refusedUpload(name)).toBe(false);
+  });
+
+  test('a NUL in the filename cannot hide the extension the stored name will have', async () => {
+    // filename* is decoded by busboy, and the NUL used to be stripped only when
+    // the name was built, so `.ht\0ml` was checked as `ht\0ml` and stored as
+    // `evil-<hash>.html`: served as a page beside the document.
+    const boundary = '----hyperclay-nul-probe';
+    const body = Buffer.from(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="file"; filename*=UTF-8''evil.ht%00ml\r\n` +
+      `Content-Type: text/html\r\n\r\n` +
+      '<script>alert(1)</script>\r\n' +
+      `--${boundary}--\r\n`
+    );
+    const res = await request(app)
+      .post('/_/upload')
+      .set('Host', 'localhost')
+      .set('Origin', 'http://localhost:4321')
+      .set('Document-URL', 'http://localhost/index.html')
+      .set('Content-Type', `multipart/form-data; boundary=${boundary}`)
+      .send(body);
+    expect(res.status).toBe(415);
+    expect(res.body.code).toBe('unsupported-type');
+    await expect(fs.stat(assets())).rejects.toThrow();
   });
 
   test('a name already taken by DIFFERENT bytes is never overwritten', async () => {

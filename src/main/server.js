@@ -287,9 +287,9 @@ const UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 const UPLOAD_REFUSED_EXTENSIONS = new Set([
   '.html', '.htm', '.shtml', '.xhtml', '.xht', '.htmlclay',
   '.xml', '.xsl', '.xslt', '.mathml', '.mml', '.rss', '.atom', '.rdf',
-  '.js', '.mjs', '.cjs',
+  '.js', '.mjs', '.cjs', '.ecma',
 ]);
-const DOCUMENT_TYPE = /^(?:text\/html|application\/xhtml\+xml|text\/xml|application\/xml|application\/[a-z0-9.+-]*\+xml|text\/mathml|text\/javascript|application\/javascript)$/i;
+const DOCUMENT_TYPE = /^(?:text\/html|application\/xhtml\+xml|text\/xml|application\/xml|[a-z0-9.-]+\/[a-z0-9.+-]*\+xml|text\/mathml|text\/javascript|application\/javascript|application\/x-javascript|application\/ecmascript|text\/ecmascript)$/i;
 
 function refusedUpload(fileName) {
   const ext = path.extname(String(fileName || '')).toLowerCase();
@@ -297,12 +297,25 @@ function refusedUpload(fileName) {
   return UPLOAD_REFUSED_EXTENSIONS.has(ext) || DOCUMENT_TYPE.test(express.static.mime.lookup(ext.slice(1)) || '');
 }
 
+// The one cleanup a client-supplied filename gets. The refusal and the stored
+// name both read this result, so the type that is checked is the type that is
+// stored: a NUL or a path stripped later can no longer turn `.ht\0ml` into `.html`.
+function normalizeUploadName(fileName) {
+  return path.basename(String(fileName || 'file')).replace(/\0/g, '').replace(/^\.+/, '');
+}
+
+// A file directly inside a document's uploads folder, where every upload is
+// stored. Case-insensitive, because the disk usually is.
+function inUploadsFolder(realPath) {
+  return /^assets-/i.test(path.basename(path.dirname(realPath)));
+}
+
 // Split a client-supplied filename into the parts the stored name is built from.
 // A leading dot is stripped rather than preserved: validateSegments 404s any
 // dot-prefixed segment, so `.avatar.png` would otherwise be refused with a
 // message about a missing file.
 function splitUploadName(fileName) {
-  const base = path.basename(String(fileName || 'file')).replace(/\0/g, '').replace(/^\.+/, '');
+  const base = normalizeUploadName(fileName);
   const dot = base.lastIndexOf('.');
   if (dot <= 0) return { stem: base || 'file', ext: '' };
   return { stem: base.slice(0, dot) || 'file', ext: base.slice(dot) };
@@ -1795,7 +1808,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         if (!part) {
           return res.status(400).json({ msg: 'No file to upload.', msgType: 'error', code: 'bad-request' });
         }
-        if (refusedUpload(part.filename)) {
+        if (refusedUpload(normalizeUploadName(part.filename))) {
           return res.status(415).json({ msg: 'That kind of file cannot be uploaded.', msgType: 'error', code: 'unsupported-type' });
         }
 
@@ -2303,26 +2316,27 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
 
         // Check if URL contains an .html or .htmlclay segment (SPA-aware routing)
         const htmlMatch = requestedPath.match(/^(.*?\.html(?:clay)?)(\/.*)?$/);
-        if (htmlMatch) {
-          // Phases 2 + 3. A read error now reaches the error handler with its
-          // real status instead of being flattened into a 404 — and `await`
-          // matters: Express 4 does not consume a rejected async handler's
-          // promise, so an unawaited serveHtml rejection hangs the request.
-          validateSegments(htmlMatch[1]);
-          const realPath = await resolveReadPath(paths, htmlMatch[1]);
-          const stats = await fs.stat(realPath);
-          if (stats.isDirectory()) throw new PathError(404, 'File not found');
-          return await serveHtml(res, realPath);
-        }
 
-        // No HTML extension in URL — serve static files or directory listings.
-        // A bare `/` was handled above, so every path here has segments.
-        validateSegments(requestedPath);
-        const realPath = await resolveReadPath(paths, requestedPath);
+        // Phases 2 + 3, resolved once for both branches below. A read error now
+        // reaches the error handler with its real status instead of being
+        // flattened into a 404 — and `await` matters: Express 4 does not consume
+        // a rejected async handler's promise, so an unawaited serveHtml
+        // rejection hangs the request.
+        validateSegments(htmlMatch ? htmlMatch[1] : requestedPath);
+        const realPath = await resolveReadPath(paths, htmlMatch ? htmlMatch[1] : requestedPath);
         const stats = await fs.stat(realPath);
         if (stats.isDirectory()) {
+          // An .html segment names a document, never a folder.
+          if (htmlMatch) throw new PathError(404, 'File not found');
           return await serveDirListing(res, realPath, paths.baseReal);
         }
+        // A page type in an uploads folder is a download on EVERY branch, so the
+        // decision is made before the page branch is reached rather than beside
+        // the header below. Uploads store directly inside `assets-<stem>/`, so
+        // only the immediate parent counts, compared without case: the disk
+        // usually is, and `Assets-board/` is the same folder.
+        const uploaded = refusedUpload(realPath) && inUploadsFolder(realPath);
+        if (htmlMatch && !uploaded) return await serveHtml(res, realPath);
         // An SVG is a document: it can carry <script>, and served inline from
         // this origin it runs with the same authority as the page beside it.
         // Uploads accept SVG precisely BECAUSE serving it inert is possible, so
@@ -2336,9 +2350,12 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         if (/\.svgz?$/i.test(realPath)) res.setHeader('Content-Disposition', 'attachment');
         // A page type inside an uploads folder arrived as an attachment before
         // this check existed: hand it over as a download.
-        else if (refusedUpload(realPath) && path.dirname(realPath).split(path.sep).some(p => p.startsWith('assets-'))) {
+        else if (uploaded) {
           res.setHeader('Content-Disposition', 'attachment');
         }
+        // send types an extensionless file by its bare basename, as if `html` or
+        // `svg` were an extension: a file with no extension is bytes, never a page.
+        if (!path.extname(realPath)) res.type('application/octet-stream');
         return res.sendFile(realPath);
       } catch (error) {
         return next(error);
@@ -2494,5 +2511,6 @@ module.exports = {
   escapeHtml,
   encodePathSegments,
   addWordBreaks,
-  assetsDirFor
+  assetsDirFor,
+  refusedUpload
 };
