@@ -180,7 +180,7 @@ describe('release.js wiring', () => {
       expect(ui).toHaveBeenCalledTimes(1);
       expect(ui).toHaveBeenCalledWith({
         localDir: '/fixture/hyperclay-local',
-        hyperclayDir: '/fixture/hyperclay',
+        hyperclayDir: path.join('/fixture/hyperclay-local', '..', 'hyperclay'),
       });
     }
   );
