@@ -812,6 +812,58 @@ describePosix('workflow attempt orchestration', () => {
     expect(problems).toEqual([]);
   });
 
+  test('reads a hinted run again until GitHub gives it its title', async () => {
+    const fx = makeFixture();
+    put(fx, readyChain(fx));
+    const problems = [];
+    const h = harness(fx, {
+      problems,
+      remote: tagRemote(fx, problems),
+      gh: [
+        ghGet(problems, definitionEndpoint(fx), definitionResult()),
+        ghPost(problems, fx, ghResult(200, hintBody(RUN_ID))),
+        ghGet(problems, runEndpoint(RUN_ID), ghResult(200, runBody(fx, { display_title: 'Release', status: 'queued' }))),
+        ghGet(problems, runEndpoint(RUN_ID), ghResult(200, runBody(fx)))
+      ]
+    });
+
+    const result = await reconcile(fx, h.deps);
+
+    expect(result.outcome).toBe('succeeded');
+    expect(result.state.attempts[0].dispatch).toBe('identified');
+    expect(result.state.attempts[0].runId).toBe(RUN_ID);
+    expect(h.posts()).toHaveLength(1);
+    expect(h.sleeps).toEqual([2000]);
+    expect(h.gets().map((call) => call.args[10])).toEqual([
+      definitionEndpoint(fx), runEndpoint(RUN_ID), runEndpoint(RUN_ID)
+    ]);
+    expect(problems).toEqual([]);
+  });
+
+  test('still refuses a hinted run whose title names another attempt', async () => {
+    const fx = makeFixture();
+    put(fx, readyChain(fx));
+    const problems = [];
+    const otherTitle = attemptTitle(fx).replace(fx.attemptId, '00000000-0000-4000-8000-000000000000');
+    const h = harness(fx, {
+      problems,
+      remote: tagRemote(fx, problems),
+      gh: [
+        ghGet(problems, definitionEndpoint(fx), definitionResult()),
+        ghPost(problems, fx, ghResult(200, hintBody(RUN_ID))),
+        ghGet(problems, runEndpoint(RUN_ID), ghResult(200, runBody(fx, { display_title: otherTitle, status: 'queued' })))
+      ]
+    });
+
+    const result = await reconcile(fx, h.deps);
+
+    expect(result.outcome).toBe('unresolved');
+    expect(result.state.attempts[0].error.code).toBe('WORKFLOW_IDENTITY_CONFLICT');
+    expect(h.sleeps).toEqual([]);
+    expect(h.gets()).toHaveLength(2);
+    expect(problems).toEqual([]);
+  });
+
   test('falls back to discovery when the accepted response carries no usable hint', async () => {
     const fx = makeFixture();
     put(fx, readyChain(fx));

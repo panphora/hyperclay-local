@@ -16,6 +16,7 @@ const { writeOutput } = require('./release-command');
 
 const READ_MS = 90000;
 const REQUEST_MS = 30000;
+const UNTITLED_WAIT_MS = 2000;
 const MAX_BYTES = 8 * 1024 * 1024;
 const WORKFLOW_PATH = '.github/workflows/release.yml';
 const REPO_FIELDS = [
@@ -410,12 +411,21 @@ async function reconcileWorkflowAttempt(input, suppliedDeps) {
   }
 
   async function readRun(id, end) {
-    requireTime(end);
-    const run = await readGithubJson('github.run', {
-      repo, endpoint: `repos/${repo}/actions/runs/${id}`
-    }, githubDeps, { deadline: end });
-    checkAbort(deps.signal);
-    return requireObservedRun(attempt(), remoteRepo, run, id);
+    for (;;) {
+      requireTime(end);
+      const run = await readGithubJson('github.run', {
+        repo, endpoint: `repos/${repo}/actions/runs/${id}`
+      }, githubDeps, { deadline: end });
+      checkAbort(deps.signal);
+      try {
+        return requireObservedRun(attempt(), remoteRepo, run, id);
+      } catch (error) {
+        const untitled = error && error.code === 'WORKFLOW_IDENTITY_CONFLICT' && error.reason === 'untitled'
+          && run.status !== 'completed';
+        if (!untitled || now() + UNTITLED_WAIT_MS >= end) throw error;
+      }
+      await wait(UNTITLED_WAIT_MS);
+    }
   }
 
   async function wait(delay) {

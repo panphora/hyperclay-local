@@ -320,6 +320,12 @@ const CONFLICT_CASES = [
   ['a bound run id carrying a rewritten title', () => observedState().attempts[0], () => runRow({
     display_title: title({ version: '1.30.0' })
   }), 'title'],
+  ['a bound run id whose title GitHub has not evaluated yet', () => observedState().attempts[0], () => runRow({
+    display_title: 'Release'
+  }), 'untitled'],
+  ['a bound run id carrying another attempt token', () => observedState().attempts[0], () => runRow({
+    display_title: title({ attemptId: OTHER_ATTEMPT_ID })
+  }), 'title'],
   ['a bound run id carrying another source', () => observedState().attempts[0], () => runRow({
     head_sha: REPAIR_SOURCE_SHA
   }), 'source'],

@@ -164,6 +164,10 @@ function carriesAttemptToken(title, attemptId) {
   return title.split(/\s+/).some((token) => token === `attempt=${attemptId}`);
 }
 
+function carriesAnyAttemptToken(title) {
+  return title.split(/\s+/).some((token) => token.startsWith('attempt='));
+}
+
 function canonicalRunUrl(raw, target, runId) {
   let parsed;
   try {
@@ -267,7 +271,8 @@ function classifyWorkflowRun(input) {
     return { kind: 'conflict', reason: error.reason, candidateId: run.id };
   }
   if (run.display_title !== target.expectedTitle) {
-    return { kind: 'conflict', reason: 'title', candidateId: run.id };
+    const reason = claimsBoundId && !carriesAnyAttemptToken(run.display_title) ? 'untitled' : 'title';
+    return { kind: 'conflict', reason, candidateId: run.id };
   }
   return { kind: 'match', observation };
 }
