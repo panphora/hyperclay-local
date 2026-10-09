@@ -88,17 +88,6 @@ class FakeServer {
     return dir ? `${dir}/${node.name}` : node.name;
   }
 
-  relPathAt(id, name, parentId) {
-    const parts = [];
-    let current = parentId ? this.get(parentId) : null;
-    let guard = 0;
-    while (current && guard++ < 100) {
-      parts.unshift(current.name);
-      current = current.parentId ? this.get(current.parentId) : null;
-    }
-    return parts.length ? `${parts.join('/')}/${name}` : name;
-  }
-
   descendantsOf(id) {
     const out = [];
     const stack = [Number(id)];
@@ -123,10 +112,6 @@ class FakeServer {
 
   paths() {
     return [...this.nodes.keys()].map((id) => this.relPathOf(id));
-  }
-
-  contents() {
-    return [...this.nodes.values()].filter((node) => node.content).map((node) => node.content);
   }
 
   inventory() {
@@ -160,8 +145,10 @@ class FakeServer {
       pathBefore: targetId === undefined || targetId === null ? null : this.relPathOf(targetId),
     };
     this.calls.push(call);
-    await this.delay();
+    // The observer runs when the request leaves, not when the answer lands, so
+    // a lane that started before a catch-up pass is not blamed on the pass.
     if (this.onCall) this.onCall(call);
+    await this.delay();
     return call;
   }
 
@@ -318,4 +305,4 @@ function install(apiClient, server) {
   return server;
 }
 
-module.exports = { FakeServer, install, checksumOf, httpError, networkError };
+module.exports = { FakeServer, install };

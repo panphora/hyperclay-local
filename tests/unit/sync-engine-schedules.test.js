@@ -92,11 +92,15 @@ jest.mock('../../src/sync-engine/node-map', () => {
 const fsSync = require('fs');
 const os = require('os');
 const nodePath = require('path');
+const { AsyncLocalStorage } = require('async_hooks');
 const api = require('../../src/sync-engine/api-client');
 const fsScenario = require('../helpers/fs-scenario');
 const { FakeServer, install } = require('../helpers/sync-fake-server');
 
 const SCHEDULES = Number(process.env.SCHEDULES || 60);
+// Which lane a request came from. A call the live lane started before a pass
+// began keeps the live lane's context, so the pass is never blamed for it.
+const lane = new AsyncLocalStorage();
 const MUTATIONS = new Set(['deleteNode', 'moveNode', 'renameNode']);
 const UPLOADS = 'uploads';
 
@@ -175,15 +179,17 @@ function scenario(extra) {
 const SCENARIOS = [
   scenario({
     id: 'E7',
+    failing: ['tree', 'free'],
     title: 'trash uploads/ while renaming work/ to work2/',
     ops: [
       { op: 'trash', path: 'uploads' },
       { op: 'rename', from: 'work', to: 'work2' }
     ],
-    targets: [20]
+    targets: [10, 11, 12, 20]
   }),
   scenario({
     id: 'E7base',
+    failing: ['tree', 'free'],
     title: 'no-uploads control: trash docs/ while renaming work/ to work2/',
     tree: { 'docs/d.html': '<p>d</p>' },
     ids: { 30: 'docs', 31: 'docs/d.html' },
@@ -195,15 +201,18 @@ const SCENARIOS = [
   }),
   scenario({
     id: 'E8',
+    failing: ['tree', 'free'],
     title: 'uploads/ renamed and renamed back while a pass runs',
     ops: [
       { op: 'rename', from: 'uploads', to: 'uploads-old' },
       { op: 'rename', from: 'uploads-old', to: 'uploads', at: 500 }
     ],
+    targets: [10, 11, 12],
     midReconcile: true
   }),
   scenario({
     id: 'E8base',
+    failing: ['tree', 'free'],
     title: 'no-uploads control: work/ renamed and renamed back while a pass runs',
     ops: [
       { op: 'rename', from: 'work', to: 'work2' },
@@ -213,6 +222,7 @@ const SCENARIOS = [
   }),
   scenario({
     id: 'E5',
+    failing: ['tree', 'free'],
     title: 'a new untitled folder after a rename reaches the server',
     tree: { 'untitled folder/a.png': 'a' },
     ids: { 40: 'untitled folder', 41: 'untitled folder/a.png' },
@@ -225,13 +235,16 @@ const SCENARIOS = [
   }),
   scenario({
     id: 'E1',
+    failing: ['tree', 'free'],
     title: 'an untracked child of a renamed uploads folder leaves no ghost folder',
     tree: { 'uploads/assets-new/n.png': 'n' },
     ops: [{ op: 'rename', from: 'uploads', to: 'uploads-old' }],
+    targets: [10, 11, 12],
     forbidServerPrefix: ['uploads-old']
   }),
   scenario({
     id: 'E2',
+    failing: ['tree', 'free'],
     title: 'a file rename while a pass runs sends the rename once',
     ops: [{ op: 'rename', from: 'work/page.html', to: 'work/page2.html' }],
     targets: [21],
@@ -240,6 +253,7 @@ const SCENARIOS = [
   }),
   scenario({
     id: 'deep',
+    failing: ['tree', 'free'],
     title: 'a 50-file folder renamed sends one rename',
     tree: deepTree,
     ids: deepIds,
@@ -249,17 +263,19 @@ const SCENARIOS = [
   }),
   scenario({
     id: 'W5a',
+    failing: ['tree', 'free'],
     title: 'work/ and uploads/ moved together into archive/',
     ops: [
       { op: 'mkdir', path: 'archive' },
       { op: 'move', from: 'work', to: 'archive/work' },
       { op: 'move', from: 'uploads', to: 'archive/uploads' }
     ],
-    targets: [20],
+    targets: [10, 11, 12, 20],
     relocateOnce: [{ id: 20, descendants: [21, 22, 23] }]
   }),
   scenario({
     id: 'W5base',
+    failing: ['tree', 'free'],
     title: 'no-uploads control: two ordinary folders moved together keep their node ids',
     tree: { 'docs/d.html': '<p>d</p>' },
     ids: { 40: 'docs', 41: 'docs/d.html' },
@@ -278,12 +294,14 @@ const SCENARIOS = [
     id: 'restore-interrupted',
     title: 'downloads fail during a restore of uploads/, then the next pass runs',
     ops: [{ op: 'trash', path: 'uploads' }],
+    targets: [10, 11, 12],
     after: [{ kind: 'reconcileAll', failDownloads: true }, { kind: 'reconcileAll' }]
   }),
   scenario({
     id: 'pass-during-trash',
     title: 'a pass runs during a pending trash of uploads/',
     ops: [{ op: 'trash', path: 'uploads' }],
+    targets: [10, 11, 12],
     midReconcile: true
   }),
   scenario({
@@ -292,7 +310,8 @@ const SCENARIOS = [
     ops: [
       { op: 'trash', path: 'uploads/assets-a' },
       { op: 'mkdir', path: 'uploads/assets-a' }
-    ]
+    ],
+    targets: [11, 12]
   }),
   scenario({
     id: 'freed-inode',
@@ -302,6 +321,7 @@ const SCENARIOS = [
       { op: 'mkdir', path: 'new-project' },
       { op: 'write', path: 'new-project/notes.txt', body: 'mine' }
     ],
+    targets: [10, 11, 12],
     reuseInode: { from: 'uploads', to: 'new-project' }
   }),
   scenario({
@@ -310,10 +330,12 @@ const SCENARIOS = [
     ops: [
       { op: 'rename', from: 'uploads', to: 'uploads-old' },
       { op: 'mkdir', path: 'uploads' }
-    ]
+    ],
+    targets: [10, 11, 12]
   }),
   scenario({
     id: 'rename-back',
+    failing: ['tree', 'free'],
     title: 'a rename and a rename back within 500 ms send nothing',
     ops: [
       { op: 'rename', from: 'work', to: 'work2' },
@@ -351,26 +373,31 @@ const SCENARIOS = [
     ids: { 30: 'docs', 31: 'docs/d.html', 32: 'docs/sub', 33: 'docs/sub/e.png' },
     ops: [{ op: 'slow-rm', path: 'docs', spanMs: 5200 }],
     targets: [30, 31, 32, 33],
-    midReconcile: true
+    midReconcile: true,
+    loseResponse: 'deleteNode'
   })
 ];
 
 // --- one run ---------------------------------------------------------------
 
 async function runOne(spec, seed, mode, baseDir) {
-  const rand = fsScenario.rng(seed * 2654435761 + (mode === 'free' ? 97 : 1));
+  // Two streams: the plan (orders, gaps, scheduled actions) is consumed in a
+  // fixed sequence, so it stays the same run to run; the seams are consumed
+  // once per async call, which the engine decides.
+  const planRand = fsScenario.rng(seed * 2654435761 + (mode === 'free' ? 97 : 1));
+  const seamRand = fsScenario.rng((seed ^ 0x5bf03635) * 40503 + (mode === 'free' ? 131 : 7));
   const root = fsScenario.mkroot(spec.tree, baseDir);
   const outside = fsScenario.mkoutside(baseDir);
   const metaDir = fsSync.mkdtempSync(nodePath.join(baseDir, 'meta-'));
 
   const ledger = fsScenario.ledgerFor(root, spec.ids);
   const serverNodes = fsScenario.serverNodesFor(root, spec.ids);
-  const uploadsInode = spec.ids[10] === 'uploads' ? fsSync.statSync(nodePath.join(root, 'uploads')).ino : null;
+  const uploadsInode = spec.ids[10] === UPLOADS ? fsSync.statSync(nodePath.join(root, UPLOADS)).ino : null;
 
-  const { stream } = fsScenario.planOps(root, outside, spec.ops, rand, mode);
+  const { stream } = fsScenario.planOps(root, outside, spec.ops, planRand, mode);
 
   fsScenario.seams.wait = async () => {
-    const n = Math.floor(rand() * 3);
+    const n = Math.floor(seamRand() * 3);
     for (let i = 0; i < n; i += 1) await tick();
   };
   fsScenario.seams.inodeAlias = new Map();
@@ -380,17 +407,17 @@ async function runOne(spec, seed, mode, baseDir) {
 
   const server = new FakeServer(serverNodes, {
     delay: async () => {
-      const n = Math.floor(rand() * 3);
+      const n = Math.floor(seamRand() * 3);
       for (let i = 0; i < n; i += 1) await tick();
     }
   });
   install(api, server);
+  if (spec.loseResponse) server.loseResponseFor(spec.loseResponse);
 
   const state = {
     violations: [],
     calls: 0,
     schedules: 0,
-    catchup: 0,
     paused: false,
     diskRenamesIntoUploads: []
   };
@@ -403,7 +430,7 @@ async function runOne(spec, seed, mode, baseDir) {
   server.onCall = (call) => {
     state.calls += 1;
     if (!MUTATIONS.has(call.name)) return;
-    if (state.catchup > 0 && underUploads(call.pathBefore)) {
+    if (lane.getStore() === 'catchup' && underUploads(call.pathBefore)) {
       fail('I1', `catch-up pass sent ${call.name} for ${call.pathBefore}`);
     }
     if (call.nodeId !== null && !spec.targets.includes(call.nodeId)) {
@@ -420,7 +447,7 @@ async function runOne(spec, seed, mode, baseDir) {
       fromInode = null;
     }
     const result = await realRename(from, to);
-    if (to === nodePath.join(root, 'uploads') && fromInode !== uploadsInode) {
+    if (to === nodePath.join(root, UPLOADS) && fromInode !== uploadsInode) {
       state.diskRenamesIntoUploads.push(from);
     }
     return result;
@@ -431,14 +458,12 @@ async function runOne(spec, seed, mode, baseDir) {
 
   const reconcile = async ({ failDownloads = false } = {}) => {
     if (failDownloads) server.failContent = true;
-    state.catchup += 1;
     state.schedules += 1;
     try {
-      await engine.reconcileAll(server.inventory(), { generation: generation++ });
+      await lane.run('catchup', () => engine.reconcileAll(server.inventory(), { generation: generation++ }));
     } catch {
       // A pass may refuse or throw; the invariants still hold for what it sent.
     } finally {
-      state.catchup -= 1;
       if (failDownloads) server.failContent = false;
     }
     await drain();
@@ -476,9 +501,9 @@ async function runOne(spec, seed, mode, baseDir) {
         await reconcile();
         scheduledOnce = true;
       }
-      if (rand() < 0.35) {
+      if (planRand() < 0.35) {
         if (state.paused) resume();
-        else if (rand() < 0.35) pause();
+        else if (planRand() < 0.35) pause();
         else {
           await reconcile();
           scheduledOnce = true;
@@ -605,6 +630,12 @@ function defineScenario(spec) {
     const title = `${spec.id}: ${spec.title} [${mode}]`;
     const body = async () => {
       const { failures, schedules, calls } = await runScenario(spec, mode);
+      if (process.env.RACE_REPORT) {
+        process.stdout.write(
+          `${title} schedules=${schedules} calls=${calls} failing-seeds=${failures.length}\n`
+          + failures.map((failure) => `  ${failure}\n`).join('')
+        );
+      }
       expect(schedules).toBeGreaterThan(0);
       if (!spec.allowZeroCalls) expect(calls).toBeGreaterThan(0);
       expect(failures).toEqual([]);

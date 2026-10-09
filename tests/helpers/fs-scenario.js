@@ -313,14 +313,9 @@ module.exports = {
   rng,
   mkroot,
   mkoutside,
-  writeTree,
   walk,
-  deriveEvents,
-  applyOp,
   planOps,
   ledgerFor,
   serverNodesFor,
-  checksumOf,
-  deepestFirst,
-  shallowestFirst
+  checksumOf
 };
