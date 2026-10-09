@@ -155,8 +155,8 @@ module.exports = {
    */
   whenQueueEmpty() {
     this.settleQueueWaiters();
-    if (this.syncQueue.isEmpty() && !this.syncQueue.isProcessingQueue()) return Promise.resolve();
-    return new Promise((resolve) => { this.queueWaiters.push(resolve); });
+    if (this.syncQueue.isEmpty() && !this.syncQueue.isProcessingQueue()) return this._lane;
+    return new Promise((resolve) => { this.queueWaiters.push(resolve); }).then(() => this._lane);
   },
 
   settleQueueWaiters() {
@@ -176,7 +176,7 @@ module.exports = {
       const item = this.syncQueue.next();
 
       try {
-        await this.applyLocalChange(item);
+        await this.serial(() => this.applyLocalChange(item));
 
         this.syncQueue.clearRetry(item.filename);
 

@@ -71,6 +71,10 @@ module.exports = {
   },
 
   async handleNodeSaved(data) {
+    return this.serial(() => this.handleNodeSavedInLane(data));
+  },
+
+  async handleNodeSavedInLane(data) {
     if (this._skipIfEcho('save', data.nodeId)) return;
 
     this.echoWindow.mark(data.nodeType, data.nodeId);
@@ -279,6 +283,10 @@ module.exports = {
   },
 
   async handleNodeRenamed(data) {
+    return this.serial(() => this.handleNodeRenamedInLane(data));
+  },
+
+  async handleNodeRenamedInLane(data) {
     if (this._skipIfEcho('rename', data.nodeId)) return;
 
     console.log(`[SYNC] SSE: node-renamed (${data.nodeType}): ${data.oldPath} → ${data.newPath}`);
@@ -299,6 +307,10 @@ module.exports = {
   },
 
   async handleNodeMoved(data) {
+    return this.serial(() => this.handleNodeMovedInLane(data));
+  },
+
+  async handleNodeMovedInLane(data) {
     if (this._skipIfEcho('move', data.nodeId)) return;
 
     console.log(`[SYNC] SSE: node-moved (${data.nodeType}): ${data.oldPath} → ${data.newPath}`);
@@ -319,6 +331,10 @@ module.exports = {
   },
 
   async handleNodeDeleted(data) {
+    return this.serial(() => this.handleNodeDeletedInLane(data));
+  },
+
+  async handleNodeDeletedInLane(data) {
     if (this._skipIfEcho('delete', data.nodeId)) return;
 
     console.log(`[SYNC] SSE: node-deleted (${data.nodeType}): ${data.path}`);
@@ -843,6 +859,10 @@ module.exports = {
    * Check for changes on the server
    */
   async checkForRemoteChanges() {
+    return this.serial(() => this.checkForRemoteChangesInLane());
+  },
+
+  async checkForRemoteChangesInLane() {
     // Don't poll if sync is not running
     if (!this.isRunning) {
       return;
@@ -951,7 +971,7 @@ module.exports = {
             this.stats.uploadsDownloaded++;
             changesFound = true;
             if (serverUpload.nodeId) {
-              map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null, syncedAt: Date.now() });
+              map.set(String(serverUpload.nodeId), { type: 'upload', path: serverUpload.path, checksum: serverUpload.checksum, inode: nodeMap.getInodeSync(localPath), syncedAt: Date.now() });
             }
           } else {
             const localContent = await readFileBuffer(localPath);
@@ -970,7 +990,7 @@ module.exports = {
                 this.stats.uploadsDownloaded++;
                 changesFound = true;
                 if (serverUpload.nodeId) {
-                  map.set(String(serverUpload.nodeId), { path: serverUpload.path, checksum: serverUpload.checksum, inode: null, syncedAt: Date.now() });
+                  map.set(String(serverUpload.nodeId), { type: 'upload', path: serverUpload.path, checksum: serverUpload.checksum, inode: nodeMap.getInodeSync(localPath), syncedAt: Date.now() });
                 }
               } else if (decision.action === A.UPLOAD) {
                 console.log(`[SYNC] PRESERVE upload ${serverUpload.path} - local changed since the last sync, uploading`);

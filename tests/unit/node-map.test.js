@@ -131,8 +131,7 @@ describe('getInode', () => {
 
     const inode = await getInode(filePath);
 
-    expect(typeof inode).toBe('number');
-    expect(inode).toBeGreaterThan(0);
+    expect(inode).toMatch(/^\d+:\d+$/);
   });
 
   test('returns null for non-existent file', async () => {

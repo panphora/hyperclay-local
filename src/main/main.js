@@ -1151,6 +1151,7 @@ function setupSyncEventHandlers() {
       dismissable: data.dismissable,
       type: data.type,
       file: data.file,
+      files: data.files,
       sessionId: data.sessionId,
       rootId: data.rootId,
       accountId: data.accountId
@@ -1636,6 +1637,14 @@ ipcMain.handle('resolve-conflict', (event, { sessionId, path: filePath, choice }
   if (!manager) return { ok: false, error: 'unavailable' };
 
   return manager.resolveConflict({ sessionId, path: filePath, choice });
+});
+
+ipcMain.handle('resolve-mass-delete', (event, { sessionId, choice } = {}) => {
+  const check = requireSession(settings.syncSessions, sessionId);
+  if (!check.ok) return check;
+  if (!manager) return { ok: false, error: 'unavailable' };
+  if (choice !== 'delete' && choice !== 'restore') return { ok: false, error: 'invalid' };
+  return manager.resolveMassDelete({ sessionId, choice });
 });
 
 // C4 §5.4: a notice row's "Show File" points at one file inside a folder this

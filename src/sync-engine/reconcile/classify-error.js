@@ -31,4 +31,7 @@ function classifyError(error) {
   return { kind: 'fatal', reason: code || `http-${status}` };
 }
 
-module.exports = { classifyError };
+// The failure kinds that belong to the session rather than to the file they hit.
+const SESSION_KINDS = new Set(['pause-all', 'pause', 'rediscover', 'offline', 'backoff']);
+
+module.exports = { classifyError, SESSION_KINDS };

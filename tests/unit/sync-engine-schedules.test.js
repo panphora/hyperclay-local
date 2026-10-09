@@ -1,5 +1,5 @@
 /**
- * The race harness (sync-structural step 1).
+ * The race harness.
  *
  * Real filesystem operations on real temp directories, every watcher event
  * those operations produce, many seeded orders with seeded async delays,
@@ -12,9 +12,15 @@
  *   I4 no unrelated folder is renamed into uploads/ on disk
  *   I5 no pre-existing bytes are lost without an operation that deleted them
  *   I6 every scenario ran a schedule and sent a call (or proved the no-op)
- *
- * Nothing under uploads/ is asserted for a live delete or move: that policy is
- * undecided, so those scenarios only check I1, I2, I4 and I5.
+ *   I7 a live delete under uploads/ is sent only for a path that is absent on
+ *      disk, at least 3000 ms after its own unlink or an ancestor folder's, and
+ *      with no add for that path in between
+ *   I8 one scenario removing 20 or more files under uploads/ sends no delete for
+ *      any of those files or their folders
+ *   I9 uploads/ gone from disk sends no delete for it or for anything under it
+ *   I10 a file back at its own path after its delete is live with its original
+ *      node id, restored and not uploaded again
+ *   I11 a deliberate live delete stays deleted: gone from disk and from the server
  */
 
 jest.mock('electron', () => ({
@@ -63,18 +69,13 @@ jest.mock('../../src/sync-engine/file-operations', () => {
 
 jest.mock('../../src/sync-engine/node-map', () => {
   const real = jest.requireActual('../../src/sync-engine/node-map');
-  const fsSync = require('fs');
   const { seams } = require('../helpers/fs-scenario');
   return {
     ...real,
     getInode: jest.fn(async (filePath) => {
       await seams.wait();
       if (seams.inodeAlias.has(filePath)) return seams.inodeAlias.get(filePath);
-      try {
-        return fsSync.statSync(filePath).ino;
-      } catch {
-        return null;
-      }
+      return real.getInodeSync(filePath);
     }),
     save: jest.fn(async () => {
       await seams.wait();
@@ -89,12 +90,32 @@ jest.mock('../../src/sync-engine/node-map', () => {
   };
 });
 
+jest.mock('../../src/sync-engine/reconcile/disk-snapshot', () => {
+  const real = jest.requireActual('../../src/sync-engine/reconcile/disk-snapshot');
+  const path = require('path');
+  return {
+    ...real,
+    snapshotDisk: jest.fn(async (root, options) => {
+      const snap = await real.snapshotDisk(root, options);
+      for (const [absPath, identity] of mockScenario.seams.inodeAlias) {
+        const rel = path.relative(root, absPath).split(path.sep).join('/');
+        if (snap.entries.has(rel)) {
+          snap.entries.get(rel).inode = identity;
+          mockScenario.seams.aliasObserved += 1;
+        }
+      }
+      return snap;
+    })
+  };
+});
+
 const fsSync = require('fs');
 const os = require('os');
 const nodePath = require('path');
 const { AsyncLocalStorage } = require('async_hooks');
 const api = require('../../src/sync-engine/api-client');
 const fsScenario = require('../helpers/fs-scenario');
+const mockScenario = fsScenario;
 const { FakeServer, install } = require('../helpers/sync-fake-server');
 
 const SCHEDULES = Number(process.env.SCHEDULES || 60);
@@ -103,6 +124,7 @@ const SCHEDULES = Number(process.env.SCHEDULES || 60);
 const lane = new AsyncLocalStorage();
 const MUTATIONS = new Set(['deleteNode', 'moveNode', 'renameNode']);
 const UPLOADS = 'uploads';
+const HOLD_MS = 3000;
 
 jest.setTimeout(600000);
 
@@ -165,6 +187,17 @@ for (let i = 0; i < DEEP_FILES; i += 1) {
 
 const deepDescendants = Object.keys(deepIds).map(Number).filter((id) => id !== 30);
 
+const MASS_FILES = 25;
+const massTree = {};
+const massIds = { 60: 'uploads/assets-m' };
+for (let i = 0; i < MASS_FILES; i += 1) {
+  const name = `m${String(i).padStart(2, '0')}.png`;
+  massTree[`uploads/assets-m/${name}`] = `m-${i}`;
+  massIds[61 + i] = `uploads/assets-m/${name}`;
+}
+
+const massNodeIds = Object.keys(massIds).map(Number);
+
 function scenario(extra) {
   const { tree = {}, ids = {}, ops = [], targets = [], ...rest } = extra;
   return {
@@ -179,7 +212,6 @@ function scenario(extra) {
 const SCENARIOS = [
   scenario({
     id: 'E7',
-    failing: ['tree', 'free'],
     title: 'trash uploads/ while renaming work/ to work2/',
     ops: [
       { op: 'trash', path: 'uploads' },
@@ -189,7 +221,6 @@ const SCENARIOS = [
   }),
   scenario({
     id: 'E7base',
-    failing: ['tree', 'free'],
     title: 'no-uploads control: trash docs/ while renaming work/ to work2/',
     tree: { 'docs/d.html': '<p>d</p>' },
     ids: { 30: 'docs', 31: 'docs/d.html' },
@@ -201,7 +232,6 @@ const SCENARIOS = [
   }),
   scenario({
     id: 'E8',
-    failing: ['tree', 'free'],
     title: 'uploads/ renamed and renamed back while a pass runs',
     ops: [
       { op: 'rename', from: 'uploads', to: 'uploads-old' },
@@ -212,7 +242,6 @@ const SCENARIOS = [
   }),
   scenario({
     id: 'E8base',
-    failing: ['tree', 'free'],
     title: 'no-uploads control: work/ renamed and renamed back while a pass runs',
     ops: [
       { op: 'rename', from: 'work', to: 'work2' },
@@ -222,20 +251,18 @@ const SCENARIOS = [
   }),
   scenario({
     id: 'E5',
-    failing: ['tree', 'free'],
-    title: 'a new untitled folder after a rename reaches the server',
-    tree: { 'untitled folder/a.png': 'a' },
-    ids: { 40: 'untitled folder', 41: 'untitled folder/a.png' },
+    title: 'a new folder at the old name after a rename reaches the server',
+    tree: { 'untitled-folder/a.png': 'a' },
+    ids: { 40: 'untitled-folder', 41: 'untitled-folder/a.png' },
     ops: [
-      { op: 'rename', from: 'untitled folder', to: 'photos' },
-      { op: 'mkdir', path: 'untitled folder' }
+      { op: 'rename', from: 'untitled-folder', to: 'photos' },
+      { op: 'mkdir', path: 'untitled-folder' }
     ],
     targets: [40],
-    expectOnServer: ['untitled folder', 'photos']
+    expectOnServer: ['untitled-folder', 'photos']
   }),
   scenario({
     id: 'E1',
-    failing: ['tree', 'free'],
     title: 'an untracked child of a renamed uploads folder leaves no ghost folder',
     tree: { 'uploads/assets-new/n.png': 'n' },
     ops: [{ op: 'rename', from: 'uploads', to: 'uploads-old' }],
@@ -244,7 +271,6 @@ const SCENARIOS = [
   }),
   scenario({
     id: 'E2',
-    failing: ['tree', 'free'],
     title: 'a file rename while a pass runs sends the rename once',
     ops: [{ op: 'rename', from: 'work/page.html', to: 'work/page2.html' }],
     targets: [21],
@@ -253,7 +279,6 @@ const SCENARIOS = [
   }),
   scenario({
     id: 'deep',
-    failing: ['tree', 'free'],
     title: 'a 50-file folder renamed sends one rename',
     tree: deepTree,
     ids: deepIds,
@@ -263,7 +288,6 @@ const SCENARIOS = [
   }),
   scenario({
     id: 'W5a',
-    failing: ['tree', 'free'],
     title: 'work/ and uploads/ moved together into archive/',
     ops: [
       { op: 'mkdir', path: 'archive' },
@@ -275,7 +299,6 @@ const SCENARIOS = [
   }),
   scenario({
     id: 'W5base',
-    failing: ['tree', 'free'],
     title: 'no-uploads control: two ordinary folders moved together keep their node ids',
     tree: { 'docs/d.html': '<p>d</p>' },
     ids: { 40: 'docs', 41: 'docs/d.html' },
@@ -289,6 +312,45 @@ const SCENARIOS = [
       { id: 20, descendants: [21, 22, 23] },
       { id: 40, descendants: [41] }
     ]
+  }),
+  scenario({
+    id: 'file-move',
+    title: 'a file moved into another folder keeps its node id',
+    ops: [{ op: 'move', from: 'work/page.html', to: 'work/sub/page.html' }],
+    targets: [21],
+    relocateOnce: [{ id: 21, descendants: [] }]
+  }),
+  scenario({
+    id: 'file-move-rename',
+    title: 'a file moved and renamed at once keeps its node id',
+    ops: [{ op: 'move', from: 'work/page.html', to: 'work/sub/index.html' }],
+    targets: [21],
+    relocateOnce: [{ id: 21, descendants: [] }]
+  }),
+  scenario({
+    id: 'folder-move-rename',
+    title: 'a folder moved and renamed at once keeps every node id',
+    tree: { 'docs/d.html': '<p>d</p>' },
+    ids: { 40: 'docs', 41: 'docs/d.html' },
+    ops: [{ op: 'move', from: 'work/sub', to: 'docs/assets' }],
+    targets: [22],
+    relocateOnce: [{ id: 22, descendants: [23] }]
+  }),
+  scenario({
+    id: 'empty-folder-rename',
+    title: 'an empty folder renamed sends one rename',
+    tree: { 'empty/.keep-dir': null },
+    ids: { 50: 'empty' },
+    ops: [{ op: 'rename', from: 'empty', to: 'empty2' }],
+    targets: [50],
+    relocateOnce: [{ id: 50, descendants: [] }]
+  }),
+  scenario({
+    id: 'page-delete',
+    title: 'a page deleted outside uploads/ is deleted on the server',
+    ops: [{ op: 'rm', path: 'work/page.html' }],
+    targets: [21],
+    expectDeleted: [{ id: 21, path: 'work/page.html' }]
   }),
   scenario({
     id: 'restore-interrupted',
@@ -335,7 +397,6 @@ const SCENARIOS = [
   }),
   scenario({
     id: 'rename-back',
-    failing: ['tree', 'free'],
     title: 'a rename and a rename back within 500 ms send nothing',
     ops: [
       { op: 'rename', from: 'work', to: 'work2' },
@@ -348,6 +409,7 @@ const SCENARIOS = [
     title: 'an attachment moved out of uploads/ while the app runs',
     ops: [{ op: 'move', from: 'uploads/assets-a/x.png', to: 'work/x.png' }],
     targets: [12],
+    expectMoved: [{ id: 12, path: 'work/x.png' }],
     after: [{ kind: 'reconcileAll' }]
   }),
   scenario({
@@ -375,6 +437,45 @@ const SCENARIOS = [
     targets: [30, 31, 32, 33],
     midReconcile: true,
     loseResponse: 'deleteNode'
+  }),
+  scenario({
+    id: 'live-delete-held',
+    title: 'a live delete under uploads/ waits for the hold, then deletes',
+    ops: [{ op: 'rm', path: 'uploads/assets-a/x.png' }],
+    targets: [12],
+    checkHold: true,
+    reconcileAfterFirstEvent: true,
+    expectDeleted: [{ id: 12, path: 'uploads/assets-a/x.png' }]
+  }),
+  scenario({
+    id: 'live-delete-transient',
+    title: 'a file under uploads/ gone for one second is never deleted',
+    ops: [
+      { op: 'rm', path: 'uploads/assets-a/x.png' },
+      { op: 'write', path: 'uploads/assets-a/x.png', body: 'x', at: 1000 }
+    ],
+    targets: [12],
+    checkHold: true,
+    allowZeroCalls: true,
+    modes: ['tree']
+  }),
+  scenario({
+    id: 'mass-delete',
+    title: 'removing 25 attachments at once sends no delete',
+    tree: massTree,
+    ids: massIds,
+    ops: [{ op: 'rm', path: 'uploads/assets-m' }],
+    targets: [],
+    massDelete: massNodeIds,
+    allowZeroCalls: true
+  }),
+  scenario({
+    id: 'uploads-root-gone',
+    title: 'uploads/ removed entirely sends no delete under it',
+    ops: [{ op: 'rm', path: 'uploads' }],
+    targets: [],
+    rootGone: true,
+    allowZeroCalls: true
   })
 ];
 
@@ -401,6 +502,7 @@ async function runOne(spec, seed, mode, baseDir) {
     for (let i = 0; i < n; i += 1) await tick();
   };
   fsScenario.seams.inodeAlias = new Map();
+  fsScenario.seams.aliasObserved = 0;
   if (spec.reuseInode) {
     fsScenario.seams.inodeAlias.set(nodePath.join(root, spec.reuseInode.to), uploadsInode);
   }
@@ -417,10 +519,13 @@ async function runOne(spec, seed, mode, baseDir) {
   const state = {
     violations: [],
     calls: 0,
+    deletes: 0,
+    restores: 0,
     schedules: 0,
     paused: false,
     diskRenamesIntoUploads: []
   };
+  const dispatched = [];
 
   const fail = (invariant, detail) => {
     const message = `${invariant}: ${detail}`;
@@ -429,12 +534,46 @@ async function runOne(spec, seed, mode, baseDir) {
 
   server.onCall = (call) => {
     state.calls += 1;
+    if (call.name === 'deleteNode') state.deletes += 1;
+    if (call.name === 'restoreNode') state.restores += 1;
     if (!MUTATIONS.has(call.name)) return;
     if (lane.getStore() === 'catchup' && underUploads(call.pathBefore)) {
       fail('I1', `catch-up pass sent ${call.name} for ${call.pathBefore}`);
     }
     if (call.nodeId !== null && !spec.targets.includes(call.nodeId)) {
       fail('I2', `${call.name} touched node ${call.nodeId} (${call.pathBefore})`);
+    }
+    // I7: the hold on a live delete under uploads/, read at the call itself.
+    if (spec.checkHold && call.name === 'deleteNode' && underUploads(call.pathBefore)) {
+      const rel = call.pathBefore;
+      if (fsSync.existsSync(nodePath.join(root, rel))) {
+        fail('I7', `deleteNode for ${rel} while it is still on disk`);
+      }
+      const unlinks = dispatched.filter((entry) =>
+        (entry.event === 'unlink' || entry.event === 'unlinkDir')
+        && (entry.rel === rel || rel.startsWith(`${entry.rel}/`)));
+      const lastUnlink = unlinks[unlinks.length - 1];
+      if (!lastUnlink) {
+        fail('I7', `deleteNode for ${rel} with no unlink event before it`);
+      } else {
+        const elapsed = Date.now() - lastUnlink.at;
+        if (elapsed < HOLD_MS) {
+          fail('I7', `deleteNode for ${rel} only ${elapsed} ms after its unlink`);
+        }
+        const readded = dispatched.some((entry) =>
+          (entry.event === 'add' || entry.event === 'addDir')
+          && entry.rel === rel && entry.at > lastUnlink.at);
+        if (readded) fail('I7', `deleteNode for ${rel} after it was added again`);
+      }
+    }
+    // I8: one scenario removed a mass of attachments; no delete for any of them.
+    if (spec.massDelete && call.name === 'deleteNode' && spec.massDelete.includes(call.nodeId)) {
+      fail('I8', `deleteNode for node ${call.nodeId} (${call.pathBefore}) in a mass delete`);
+    }
+    // I9: uploads/ is gone, so nothing under it may be deleted.
+    if (spec.rootGone && call.name === 'deleteNode' && underUploads(call.pathBefore)
+      && !fsSync.existsSync(nodePath.join(root, UPLOADS))) {
+      fail('I9', `deleteNode for ${call.pathBefore} while uploads/ is gone`);
     }
   };
 
@@ -458,6 +597,8 @@ async function runOne(spec, seed, mode, baseDir) {
 
   const reconcile = async ({ failDownloads = false } = {}) => {
     if (failDownloads) server.failContent = true;
+    state.pausedSinceReconcile = false;
+    if (dispatched.length === 0) state.reconciledBeforeEvents = true;
     state.schedules += 1;
     try {
       await lane.run('catchup', () => engine.reconcileAll(server.inventory(), { generation: generation++ }));
@@ -471,6 +612,8 @@ async function runOne(spec, seed, mode, baseDir) {
 
   const pause = () => {
     state.paused = true;
+    state.pausedEver = true;
+    state.pausedSinceReconcile = true;
     state.schedules += 1;
     engine.runner.state = 'paused';
     engine.dropPendingWork();
@@ -497,40 +640,48 @@ async function runOne(spec, seed, mode, baseDir) {
       if (event.remove) {
         fsSync.rmSync(nodePath.join(root, event.rel), { recursive: true, force: true });
       }
-      if (i === midIndex) {
+      // A catch-up pass before the first event would see the scenario's disk
+      // operation before its event: this scenario asks for the event first.
+      const beforeFirstEvent = spec.reconcileAfterFirstEvent === true && i === 0;
+      if (i === midIndex && !beforeFirstEvent) {
         await reconcile();
         scheduledOnce = true;
       }
-      if (planRand() < 0.35) {
+      const draw = planRand();
+      if (draw < 0.35) {
         if (state.paused) resume();
         else if (planRand() < 0.35) pause();
-        else {
+        else if (!beforeFirstEvent) {
           await reconcile();
           scheduledOnce = true;
         }
       }
+      dispatched.push({ event: event.event, rel: event.rel, at: Date.now() });
       engine._dispatchRaw(event.event, event.rel);
       await drain(2);
     }
-    if (!scheduledOnce) {
+    if (state.paused) resume();
+    // A resume restarts the session, and that start reconciles: work a pause dropped comes back there.
+    if (!scheduledOnce || state.pausedSinceReconcile) {
       await reconcile();
       scheduledOnce = true;
     }
-    if (state.paused) resume();
 
     for (let round = 0; round < 12; round += 1) {
       jest.advanceTimersByTime(2000);
+      await engine._lane;
       await drain();
       await engine.processQueue();
       await drain();
       if (round > 5 && engine.syncQueue.isEmpty() && !engine.syncQueue.isProcessingQueue()
-        && engine.pendingUnlinks.size === 0) break;
+        && (!engine._structure || (!engine._structure.timer && !engine._structure.wakeTimer))) break;
     }
 
     for (const action of spec.after || []) {
       await reconcile(action);
       await drain();
       jest.advanceTimersByTime(2000);
+      await engine._lane;
       await drain();
       await engine.processQueue();
       await drain();
@@ -538,6 +689,7 @@ async function runOne(spec, seed, mode, baseDir) {
 
     for (let round = 0; round < 8; round += 1) {
       jest.advanceTimersByTime(2000);
+      await engine._lane;
       await drain();
       await engine.processQueue();
       await drain();
@@ -545,6 +697,13 @@ async function runOne(spec, seed, mode, baseDir) {
   } finally {
     renameSpy.mockRestore();
   }
+
+  const st = engine._structure;
+  if (st && (st.timer || st.wakeTimer || st.dirty.size)) {
+    fail('Q', `not quiescent: timer=${!!st.timer} wake=${!!st.wakeTimer} dirty=${[...st.dirty].join(',')}`);
+  }
+
+  if (spec.reuseInode && !fsScenario.seams.aliasObserved) fail('setup', 'the reused inode never reached a snapshot');
 
   // I4: no unrelated folder was renamed into uploads/ on disk.
   for (const from of state.diskRenamesIntoUploads) {
@@ -597,6 +756,29 @@ async function runOne(spec, seed, mode, baseDir) {
     if (!server.hasPath(rel)) fail('I3', `${rel} never reached the server`);
   }
 
+  // I12: a live move out of uploads/ is sent as a move: the node keeps its id at
+  // the new path. A catch-up that runs before the watcher reported anything, or
+  // after a pause dropped the job, sees an offline move and keeps a copy.
+  for (const { id, path: rel } of spec.expectMoved || []) {
+    if (state.pausedEver || state.reconciledBeforeEvents) continue;
+    const node = server.get(id);
+    if (!node) fail('I12', `node ${id} is gone from the server`);
+    else if (server.relPathOf(id) !== rel) fail('I12', `node ${id} is at ${server.relPathOf(id)}, not ${rel}`);
+  }
+
+  // I11: a deliberate live delete stays deleted. A pause drops the held delete,
+  // and the catch-up pass after it restores the attachment: the safe outcome.
+  for (const { id, path: rel } of spec.expectDeleted || []) {
+    const onServer = Boolean(server.get(id));
+    const onDisk = fsSync.existsSync(nodePath.join(root, rel));
+    if (state.pausedEver) {
+      if (onServer !== onDisk) fail('I11', `${rel} after a pause: server ${onServer}, disk ${onDisk}`);
+      continue;
+    }
+    if (onServer) fail('I11', `node ${id} is still live on the server`);
+    if (onDisk) fail('I11', `${rel} came back on disk`);
+  }
+
   engine.syncQueue.clear();
   fsSync.rmSync(root, { recursive: true, force: true });
   fsSync.rmSync(outside, { recursive: true, force: true });
@@ -610,11 +792,15 @@ async function runScenario(spec, mode) {
   const failures = [];
   let schedules = 0;
   let calls = 0;
+  let deletes = 0;
+  let restores = 0;
   try {
     for (let seed = 1; seed <= SCHEDULES; seed += 1) {
       const state = await runOne(spec, seed, mode, baseDir);
       schedules += state.schedules;
       calls += state.calls;
+      deletes += state.deletes;
+      restores += state.restores;
       if (state.violations.length) {
         failures.push(`seed ${seed}: ${state.violations.join(' ; ')}`);
       }
@@ -622,17 +808,18 @@ async function runScenario(spec, mode) {
   } finally {
     fsSync.rmSync(baseDir, { recursive: true, force: true });
   }
-  return { failures, schedules, calls };
+  return { failures, schedules, calls, deletes, restores };
 }
 
 function defineScenario(spec) {
-  for (const mode of ['tree', 'free']) {
+  for (const mode of spec.modes || ['tree', 'free']) {
     const title = `${spec.id}: ${spec.title} [${mode}]`;
     const body = async () => {
-      const { failures, schedules, calls } = await runScenario(spec, mode);
+      const { failures, schedules, calls, deletes, restores } = await runScenario(spec, mode);
       if (process.env.RACE_REPORT) {
         process.stdout.write(
-          `${title} schedules=${schedules} calls=${calls} failing-seeds=${failures.length}\n`
+          `${title} schedules=${schedules} calls=${calls} deleteNode=${deletes}`
+          + ` restoreNode=${restores} failing-seeds=${failures.length}\n`
           + failures.map((failure) => `  ${failure}\n`).join('')
         );
       }

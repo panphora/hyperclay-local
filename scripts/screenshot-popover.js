@@ -107,6 +107,7 @@ function installStub(cfg) {
       : { ok: false }),
     setupTeam: ok,
     resolveConflict: ok,
+    resolveMassDelete: ok,
     revealFile: ok,
     disconnect: ok,
     removeFolder: ok,

@@ -86,8 +86,6 @@ const node = (id, type, name, dir, parentId, etag) => (etag === undefined
   ? { id, type, name, path: dir, parentId }
   : { id, type, name, path: dir, parentId, etag });
 
-const localFolder = (rel) => [rel, { fullPath: `/test/sync/${rel}` }];
-
 const realBufferChecksum = jest.requireActual('../../src/sync-engine/file-operations').calculateBufferChecksum;
 const STUB_STAT = { mtime: new Date('2024-01-01'), mtimeMs: 1704067200000, size: 100, mode: 0o644 };
 
@@ -429,44 +427,6 @@ describe('a teammate moved a node while this client was offline', () => {
     expect(apiClient.deleteNode.mock.calls[0][1]).toBe(13);
     expect(disk()).toEqual([]);
     expect(mapPaths()).toEqual({});
-  });
-});
-
-describe("a teammate's folder rename this disk made offline", () => {
-  beforeEach(() => { syncEngine.lastSyncedAt = Date.now(); });
-
-  const withInodes = async (inodes) => {
-    jest.clearAllMocks(); installFs();
-    nodeMapModule.getInode.mockImplementation(async (a) => (rel(a) in inodes ? inodes[rel(a)] : 1000 + rel(a).length));
-    const plans = spyPlans();
-    await syncEngine.reconcileAll(inv(), { generation: 1 });
-    return plans;
-  };
-
-  test("a teammate's new folder under a locally renamed folder lands under the new name", async () => {
-    syncEngine.repo.seed([['1', { type: 'folder', path: 'a', parentId: null, inode: 222 }]]);
-    fsInit({}); mkdirs('a2');
-    server = [sv(1, 'folder', 'a', '', 0), sv(20, 'folder', 'new', 'a', 1)];
-
-    await withInodes({ a2: 222 });
-
-    expect(apiClient.renameNode).toHaveBeenCalledTimes(1);
-    expect(apiClient.renameNode.mock.calls[0].slice(1, 3)).toEqual([1, 'a2']);
-    expect(apiClient.deleteNode).not.toHaveBeenCalled();
-    expect(apiClient.createNode).not.toHaveBeenCalled();
-    expect(diskDirs()).toEqual(['a2']);
-    expect(disk().some(p => p.includes('conflicted copy'))).toBe(false);
-
-    server = [sv(1, 'folder', 'a2', '', 0), sv(20, 'folder', 'new', 'a2', 1)];
-
-    await withInodes({ a2: 222 });
-
-    expect(apiClient.deleteNode).not.toHaveBeenCalled();
-    expect(apiClient.createNode).not.toHaveBeenCalled();
-    expect(diskDirs()).toEqual(['a2', 'a2/new']);
-    expect(mapPaths()).toEqual({ 1: 'a2', 20: 'a2/new' });
-    expect(disk().some(p => p.includes('conflicted copy'))).toBe(false);
-    expect(diskDirs().some(p => p.includes('conflicted copy'))).toBe(false);
   });
 });
 

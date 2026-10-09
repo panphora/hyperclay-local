@@ -10,6 +10,7 @@ const path = require('upath');
 const { createBackupIfExists, createBinaryBackupIfExists } = require('../main/utils/backup');
 const { classifyError, formatErrorForLog } = require('./error-handler');
 const {
+  fileExists,
   readFile,
   writeFile,
   getFileStats,
@@ -475,7 +476,7 @@ module.exports = {
       }
 
       if (resultNodeId) {
-        await this.repo.set(resultNodeId, { type: 'upload', path: relativePath, checksum: localChecksum, inode: null, syncedAt: Date.now() });
+        await this.repo.set(resultNodeId, { type: 'upload', path: relativePath, checksum: localChecksum, inode: await nodeMap.getInode(path.join(this.syncFolder, relativePath)), syncedAt: Date.now() });
       }
 
       console.log(`[SYNC] Uploaded: ${relativePath}`);
@@ -501,6 +502,8 @@ module.exports = {
   },
 
   async createFolderOnServer(relativePath) {
+    if (!fileExists(path.join(this.syncFolder, relativePath))) return null;
+
     const gen = this.generation;
     try {
       const pathParts = relativePath.split('/').filter(Boolean);
@@ -529,6 +532,7 @@ module.exports = {
         name,
         parentId
       });
+      this._mutationSeq = (this._mutationSeq || 0) + 1;
       if (gen !== this.generation) return;
 
       this.outbox.markInFlight('save', createdNode.id);

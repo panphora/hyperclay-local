@@ -43,7 +43,7 @@ const dataGuard = require('../../main/data-loss-guard');
 const nodeMap = require('../node-map');
 const store = require('./conflicts');
 const { A } = require('./decide');
-const { isLockedFolder, lockedFolderError } = require('../locked-folder');
+const { isUnderLockedFolder, lockedFolderError } = require('../locked-folder');
 
 const SITE_PATTERN = /\.(html|htmlclay)$/i;
 
@@ -186,7 +186,12 @@ async function writeLocal(engine, rel, content, { modifiedAt = null, gen, expect
 
 /** Merge baseline fields into an entry (or a brand-new one) and persist. */
 async function saveEntry(engine, nodeId, entry, fields, extra = {}) {
-  const next = nodeMap.applyBaseline({ ...(entry || {}), ...extra }, fields);
+  const merged = { ...(entry || {}), ...extra };
+  if (merged.path && merged.type !== 'folder' && extra.inode === undefined) {
+    const identity = await nodeMap.getInode(await localPathFor(engine, merged.path));
+    if (identity) merged.inode = identity;
+  }
+  const next = nodeMap.applyBaseline(merged, fields);
   await engine.repo.set(nodeId, next);
   return next;
 }
@@ -400,7 +405,12 @@ async function download(engine, nodeId, entry, context, gen) {
 // A noop pass is where a version the desktop did not cause (a teammate's rename of a parent,
 // a folder's subtree) reaches the baseline, so the next structural change sends it.
 async function refreshStructureVersion(engine, nodeId, entry, context) {
-  if (!entry || !context.structureVersion) return;
+  if (!entry) return;
+  if (entry.path && entry.type !== 'folder') {
+    const identity = await nodeMap.getInode(await localPathFor(engine, entry.path));
+    if (identity && identity !== entry.inode) await engine.repo.set(nodeId, { ...entry, inode: identity });
+  }
+  if (!context.structureVersion) return;
   const baseline = engine.repo.getBaseline(nodeId);
   if (!baseline || baseline.structureVersion === context.structureVersion) return;
   await engine.repo.updateBaseline(nodeId, { structureVersion: context.structureVersion });
@@ -430,7 +440,7 @@ async function trashLocal(engine, nodeId, entry, context) {
 async function deleteRemote(engine, nodeId, entry, context) {
   const rel = relPathOf(entry, context, nodeId);
   // The root's `uploads` folder is never deleted: it holds every attachment.
-  if (isLockedFolder(rel)) throw lockedFolderError();
+  if (isUnderLockedFolder(rel)) throw lockedFolderError();
   engine.assertRootPresent();
   const type = typeOf(entry, context, rel);
   const id = idOf(nodeId);

@@ -11,6 +11,7 @@
 
 const path = require('upath');
 const { fileExists } = require('./file-operations');
+const { listNodes } = require('./api-client');
 const { classifyRoot, writeRootMarker, flagIdentity } = require('./root-marker');
 const { decidePath } = require('./reconcile/decide');
 
@@ -70,8 +71,25 @@ module.exports = {
    *   the envelope the api returned
    * @param {{generation?:number, signal?:AbortSignal, bootstrap?:boolean}} [work]
    */
-  async reconcileAll(inventory, { generation, signal, bootstrap = false } = {}) {
+  reconcileAll(inventory, { generation, signal, bootstrap = false } = {}) {
+    if (signal && signal.aborted) return Promise.resolve();
+    const startedAtCall = this._laneStarted;
+    const busyAtCall = this.inLane();
+    return this.serial(() => {
+      // Lane work that ran while this waited may have changed the server since the inventory was listed.
+      const stale = busyAtCall || this._laneStarted - 1 > startedAtCall;
+      return this.reconcileAllInLane(inventory, { generation, signal, bootstrap, stale });
+    });
+  },
+
+  async reconcileAllInLane(inventory, { generation, signal, bootstrap = false, stale = false } = {}) {
     if (signal && signal.aborted) return;
+    if (stale) {
+      const gen = this.generation;
+      const fresh = await listNodes(this.conn);
+      if (gen !== this.generation) return;
+      inventory = fresh;
+    }
     const nodes = Array.isArray(inventory) ? inventory : ((inventory && inventory.nodes) || []);
     const work = this.beginSessionWork(generation, signal);
     this.serverNodesCache = nodes;
@@ -103,22 +121,41 @@ module.exports = {
    * @param {{generation?:number, signal?:AbortSignal}} [work]
    * @returns {Promise<string|null>} the action, or null when nothing was decided
    */
-  async refreshNode(nodeId, { generation, signal } = {}) {
-    if (signal && signal.aborted) return null;
+  refreshNode(nodeId, { generation, signal } = {}) {
+    if (signal && signal.aborted) return Promise.resolve(null);
     const id = String(nodeId);
+    const seqAtCall = this._mutationSeq || 0;
     const work = this.beginSessionWork(generation, signal);
 
     // One list in flight per session: every invalidation of this generation
-    // waits for the same fetch instead of listing once per node.
+    // waits for the same fetch instead of listing once per node. The read is
+    // shared here; the decision it feeds runs inside the lane.
     if (!this.nodeListInFlight) {
       this.nodeListInFlight = this.refreshInventory({ inventory: null, refreshed: new Set() })
         .finally(() => { this.nodeListInFlight = null; });
     }
-    const inventory = await this.nodeListInFlight;
-    if (this.staleWork(generation, signal, work)) return null;
+    const inventory = this.nodeListInFlight;
+    return this.serial(async () => {
+      let listed = await inventory;
+      if ((this._mutationSeq || 0) !== seqAtCall) {
+        const gen = this.generation;
+        const fresh = await listNodes(this.conn);
+        if (gen !== this.generation) return null;
+        listed = fresh;
+      }
+      if (this.staleWork(generation, signal, work)) return null;
+      return this.refreshNodeInLane(id, listed, { generation, signal, work });
+    });
+  },
 
+  async refreshNodeInLane(id, inventory, { generation, signal, work }) {
     const node = (inventory || []).find((n) => String(n.id) === id);
     let entry = this.repo.get(id) || null;
+    if (entry && entry.path && this.passLeavesToLiveJob(entry.path)) {
+      this._structureState().refreshDeferred = true;
+      this.markDirty(entry.path);
+      return null;
+    }
     const remote = node ? this.remoteViewOf(node) : null;
     const isFolder = (remote && remote.type === 'folder') || (entry && entry.type === 'folder');
 
@@ -179,9 +216,9 @@ module.exports = {
 
   /**
    * Drop everything this session queued: the debounce queue and its retry
-   * timers, the pending unlinks and the invalidation work in flight. The
-   * generation bump makes every continuation started before this point stale,
-   * which is how a pause touches no files.
+   * timers, and the invalidation work in flight. The generation bump makes
+   * every continuation started before this point stale, which is how a pause
+   * touches no files.
    */
   dropPendingWork() {
     this.generation += 1;
@@ -189,8 +226,7 @@ module.exports = {
     this.sessionWork = null;
     this.nodeListInFlight = null;
     this.syncQueue.clear();
-    for (const [, { timerId }] of this.pendingUnlinks) clearTimeout(timerId);
-    this.pendingUnlinks.clear();
+    this.clearStructureState();
     this.settleQueueWaiters();
   },
 

@@ -1,4 +1,5 @@
 const fs = require('fs/promises');
+const fsSync = require('fs');
 const path = require('path');
 
 const { withFileLock, atomicWriteFile } = require('../main/utils/write-queue');
@@ -126,12 +127,37 @@ async function saveState(metaDir, state) {
   await atomicWrite(path.join(metaDir, STATE_FILE), JSON.stringify(state, null, 2));
 }
 
+function identityOf(stat) {
+  return `${stat.ino}:${stat.birthtimeNs}`;
+}
+
 async function getInode(filePath) {
   try {
-    const stat = await fs.stat(filePath);
-    return stat.ino;
+    return identityOf(await fs.stat(filePath, { bigint: true }));
   } catch {
     return null;
+  }
+}
+
+function getInodeSync(filePath) {
+  try {
+    return identityOf(fsSync.statSync(filePath, { bigint: true }));
+  } catch {
+    return null;
+  }
+}
+
+async function upgradeIdentities(map, syncFolder) {
+  for (const entry of map.values()) {
+    if (!entry.path) continue;
+    if (entry.inode === null || entry.inode === undefined) {
+      const identity = await getInode(path.join(syncFolder, entry.path));
+      if (identity) entry.inode = identity;
+      continue;
+    }
+    if (typeof entry.inode !== 'number') continue;
+    const identity = await getInode(path.join(syncFolder, entry.path));
+    if (identity && identity.split(':')[0] === String(entry.inode)) entry.inode = identity;
   }
 }
 
@@ -186,6 +212,9 @@ module.exports = {
   loadState,
   saveState,
   getInode,
+  getInodeSync,
+  identityOf,
+  upgradeIdentities,
   walkDescendants,
   loadTombstones,
   saveTombstones,

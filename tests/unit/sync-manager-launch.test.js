@@ -174,6 +174,7 @@ beforeEach(() => {
   fileOps.readFile.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
   fileOps.readFileBuffer.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
   fileOps.calculateBufferChecksum.mockReturnValue('local-checksum');
+  fileOps.shouldSkipEntry.mockImplementation(jest.requireActual('../../src/sync-engine/file-operations').shouldSkipEntry);
   nodeMap.getInode.mockResolvedValue(1);
   nodeMap.load.mockResolvedValue(new Map());
   nodeMap.loadTombstones.mockResolvedValue(new Map());
@@ -254,8 +255,15 @@ const streamFor = (sessionId) => manager.sessions.get(sessionId).runner.stream;
 // dispatches for a file the user saved. The app's subscription is what calls
 // this; the tests drive it directly because the subscription is faked here.
 async function localEdit(engine, rel) {
+  require('fs').writeFileSync(require('path').join(engine.syncFolder, rel), '<p>edit</p>');
   engine._dispatchRaw('change', rel);
   await new Promise((resolve) => setImmediate(resolve));
+  // An untracked path goes to the structure job: run it now instead of after its quiet window.
+  const structure = engine._structure;
+  if (structure && structure.timer) {
+    clearTimeout(structure.timer);
+    await engine._fireStructureJob();
+  }
 }
 
 // Same drain, under the fake timers the backoff test runs on.

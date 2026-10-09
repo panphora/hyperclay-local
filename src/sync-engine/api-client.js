@@ -330,6 +330,23 @@ async function deleteNode(conn, nodeId, { cascade = false, expectedVersion } = {
   }, { errorPrefix: `Delete node ${nodeId} failed` });
 }
 
+/**
+ * Restore a trashed Node to the parent and name it had. A sync delete is a soft
+ * delete into the trash, so a device that finds the file back on disk asks for
+ * it here rather than re-uploading it.
+ * @param {Object} conn
+ * @param {number} nodeId
+ * @returns {Promise<{ success: true, node: Object }>}
+ */
+async function restoreNode(conn, nodeId) {
+  const url = syncUrl(conn, `/nodes/${nodeId}/restore`);
+  console.log(`[API] Restoring node ${nodeId}`);
+  return apiFetch(url, {
+    method: 'POST',
+    headers: authHeaders(conn)
+  }, { errorPrefix: `Restore node ${nodeId} failed` });
+}
+
 // ============================================================================
 // STATUS (unchanged from the old API)
 // ============================================================================
@@ -384,6 +401,7 @@ module.exports = {
   renameNode,
   moveNode,
   deleteNode,
+  restoreNode,
   getServerStatus,
   postControlMessage
 };

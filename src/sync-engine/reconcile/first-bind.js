@@ -269,7 +269,7 @@ async function firstBind(entry, options = {}) {
     markerWritten = true;
 
     // 5. Folders, then sites, then uploads.
-    await engine.performInitialFolderSync(nodes);
+    await engine.serial(() => engine.performInitialFolderSync(nodes));
     const files = nodes.filter((node) => node.type !== 'folder').sort((a, b) => rankOf(a) - rankOf(b));
     let done = 0;
     let bytesDone = 0;

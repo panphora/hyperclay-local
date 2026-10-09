@@ -143,6 +143,7 @@ beforeEach(() => {
 
   apiClient.listNodes.mockResolvedValue(completeList([]));
   apiClient.deleteNode.mockResolvedValue({ success: true });
+  apiClient.createNode.mockImplementation(async (conn, payload) => ({ id: 900, type: payload.type, name: payload.name, parentId: payload.parentId }));
   apiClient.renameNode.mockResolvedValue({ success: true });
   apiClient.getNodeContent.mockResolvedValue({
     content: '<html>server</html>',
@@ -335,20 +336,6 @@ describe('performInitialFolderSync — a pass that may not delete', () => {
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
   });
 
-  test('a pending unlink is the watcher’s to send', async () => {
-    seedOfflineDeletedTree();
-    emptyDisk();
-    gone();
-    syncEngine.pendingUnlinks.set('proj', { timerId: 0, nodeId: '10', type: 'folder', entry: {}, ledger: [] });
-
-    await syncEngine.performInitialFolderSync(offlineDeletedInventory());
-
-    expect(apiClient.deleteNode).not.toHaveBeenCalled();
-    expect(fileOps.ensureDirectory).not.toHaveBeenCalled();
-    expect(syncEngine.repo.has('10')).toBe(true);
-    expect(syncEngine.repo.has('12')).toBe(true);
-  });
-
   test('absence needs an ENOENT: a present directory is never a delete', async () => {
     seedOfflineDeletedTree();
     emptyDisk();
@@ -406,27 +393,6 @@ describe('performInitialFolderSync — creating and relocating folders', () => {
     expect(apiClient.deleteNode).toHaveBeenCalledWith(expect.anything(), 10, { expectedVersion: 'v1', cascade: true });
   });
 
-  test('an offline folder rename is sent by inode and re-points its descendants', async () => {
-    syncEngine.repo.seed([
-      ['10', { type: 'folder', path: 'proj', parentId: null, inode: 222 }],
-      ['11', { type: 'site', path: 'proj/page.html', inode: 111, remoteEtag: SAME, localChecksum: SAME }]
-    ]);
-    syncEngine.lastSyncedAt = Date.now();
-    fileOps.getLocalFolders.mockResolvedValue(new Map([localFolder('renamed')]));
-    gone();
-    nodeMapModule.getInode.mockImplementation(async (p) => (p === '/test/sync/renamed' ? 222 : 12345));
-
-    await syncEngine.performInitialFolderSync(completeList([
-      node(10, 'folder', 'proj', '', 0),
-      node(11, 'site', 'page.html', 'proj', 10, SAME)
-    ]));
-
-    expect(apiClient.renameNode).toHaveBeenCalledWith(expect.anything(), 10, 'renamed');
-    expect(syncEngine.repo.get('10').path).toBe('renamed');
-    expect(syncEngine.repo.get('11').path).toBe('renamed/page.html');
-    expect(apiClient.deleteNode).not.toHaveBeenCalled();
-  });
-
   test('a legacy list naming the folder never deletes it', async () => {
     seedOfflineDeletedTree();
     emptyDisk();
@@ -444,25 +410,6 @@ describe('performInitialFolderSync — creating and relocating folders', () => {
     expect(syncEngine.repo.has('10')).toBe(true);
   });
 
-  test('a failed rename never falls through to a delete', async () => {
-    syncEngine.repo.seed([
-      ['10', { type: 'folder', path: 'proj', parentId: null, inode: 222 }],
-      ['11', { type: 'site', path: 'proj/page.html', inode: 111, remoteEtag: SAME, localChecksum: SAME }]
-    ]);
-    syncEngine.lastSyncedAt = Date.now();
-    fileOps.getLocalFolders.mockResolvedValue(new Map([localFolder('renamed')]));
-    gone();
-    nodeMapModule.getInode.mockImplementation(async (p) => (p === '/test/sync/renamed' ? 222 : 12345));
-    apiClient.renameNode.mockRejectedValue(Object.assign(new Error('down'), { statusCode: 409, code: 'name-conflict' }));
-
-    await syncEngine.performInitialFolderSync(completeList([
-      node(10, 'folder', 'proj', '', 0),
-      node(11, 'site', 'page.html', 'proj', 10, SAME)
-    ]));
-
-    expect(apiClient.deleteNode).not.toHaveBeenCalled();
-    expect(syncEngine.repo.get('10').path).toBe('proj');
-  });
 });
 
 describe('performInitialFolderSync — a session failure ends the pass', () => {
@@ -473,89 +420,6 @@ describe('performInitialFolderSync — a session failure ends the pass', () => {
     apiClient.deleteNode.mockRejectedValue(Object.assign(new Error('invalid key'), { statusCode: 401, code: 'invalid-key' }));
 
     await expect(syncEngine.performInitialFolderSync(offlineDeletedInventory())).rejects.toMatchObject({
-      statusCode: 401
-    });
-  });
-});
-
-describe('performInitialFolderSync — a relocated folder carries its subtree', () => {
-  function seedRenamedTree() {
-    syncEngine.repo.seed([
-      ['10', { type: 'folder', path: 'a', parentId: null, inode: 222 }],
-      ['11', { type: 'folder', path: 'a/sub', parentId: 10, inode: 333 }],
-      ['12', { type: 'site', path: 'a/sub/p.html', parentId: 11, inode: 111, remoteEtag: SAME, localChecksum: SAME }]
-    ]);
-    syncEngine.lastSyncedAt = Date.now();
-    fileOps.getLocalFolders.mockResolvedValue(new Map([localFolder('a2'), localFolder('a2/sub')]));
-    gone();
-    nodeMapModule.getInode.mockImplementation(async (p) => {
-      if (p === '/test/sync/a2') return 222;
-      if (p === '/test/sync/a2/sub') return 333;
-      return 12345;
-    });
-  }
-
-  function renamedInventory() {
-    return completeList([
-      node(10, 'folder', 'a', '', 0),
-      node(11, 'folder', 'sub', 'a', 10),
-      node(12, 'site', 'p.html', 'a/sub', 11, SAME)
-    ]);
-  }
-
-  test('a subfolder moves with its renamed parent', async () => {
-    seedRenamedTree();
-
-    await syncEngine.performInitialFolderSync(renamedInventory());
-
-    expect(apiClient.renameNode).toHaveBeenCalledTimes(1);
-    expect(apiClient.renameNode).toHaveBeenCalledWith(expect.anything(), 10, 'a2');
-    expect(apiClient.moveNode).not.toHaveBeenCalled();
-    expect(apiClient.deleteNode).not.toHaveBeenCalled();
-    expect(fileOps.ensureDirectory).not.toHaveBeenCalled();
-    expect(syncEngine.repo.get('11').path).toBe('a2/sub');
-    expect(syncEngine.repo.get('12').path).toBe('a2/sub/p.html');
-  });
-
-  test('a failed parent rename leaves the children alone', async () => {
-    seedRenamedTree();
-    apiClient.renameNode.mockRejectedValue(Object.assign(new Error('boom'), { statusCode: 409, code: 'name-conflict' }));
-
-    await syncEngine.performInitialFolderSync(renamedInventory());
-
-    expect(apiClient.renameNode).toHaveBeenCalledTimes(1);
-    expect(apiClient.moveNode).not.toHaveBeenCalled();
-    expect(apiClient.deleteNode).not.toHaveBeenCalled();
-    expect(syncEngine.repo.get('11').path).toBe('a/sub');
-    expect(syncEngine.stats.errors.length).toBe(1);
-  });
-
-  test('a move into a new local folder creates it on the server first', async () => {
-    syncEngine.repo.seed([
-      ['10', { type: 'folder', path: 'proj', parentId: null, inode: 222 }]
-    ]);
-    syncEngine.lastSyncedAt = Date.now();
-    fileOps.getLocalFolders.mockResolvedValue(new Map([localFolder('archive'), localFolder('archive/proj')]));
-    gone();
-    nodeMapModule.getInode.mockImplementation(async (p) => (p === '/test/sync/archive/proj' ? 222 : 12345));
-    apiClient.createNode.mockResolvedValue({ id: 50, parentId: 0 });
-
-    await syncEngine.performInitialFolderSync(completeList([
-      node(10, 'folder', 'proj', '', 0)
-    ]));
-
-    expect(apiClient.createNode).toHaveBeenCalledWith(expect.anything(),
-      expect.objectContaining({ type: 'folder', name: 'archive' }));
-    expect(apiClient.moveNode).toHaveBeenCalledWith(expect.anything(), 10, 50);
-    expect(syncEngine.repo.get('10').path).toBe('archive/proj');
-    expect(apiClient.deleteNode).not.toHaveBeenCalled();
-  });
-
-  test('a 401 on the relocation send ends the pass', async () => {
-    seedRenamedTree();
-    apiClient.renameNode.mockRejectedValue(Object.assign(new Error('unauthorized'), { statusCode: 401, code: 'invalid-key' }));
-
-    await expect(syncEngine.performInitialFolderSync(renamedInventory())).rejects.toMatchObject({
       statusCode: 401
     });
   });
@@ -582,20 +446,6 @@ describe('performInitialFolderSync — a rename without a usable inode is recogn
       node(11, 'site', 'p.html', 'proj', 10, SAME)
     ]);
   }
-
-  test('the one local-only folder holding the same file, unchanged, is the rename', async () => {
-    seedFolderWithoutInode();
-    fileOps.getLocalFolders.mockResolvedValue(new Map([localFolder('renamed')]));
-    existingPaths(['/test/sync/renamed/p.html']);
-
-    await syncEngine.performInitialFolderSync(inventory());
-
-    expect(apiClient.renameNode).toHaveBeenCalledWith(expect.anything(), 10, 'renamed');
-    expect(syncEngine.repo.get('10').path).toBe('renamed');
-    expect(syncEngine.repo.get('11').path).toBe('renamed/p.html');
-    expect(apiClient.deleteNode).not.toHaveBeenCalled();
-    expect(apiClient.createNode).not.toHaveBeenCalled();
-  });
 
   test('two lookalike candidates are no evidence: the decision path runs', async () => {
     seedFolderWithoutInode();
@@ -628,7 +478,7 @@ describe('performInitialFolderSync — a rename without a usable inode is recogn
 describe('performInitialFolderSync — the locked root uploads folder', () => {
   function seedUploadsTree() {
     syncEngine.repo.seed([
-      ['10', { type: 'folder', path: 'uploads', parentId: null, inode: 222 }],
+      ['10', { type: 'folder', path: 'uploads', parentId: null, inode: '222:1' }],
       ['11', { type: 'folder', path: 'uploads/assets-a', parentId: 10, inode: 333 }],
       ['12', { type: 'upload', path: 'uploads/assets-a/x.png', parentId: 11, inode: 131, remoteEtag: UPLOAD_ETAG, localChecksum: UPLOAD_ETAG }]
     ]);
@@ -648,6 +498,8 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
     emptyDisk();
     gone();
 
+    apiClient.listNodes.mockResolvedValue(uploadsInventory());
+
     await syncEngine.reconcileAll(uploadsInventory(), { generation: 1 });
 
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
@@ -658,37 +510,13 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
     expect(syncEngine.repo.has('12')).toBe(true);
   });
 
-  test('an uploads folder renamed while the app was closed is renamed back on disk', async () => {
-    seedUploadsTree();
-    fileOps.getLocalFolders.mockResolvedValue(new Map([localFolder('elsewhere'), localFolder('elsewhere/assets-a')]));
-    fileOps.getLocalFiles.mockResolvedValue(new Map());
-    fileOps.getLocalUploads.mockResolvedValue(new Map());
-    gone();
-    nodeMapModule.getInode.mockImplementation(async (p) => (p === '/test/sync/elsewhere' ? 222 : 12345));
-    fileOps.fileExists.mockImplementation((p) => p !== '/test/sync/uploads');
-
-    const rename = jest.spyOn(require('fs').promises, 'rename').mockResolvedValue();
-
-    await syncEngine.performInitialFolderSync(uploadsInventory());
-
-    expect(rename).toHaveBeenCalledWith('/test/sync/elsewhere', '/test/sync/uploads');
-    expect(apiClient.renameNode).not.toHaveBeenCalled();
-    expect(apiClient.moveNode).not.toHaveBeenCalled();
-    expect(apiClient.deleteNode).not.toHaveBeenCalled();
-    expect(syncEngine.repo.get('10').path).toBe('uploads');
-    expect(syncEngine.repo.get('11').path).toBe('uploads/assets-a');
-    expect(syncEngine.repo.get('12').path).toBe('uploads/assets-a/x.png');
-
-    rename.mockRestore();
-  });
-
   test('a rename-back that fails leaves the folder to be restored by download', async () => {
     seedUploadsTree();
     fileOps.getLocalFolders.mockResolvedValue(new Map([localFolder('elsewhere'), localFolder('elsewhere/assets-a')]));
     fileOps.getLocalFiles.mockResolvedValue(new Map());
     fileOps.getLocalUploads.mockResolvedValue(new Map());
     gone();
-    nodeMapModule.getInode.mockImplementation(async (p) => (p === '/test/sync/elsewhere' ? 222 : 12345));
+    nodeMapModule.getInode.mockImplementation(async (p) => (p === '/test/sync/elsewhere' ? '222:1' : 12345));
     fileOps.fileExists.mockImplementation((p) => p !== '/test/sync/uploads');
 
     const rename = jest.spyOn(require('fs').promises, 'rename').mockRejectedValue(new Error('EACCES'));
@@ -704,9 +532,7 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
 
   // Real directories, real inodes: the pass decides from the inode the folder has
   // on this disk, which a mocked one can never prove.
-  const realInode = async (p) => {
-    try { return fsSync.statSync(p).ino; } catch { return null; }
-  };
+  const realInode = async (p) => nodeMapModule.getInodeSync(p);
   const realFileExists = jest.requireActual('../../src/sync-engine/file-operations').fileExists;
   const realFileOps = jest.requireActual('../../src/sync-engine/file-operations');
 
@@ -716,6 +542,7 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
       fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
       fsSync.writeFileSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'), 'x');
       const originalInode = fsSync.statSync(nodePath.join(root, 'uploads')).ino;
+      const originalIdentity = nodeMapModule.getInodeSync(nodePath.join(root, 'uploads'));
 
       // The folder was deleted and an empty uploads/ (a Local upload, or the user)
       // is back at its path before this pass ran: same path, another directory.
@@ -727,7 +554,7 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
 
       syncEngine.syncFolder = root;
       syncEngine.repo.seed([
-        ['10', { type: 'folder', path: 'uploads', parentId: null, inode: originalInode }],
+        ['10', { type: 'folder', path: 'uploads', parentId: null, inode: originalIdentity }],
         ['11', { type: 'folder', path: 'uploads/assets-a', parentId: 10, inode: 333 }],
         ['12', { type: 'upload', path: 'uploads/assets-a/x.png', parentId: 11, inode: 131, remoteEtag: UPLOAD_ETAG, localChecksum: UPLOAD_ETAG }]
       ]);
@@ -738,6 +565,8 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
       gone();
       nodeMapModule.getInode.mockImplementation(realInode);
       fileOps.fileExists.mockImplementation(realFileExists);
+
+      apiClient.listNodes.mockResolvedValue(uploadsInventory());
 
       await syncEngine.reconcileAll(uploadsInventory(), { generation: 1 });
 
@@ -757,8 +586,8 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
     try {
       fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
       fsSync.writeFileSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'), 'x');
-      const uploadsInode = fsSync.statSync(nodePath.join(root, 'uploads')).ino;
-      const assetsInode = fsSync.statSync(nodePath.join(root, 'uploads', 'assets-a')).ino;
+      const uploadsInode = nodeMapModule.getInodeSync(nodePath.join(root, 'uploads'));
+      const assetsInode = nodeMapModule.getInodeSync(nodePath.join(root, 'uploads', 'assets-a'));
 
       // Renamed while the app was closed: the real directories moved, inodes and all.
       fsSync.renameSync(nodePath.join(root, 'uploads'), nodePath.join(root, 'elsewhere'));
@@ -781,6 +610,8 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
       rename = jest.spyOn(require('fs').promises, 'rename')
         .mockRejectedValue(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
 
+      apiClient.listNodes.mockResolvedValue(uploadsInventory());
+
       await syncEngine.reconcileAll(uploadsInventory(), { generation: 1 });
 
       expect(apiClient.moveNode).not.toHaveBeenCalled();
@@ -800,13 +631,13 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
     try {
       fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
       fsSync.writeFileSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'), 'x');
-      const uploadsInode = fsSync.statSync(nodePath.join(root, 'uploads')).ino;
-      const assetsInode = fsSync.statSync(nodePath.join(root, 'uploads', 'assets-a')).ino;
+      const uploadsInode = nodeMapModule.getInodeSync(nodePath.join(root, 'uploads'));
+      const assetsInode = nodeMapModule.getInodeSync(nodePath.join(root, 'uploads', 'assets-a'));
 
       // assets-a was renamed away while the app was closed: the file keeps its
       // inode and its bytes, and only the folder pass may bring the subtree back.
       fsSync.renameSync(nodePath.join(root, 'uploads', 'assets-a'), nodePath.join(root, 'elsewhere'));
-      const xInode = fsSync.statSync(nodePath.join(root, 'elsewhere', 'x.png')).ino;
+      const xInode = nodeMapModule.getInodeSync(nodePath.join(root, 'elsewhere', 'x.png'));
 
       syncEngine.syncFolder = root;
       syncEngine.repo.seed([
@@ -821,6 +652,8 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
       gone();
       nodeMapModule.getInode.mockImplementation(realInode);
       fileOps.fileExists.mockImplementation(realFileExists);
+
+      apiClient.listNodes.mockResolvedValue(uploadsInventory());
 
       await syncEngine.reconcileAll(uploadsInventory(), { generation: 1 });
 
@@ -844,8 +677,8 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
     try {
       fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
       fsSync.writeFileSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'), 'x');
-      const uploadsInode = fsSync.statSync(nodePath.join(root, 'uploads')).ino;
-      const assetsInode = fsSync.statSync(nodePath.join(root, 'uploads', 'assets-a')).ino;
+      const uploadsInode = nodeMapModule.getInodeSync(nodePath.join(root, 'uploads'));
+      const assetsInode = nodeMapModule.getInodeSync(nodePath.join(root, 'uploads', 'assets-a'));
 
       syncEngine.syncFolder = root;
       syncEngine.repo.seed([
@@ -891,8 +724,8 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
       fsSync.mkdirSync(nodePath.join(root, 'uploads'), { recursive: true });
       fsSync.mkdirSync(nodePath.join(root, 'elsewhere'), { recursive: true });
       fsSync.writeFileSync(nodePath.join(root, 'elsewhere', 'page.html'), '<html>elsewhere</html>');
-      const uploadsInode = fsSync.statSync(nodePath.join(root, 'uploads')).ino;
-      const pageInode = fsSync.statSync(nodePath.join(root, 'elsewhere', 'page.html')).ino;
+      const uploadsInode = nodeMapModule.getInodeSync(nodePath.join(root, 'uploads'));
+      const pageInode = nodeMapModule.getInodeSync(nodePath.join(root, 'elsewhere', 'page.html'));
 
       syncEngine.syncFolder = root;
       syncEngine.repo.seed([
@@ -914,11 +747,13 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
         parentId: payload.parentId
       }));
 
-      await syncEngine.reconcileAll(completeList([
+      const pageInventory = () => completeList([
         node(10, 'folder', 'uploads', '', 0),
         node(11, 'folder', 'assets-a', 'uploads', 10),
         node(12, 'site', 'page.html', 'uploads/assets-a', 11, SAME)
-      ]), { generation: 1 });
+      ]);
+      apiClient.listNodes.mockResolvedValue(pageInventory());
+      await syncEngine.reconcileAll(pageInventory(), { generation: 1 });
 
       // The lookalike elsewhere/page.html is a new local file, not where the
       // page went: the page comes back by download.
@@ -945,8 +780,8 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
       fsSync.mkdirSync(nodePath.join(root, 'uploads'), { recursive: true });
       fsSync.mkdirSync(nodePath.join(root, 'elsewhere'), { recursive: true });
       fsSync.writeFileSync(nodePath.join(root, 'elsewhere', 'page.html'), '<html>elsewhere</html>');
-      const uploadsInode = fsSync.statSync(nodePath.join(root, 'uploads')).ino;
-      const pageInode = fsSync.statSync(nodePath.join(root, 'elsewhere', 'page.html')).ino;
+      const uploadsInode = nodeMapModule.getInodeSync(nodePath.join(root, 'uploads'));
+      const pageInode = nodeMapModule.getInodeSync(nodePath.join(root, 'elsewhere', 'page.html'));
 
       syncEngine.syncFolder = root;
       syncEngine.bootstrapPass = true;

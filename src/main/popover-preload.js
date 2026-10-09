@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   chooseTeamFolder: (accountId) => ipcRenderer.invoke('choose-team-folder', { accountId }),
   setupTeam: (accountId, folder, trusted) => ipcRenderer.invoke('setup-team', { accountId, folder, trusted }),
   resolveConflict: (sessionId, path, choice) => ipcRenderer.invoke('resolve-conflict', { sessionId, path, choice }),
+  resolveMassDelete: (sessionId, choice) => ipcRenderer.invoke('resolve-mass-delete', { sessionId, choice }),
   revealFile: (sessionId, path) => ipcRenderer.invoke('reveal-file', { sessionId, path }),
   disconnect: (sessionId) => ipcRenderer.invoke('disconnect', { sessionId }),
   removeFolder: (rootId) => ipcRenderer.invoke('remove-folder', { rootId }),

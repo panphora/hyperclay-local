@@ -542,6 +542,7 @@ const PopoverApp = () => {
               onMarkAllRead={markAllRead}
               onClearAll={clearAllErrors}
               onResolveConflict={(sessionId, path, choice) => window.electronAPI?.resolveConflict(sessionId, path, choice)}
+              onResolveMassDelete={(sessionId, choice) => window.electronAPI?.resolveMassDelete(sessionId, choice)}
               onRevealFile={(sessionId, path) => window.electronAPI?.revealFile(sessionId, path)}
             />
           )}
@@ -940,7 +941,7 @@ const FirstRun = ({ serverLoading, onChooseFolder }) => (
 
 const NoticesView = ({
   tab, onTab, unreadCount, errors, conflicts, blocked, cards, lines,
-  onMarkErrorRead, onDismissError, onMarkAllRead, onClearAll, onResolveConflict, onRevealFile,
+  onMarkErrorRead, onDismissError, onMarkAllRead, onClearAll, onResolveConflict, onResolveMassDelete, onRevealFile,
 }) => {
   const [, setTick] = useState(0);
 
@@ -966,7 +967,7 @@ const NoticesView = ({
       </div>
       <div style={{ ...sunken(), flex: 1, minHeight: 0, overflowY: 'auto' }}>
         {tab === 'notices'
-          ? <NoticeRows errors={errors} conflicts={conflicts} blocked={blocked} cards={cards} onMarkErrorRead={onMarkErrorRead} onDismissError={onDismissError} onResolveConflict={onResolveConflict} onRevealFile={onRevealFile} />
+          ? <NoticeRows errors={errors} conflicts={conflicts} blocked={blocked} cards={cards} onMarkErrorRead={onMarkErrorRead} onDismissError={onDismissError} onResolveConflict={onResolveConflict} onResolveMassDelete={onResolveMassDelete} onRevealFile={onRevealFile} />
           : <ActivityRows lines={lines} />}
       </div>
       {tab === 'activity' && (
@@ -984,7 +985,7 @@ const NoticesView = ({
 
 const logRow = (first) => ({ padding: '7px 10px', boxShadow: first ? 'none' : `inset 0 1px 0 ${C.line}` });
 
-const NoticeRows = ({ errors, conflicts, blocked, cards, onMarkErrorRead, onDismissError, onResolveConflict, onRevealFile }) => {
+const NoticeRows = ({ errors, conflicts, blocked, cards, onMarkErrorRead, onDismissError, onResolveConflict, onResolveMassDelete, onRevealFile }) => {
   const titleForSession = (sessionId) => {
     const card = (cards || []).find((candidate) => candidate.sessionId === sessionId);
     return card ? card.title : null;
@@ -1057,6 +1058,12 @@ const NoticeRows = ({ errors, conflicts, blocked, cards, onMarkErrorRead, onDism
               {label ? `${label}: ${error.error}` : error.error}
               {error.file && (
                 <div style={{ marginTop: 2, fontSize: 11, color: C.muted }}>{error.file}</div>
+              )}
+              {error.type === 'mass-delete' && (
+                <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                  <Press onClick={() => { onResolveMassDelete(error.sessionId, 'delete'); onDismissError(error.id); }} style={small}>Delete on server</Press>
+                  <Press onClick={() => { onResolveMassDelete(error.sessionId, 'restore'); onDismissError(error.id); }} style={small}>Restore here</Press>
+                </div>
               )}
               {error.dismissable !== false && error.priority !== 1 && (
                 <TextButton

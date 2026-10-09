@@ -603,6 +603,13 @@ class SyncManager extends EventEmitter {
     return result;
   }
 
+  async resolveMassDelete({ sessionId, choice } = {}) {
+    const entry = this.sessions.get(sessionId);
+    if (!entry) return { ok: false, error: 'unknown' };
+    await entry.engine.resolveMassDelete(choice);
+    return { ok: true };
+  }
+
   /**
    * Discovery (CONTRACTS §1): the account list every session's eligibility
    * comes from. Runs the reconnect sequence after every refresh.

@@ -17,27 +17,20 @@ const { classifyError, formatErrorForLog } = require('./error-handler');
 const {
   getLocalFiles,
   getLocalFolders,
-  readFile,
   fileExists,
   moveFile,
   getLocalUploads,
-  readFileBuffer,
-  calculateBufferChecksum,
   getFileStats
 } = require('./file-operations');
-const { calculateChecksum, calculateFileChecksum } = require('./utils');
+const { calculateFileChecksum } = require('./utils');
 const { ERROR_PRIORITY } = require('./constants');
 const { decide, decideFolder, A } = require('./reconcile/decide');
-const { ancestorPaths } = require('./path-helpers');
 const { isLockedFolder, isUnderLockedFolder } = require('./locked-folder');
 const { executeDecision } = require('./reconcile/execute');
-const { classifyError: classifySyncError } = require('./reconcile/classify-error');
+const { classifyError: classifySyncError, SESSION_KINDS } = require('./reconcile/classify-error');
 const nodeMap = require('./node-map');
 
 const SITE_PATTERN = /\.(html|htmlclay)$/i;
-
-// The failure kinds that belong to the session rather than to the file they hit.
-const SESSION_KINDS = new Set(['pause-all', 'pause', 'rediscover', 'offline', 'backoff']);
 
 // The order one pass executes in (C3 §5.5): folders created, content, local
 // trashes, remote deletes, folders deleted. The folder pass runs its own plan
@@ -317,6 +310,8 @@ module.exports = {
         const remote = this.remoteViewOf(node);
         listedPaths.add(remote.path);
         if (handled.has(nid)) continue;
+        const known = this.repo.get(nid);
+        if (known && known.path && this.passLeavesToLiveJob(known.path)) continue;
 
         plan.push(await this.decideNode({
           nodeId: nid,
@@ -348,7 +343,7 @@ module.exports = {
       // Files on disk with no node id: a brand-new local file the inventory
       // could not have named, so it is decided against a complete view.
       for (const [rel] of localFiles) {
-        if (listedPaths.has(rel) || this.repo.getByPath(rel)) continue;
+        if (listedPaths.has(rel) || this.repo.getByPath(rel) || this.passLeavesToLiveJob(rel)) continue;
         plan.push(await this.decideNode({
           nodeId: null,
           rel,
@@ -406,8 +401,9 @@ module.exports = {
    * Correlation for one listed file: a node whose baseline path is elsewhere on
    * disk is moved to the path the server reports and re-pointed there, so the
    * decision below reads the right path and the baseline keeps its checksums. A
-   * node whose file is missing entirely is left to detectLocalChanges (inode
-   * and checksum strategies) with the server's path as the expected one.
+   * node whose file is missing entirely is left to detectLocalChanges to decide
+   * (a delete, or a restore when the remote changed) with the server's path as
+   * the expected one.
    */
   async correlateServerFile(serverFile, localFiles, map) {
     const relativePath = serverFile.path || serverFile.filename;
@@ -459,36 +455,22 @@ module.exports = {
   },
 
   /**
-   * Detect local structural changes (delete/move/rename) that happened while
-   * offline, correlate each one to its node, then decide what is left: a node
-   * whose bytes are gone from disk is deleted remotely, or re-downloaded when a
-   * teammate edited it after the local delete.
+   * Decide every tracked site whose bytes are gone from disk while the server
+   * still lists it: a delete when the remote is unchanged since the baseline, a
+   * restore when a teammate edited the node after the local delete. Renames and
+   * moves are applied from the differ before this pass runs
+   * (runStructureCatchupInLane), so nothing here pairs by basename or checksum.
    *
    * performInitialSync passes a `plan` to fill and executes it afterwards;
    * called on its own it runs what it decided.
    */
   async detectLocalChanges(allServerNodes, localFiles, knownNodeIdsAtStart, plan = null) {
     const items = [];
-    const correlated = new Set();
     const serverNodeById = new Map(allServerNodes.map(n => [String(n.id), n]));
     // Use server-declared type for routing — repo entries may not have a type field set.
     const serverSiteIds = new Set(
       allServerNodes.filter(n => n.type === 'site').map(n => String(n.id))
     );
-
-    // Build reverse map: localPath → nodeId
-    const reverseMap = new Map();
-    for (const [nid, entry] of this.repo) {
-      reverseMap.set(entry.path, nid);
-    }
-
-    // Track local files not in nodeMap (candidates for rename/move targets)
-    const localOnlySet = new Set();
-    for (const [relPath] of localFiles) {
-      if (!reverseMap.has(relPath)) {
-        localOnlySet.add(relPath);
-      }
-    }
 
     await this.repo.apply(async (map) => {
     for (const [nid, entry] of [...map]) {
@@ -503,93 +485,10 @@ module.exports = {
       if (serverPath !== entry.path || (this.movedRemotely && this.movedRemotely.has(nid))) continue;
       if (localFiles.has(entry.path)) continue; // file still at expected path
 
-      // File is GONE from expected path but still exists on server — find where it went
-
-      const expectedBasename = path.basename(entry.path);
-      // Nothing under the root's uploads folder is paired with a lookalike: a
-      // missing attachment is restored by download, the lookalike is a new file.
-      const candidates = isUnderLockedFolder(entry.path) ? [] : localOnlySet;
-
-      const strategies = [
-        {
-          name: 'move',
-          pendingOp: 'move',
-          match: async (localFile) => path.basename(localFile) === expectedBasename,
-          apply: async (localFile) => {
-            const targetFolder = path.dirname(localFile);
-            // Folder names never carry .html/.htmlclay extensions (validator regex
-            // forbids dots); the previous .replace() was a no-op for real data.
-            const folderPath = targetFolder === '.' ? '' : targetFolder;
-            const targetParentId = this.resolveParentIdByPath(folderPath);
-            await this._apiMoveNode(nid, targetParentId);
-            const inode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
-            const content = await readFile(path.join(this.syncFolder, localFile)).catch(() => null);
-            const cs = content ? await calculateChecksum(content) : entry.checksum;
-            return { path: localFile, checksum: cs, inode, syncedAt: Date.now() };
-          }
-        },
-        {
-          name: 'rename (inode match)',
-          pendingOp: 'rename',
-          match: async (localFile) => {
-            const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
-            return localInode && entry.inode && localInode === entry.inode;
-          },
-          apply: async (localFile) => {
-            const newName = path.basename(localFile);
-            await this._apiRenameNode(nid, newName);
-            const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
-            const content = await readFile(path.join(this.syncFolder, localFile)).catch(() => null);
-            const cs = content ? await calculateChecksum(content) : entry.checksum;
-            return { path: localFile, checksum: cs, inode: localInode, syncedAt: Date.now() };
-          }
-        },
-        {
-          name: 'rename (checksum match)',
-          pendingOp: 'rename',
-          match: async (localFile) => {
-            if (!entry.checksum) return false;
-            const content = await readFile(path.join(this.syncFolder, localFile)).catch(() => null);
-            if (!content) return false;
-            return (await calculateChecksum(content)) === entry.checksum;
-          },
-          apply: async (localFile) => {
-            const newName = path.basename(localFile);
-            await this._apiRenameNode(nid, newName);
-            const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
-            const content = await readFile(path.join(this.syncFolder, localFile)).catch(() => null);
-            const cs = content ? await calculateChecksum(content) : entry.checksum;
-            return { path: localFile, checksum: cs, inode: localInode, syncedAt: Date.now() };
-          }
-        }
-      ];
-
-      let handled = false;
-      for (const strategy of strategies) {
-        for (const localFile of candidates) {
-          if (await strategy.match(localFile)) {
-            try {
-              console.log(`[SYNC] Local ${strategy.name} detected: ${entry.path} → ${localFile} (nodeId ${nid})`);
-              const newEntry = await strategy.apply(localFile);
-              map.set(nid, newEntry);
-              localOnlySet.delete(localFile);
-              handled = true;
-            } catch (err) {
-              console.error(`[SYNC] Failed to sync local ${strategy.name} for nodeId ${nid}:`, err.message);
-            }
-            break;
-          }
-        }
-        if (handled) break;
-      }
-      if (handled) {
-        correlated.add(nid);
-        continue;
-      }
-
-      // No match: the bytes are gone from disk. decide says whether that is a
-      // delete (the remote is unchanged since the baseline) or a restore (a
-      // teammate edited the node after the local delete).
+      // The bytes are gone from disk: decide says whether that is a delete (the
+      // remote is unchanged since the baseline) or a restore (a teammate edited
+      // the node after the local delete).
+      if (this.passLeavesToLiveJob(entry.path)) continue;
       items.push(await this.decideNode({
         nodeId: nid,
         rel: serverPath,
@@ -605,31 +504,21 @@ module.exports = {
     } else {
       await this.runPlan(items);
     }
-    return new Set([...correlated, ...items.map(item => String(item.nodeId))]);
+    return new Set(items.map(item => String(item.nodeId)));
   },
 
   /**
-   * Detect local structural changes (delete/move/rename) for uploads that
-   * happened while offline, then decide the rest the same way as sites.
+   * Decide every tracked upload whose bytes are gone locally while the server
+   * still lists it, the same way as sites. Renames and moves are applied from
+   * the differ before this pass runs (runStructureCatchupInLane).
    */
   async detectLocalUploadChanges(allServerNodes, localUploads, knownNodeIdsAtStart, plan = null) {
     const items = [];
-    const correlated = new Set();
     const serverNodeById = new Map(allServerNodes.map(n => [String(n.id), n]));
     // Route only upload nodes — use server-declared type, not local entry.type.
     const serverUploadIds = new Set(
       allServerNodes.filter(n => n.type === 'upload').map(n => String(n.id))
     );
-
-    const reverseMap = new Map();
-    for (const [nid, entry] of this.repo) {
-      reverseMap.set(entry.path, nid);
-    }
-
-    const localUploadOnlySet = new Set();
-    for (const [relPath] of localUploads) {
-      if (!reverseMap.has(relPath)) localUploadOnlySet.add(relPath);
-    }
 
     await this.repo.apply(async (map) => {
       for (const [nid, entry] of [...map]) {
@@ -642,103 +531,9 @@ module.exports = {
         if (serverPath !== entry.path || (this.movedRemotely && this.movedRemotely.has(nid))) continue; // server changed path — server wins
         if (localUploads.has(entry.path)) continue; // still at expected path
 
-        const expectedBasename = path.basename(entry.path);
-        // Nothing under the root's uploads folder is paired with a lookalike: a
-        // missing attachment is restored by download, the lookalike is a new file.
-        const candidates = isUnderLockedFolder(entry.path) ? [] : localUploadOnlySet;
-
-        const strategies = [
-          {
-            name: 'move',
-            pendingOp: 'move',
-            match: async (localFile) => path.basename(localFile) === expectedBasename,
-            apply: async (localFile) => {
-              const targetFolder = path.dirname(localFile);
-              const folderPath = targetFolder === '.' ? '' : targetFolder;
-              const targetParentId = this.resolveParentIdByPath(folderPath);
-              await this._apiMoveNode(nid, targetParentId);
-              const inode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
-              const buf = await readFileBuffer(path.join(this.syncFolder, localFile)).catch(() => null);
-              const cs = buf ? calculateBufferChecksum(buf) : entry.checksum;
-              return { type: 'upload', path: localFile, checksum: cs, inode, syncedAt: Date.now() };
-            }
-          },
-          {
-            name: 'rename (inode match)',
-            pendingOp: 'rename',
-            match: async (localFile) => {
-              const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
-              return localInode && entry.inode && localInode === entry.inode;
-            },
-            apply: async (localFile) => {
-              const newName = path.basename(localFile);
-              await this._apiRenameNode(nid, newName);
-              const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
-              const buf = await readFileBuffer(path.join(this.syncFolder, localFile)).catch(() => null);
-              const cs = buf ? calculateBufferChecksum(buf) : entry.checksum;
-              return { type: 'upload', path: localFile, checksum: cs, inode: localInode, syncedAt: Date.now() };
-            }
-          },
-          {
-            name: 'rename (checksum match)',
-            pendingOp: 'rename',
-            match: async (localFile) => {
-              if (!entry.checksum) return false;
-              const buf = await readFileBuffer(path.join(this.syncFolder, localFile)).catch(() => null);
-              if (!buf) return false;
-              return calculateBufferChecksum(buf) === entry.checksum;
-            },
-            apply: async (localFile) => {
-              const newName = path.basename(localFile);
-              await this._apiRenameNode(nid, newName);
-              const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFile));
-              const buf = await readFileBuffer(path.join(this.syncFolder, localFile)).catch(() => null);
-              const cs = buf ? calculateBufferChecksum(buf) : entry.checksum;
-              return { type: 'upload', path: localFile, checksum: cs, inode: localInode, syncedAt: Date.now() };
-            }
-          }
-        ];
-
-        let handled = false;
-        for (const strategy of strategies) {
-          for (const localFile of candidates) {
-            if (await strategy.match(localFile)) {
-              try {
-                console.log(`[SYNC] Local upload ${strategy.name}: ${entry.path} → ${localFile} (nodeId ${nid})`);
-                const newEntry = await strategy.apply(localFile);
-                map.set(nid, newEntry);
-                localUploadOnlySet.delete(localFile);
-                handled = true;
-                if (this.logger) {
-                  this.logger.info('SYNC', `Upload ${strategy.name} synced to server`, {
-                    from: entry.path,
-                    to: localFile,
-                    nodeId: nid
-                  });
-                }
-              } catch (err) {
-                console.error(`[SYNC] Failed to sync local upload ${strategy.name} for nodeId ${nid}:`, err.message);
-                if (this.logger) {
-                  this.logger.error('SYNC', `Failed to sync offline upload ${strategy.name}`, {
-                    file: entry.path,
-                    target: localFile,
-                    nodeId: nid,
-                    error: err.message
-                  });
-                }
-              }
-              break;
-            }
-          }
-          if (handled) break;
-        }
-        if (handled) {
-          correlated.add(nid);
-          continue;
-        }
-
         // The upload is gone locally: decide between deleting it and restoring a
         // teammate's later edit instead of reading the remote's mtime.
+        if (this.passLeavesToLiveJob(entry.path)) continue;
         items.push(await this.decideNode({
           nodeId: nid,
           rel: serverPath,
@@ -755,7 +550,7 @@ module.exports = {
     } else {
       await this.runPlan(items);
     }
-    return new Set([...correlated, ...items.map(item => String(item.nodeId))]);
+    return new Set(items.map(item => String(item.nodeId)));
   },
 
   /**
@@ -795,6 +590,8 @@ module.exports = {
         const remote = this.remoteViewOf(node);
         listedPaths.add(remote.path);
         if (handled.has(nid)) continue;
+        const known = this.repo.get(nid);
+        if (known && known.path && this.passLeavesToLiveJob(known.path)) continue;
 
         plan.push(await this.decideNode({
           nodeId: nid,
@@ -824,7 +621,7 @@ module.exports = {
 
       // Uploads on disk with no node id: new local files to create remotely.
       for (const [rel] of localUploads) {
-        if (listedPaths.has(rel) || this.repo.getByPath(rel)) continue;
+        if (listedPaths.has(rel) || this.repo.getByPath(rel) || this.passLeavesToLiveJob(rel)) continue;
         plan.push(await this.decideNode({
           nodeId: null,
           rel,
@@ -866,7 +663,10 @@ module.exports = {
     this.pathUnresolved = new Set();
     this.assertRootPresent();
 
-    const allServerNodes = inventory || await this.fetchAndCacheServerNodes(0);
+    let allServerNodes = inventory || await this.fetchAndCacheServerNodes(0);
+    if (await this.runStructureCatchupInLane(allServerNodes)) {
+      allServerNodes = await this.fetchAndCacheServerNodes(0);
+    }
     const complete = this.serverNodesComplete === true || (Array.isArray(allServerNodes) && allServerNodes.complete === true);
     const listed = new Map();
     for (const node of allServerNodes) {
@@ -887,18 +687,16 @@ module.exports = {
       .filter(([, entry]) => entry.type === 'folder' && entry.path)
       .sort(([, a], [, b]) => a.path.length - b.path.length);
 
-    const localOnly = new Set();
-    for (const [rel] of localFolders) {
-      if (!this.repo.getByPath(rel)) localOnly.add(rel);
-    }
-
     await this.repo.apply(async (map) => {
       for (const [nid, snapshot] of tracked) {
         // A folder under one relocated this pass already moved with it (or waits for the next pass).
         if (relocated.some((parent) => snapshot.path.startsWith(parent + '/'))) continue;
         // A parent the server moved was relocated above: read the path it has now.
+        // A local rename the catch-up could not send: the folder waits for the next pass.
+        if (this.pathUnresolved.has(String(nid))) continue;
         const entry = map.get(nid) || snapshot;
-        if (this.hasPendingUnlink(entry.path)) continue;
+        // A folder under one this pass restores comes back with it, held or not.
+        if (this.holdsPath(entry.path) && !restoring.some((parent) => entry.path.startsWith(parent + '/'))) continue;
         const node = listed.get(nid);
 
         if (!node) {
@@ -943,13 +741,9 @@ module.exports = {
 
         // Missing from the scan: only an ENOENT proves the directory is gone.
         if ((await this.localDirState(entry.path)) !== 'absent') continue;
-        // Nothing under the root's uploads folder is ever relocated or deleted because it
-        // is missing here: it is restored. The root itself keeps its rename-back above.
+        // Nothing under the root's uploads folder is ever deleted because it is
+        // missing here: it is restored. The root itself keeps its rename-back above.
         const underLocked = isUnderLockedFolder(entry.path) && !isLockedFolder(entry.path);
-        if (!underLocked && await this.relocateFolderByInode(nid, entry, localOnly, map)) {
-          relocated.push(entry.path);
-          continue;
-        }
         if (deleting.some((parent) => entry.path.startsWith(parent + '/'))) continue;
 
         // A folder under one being restored comes back with it: when in doubt, keep the data.
@@ -974,7 +768,7 @@ module.exports = {
         const rel = relPathOf(node);
         // Under a folder renamed on the server this pass: the inventory still names the old path.
         if (relocated.some((parent) => rel.startsWith(parent + '/'))) continue;
-        if (this.hasPendingUnlink(rel)) continue;
+        if (this.holdsPath(rel)) continue;
         plan.push(this.folderItem(nid, rel,
           decideFolder({ tracked: false, local: localFolders.has(rel), remote: true, complete }),
           { parentId: node.parentId }));
@@ -983,6 +777,21 @@ module.exports = {
 
     this.restoredFolders = restoring;
     await this.runPlan(plan);
+
+    // Folders made on this disk that the server has never listed: created there,
+    // parents first, so an empty one is not left behind until it gets a file.
+    const listedPaths = new Set([...listed.values()].map(relPathOf));
+    const created = [...localFolders.keys()]
+      .filter((rel) => !this.repo.getByPath(rel) && !listedPaths.has(rel) && !this.holdsPath(rel))
+      .sort((a, b) => a.length - b.length);
+    for (const rel of created) {
+      if (this.repo.getByPath(rel)) continue;
+      try {
+        await this.createFolderOnServer(rel);
+      } catch (error) {
+        if (error.statusCode === 401 || error.statusCode === 403) throw error;
+      }
+    }
     console.log('[SYNC] Initial folder sync complete');
   },
 
@@ -996,11 +805,9 @@ module.exports = {
     };
   },
 
-  /** The watcher is still deciding this path (or a folder above it): its delete is the watcher's to send. */
-  hasPendingUnlink(rel) {
-    if (!this.pendingUnlinks || this.pendingUnlinks.size === 0) return false;
-    if (this.pendingUnlinks.has(rel)) return true;
-    return ancestorPaths(rel).some((ancestor) => this.pendingUnlinks.has(ancestor));
+  /** A path the live structure job is deciding, unless this reconcile restores a folder above it. */
+  passLeavesToLiveJob(rel) {
+    return this.holdsPath(rel) && !this.isUnderRestoredFolder(rel);
   },
 
   /** A path under a folder this reconcile restores: its files come back instead of being deleted. */
@@ -1044,131 +851,4 @@ module.exports = {
     return false;
   },
 
-  /**
-   * A tracked folder gone from its path whose inode is now at a local-only
-   * path was renamed or moved while offline: send that and repoint the folder
-   * and its descendants. Returns true when the folder was matched, whether or
-   * not the send succeeded: a failed rename leaves the folder to the next pass
-   * and never falls through to a delete. With no inode to match (a filesystem
-   * without stable ones, or none recorded) the folder is recognised by its
-   * content instead — the one local-only folder holding its files unchanged.
-   *
-   * The root's `uploads` folder is never sent a rename or a move: only a
-   * positive inode match renames it back on disk, and a rename that fails
-   * returns false so the pass restores it by download.
-   */
-  async relocateFolderByInode(nid, entry, localOnly, map) {
-    if (entry.inode) {
-      for (const localFolder of localOnly) {
-        const localInode = await nodeMap.getInode(path.join(this.syncFolder, localFolder));
-        if (localInode && localInode === entry.inode) {
-          if (isLockedFolder(entry.path)) {
-            if (!this.lockedFolderDescendantsPresent(entry, localFolder)) continue;
-            return this.restoreLockedFolder(localFolder);
-          }
-          return this.relocateFolderTo(nid, entry, localFolder, localInode, localOnly, map);
-        }
-      }
-    }
-    // The root's uploads folder is renamed back only on a positive inode match: a
-    // local-only folder that merely holds the same files is not it, so the pass
-    // restores the folder by download instead.
-    if (isLockedFolder(entry.path)) return false;
-    // No inode match (a filesystem without stable inodes, or none recorded): the one
-    // local-only folder holding this folder's files, unchanged, is the same folder.
-    const byContent = await this.folderMatchingContent(entry.path, localOnly);
-    if (!byContent) return false;
-    const inode = await nodeMap.getInode(path.join(this.syncFolder, byContent));
-    return this.relocateFolderTo(nid, entry, byContent, inode, localOnly, map);
-  },
-
-  /**
-   * A freed inode can be handed to a new folder. When the tracked folder has
-   * descendants, an inode match is only trusted while at least one of their
-   * relative paths is really under the candidate folder.
-   */
-  lockedFolderDescendantsPresent(entry, candidate) {
-    const descendants = this.repo.walkDescendants(entry.path);
-    if (descendants.length === 0) return true;
-    return descendants.some(({ entry: descendant }) =>
-      fileExists(path.join(this.syncFolder, candidate, descendant.path.slice(entry.path.length + 1))));
-  },
-
-  /**
-   * The local-only folder that holds this folder's tracked files at the same relative
-   * paths with their baseline checksums. At least one file must match, and only a
-   * single candidate counts: two lookalikes are no evidence.
-   */
-  async folderMatchingContent(folderPath, localOnly) {
-    const files = [];
-    for (const { nodeId, entry } of this.repo.walkDescendants(folderPath)) {
-      if (entry.type === 'folder') continue;
-      const baseline = this.repo.getBaseline(nodeId);
-      if (!baseline || !baseline.localChecksum) continue;
-      files.push({ rel: entry.path.slice(folderPath.length + 1), checksum: baseline.localChecksum });
-    }
-    if (files.length === 0) return null;
-
-    const matches = [];
-    for (const candidate of localOnly) {
-      for (const file of files) {
-        const rel = `${candidate}/${file.rel}`;
-        if (!fileExists(path.join(this.syncFolder, rel))) continue;
-        const { checksum } = await this.localView(rel);
-        if (checksum === file.checksum) {
-          matches.push(candidate);
-          break;
-        }
-      }
-    }
-    return matches.length === 1 ? matches[0] : null;
-  },
-
-  async relocateFolderTo(nid, entry, localFolder, localInode, localOnly, map) {
-    const oldBasename = path.basename(entry.path);
-    const newBasename = path.basename(localFolder);
-    const normalizeDir = d => (d === '.' ? '' : d);
-    const oldDirname = normalizeDir(path.dirname(entry.path));
-    const newDirname = normalizeDir(path.dirname(localFolder));
-    const isRename = newBasename !== oldBasename && newDirname === oldDirname;
-    const isMove = newBasename === oldBasename && newDirname !== oldDirname;
-    const shape = isRename ? 'rename' : isMove ? 'move' : 'move+rename';
-
-    try {
-      console.log(`[SYNC] Local folder ${shape} detected: ${entry.path} → ${localFolder} (nodeId ${nid})`);
-      // A folder moved into a new local folder needs that folder on the server first.
-      if (shape !== 'rename' && newDirname && !this.repo.getByPath(newDirname)) {
-        await this.createFolderOnServer(newDirname);
-      }
-      if (shape === 'rename') {
-        await this._apiRenameNode(nid, newBasename);
-      } else if (shape === 'move') {
-        await this._apiMoveNode(nid, this.resolveParentIdByPath(newDirname));
-      } else {
-        await this._apiMoveNode(nid, this.resolveParentIdByPath(newDirname), newBasename);
-      }
-
-      const descendants = this.repo.walkDescendants(entry.path);
-      for (const { nodeId: descId, entry: descEntry } of descendants) {
-        map.set(descId, { ...descEntry, path: localFolder + descEntry.path.slice(entry.path.length) });
-      }
-      map.set(nid, { type: 'folder', path: localFolder, parentId: entry.parentId, inode: localInode });
-      localOnly.delete(localFolder);
-      if (this.logger) {
-        this.logger.info('SYNC', `Folder ${shape} synced to server`, {
-          from: entry.path, to: localFolder, nodeId: nid, descendantsUpdated: descendants.length
-        });
-      }
-    } catch (err) {
-      console.error(`[SYNC] Failed to sync local folder ${shape} for nodeId ${nid}:`, err.message);
-      if (this.logger) {
-        this.logger.error('SYNC', `Failed to sync offline folder ${shape}`, {
-          from: entry.path, to: localFolder, nodeId: nid, error: err.message
-        });
-      }
-      this.stats.errors.push(formatErrorForLog(err, { filename: entry.path, action: 'reconcile' }));
-      if (SESSION_KINDS.has(classifySyncError(err).kind)) throw err;
-    }
-    return true;
-  }
 };

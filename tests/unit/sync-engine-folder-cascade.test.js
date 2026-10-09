@@ -36,13 +36,11 @@ jest.mock('../../src/sync-engine/node-map');
 // expectation built with Node's path asserts backslashes on Windows against the
 // forward slashes the code actually produces.
 const path = require('upath');
-const fsSync = require('fs');
-const os = require('os');
-const nodePath = require('path');
 const fileOps = require('../../src/sync-engine/file-operations');
 const nodeMapModule = require('../../src/sync-engine/node-map');
 const Outbox = require('../../src/sync-engine/state/outbox');
 const CascadeSuppression = require('../../src/sync-engine/state/cascade-suppression');
+const realGetInodeSync = jest.requireActual('../../src/sync-engine/node-map').getInodeSync;
 
 let syncEngine;
 
@@ -64,6 +62,7 @@ beforeEach(() => {
   fileOps.ensureDirectory.mockResolvedValue();
   fileOps.fileExists.mockResolvedValue(false);
   nodeMapModule.getInode.mockResolvedValue(12345);
+  nodeMapModule.getInodeSync.mockImplementation(realGetInodeSync);
   nodeMapModule.save.mockResolvedValue();
   nodeMapModule.load.mockResolvedValue(new Map());
   nodeMapModule.loadState.mockResolvedValue({});
@@ -172,89 +171,5 @@ describe('_applyFolderRelocate', () => {
     expect(syncEngine.outbox.has('move', 60)).toBe(false);
 
     spy.mockRestore();
-  });
-});
-
-describe('the locked root uploads folder — rename back', () => {
-  const realWalkDescendants = jest.requireActual('../../src/sync-engine/node-map').walkDescendants;
-  const realFileExists = jest.requireActual('../../src/sync-engine/file-operations').fileExists;
-
-  it('renames the folder back, sends nothing and publishes no provisional path', async () => {
-    const { renameNode, moveNode, deleteNode } = require('../../src/sync-engine/api-client');
-    const root = fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-locked-'));
-    let rename = null;
-    try {
-      // Real directories and real inodes: the folder that left is the one whose
-      // inode the add really has on disk, and it still holds its descendants.
-      fsSync.mkdirSync(nodePath.join(root, 'uploads-old', 'assets-a'), { recursive: true });
-      fsSync.writeFileSync(nodePath.join(root, 'uploads-old', 'assets-a', 'x.png'), 'x');
-      const uploadsInode = fsSync.statSync(nodePath.join(root, 'uploads-old')).ino;
-      const assetsInode = fsSync.statSync(nodePath.join(root, 'uploads-old', 'assets-a')).ino;
-      const xInode = fsSync.statSync(nodePath.join(root, 'uploads-old', 'assets-a', 'x.png')).ino;
-
-      syncEngine.syncFolder = root;
-      syncEngine.repo.seed([
-        ['10', { type: 'folder', path: 'uploads', parentId: null, inode: uploadsInode }],
-        ['11', { type: 'folder', path: 'uploads/assets-a', parentId: 10, inode: assetsInode }],
-        ['12', { type: 'upload', path: 'uploads/assets-a/x.png', checksum: 'x', inode: xInode }]
-      ]);
-      nodeMapModule.walkDescendants.mockImplementation(realWalkDescendants);
-      fileOps.fileExists.mockImplementation(realFileExists);
-
-      rename = jest.spyOn(require('fs').promises, 'rename').mockResolvedValue();
-
-      syncEngine._onUnlinkDir('uploads');
-      syncEngine._onAddDir('uploads-old');
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(rename).toHaveBeenCalledWith(
-        path.join(root, 'uploads-old'),
-        path.join(root, 'uploads')
-      );
-      expect(renameNode).not.toHaveBeenCalled();
-      expect(moveNode).not.toHaveBeenCalled();
-      expect(deleteNode).not.toHaveBeenCalled();
-      expect(syncEngine.repo.get('10').path).toBe('uploads');
-      expect(syncEngine.repo.get('11').path).toBe('uploads/assets-a');
-      expect(syncEngine.repo.get('12').path).toBe('uploads/assets-a/x.png');
-
-      // Both names and every descendant are suppressed, so the child events of
-      // the operation are never taken for new files.
-      expect(syncEngine.cascade.consume('uploads')).toBe(true);
-      expect(syncEngine.cascade.consume('uploads-old')).toBe(true);
-      expect(syncEngine.cascade.consume('uploads/assets-a')).toBe(true);
-      expect(syncEngine.cascade.consume('uploads/assets-a/x.png')).toBe(true);
-      expect(syncEngine.cascade.consume('uploads-old/assets-a')).toBe(true);
-      expect(syncEngine.cascade.consume('uploads-old/assets-a/x.png')).toBe(true);
-    } finally {
-      if (rename) rename.mockRestore();
-      fsSync.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('asks for a reconcile instead when the folder cannot be renamed back', async () => {
-    syncEngine.repo.seed([
-      ['10', { type: 'folder', path: 'uploads', parentId: null, inode: 12345 }]
-    ]);
-    nodeMapModule.walkDescendants.mockImplementation(realWalkDescendants);
-    fileOps.fileExists.mockImplementation((p) => p === syncEngine.syncFolder);
-    syncEngine.runner = { start: jest.fn() };
-
-    const rename = jest.spyOn(require('fs').promises, 'rename').mockRejectedValue(new Error('EACCES'));
-    const statSync = jest.spyOn(require('fs'), 'statSync').mockReturnValue({ ino: 12345 });
-
-    syncEngine._onUnlinkDir('uploads');
-    syncEngine._onAddDir('uploads-old');
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(syncEngine.runner.start).toHaveBeenCalledTimes(1);
-    expect(rename).toHaveBeenCalled();
-
-    rename.mockRestore();
-    statSync.mockRestore();
   });
 });

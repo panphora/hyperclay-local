@@ -17,6 +17,8 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
+const { getInodeSync } = jest.requireActual('../../src/sync-engine/node-map');
+
 const checksumOf = (buffer) => crypto.createHash('sha256').update(buffer).digest('hex').substring(0, 16);
 
 /** Seeded delays the engine's async seams read. Replaced per run. */
@@ -70,11 +72,12 @@ function walk(root) {
       const abs = path.join(dir, name);
       const childRel = rel ? `${rel}/${name}` : name;
       const stat = fs.lstatSync(abs);
+      const inode = getInodeSync(abs);
       if (stat.isDirectory()) {
-        found.set(childRel, { type: 'folder', inode: stat.ino });
+        found.set(childRel, { type: 'folder', inode });
         visit(abs, childRel);
       } else {
-        found.set(childRel, { type: 'file', inode: stat.ino, bytes: fs.readFileSync(abs) });
+        found.set(childRel, { type: 'file', inode, bytes: fs.readFileSync(abs) });
       }
     }
   };
@@ -267,7 +270,7 @@ function ledgerFor(root, ids) {
     const stat = fs.statSync(path.join(root, rel));
     const isFolder = stat.isDirectory();
     const type = isFolder ? 'folder' : /\.(html|htmlclay)$/i.test(rel) ? 'site' : 'upload';
-    const entry = { type, path: rel, parentId: parentOf(rel), inode: stat.ino };
+    const entry = { type, path: rel, parentId: parentOf(rel), inode: getInodeSync(path.join(root, rel)) };
     if (!isFolder) {
       const bytes = fs.readFileSync(path.join(root, rel));
       const checksum = checksumOf(bytes);

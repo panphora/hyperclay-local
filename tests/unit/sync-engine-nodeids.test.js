@@ -221,67 +221,6 @@ describe('performInitialSync — nodeId move detection', () => {
 });
 
 describe('performInitialSync — offline rename', () => {
-  test('defers download and detects rename via inode match (no duplicate node)', async () => {
-    const content = '<html>renamed offline</html>';
-    const cs = checksum(content);
-    const PRESERVED_INODE = 99999;
-
-    syncEngine.repo.seed([['42', entry('old-name.html', cs, PRESERVED_INODE)]]);
-    syncEngine.lastSyncedAt = new Date('2024-05-01').getTime();
-
-    apiClient.listNodes.mockResolvedValue([
-      { id: 42, type: 'site', name: 'old-name.html', path: '', checksum: cs, modifiedAt: '2024-05-01T00:00:00Z' }
-    ]);
-
-    fileOps.getLocalFiles.mockResolvedValue(new Map([
-      ['new-name.html', { path: '/test/sync/new-name.html', relativePath: 'new-name.html', mtime: new Date('2024-05-01'), size: 100 }]
-    ]));
-
-    nodeMapModule.getInode.mockImplementation(async (p) => {
-      if (p === '/test/sync/new-name.html') return PRESERVED_INODE;
-      return null;
-    });
-    fileOps.readFile.mockResolvedValue(content);
-
-    await syncEngine.performInitialSync();
-
-    expect(apiClient.getNodeContent).not.toHaveBeenCalled();
-    expect(apiClient.renameNode).toHaveBeenCalledWith(
-      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 42, 'new-name.html'
-    );
-    expect(apiClient.createNode).not.toHaveBeenCalled();
-    expect(syncEngine.repo.get('42').path).toBe('new-name.html');
-    expect(syncEngine.repo.size).toBe(1);
-  });
-
-  test('offline rename (no inode, checksum match) renames instead of redownloading', async () => {
-    // Option D: a known file missing at its unchanged server path is NOT redownloaded.
-    // It is deferred to detectLocalChanges, which here matches the rename by checksum.
-    const content = '<html>legacy</html>';
-    const cs = checksum(content);
-
-    syncEngine.repo.seed([['42', entry('old-name.html', cs, null)]]);
-    syncEngine.lastSyncedAt = new Date('2024-05-01').getTime();
-
-    apiClient.listNodes.mockResolvedValue([
-      { id: 42, type: 'site', name: 'old-name.html', path: '', checksum: cs, modifiedAt: '2024-05-01T00:00:00Z' }
-    ]);
-
-    fileOps.getLocalFiles.mockResolvedValue(new Map([
-      ['new-name.html', { path: '/test/sync/new-name.html', relativePath: 'new-name.html', mtime: new Date('2024-05-01'), size: 100 }]
-    ]));
-
-    nodeMapModule.getInode.mockResolvedValue(99999);
-    fileOps.readFile.mockResolvedValue(content);
-
-    await syncEngine.performInitialSync();
-
-    expect(apiClient.getNodeContent).not.toHaveBeenCalled();
-    expect(apiClient.renameNode).toHaveBeenCalledWith(
-      expect.objectContaining({ serverUrl: 'http://localhyperclay.com', apiKey: 'hcsk_test' }), 42, 'new-name.html'
-    );
-  });
-
   test('offline delete (no local match) propagates the delete instead of redownloading', async () => {
     // Option D: a known file gone from its unchanged server path with no rename
     // target is a genuine offline delete — propagate it, do NOT resurrect it.

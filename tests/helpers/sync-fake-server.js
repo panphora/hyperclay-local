@@ -37,6 +37,7 @@ class FakeServer {
    */
   constructor(nodes = [], { delay } = {}) {
     this.nodes = new Map();
+    this.trash = new Map();
     this.calls = [];
     this.onCall = null;
     this.delay = delay || (async () => {});
@@ -114,23 +115,24 @@ class FakeServer {
     return [...this.nodes.keys()].map((id) => this.relPathOf(id));
   }
 
+  _listEntry(node) {
+    const checksum = node.content ? checksumOf(node.content) : null;
+    return {
+      id: node.id,
+      type: node.type,
+      name: node.name,
+      path: this.dirOf(node.id),
+      parentId: node.parentId,
+      etag: checksum,
+      checksum,
+      size: node.content ? node.content.length : 0,
+      modifiedAt: node.modifiedAt,
+      structureVersion: `${node.id}-${node.version}`
+    };
+  }
+
   inventory() {
-    const nodes = [...this.nodes.keys()].map((id) => {
-      const node = this.get(id);
-      const checksum = node.content ? checksumOf(node.content) : null;
-      return {
-        id: node.id,
-        type: node.type,
-        name: node.name,
-        path: this.dirOf(id),
-        parentId: node.parentId,
-        etag: checksum,
-        checksum,
-        size: node.content ? node.content.length : 0,
-        modifiedAt: node.modifiedAt,
-        structureVersion: `${node.id}-${node.version}`
-      };
-    });
+    const nodes = [...this.nodes.keys()].map((id) => this._listEntry(this.get(id)));
     Object.defineProperty(nodes, 'complete', { value: true, enumerable: false, configurable: true });
     return nodes;
   }
@@ -255,10 +257,49 @@ class FakeServer {
     if (node.type === 'folder' && descendants.length && !cascade) {
       throw httpError(400, 'Folder is not empty');
     }
-    for (const childId of descendants) this.nodes.delete(childId);
+    for (const childId of descendants) {
+      this.trash.set(childId, this.nodes.get(childId));
+      this.nodes.delete(childId);
+    }
+    this.trash.set(Number(id), node);
     this.nodes.delete(Number(id));
     this.maybeLose('deleteNode');
     return { nodeId: Number(id), type: node.type };
+  }
+
+  async restoreNode(conn, id) {
+    await this.record('restoreNode', [id], id);
+    const node = this.trash.get(Number(id));
+    if (!node) throw httpError(404, `Node ${id} not in trash`);
+    if (node.parentId && !this.get(node.parentId)) throw httpError(409, 'parent-missing');
+    this._assertFreeName(node.parentId, node.name, node.id);
+    const descendants = this._trashedDescendants(Number(id));
+    this.trash.delete(Number(id));
+    this.nodes.set(Number(id), node);
+    node.version++;
+    for (const childId of descendants) {
+      const child = this.trash.get(childId);
+      this.trash.delete(childId);
+      this.nodes.set(childId, child);
+      child.version++;
+    }
+    return { success: true, node: this._listEntry(node) };
+  }
+
+  /** The ids trashed with a folder: every trashed node whose chain leads to it. */
+  _trashedDescendants(id) {
+    const out = [];
+    const stack = [Number(id)];
+    while (stack.length) {
+      const parent = stack.pop();
+      for (const [childId, child] of this.trash) {
+        if (child.parentId === parent) {
+          out.push(childId);
+          stack.push(childId);
+        }
+      }
+    }
+    return out;
   }
 
   async putNodeContent(conn, id, content) {
@@ -293,6 +334,8 @@ class FakeServer {
  * implement throws, so a missing implementation cannot pass as a no-op.
  */
 function install(apiClient, server) {
+  // `restoreNode` is wired only once api-client exports it: a method the client
+  // does not have cannot be called, and the loop below covers it when it lands.
   for (const name of Object.keys(apiClient)) {
     const fn = apiClient[name];
     if (!fn || typeof fn.mockImplementation !== 'function') continue;

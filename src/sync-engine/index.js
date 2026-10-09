@@ -21,7 +21,9 @@ const Outbox = require('./state/outbox');
 const CascadeSuppression = require('./state/cascade-suppression');
 const EchoWindow = require('./state/echo-window');
 const NodeRepository = require('./state/node-repository');
+const nodeMap = require('./node-map');
 const uploadBlocks = require('./state/upload-blocks');
+const { attachLane } = require('./state/sync-lane');
 
 class SyncEngine extends EventEmitter {
   constructor() {
@@ -77,7 +79,6 @@ class SyncEngine extends EventEmitter {
       configurable: true
     });
     this.outbox = new Outbox(); // SSE echo suppression: tracks in-flight mutations
-    this.pendingUnlinks = new Map(); // watcher rename/move detection: relativePath → { timerId, nodeId, type, entry }
     this.echoWindow = new EchoWindow(); // tracks recent SSE node-saved events for toast suppression in the watcher
     // Cascade suppression (S5-Q1, extended in Step 6): when a folder operation
     // (rename, move, or delete) is detected locally OR applied via SSE, we
@@ -105,6 +106,8 @@ class SyncEngine extends EventEmitter {
       lastSync: null,
       errors: []
     };
+
+    attachLane(this);
   }
 
   /**
@@ -332,17 +335,19 @@ class SyncEngine extends EventEmitter {
         this.lastSyncedAt = null;
       }
 
+      await this.serial(() => this.repo.apply((map) => nodeMap.upgradeIdentities(map, this.syncFolder)));
+
       if (!this.firstBind && !offline) {
-        await this.performInitialFolderSync();
+        await this.serial(() => this.performInitialFolderSync());
 
         // Perform initial sync for sites
         console.log(`[SYNC] Starting initial site sync...`);
-        await this.performInitialSync();
+        await this.serial(() => this.performInitialSync());
         console.log(`[SYNC] Initial site sync completed`);
 
         // Perform initial sync for uploads
         console.log(`[SYNC] Starting initial upload sync...`);
-        await this.performInitialUploadSync();
+        await this.serial(() => this.performInitialUploadSync());
         this.movedRemotely = new Set();
         this.pathUnresolved = new Set();
         this.restoredFolders = [];
@@ -475,16 +480,13 @@ class SyncEngine extends EventEmitter {
     // Clear all pending operations
     this.syncQueue.clear();
 
-    // Clear pending actions and unlinks
+    // Clear pending actions
     if (this.pendingActionsCleanupTimer) {
       clearInterval(this.pendingActionsCleanupTimer);
       this.pendingActionsCleanupTimer = null;
     }
     this.outbox.clear();
-    for (const [, { timerId }] of this.pendingUnlinks) {
-      clearTimeout(timerId);
-    }
-    this.pendingUnlinks.clear();
+    this.clearStructureState({ forgetDeletes: true });
     this.echoWindow.clear();
 
     this.cascade.clear();
@@ -582,7 +584,8 @@ Object.assign(SyncEngine.prototype,
   require('./engine-initial-sync'),
   require('./engine-sse'),
   require('./engine-watcher'),
-  require('./engine-mutations')
+  require('./engine-mutations'),
+  require('./engine-structure')
 );
 
 // Register control-lane rider handlers (data-loss/dismiss, ...) for their side

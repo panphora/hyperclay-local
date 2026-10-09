@@ -277,6 +277,7 @@ async function getLocalFolders(syncFolder, logger = null) {
 }
 
 module.exports = {
+  shouldSkipEntry,
   getLocalFolders,
   getLocalFiles,
   readFile,

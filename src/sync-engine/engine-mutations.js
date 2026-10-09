@@ -12,17 +12,21 @@ const {
   moveNode,
   deleteNode
 } = require('./api-client');
-const { isLockedFolder, lockedFolderError } = require('./locked-folder');
+const { isLockedFolder, isUnderLockedFolder, lockedFolderError } = require('./locked-folder');
 
 module.exports = {
   /**
-   * The root's `uploads` folder is never sent a rename, move or delete: every
-   * document's attachments live under it. Refused before anything is marked in
-   * flight, so no request leaves and no outbox entry is left behind.
+   * The root's `uploads` folder is never sent a rename, move or delete, and
+   * nothing under it is, except by the live structure job after its hold: a
+   * catch-up pass restores what is missing there instead. Refused before
+   * anything is marked in flight, so no request leaves and no outbox entry is
+   * left behind.
    */
   refuseLockedFolder(nodeId) {
     const entry = this.repo.get(nodeId);
-    if (entry && isLockedFolder(entry.path)) throw lockedFolderError();
+    if (!entry) return;
+    if (isLockedFolder(entry.path)) throw lockedFolderError();
+    if (isUnderLockedFolder(entry.path) && !this._structureLive) throw lockedFolderError();
   },
 
   // CONTRACTS §4-5: a file's baseline version is kept current by downloads, uploads and noop
@@ -50,28 +54,32 @@ module.exports = {
     this.refuseLockedFolder(nodeId);
     const gen = this.generation;
     const expectedVersion = await this._expectedVersion(nodeId);
-    if (gen !== this.generation) return;
+    if (gen !== this.generation) return false;
     this.outbox.markInFlight('rename', parseInt(nodeId));
     const options = expectedVersion ? [{ expectedVersion }] : [];
     await renameNode(this.conn, parseInt(nodeId), newName, ...options);
-    if (gen !== this.generation) return;
+    this._mutationSeq = (this._mutationSeq || 0) + 1;
+    if (gen !== this.generation) return true;
     this.invalidateServerNodesCache();
     await this.repo.updateBaseline(nodeId, { structureVersion: null });
+    return true;
   },
 
   async _apiMoveNode(nodeId, parentId, newName) {
     this.refuseLockedFolder(nodeId);
     const gen = this.generation;
     const expectedVersion = await this._expectedVersion(nodeId);
-    if (gen !== this.generation) return;
+    if (gen !== this.generation) return false;
     this.outbox.markInFlight('move', parseInt(nodeId));
     const args = expectedVersion
       ? [newName === undefined ? null : newName, { expectedVersion }]
       : (newName === undefined ? [] : [newName]);
     await moveNode(this.conn, parseInt(nodeId), parentId, ...args);
-    if (gen !== this.generation) return;
+    this._mutationSeq = (this._mutationSeq || 0) + 1;
+    if (gen !== this.generation) return true;
     this.invalidateServerNodesCache();
     await this.repo.updateBaseline(nodeId, { structureVersion: null });
+    return true;
   },
 
   async _apiDeleteNode(nodeId, { cascade = false } = {}) {
@@ -79,10 +87,12 @@ module.exports = {
     this.assertRootPresent();
     const gen = this.generation;
     const expectedVersion = await this._expectedVersion(nodeId);
-    if (gen !== this.generation) return;
+    if (gen !== this.generation) return false;
     this.outbox.markInFlight('delete', parseInt(nodeId));
     await deleteNode(this.conn, parseInt(nodeId), { cascade, expectedVersion });
-    if (gen !== this.generation) return;
+    this._mutationSeq = (this._mutationSeq || 0) + 1;
+    if (gen !== this.generation) return true;
     this.invalidateServerNodesCache();
+    return true;
   }
 };
