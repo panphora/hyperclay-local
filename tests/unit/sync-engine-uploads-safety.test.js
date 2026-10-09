@@ -40,6 +40,7 @@ jest.mock('../../src/sync-engine/api-client');
 const fsSync = require('fs');
 const os = require('os');
 const nodePath = require('path');
+const upath = require('upath');
 const apiClient = require('../../src/sync-engine/api-client');
 const nodeMap = require('../../src/sync-engine/node-map');
 const { SyncEngine } = require('../../src/sync-engine/index');
@@ -228,12 +229,12 @@ describe('a catch-up pass never deletes or moves anything under uploads/', () =>
     // The freed inode is handed to the new folder, as a reusing filesystem would.
     const realGetInode = nodeMap.getInode;
     const reuse = jest.spyOn(nodeMap, 'getInode').mockImplementation(async (p) =>
-      (p === nodePath.join(root, 'new-project') ? uploadsInode : realGetInode(p)));
+      (p === upath.join(root, 'new-project') ? uploadsInode : realGetInode(p)));
 
     try {
       await engine.reconcileAll(uploadsInventory(), { generation: 1 });
 
-      expect(reuse).toHaveBeenCalledWith(nodePath.join(root, 'new-project'));
+      expect(reuse).toHaveBeenCalledWith(upath.join(root, 'new-project'));
       expect(apiClient.renameNode).not.toHaveBeenCalled();
       expect(apiClient.moveNode).not.toHaveBeenCalled();
       expect(apiClient.deleteNode).not.toHaveBeenCalled();
@@ -405,7 +406,7 @@ describe('the watcher pairs a folder add by inode first', () => {
     const realStatSync = fsSync.statSync;
     const stat = jest.spyOn(fsSync, 'statSync').mockImplementation((p, ...rest) => {
       const st = realStatSync(p, ...rest);
-      if (p === nodePath.join(root, 'new-project')) {
+      if (p === upath.join(root, 'new-project')) {
         return Object.assign(Object.create(Object.getPrototypeOf(st)), st, { ino: uploadsInode });
       }
       return st;

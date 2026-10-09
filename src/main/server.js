@@ -314,7 +314,10 @@ function refusedUpload(fileName) {
 // name both read this result, so the type that is checked is the type that is
 // stored: a NUL or a path stripped later can no longer turn `.ht\0ml` into `.html`.
 function normalizeUploadName(fileName) {
-  return path.basename(String(fileName || 'file')).replace(/\0/g, '').replace(/^\.+/, '');
+  return path.basename(String(fileName || 'file'))
+    .replace(/\0/g, '')
+    .replace(/[<>:"|?*\x01-\x1f]/g, '')
+    .replace(/^\.+/, '');
 }
 
 // A file directly inside a document's uploads folder, where every upload is

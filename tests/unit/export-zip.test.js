@@ -325,7 +325,7 @@ describe('exporting a document that links an answered upload url', () => {
       .set('Host', 'localhost')
       .set('Origin', 'http://localhost:4321')
       .set('Document-URL', 'http://localhost/board.html')
-      .attach('file', bytes, "image (1)'s*.png");
+      .attach('file', bytes, "image (1)'s!*.png");
     expect(res.status).toBe(200);
     const [file] = res.body.uploads;
     expect(file.url.split('/').pop()).not.toMatch(/[!'()*]/);

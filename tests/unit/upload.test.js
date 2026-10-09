@@ -247,17 +247,59 @@ describe('uploads', () => {
   });
 
   test('a name encodeURIComponent leaves characters raw still answers one unbroken link', async () => {
-    // `! ' ( ) *` survive encodeURIComponent, and the zip exporter stops a link at
-    // the first of them: `image (1).png` was exported as `image` and left out.
-    const res = await upload(Buffer.from('PNGDATA'), "image (1)'s*.png");
+    // `! ' ( )` survive encodeURIComponent, and the zip exporter stops a link at
+    // the first of them: `image (1).png` was exported as `image` and left out. The
+    // `*` is dropped from the stored name, as hyperclay.com does, since no Windows filename can hold it.
+    const res = await upload(Buffer.from('PNGDATA'), "image (1)'s!*.png");
     expect(res.status).toBe(200);
     const [file] = res.body.uploads;
-    expect(file.url).toMatch(/^\/_\/uploads\/assets-index\/image%20%281%29%27s%2A-[0-9a-f]{6}\.png$/);
+    expect(file.url).toMatch(/^\/_\/uploads\/assets-index\/image%20%281%29%27s%21-[0-9a-f]{6}\.png$/);
     expect(decodeURIComponent(file.url.split('/').pop())).toBe(file.name);
 
     const served = await request(app).get(file.url).set('Host', 'localhost');
     expect(served.status).toBe(200);
     expect(Buffer.from(served.body).toString()).toBe('PNGDATA');
+  });
+
+  test('the characters Windows forbids in a filename are dropped from the stored name', async () => {
+    // Sent raw: form-data leaves the `"` unescaped in the part header, so going
+    // through the client would test the client, not this route.
+    const res = await new Promise((resolve, reject) => {
+      const boundary = '----hyperclay-forbidden-name';
+      const body = Buffer.concat([
+        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a<b>c:d\\"e|f?g*h.png"\r\nContent-Type: image/png\r\n\r\n`),
+        Buffer.from('PNGDATA'),
+        Buffer.from(`\r\n--${boundary}--\r\n`)
+      ]);
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port: app.address().port,
+          method: 'POST',
+          path: '/_/upload',
+          headers: {
+            Host: 'localhost',
+            Origin: 'http://localhost:4321',
+            'Document-URL': 'http://localhost/index.html',
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+            'Content-Length': body.length
+          }
+        },
+        (response) => {
+          let text = '';
+          response.on('data', (chunk) => { text += chunk; });
+          response.on('end', () => resolve({ status: response.statusCode, text }));
+        }
+      );
+      req.on('error', reject);
+      req.end(body);
+    });
+
+    expect(res.status).toBe(200);
+    const [file] = JSON.parse(res.text).uploads;
+    expect(file.name).toMatch(/^abcdefgh-[0-9a-f]{6}\.png$/);
+    expect(file.url).toMatch(/^\/_\/uploads\/assets-index\/abcdefgh-[0-9a-f]{6}\.png$/);
+    expect(await fs.readFile(path.join(assets(), file.name), 'utf8')).toBe('PNGDATA');
   });
 
   test('a page type hand-placed inside an assets folder is served as an attachment', async () => {

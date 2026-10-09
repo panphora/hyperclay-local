@@ -47,6 +47,7 @@ const nodeMapModule = require('../../src/sync-engine/node-map');
 const fsSync = require('fs');
 const os = require('os');
 const nodePath = require('path');
+const upath = require('upath');
 
 jest.mock('../../src/sync-engine/file-operations');
 jest.mock('../../src/sync-engine/utils', () => {
@@ -743,7 +744,7 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
       expect(apiClient.deleteNode).not.toHaveBeenCalled();
       expect(apiClient.moveNode).not.toHaveBeenCalled();
       expect(apiClient.renameNode).not.toHaveBeenCalled();
-      expect(fileOps.ensureDirectory).toHaveBeenCalledWith(nodePath.join(root, 'uploads', 'assets-a'));
+      expect(fileOps.ensureDirectory).toHaveBeenCalledWith(upath.join(root, 'uploads', 'assets-a'));
       expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 12);
     } finally {
       fsSync.rmSync(root, { recursive: true, force: true });
@@ -785,8 +786,8 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
       expect(apiClient.moveNode).not.toHaveBeenCalled();
       expect(apiClient.renameNode).not.toHaveBeenCalled();
       expect(apiClient.deleteNode).not.toHaveBeenCalled();
-      expect(fileOps.ensureDirectory).toHaveBeenCalledWith(nodePath.join(root, 'uploads'));
-      expect(fileOps.ensureDirectory).toHaveBeenCalledWith(nodePath.join(root, 'uploads', 'assets-a'));
+      expect(fileOps.ensureDirectory).toHaveBeenCalledWith(upath.join(root, 'uploads'));
+      expect(fileOps.ensureDirectory).toHaveBeenCalledWith(upath.join(root, 'uploads', 'assets-a'));
       expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 12);
     } finally {
       if (rename) rename.mockRestore();
@@ -825,11 +826,11 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
 
       expect(apiClient.renameNode).not.toHaveBeenCalled();
       expect(apiClient.moveNode).not.toHaveBeenCalled();
-      expect(fileOps.ensureDirectory).toHaveBeenCalledWith(nodePath.join(root, 'uploads', 'assets-a'));
+      expect(fileOps.ensureDirectory).toHaveBeenCalledWith(upath.join(root, 'uploads', 'assets-a'));
       expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 12);
       // The executor writes through the resolved root, so the assertion is too.
       expect(fileOps.writeFileBuffer).toHaveBeenCalledWith(
-        nodePath.join(fsSync.realpathSync(root), 'uploads', 'assets-a', 'x.png'),
+        upath.join(fsSync.realpathSync.native(root), 'uploads', 'assets-a', 'x.png'),
         expect.anything(),
         expect.anything()
       );
@@ -857,7 +858,7 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
       fileOps.getLocalFolders.mockResolvedValue(new Map([localFolder('uploads'), localFolder('uploads/assets-a')]));
       fileOps.getLocalFiles.mockResolvedValue(new Map());
       fileOps.getLocalUploads.mockResolvedValue(new Map([
-        ['uploads/assets-a/x.png', { path: nodePath.join(root, 'uploads', 'assets-a', 'x.png') }]
+        ['uploads/assets-a/x.png', { path: upath.join(root, 'uploads', 'assets-a', 'x.png') }]
       ]));
       gone();
       nodeMapModule.getInode.mockImplementation(realInode);
@@ -875,7 +876,7 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
       expect(apiClient.deleteNode).not.toHaveBeenCalled();
       expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 13);
       expect(fileOps.writeFileBuffer).toHaveBeenCalledWith(
-        nodePath.join(fsSync.realpathSync(root), 'uploads', 'assets-a', 'y.png'),
+        upath.join(fsSync.realpathSync.native(root), 'uploads', 'assets-a', 'y.png'),
         expect.anything(),
         expect.anything()
       );
@@ -925,7 +926,7 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
       expect(apiClient.moveNode).not.toHaveBeenCalled();
       expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 12);
       expect(fileOps.writeFile).toHaveBeenCalledWith(
-        nodePath.join(fsSync.realpathSync(root), 'uploads', 'assets-a', 'page.html'),
+        upath.join(fsSync.realpathSync.native(root), 'uploads', 'assets-a', 'page.html'),
         expect.anything(),
         expect.anything()
       );

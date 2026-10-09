@@ -210,8 +210,8 @@ describe('the locked root uploads folder — rename back', () => {
       await Promise.resolve();
 
       expect(rename).toHaveBeenCalledWith(
-        nodePath.join(root, 'uploads-old'),
-        nodePath.join(root, 'uploads')
+        path.join(root, 'uploads-old'),
+        path.join(root, 'uploads')
       );
       expect(renameNode).not.toHaveBeenCalled();
       expect(moveNode).not.toHaveBeenCalled();

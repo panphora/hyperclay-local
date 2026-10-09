@@ -34,6 +34,7 @@ jest.mock('../../src/sync-engine/node-map');
 const fsSync = require('fs');
 const os = require('os');
 const nodePath = require('path');
+const upath = require('upath');
 const nodeMapModule = require('../../src/sync-engine/node-map');
 const fileOps = require('../../src/sync-engine/file-operations');
 const Outbox = require('../../src/sync-engine/state/outbox');
@@ -220,12 +221,14 @@ async function flush(times = 6) {
 // A correlation that proves identity by reading the folder's content touches the
 // real filesystem, so the test waits for the outcome on disk rather than for a
 // number of event-loop turns: I/O completion has no turn it is bound to.
-async function waitFor(predicate, tries = 200) {
-  for (let i = 0; i < tries; i++) {
+async function waitFor(predicate, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (predicate()) return true;
-    await new Promise((resolve) => setTimeout(resolve, 1));
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  return predicate();
+  if (predicate()) return true;
+  throw new Error(`waitFor: the condition still did not hold after ${timeoutMs} ms`);
 }
 
 describe('the locked root uploads folder — watcher delete', () => {
@@ -347,7 +350,7 @@ describe('the locked root uploads folder — watcher rename', () => {
       expect(fsSync.existsSync(nodePath.join(root, 'uploads', 'assets-a', 'y.png'))).toBe(true);
       expect(fsSync.existsSync(nodePath.join(root, 'uploads-old'))).toBe(false);
       expect(syncEngine.repo.get('10').path).toBe('uploads');
-      expect(rename).toHaveBeenCalledWith(nodePath.join(root, 'uploads-old'), nodePath.join(root, 'uploads'));
+      expect(rename).toHaveBeenCalledWith(upath.join(root, 'uploads-old'), upath.join(root, 'uploads'));
       expect(syncEngine.pendingUnlinks.size).toBe(0);
       rename.mockRestore();
     } finally {
@@ -474,7 +477,7 @@ describe('the locked root uploads folder — rename-back identity', () => {
       syncEngine._onAddDir('uploads-old');
       await waitFor(() => fsSync.existsSync(nodePath.join(root, 'uploads')));
 
-      expect(rename).toHaveBeenCalledWith(nodePath.join(root, 'uploads-old'), nodePath.join(root, 'uploads'));
+      expect(rename).toHaveBeenCalledWith(upath.join(root, 'uploads-old'), upath.join(root, 'uploads'));
       expect(renameNode).not.toHaveBeenCalled();
       expect(moveNode).not.toHaveBeenCalled();
       expect(deleteNode).not.toHaveBeenCalled();
@@ -517,7 +520,7 @@ describe('the locked root uploads folder — rename-back identity', () => {
       await waitFor(() => fsSync.existsSync(nodePath.join(root, 'uploads')));
       await syncEngine.processQueue();
 
-      expect(rename).toHaveBeenCalledWith(nodePath.join(root, 'uploads-old'), nodePath.join(root, 'uploads'));
+      expect(rename).toHaveBeenCalledWith(upath.join(root, 'uploads-old'), upath.join(root, 'uploads'));
       expect(fsSync.existsSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'))).toBe(true);
       expect(fsSync.existsSync(nodePath.join(root, 'uploads-old'))).toBe(false);
       expect(createNode).not.toHaveBeenCalled();
@@ -552,10 +555,10 @@ describe('the locked root uploads folder — rename-back identity', () => {
       syncEngine._onUnlinkDir('uploads');
       syncEngine._onAddDir('new-project');
 
-      // The rescan queues the folder's contents, which only happens once the
-      // rejected add was handed back to the ordinary path.
+      // The rescan queues the folder, which only happens once the rejected add
+      // was handed back to the ordinary path.
       await waitFor(() => syncEngine.syncQueue.getQueuedItems()
-        .some((item) => item.type === 'add' && item.filename === 'new-project/notes.txt'));
+        .some((item) => item.type === 'addDir' && item.filename === 'new-project'));
 
       expect(fsSync.existsSync(nodePath.join(root, 'new-project', 'notes.txt'))).toBe(true);
       expect(fsSync.existsSync(nodePath.join(root, 'uploads'))).toBe(false);
@@ -661,7 +664,7 @@ describe('the locked root uploads folder — rename-back identity', () => {
       // identity check that waits on that read would let the child claim the
       // parent's pending unlink first.
       nodeMapModule.getInode.mockImplementation(async (p) => {
-        if (p === nodePath.join(root, 'work2')) {
+        if (p === upath.join(root, 'work2')) {
           for (let i = 0; i < 5; i++) await Promise.resolve();
         }
         return realInode(p);
@@ -715,7 +718,7 @@ describe('the locked root uploads folder — rename-back identity', () => {
       ]);
       useRealWalkDescendants();
       fileOps.fileExists.mockImplementation((p) =>
-        p === syncEngine.syncFolder || p === nodePath.join(syncEngine.syncFolder, 'uploads'));
+        p === syncEngine.syncFolder || p === upath.join(syncEngine.syncFolder, 'uploads'));
       const reconcile = jest.spyOn(syncEngine, 'requestReconcile').mockImplementation(() => {});
 
       syncEngine._registerPendingUnlink('uploads', 'folder');
