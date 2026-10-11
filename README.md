@@ -15,7 +15,7 @@ A beautiful, cross-platform desktop application for running your malleable HTML 
 - 🖥️ **Native desktop app** - Familiar GUI interface
 - 📁 **Visual folder selection** - Point and click to choose your apps folder
 - 🚀 **One-click server start** - Start/stop server with buttons
-- 🌐 **Auto-browser opening** - Automatically opens your default browser
+- 🌐 **Open in browser** - Open a served folder in your default browser from its card
 - 📊 **Real-time status** - Visual indicators for server state
 - 🔔 **System tray integration** - Runs in background, accessible from tray
 - 🎨 **Beautiful UI** - Modern, responsive interface
@@ -167,7 +167,7 @@ The app runs an embedded Express.js server (same as the Node.js version) with:
 - **Hidden Files**: Automatically hides dotfiles and system files
 
 ### Browser Integration
-- **Auto-launch**: Opens default browser when server starts
+- **Open in Browser**: A folder card opens its address in your default browser
 - **External links**: Opens external links in default browser
 
 ### Cloud Sync
