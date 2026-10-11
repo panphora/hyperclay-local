@@ -12,7 +12,7 @@ These are the commitments that do not change. They are written down so nobody ha
 
 **ClayJS and the page layer are MIT-0, forever.** Everything that runs inside or alongside your HTML files, ClayJS and the in-page libraries, is MIT No Attribution: use it, copy it, remix it, ship it, no conditions, never fenced.
 
-**The file format belongs to everyone.** The malleable HTML file specification is CC0, and "malleable HTML" is a generic term that nobody, including us, will ever register or own.
+**The file format belongs to everyone.** The malleable document specification is CC0, and "malleable document" and the older "malleable HTML" are generic terms that nobody, including us, will ever register or own.
 
 **Is this open source? Not by the OSD, and we will not blur that.** The fenced software is source available: the source is public, you can read every line, build from it, modify it, and self-host it. It becomes open source, plain MIT, on the printed date, per version.
 

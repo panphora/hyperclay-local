@@ -11,7 +11,7 @@
 - An OS-aware hero download button backed by the canonical download list.
 - An interactive hero: transparent hotspots over the popover screenshot let visitors click the Serve and Sync switches and the bell to swap between the five captured UI states.
 - Live in-page SAP demos for example single-file apps.
-- Example malleable HTML snippets for HyperclayJS and plain JavaScript.
+- Example malleable document snippets for HyperclayJS and plain JavaScript.
 - FAQ and troubleshooting content for installation, source builds, saving, and safety.
 
 ## How To Use It

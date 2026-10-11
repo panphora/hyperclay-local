@@ -62,7 +62,7 @@ icon entirely (`app.dock.hide()`).
 
 1. Click the tray icon to open the popover panel (340x500 px).
 2. Click "Choose Folder..." and pick a folder in the native directory picker. The dialog
-   title is "Select folder containing your malleable HTML files".
+   title is "Select folder containing your malleable documents".
 3. **On a first run that is all you do: choosing the folder also starts the server**, so one
    click takes a fresh install to a served folder. After that the Serve switch at the bottom
    of the popover, or "Start Server" in the tray menu, turns it on and off.

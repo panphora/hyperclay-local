@@ -1,4 +1,4 @@
-// HTML Clay's shared live-sync worker: Malleable HTML File spec, section 10.
+// HTML Clay's shared live-sync worker: Malleable Document spec, section 10.
 //
 // One instance per origin (a SharedWorker named "clay-sync") holds the origin's
 // single /_/sync stream and fans its frames out to every page over MessagePorts.

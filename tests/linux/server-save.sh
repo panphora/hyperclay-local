@@ -1,6 +1,6 @@
 #!/bin/bash
 # The served folder works from a real browser: the app boots from the AppImage, the
-# Malleable HTML File conformance page saves a document from the app's own origin,
+# Malleable Document conformance page saves a document from the app's own origin,
 # and a LAN-style Host header is refused (documented loopback-only behaviour).
 source "$(dirname "$0")/lib.sh"
 command -v node >/dev/null || fail "node is required"

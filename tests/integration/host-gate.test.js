@@ -1,4 +1,4 @@
-// The Malleable HTML File conformance page, run against a real listener.
+// The Malleable Document conformance page, run against a real listener.
 //
 // It is a browser test and cannot be anything else. The spec requires exact origin
 // validation on every save, so a save can only be proven from the origin that will be
@@ -22,7 +22,7 @@ const run = promisify(execFile);
 const enabled = process.env.HOST_GATE === '1';
 const describeGate = enabled ? describe : describe.skip;
 
-describeGate('Malleable HTML File host conformance', () => {
+describeGate('Malleable Document host conformance', () => {
   let dir;
   let server;
 

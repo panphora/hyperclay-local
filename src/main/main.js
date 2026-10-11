@@ -603,7 +603,7 @@ function showAboutDialog() {
     type: 'info',
     title: 'About Hyperclay Local',
     message: `Hyperclay Local Server v${app.getVersion()}`,
-    detail: 'A local server for running your malleable HTML files offline.\n\nMade with \u2764\ufe0f for the Hyperclay platform.',
+    detail: 'A local server for running your malleable documents offline.\n\nMade with \u2764\ufe0f for the Hyperclay platform.',
     buttons: ['OK']
   });
 }
@@ -929,7 +929,7 @@ async function handleSelectFolder(event) {
   const parentWin = event ? BrowserWindow.fromWebContents(event.sender) : null;
   const result = await dialog.showOpenDialog(parentWin, {
     properties: ['openDirectory'],
-    title: 'Select folder containing your malleable HTML files'
+    title: 'Select folder containing your malleable documents'
   });
 
   if (result.canceled || result.filePaths.length === 0) return { success: false };
@@ -1851,7 +1851,7 @@ ipcMain.handle('show-options-menu', (event) => {
             type: 'info',
             title: 'About Hyperclay Local',
             message: `Hyperclay Local Server v${app.getVersion()}`,
-            detail: 'A local server for running your malleable HTML files offline.\n\nMade with \u2764\ufe0f for the Hyperclay platform.',
+            detail: 'A local server for running your malleable documents offline.\n\nMade with \u2764\ufe0f for the Hyperclay platform.',
             buttons: ['OK'],
             icon: iconPath || undefined
           });

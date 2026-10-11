@@ -8,7 +8,7 @@
 >
 > Plain answers: [hyperclay.com/host-program](https://hyperclay.com/host-program) · binding text in [LICENSE](LICENSE) · questions: license@hyperclay.com
 
-A beautiful, cross-platform desktop application for running your malleable HTML files locally with zero configuration.
+A beautiful, cross-platform desktop application for running your malleable documents locally with zero configuration.
 
 ## ✨ Features
 
@@ -26,7 +26,7 @@ A beautiful, cross-platform desktop application for running your malleable HTML 
 
 ## What is Hyperclay?
 
-Hyperclay lets you create **malleable HTML files** - powerful, self-contained files that you fully own and control. Think of it as combining the simplicity of Google Docs with the power of custom web applications.
+Hyperclay lets you create **malleable documents** - powerful, self-contained files that you fully own and control. Think of it as combining the simplicity of Google Docs with the power of custom web applications.
 
 ### The Big Idea
 - **Own Your Stack**: No vendor lock-in. Download your apps and run them anywhere.
@@ -36,8 +36,8 @@ Hyperclay lets you create **malleable HTML files** - powerful, self-contained fi
 
 ### How Hyperclay Apps Work
 
-#### Malleable HTML Files
-Your malleable HTML files can edit themselves in real-time. Change text, add features, modify layouts - everything saves automatically and becomes part of the app. Each app is a complete HTML document that includes:
+#### Malleable Documents
+Your malleable documents can edit themselves in real-time. Change text, add features, modify layouts - everything saves automatically and becomes part of the app. Each app is a complete HTML document that includes:
 - Your content and data
 - Styling (CSS) 
 - Behavior (JavaScript)
@@ -69,7 +69,7 @@ While [hyperclay.com](https://hyperclay.com) provides the full hosted experience
 - ✅ **Privacy first** - Your apps and data never leave your computer
 - ✅ **Future-proof** - Apps work forever, regardless of service status
 
-This local server provides the core functionality needed to run and edit your Hyperclay apps, ensuring you're never locked into any platform while still benefiting from the powerful malleable HTML concept.
+This local server provides the core functionality needed to run and edit your Hyperclay apps, ensuring you're never locked into any platform while still benefiting from the malleable document concept.
 
 ## 🚀 Quick Start
 
@@ -84,7 +84,7 @@ This local server provides the core functionality needed to run and edit your Hy
 
 2. **Install** and run the app
 
-3. **Select your folder** containing malleable HTML files
+3. **Select your folder** containing malleable documents
 
 4. **Click "Start Server"**
 
@@ -355,5 +355,5 @@ Contributions welcome! Areas that need help:
 
 ---
 
-**Made with ❤️ for Hyperclay** - The platform for malleable HTML files  
+**Made with ❤️ for Hyperclay** - The platform for malleable documents  
 Get the full experience at [hyperclay.com](https://hyperclay.com)

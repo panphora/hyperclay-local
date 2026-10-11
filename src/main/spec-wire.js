@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 
-// The Malleable HTML File conditional contract (spec §6), as this host implements it.
+// The Malleable Document conditional contract (spec §6), as this host implements it.
 // It is the third copy of these two functions: hyperclay has the ESM original at
 // server-lib/spec-wire.js and htmlclay has a Go twin at internal/specwire. An etag is
 // a promise made BETWEEN hosts — a document synced from hyperclay.com to this folder
