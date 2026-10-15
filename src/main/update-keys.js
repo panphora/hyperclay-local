@@ -3,4 +3,4 @@
 // public half goes here, the seed only into 1Password and the HLOCAL_UPDATE_SEED secret.
 // Keep the old key listed beside a new one for a release or two when rotating.
 // While this is empty, AppImages never update in place and keep the download link.
-module.exports = { UPDATE_PUBLIC_KEYS: [] };
+module.exports = { UPDATE_PUBLIC_KEYS: ['QQwrfiYymvtZjLao23jydATTbWnaAwB1pRwc347P2JA='] };
