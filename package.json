@@ -159,8 +159,8 @@
       ]
     },
     "nsis": {
-      "oneClick": true,
-      "perMachine": false,
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
       "artifactName": "HyperclayLocal-Setup-${version}.${ext}"
     },
     "publish": [

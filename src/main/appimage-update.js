@@ -3,8 +3,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
+const { compareVersions } = require('./updater');
 
-const SIGNATURE_DOMAIN = 'hyperclay-local-appimage-update';
+const SIGNATURE_DOMAIN = 'hyperclay-local-appimage-update-v2';
 const HEALTH_ENV = 'HCL_UPDATE_HEALTHY';
 
 // Waits for the old process to be gone, so the single-instance lock is free, then starts
@@ -45,8 +46,18 @@ done
 rm -f "$healthy"
 `;
 
-function signedMessage(fileName, sha512) {
-  return Buffer.from(`${SIGNATURE_DOMAIN}\n${fileName}\n${sha512}\n`, 'utf8');
+// The architecture and version are signed with the bytes, so a validly signed image
+// for another architecture, or an older signed release, never passes for this one.
+function signedMessage({ fileName, version, arch, sha512 }) {
+  return Buffer.from(`${SIGNATURE_DOMAIN}\n${version}\n${arch}\n${fileName}\n${sha512}\n`, 'utf8');
+}
+
+function appImageArch(fileName) {
+  return /-arm64\.AppImage$/.test(fileName) ? 'arm64' : 'x64';
+}
+
+function appImageFileName(version, arch) {
+  return `HyperclayLocal-${version}${arch === 'arm64' ? '-arm64' : ''}.AppImage`;
 }
 
 function publicKeyFromBase64(raw) {
@@ -56,10 +67,10 @@ function publicKeyFromBase64(raw) {
   });
 }
 
-function verifyAppImageSignature({ fileName, sha512, signature, publicKeys }) {
+function verifyAppImageSignature({ fileName, version, arch, sha512, signature, publicKeys }) {
   const sig = Buffer.from(String(signature || '').trim(), 'base64');
   if (sig.length !== 64) return false;
-  const message = signedMessage(fileName, sha512);
+  const message = signedMessage({ fileName, version, arch, sha512 });
   return publicKeys.some((key) => {
     try {
       return crypto.verify(null, message, publicKeyFromBase64(key), sig);
@@ -83,12 +94,38 @@ function stagedPathFor(appImage) {
   return path.join(path.dirname(appImage), `.${path.basename(appImage)}.new`);
 }
 
+// The highest version a verified signature has carried. A feed offering less is a
+// replay of an older signed release, however much newer than this build it is.
+function readSeenVersion(seenFile) {
+  try {
+    const version = fs.readFileSync(seenFile, 'utf8').trim();
+    return /^\d+\.\d+\.\d+$/.test(version) ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+function recordSeenVersion(seenFile, version) {
+  const seen = readSeenVersion(seenFile);
+  if (seen && compareVersions(version, seen) <= 0) return;
+  const temp = `${seenFile}.tmp`;
+  try {
+    fs.writeFileSync(temp, `${version}\n`);
+    fs.renameSync(temp, seenFile);
+  } catch (error) {
+    console.error('[UPDATE] Could not record the highest update version seen:', error.message);
+  }
+}
+
 // Copies the download next to the running AppImage (same filesystem, so the later rename
-// is atomic), then checks the copy itself: the feed's sha512 and our ed25519 signature.
-async function stageAppImage({ appImage, downloadedFile, info, feedUrl, fetchText, publicKeys }) {
+// is atomic), then checks the copy itself: the feed's sha512 and our ed25519 signature
+// over this version and architecture.
+async function stageAppImage({ appImage, downloadedFile, info, feedUrl, fetchText, publicKeys, arch = process.arch, seenFile = null }) {
+  const version = String(info.version);
+  const seen = seenFile ? readSeenVersion(seenFile) : null;
+  if (seen && compareVersions(version, seen) < 0) throw new Error(`The update feed offers v${version}, older than v${seen} already seen`);
   const fileName = path.basename(downloadedFile);
-  const expectedName = new RegExp(`^HyperclayLocal-${String(info.version).replace(/\./g, '\\.')}(-arm64)?\\.AppImage$`);
-  if (!expectedName.test(fileName)) throw new Error(`Unexpected update file ${fileName} for v${info.version}`);
+  if (fileName !== appImageFileName(version, arch)) throw new Error(`Unexpected update file ${fileName} for v${version} on ${arch}`);
   const entry = (info.files || [])
     .map((file) => ({ sha512: file.sha512, url: new URL(file.url, `${feedUrl}/`) }))
     .find((file) => path.posix.basename(file.url.pathname) === fileName);
@@ -106,10 +143,13 @@ async function stageAppImage({ appImage, downloadedFile, info, feedUrl, fetchTex
     }
     const sha512 = await sha512File(staged);
     if (sha512 !== entry.sha512) throw new Error(`${fileName} does not match the sha512 in the update feed`);
-    const signature = await fetchText(`${entry.url.href}.sig`);
-    if (!verifyAppImageSignature({ fileName, sha512, signature, publicKeys })) {
-      throw new Error(`${fileName} does not carry a valid Hyperclay Local signature`);
+    const sigUrl = new URL(entry.url.href);
+    sigUrl.pathname += '.sig';
+    const signature = await fetchText(sigUrl.href);
+    if (!verifyAppImageSignature({ fileName, version, arch, sha512, signature, publicKeys })) {
+      throw new Error(`${fileName} does not carry a valid Hyperclay Local signature for v${version} on ${arch}`);
     }
+    if (seenFile) recordSeenVersion(seenFile, version);
     return staged;
   } catch (error) {
     await fs.promises.rm(staged, { force: true });
@@ -193,7 +233,11 @@ module.exports = {
   takeHealthFile,
   markHealthy,
   readSkippedVersion,
+  readSeenVersion,
+  recordSeenVersion,
   signedMessage,
+  appImageArch,
+  appImageFileName,
   verifyAppImageSignature,
   sha512File,
   stagedPathFor,

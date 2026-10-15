@@ -6,6 +6,8 @@ require('dotenv').config();
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { macFeed, macUpdateZips, windowsFeed, windowsInstallers, linuxFeeds, linuxAppImages } = require('./update-feed');
 const { createSigner } = require('./update-signing');
+const { putImmutable } = require('./immutable-upload');
+const { appImageArch } = require('../src/main/appimage-update');
 
 // R2 Configuration
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
@@ -31,6 +33,29 @@ function getContentType(filename) {
     default:
       return 'application/octet-stream';
   }
+}
+
+function r2Client() {
+  return new S3Client({
+    region: "auto",
+    endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    credentials: {
+      accessKeyId: R2_ACCESS_KEY,
+      secretAccessKey: R2_SECRET_KEY,
+    },
+  });
+}
+
+async function uploadImmutableToR2(filePath, key, cacheControl) {
+  const outcome = await putImmutable({
+    client: r2Client(),
+    bucket: R2_BUCKET,
+    key,
+    body: fs.readFileSync(filePath),
+    contentType: getContentType(key),
+    cacheControl,
+  });
+  console.log(outcome === 'unchanged' ? `✅ ${key} already holds these bytes, left as is` : `✅ Uploaded ${key}`);
 }
 
 async function uploadToR2(filePath, key, cacheControl) {
@@ -205,7 +230,7 @@ async function main() {
   if (signer) {
     for (const file of linuxImages) {
       const sha512 = crypto.createHash('sha512').update(fs.readFileSync(path.join(executablesDir, file))).digest('base64');
-      fs.writeFileSync(path.join(executablesDir, `${file}.sig`), `${signer.sign(file, sha512)}\n`);
+      fs.writeFileSync(path.join(executablesDir, `${file}.sig`), `${signer.sign({ fileName: file, version, arch: appImageArch(file), sha512 })}\n`);
       linuxUpdateFiles.push(file, `${file}.sig`);
     }
   }
@@ -240,7 +265,7 @@ async function main() {
   const windowsSetup = windowsInstallers(files, version);
   for (const file of [...updateZips, ...windowsSetup, ...linuxUpdateFiles]) {
     try {
-      await uploadToR2(
+      await uploadImmutableToR2(
         path.join(executablesDir, file),
         `releases/${version}/${file}`,
         'public, max-age=31536000, immutable'

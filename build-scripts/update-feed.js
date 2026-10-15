@@ -6,10 +6,13 @@ function macUpdateZips(files, version) {
   return files.filter((file) => file.endsWith('-mac.zip') && file.includes(`-${version}-`)).sort();
 }
 
+// The sha512 query gives every distinct build its own cache key, so a CDN never answers
+// a feed with bytes cached for another one. Hex, because electron-updater matches "arm64"
+// and the arch name against the whole url string.
 function fileEntry(dir, filename, baseUrl) {
   const bytes = fs.readFileSync(path.join(dir, filename));
   return {
-    url: `${baseUrl}/${filename}`,
+    url: `${baseUrl}/${filename}?sha512=${crypto.createHash('sha512').update(bytes).digest('hex')}`,
     sha512: crypto.createHash('sha512').update(bytes).digest('base64'),
     size: bytes.length
   };

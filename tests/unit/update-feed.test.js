@@ -5,6 +5,8 @@ const crypto = require('crypto');
 const yaml = require('js-yaml');
 const { macFeed, macUpdateZips, windowsFeed, windowsInstallers, linuxFeeds, linuxAppImages } = require('../../build-scripts/update-feed');
 
+const hex = (content) => crypto.createHash('sha512').update(content).digest('hex');
+
 describe('mac update feed', () => {
   let dir;
 
@@ -35,8 +37,8 @@ describe('mac update feed', () => {
 
     expect(feed.version).toBe('1.31.0');
     expect(feed.files).toEqual([
-      { url: 'https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-1.31.0-mac.zip', sha512: x64Hash, size: 9 },
-      { url: 'https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-1.31.0-arm64-mac.zip', sha512: armHash, size: 12 }
+      { url: `https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-1.31.0-mac.zip?sha512=${hex('x64 bytes')}`, sha512: x64Hash, size: 9 },
+      { url: `https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-1.31.0-arm64-mac.zip?sha512=${hex('arm64 bytes!')}`, sha512: armHash, size: 12 }
     ]);
     expect(feed.path).toBe(feed.files[0].url);
     expect(feed.sha512).toBe(x64Hash);
@@ -85,8 +87,8 @@ describe('windows update feed', () => {
 
     expect(feed).toEqual({
       version: '1.31.0',
-      files: [{ url: 'https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-Setup-1.31.0.exe', sha512: hash, size: bytes.length }],
-      path: 'https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-Setup-1.31.0.exe',
+      files: [{ url: `https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-Setup-1.31.0.exe?sha512=${hex(bytes)}`, sha512: hash, size: bytes.length }],
+      path: `https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-Setup-1.31.0.exe?sha512=${hex(bytes)}`,
       sha512: hash,
       releaseDate: '2026-10-15T00:00:00.000Z'
     });
@@ -131,11 +133,11 @@ describe('linux update feeds', () => {
 
     expect(Object.keys(feeds).sort()).toEqual(['latest-linux-arm64.yml', 'latest-linux.yml']);
     expect(feeds['latest-linux.yml'].files).toEqual([{
-      url: 'https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-1.31.0.AppImage',
+      url: `https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-1.31.0.AppImage?sha512=${hex('x64 after the runtime swap')}`,
       sha512: crypto.createHash('sha512').update('x64 after the runtime swap').digest('base64'),
       size: 26
     }]);
-    expect(feeds['latest-linux-arm64.yml'].path).toBe('https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-1.31.0-arm64.AppImage');
+    expect(feeds['latest-linux-arm64.yml'].path).toBe(`https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-1.31.0-arm64.AppImage?sha512=${hex('arm64 after the runtime swap')}`);
     expect(feeds['latest-linux-arm64.yml'].sha512).toBe(crypto.createHash('sha512').update('arm64 after the runtime swap').digest('base64'));
   });
 
@@ -146,5 +148,69 @@ describe('linux update feeds', () => {
       'HyperclayLocal-1.31.0.AppImage',
       'HyperclayLocal-1.31.0.AppImage.sig'
     ], '1.31.0')).toEqual(['HyperclayLocal-1.31.0-arm64.AppImage', 'HyperclayLocal-1.31.0.AppImage']);
+  });
+});
+
+describe('feed urls through electron-updater 6.8.9', () => {
+  const { parseUpdateInfo, resolveFiles, findFile } = require('electron-updater/out/providers/Provider');
+  const { newBaseUrl } = require('electron-updater/out/util');
+  const FEED = 'https://local.hyperclay.com/updates/stable';
+  let dir;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'update-feed-urls-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // What GenericProvider does with a feed: parse it, resolve each url against the feed's
+  // base url, and pick the file by the extension of its pathname.
+  function resolve(content, name, extension, not) {
+    const info = parseUpdateInfo(content, name, new URL(`${FEED}/${name}`));
+    return findFile(resolveFiles(info, newBaseUrl(FEED)), extension, not);
+  }
+
+  const options = (version = '1.31.0') => ({ dir, version, baseUrl: `https://local.hyperclay.com/releases/${version}`, releaseDate: 'd' });
+
+  test('every platform keeps the query on the request and a plain file name for the cache', () => {
+    fs.writeFileSync(path.join(dir, 'HyperclayLocal-1.31.0-mac.zip'), 'x64 zip');
+    fs.writeFileSync(path.join(dir, 'HyperclayLocal-1.31.0-arm64-mac.zip'), 'arm64 zip');
+    fs.writeFileSync(path.join(dir, 'HyperclayLocal-Setup-1.31.0.exe'), 'exe');
+    fs.writeFileSync(path.join(dir, 'HyperclayLocal-1.31.0.AppImage'), 'appimage');
+    const cases = [
+      process.arch === 'arm64'
+        ? [resolve(macFeed(options()), 'latest-mac.yml', 'zip', ['pkg', 'dmg']), 'HyperclayLocal-1.31.0-arm64-mac.zip', 'arm64 zip']
+        : [resolve(macFeed(options()), 'latest-mac.yml', 'zip', ['pkg', 'dmg']), 'HyperclayLocal-1.31.0-mac.zip', 'x64 zip'],
+      [resolve(windowsFeed(options()), 'latest.yml', 'exe'), 'HyperclayLocal-Setup-1.31.0.exe', 'exe'],
+      [resolve(linuxFeeds(options())[0][1], 'latest-linux.yml', 'AppImage'), 'HyperclayLocal-1.31.0.AppImage', 'appimage']
+    ];
+    for (const [file, name, bytes] of cases) {
+      expect(file.url.origin + file.url.pathname).toBe(`https://local.hyperclay.com/releases/1.31.0/${name}`);
+      expect(file.url.search).toBe(`?sha512=${hex(bytes)}`);
+      expect(path.basename(decodeURIComponent(file.url.pathname))).toBe(name);
+    }
+  });
+
+  test('only the arm64 zip matches MacUpdater\'s arm64 test, so the hex query never confuses it', () => {
+    fs.writeFileSync(path.join(dir, 'HyperclayLocal-1.31.0-mac.zip'), 'x64 zip');
+    fs.writeFileSync(path.join(dir, 'HyperclayLocal-1.31.0-arm64-mac.zip'), 'arm64 zip');
+    const info = parseUpdateInfo(macFeed(options()), 'latest-mac.yml', new URL(`${FEED}/latest-mac.yml`));
+    const files = resolveFiles(info, newBaseUrl(FEED));
+    const isArm64File = (file) => file.url.pathname.includes('arm64') || (file.info.url && file.info.url.includes('arm64'));
+    expect(files.map(isArm64File)).toEqual([false, true]);
+    for (const arch of ['x64', 'arm64', 'ia32']) {
+      expect(files.filter((file) => !file.info.url.includes(`-${arch}`) && file.info.url.split('?')[1].includes(arch))).toEqual([]);
+    }
+  });
+
+  test('a rebuild with other bytes gets another url', () => {
+    const file = path.join(dir, 'HyperclayLocal-Setup-2.0.0.exe');
+    fs.writeFileSync(file, 'first fixture bytes');
+    const first = yaml.load(windowsFeed(options('2.0.0'))).files[0].url;
+    fs.writeFileSync(file, 'rebuilt fixture bytes');
+    const rebuilt = yaml.load(windowsFeed(options('2.0.0'))).files[0].url;
+    expect(rebuilt).not.toBe(first);
   });
 });

@@ -1,6 +1,6 @@
 const { EventEmitter } = require('events');
 const { UUID } = require('builder-util-runtime');
-const { createUpdater, canInstallInPlace, parseInstallLocation, readWindowsInstallLocation, WINDOWS_INSTALL_KEY } = require('../../src/main/updater');
+const { createUpdater, canInstallInPlace, parseInstallLocation, readWindowsInstallLocation, WINDOWS_INSTALL_KEY, WINDOWS_MACHINE_INSTALL_KEY } = require('../../src/main/updater');
 
 function fakeAutoUpdater() {
   const updater = new EventEmitter();
@@ -46,6 +46,22 @@ describe('canInstallInPlace on Windows', () => {
     expect(canInstallInPlace({ ...base, installLocation: 'D:\\Apps\\HyperclayLocal' })).toBe(false);
     expect(canInstallInPlace({ ...base, installLocation: 'C:\\Users\\ana\\AppData\\Local\\Programs\\HyperclayLocal', canWrite: () => false })).toBe(false);
     expect(canInstallInPlace({ ...base, isPackaged: false, installLocation: 'C:\\Users\\ana\\AppData\\Local\\Programs\\HyperclayLocal' })).toBe(false);
+  });
+
+  test('a per-user install beside a per-machine one keeps the download link', () => {
+    expect(canInstallInPlace({ ...base, installLocation: 'C:\\Users\\ana\\AppData\\Local\\Programs\\HyperclayLocal', machineInstallLocation: 'C:\\Program Files\\HyperclayLocal' })).toBe(false);
+  });
+
+  test('a per-user install in a folder the user chose can install in place', () => {
+    const chosen = 'D:\\Apps\\Hyperclay Local';
+    expect(canInstallInPlace({ ...base, exePath: `${chosen}\\HyperclayLocal.exe`, installLocation: chosen })).toBe(true);
+  });
+
+  test('the per-machine key is read from HKLM under the same guid', () => {
+    expect(WINDOWS_MACHINE_INSTALL_KEY).toBe(WINDOWS_INSTALL_KEY.replace(/^HKCU/, 'HKLM'));
+    const exec = jest.fn(() => '    InstallLocation    REG_SZ    C:\\Program Files\\HyperclayLocal\r\n');
+    expect(readWindowsInstallLocation(exec, WINDOWS_MACHINE_INSTALL_KEY)).toBe('C:\\Program Files\\HyperclayLocal');
+    expect(exec.mock.calls[0][1]).toEqual(['query', WINDOWS_MACHINE_INSTALL_KEY, '/v', 'InstallLocation']);
   });
 
   test('the registry key is the one electron-builder derives from the appId', () => {

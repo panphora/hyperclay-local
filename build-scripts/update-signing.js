@@ -37,7 +37,7 @@ function createSigner(seedBase64, publicKeys = UPDATE_PUBLIC_KEYS) {
   }
   return {
     publicKey,
-    sign: (fileName, sha512) => crypto.sign(null, signedMessage(fileName, sha512), key).toString('base64')
+    sign: ({ fileName, version, arch, sha512 }) => crypto.sign(null, signedMessage({ fileName, version, arch, sha512 }), key).toString('base64')
   };
 }
 

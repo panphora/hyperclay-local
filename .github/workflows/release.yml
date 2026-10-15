@@ -405,18 +405,29 @@ jobs:
             exit 1
           }
 
-          # Install the way a user does (per user, no UAC) and check what lands on disk,
-          # through the same registry value the app reads to decide it can update itself.
+          # Install silently, which the assisted installer does per user (no UAC) when no
+          # install exists yet, and check what lands on disk through the same registry
+          # value the app reads to decide it can update itself.
           Start-Process -FilePath $installer -ArgumentList "/S" -Wait
           $key = "HKCU:\Software\56279e69-a1ca-58cc-a483-19be13420d85"
           $dir = (Get-ItemProperty -Path $key -Name InstallLocation).InstallLocation
           Write-Host "Installed to: $dir"
           if (-not $dir.StartsWith($env:LOCALAPPDATA, [System.StringComparison]::OrdinalIgnoreCase)) {
-            Write-Error "The one-click installer did not install per user: $dir"
+            Write-Error "The installer did not install per user: $dir"
             exit 1
           }
           Assert-Signed (Join-Path $dir "HyperclayLocal.exe")
           Assert-Signed (Join-Path $dir "Uninstall HyperclayLocal.exe")
+
+          # electron-updater reinstalls with --updated /S. The assisted installer must find
+          # the per-user install through HKCU and reinstall into the same folder.
+          Start-Process -FilePath $installer -ArgumentList "--updated","/S" -Wait
+          $again = (Get-ItemProperty -Path $key -Name InstallLocation).InstallLocation
+          if ($again -ne $dir) {
+            Write-Error "A silent update moved the install: $dir -> $again"
+            exit 1
+          }
+          Assert-Signed (Join-Path $dir "HyperclayLocal.exe")
         shell: pwsh
 
       - run: node build-scripts/move-executables.js windows

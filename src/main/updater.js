@@ -7,6 +7,7 @@ const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
 // NSIS keys a per-user install under HKCU\Software\<guid>, the guid being a UUIDv5 of
 // the appId. A per-machine install keeps it under HKLM and needs elevation to update.
 const WINDOWS_INSTALL_KEY = 'HKCU\\Software\\56279e69-a1ca-58cc-a483-19be13420d85';
+const WINDOWS_MACHINE_INSTALL_KEY = 'HKLM\\Software\\56279e69-a1ca-58cc-a483-19be13420d85';
 
 function compareVersions(v1, v2) {
   const parts1 = v1.split('.').map(Number);
@@ -22,16 +23,18 @@ function compareVersions(v1, v2) {
 
 // Squirrel replaces the bundle where it sits, so it needs one it can write, and never a
 // translocated or disk-image copy. The NSIS installer reinstalls into the per-user
-// location it recorded, which must be the folder this exe runs from. An AppImage is
-// swapped by our own code, which needs its folder writable and a key to check updates.
-function canInstallInPlace({ platform, isPackaged, exePath, canWrite, installLocation = null, appImage = null, hasUpdateKeys = false }) {
+// location it recorded, which must be the folder this exe runs from. When a per-machine
+// install exists too, the assisted installer elevates even a silent update and installs
+// per machine, so that case keeps the download link. An AppImage is swapped by our own
+// code, which needs its folder writable and a key to check updates.
+function canInstallInPlace({ platform, isPackaged, exePath, canWrite, installLocation = null, machineInstallLocation = null, appImage = null, hasUpdateKeys = false }) {
   if (!isPackaged) return false;
   if (platform === 'linux') {
     if (!appImage || !hasUpdateKeys || !path.posix.isAbsolute(appImage)) return false;
     return canWrite(appImage) && canWrite(path.posix.dirname(appImage));
   }
   if (platform === 'win32') {
-    if (!installLocation) return false;
+    if (!installLocation || machineInstallLocation) return false;
     const dir = path.win32.dirname(exePath);
     return path.win32.resolve(installLocation).toLowerCase() === dir.toLowerCase() && canWrite(dir);
   }
@@ -47,9 +50,9 @@ function parseInstallLocation(regOutput) {
   return match ? match[1] : null;
 }
 
-function readWindowsInstallLocation(execFileSync) {
+function readWindowsInstallLocation(execFileSync, key = WINDOWS_INSTALL_KEY) {
   try {
-    return parseInstallLocation(execFileSync('reg', ['query', WINDOWS_INSTALL_KEY, '/v', 'InstallLocation'], { encoding: 'utf8', windowsHide: true }));
+    return parseInstallLocation(execFileSync('reg', ['query', key, '/v', 'InstallLocation'], { encoding: 'utf8', windowsHide: true }));
   } catch {
     return null;
   }
@@ -181,4 +184,4 @@ function createUpdater({
   return { start, check, install, get };
 }
 
-module.exports = { createUpdater, canInstallInPlace, compareVersions, parseInstallLocation, readWindowsInstallLocation, WINDOWS_INSTALL_KEY, FEED_URL };
+module.exports = { createUpdater, canInstallInPlace, compareVersions, parseInstallLocation, readWindowsInstallLocation, WINDOWS_INSTALL_KEY, WINDOWS_MACHINE_INSTALL_KEY, FEED_URL };

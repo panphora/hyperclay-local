@@ -31,7 +31,7 @@ const { getAccounts } = require('../sync-engine/api-client');
 const { buildCards, worstState, trayIconVariant, trayTooltip, switchSublines, toLine, trayMenuModel } = require('./ui/card-model');
 const { createNewTeamNotifier } = require('./new-team-notifier');
 const { isAllowedExternalUrl, requireRoot, requireSession, requireAccount, cardMenuModel, disconnectDialog, removeFolderDialog, movePortDialog, flattenConflicts, flattenBlocked, ACTIVITY_THROTTLE_MS, createThrottle, profilePatch, accountSettingsUrl, profileErrorMessage } = require('./ui/main-ipc');
-const { createUpdater, canInstallInPlace, readWindowsInstallLocation, FEED_URL } = require('./updater');
+const { createUpdater, canInstallInPlace, readWindowsInstallLocation, WINDOWS_MACHINE_INSTALL_KEY, FEED_URL } = require('./updater');
 const { stageAppImage, commitAppImage, restartAppImage, takeHealthFile, markHealthy, readSkippedVersion } = require('./appimage-update');
 const { UPDATE_PUBLIC_KEYS } = require('./update-keys');
 
@@ -873,6 +873,7 @@ async function drainSyncForUpdate() {
 function startUpdater() {
   const appImage = process.platform === 'linux' ? process.env.APPIMAGE || null : null;
   const skipFile = path.join(app.getPath('userData'), 'update-skip');
+  const seenFile = path.join(app.getPath('userData'), 'update-seen');
   let stagedAppImage = null;
   let stagedVersion = null;
   const installInPlace = canInstallInPlace({
@@ -880,6 +881,7 @@ function startUpdater() {
     isPackaged: app.isPackaged,
     exePath: app.getPath('exe'),
     installLocation: process.platform === 'win32' ? readWindowsInstallLocation(require('child_process').execFileSync) : null,
+    machineInstallLocation: process.platform === 'win32' ? readWindowsInstallLocation(require('child_process').execFileSync, WINDOWS_MACHINE_INSTALL_KEY) : null,
     appImage,
     hasUpdateKeys: UPDATE_PUBLIC_KEYS.length > 0,
     canWrite: (target) => {
@@ -923,6 +925,7 @@ function startUpdater() {
         info,
         feedUrl: FEED_URL,
         publicKeys: UPDATE_PUBLIC_KEYS,
+        seenFile,
         fetchText: async (url) => {
           const response = await fetch(url, { cache: 'no-store' });
           if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);

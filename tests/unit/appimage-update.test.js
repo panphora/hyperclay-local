@@ -12,7 +12,9 @@ const {
   stagedPathFor,
   stageAppImage,
   commitAppImage,
-  restartAppImage
+  restartAppImage,
+  readSeenVersion,
+  appImageArch
 } = require('../../src/main/appimage-update');
 const { createSigner, keygen } = require('../../build-scripts/update-signing');
 
@@ -29,25 +31,34 @@ describe('AppImage update signatures', () => {
   const signer = createSigner(seed, [publicKey]);
   const name = 'HyperclayLocal-1.31.0.AppImage';
   const digest = sha512('new image');
+  const signed = { fileName: name, version: '1.31.0', arch: 'x64', sha512: digest };
 
   test('a signature from the release key verifies', () => {
     expect(signer.publicKey).toBe(publicKey);
-    expect(verifyAppImageSignature({ fileName: name, sha512: digest, signature: signer.sign(name, digest), publicKeys: [publicKey] })).toBe(true);
+    expect(verifyAppImageSignature({ ...signed, signature: signer.sign(signed), publicKeys: [publicKey] })).toBe(true);
   });
 
   test('a signature for other bytes, another file name or another key does not', () => {
     const other = keygen();
-    const signature = signer.sign(name, digest);
-    expect(verifyAppImageSignature({ fileName: name, sha512: sha512('other'), signature, publicKeys: [publicKey] })).toBe(false);
-    expect(verifyAppImageSignature({ fileName: 'HyperclayLocal-1.31.0-arm64.AppImage', sha512: digest, signature, publicKeys: [publicKey] })).toBe(false);
-    expect(verifyAppImageSignature({ fileName: name, sha512: digest, signature, publicKeys: [other.publicKey] })).toBe(false);
-    expect(verifyAppImageSignature({ fileName: name, sha512: digest, signature: 'not a signature', publicKeys: [publicKey] })).toBe(false);
-    expect(verifyAppImageSignature({ fileName: name, sha512: digest, signature, publicKeys: [] })).toBe(false);
+    const signature = signer.sign(signed);
+    expect(verifyAppImageSignature({ ...signed, sha512: sha512('other'), signature, publicKeys: [publicKey] })).toBe(false);
+    expect(verifyAppImageSignature({ ...signed, fileName: 'HyperclayLocal-1.31.0-arm64.AppImage', signature, publicKeys: [publicKey] })).toBe(false);
+    expect(verifyAppImageSignature({ ...signed, signature, publicKeys: [other.publicKey] })).toBe(false);
+    expect(verifyAppImageSignature({ ...signed, signature: 'not a signature', publicKeys: [publicKey] })).toBe(false);
+    expect(verifyAppImageSignature({ ...signed, signature, publicKeys: [] })).toBe(false);
+  });
+
+  test('the signature binds the architecture and the version', () => {
+    const signature = signer.sign(signed);
+    expect(verifyAppImageSignature({ ...signed, arch: 'arm64', signature, publicKeys: [publicKey] })).toBe(false);
+    expect(verifyAppImageSignature({ ...signed, version: '1.32.0', signature, publicKeys: [publicKey] })).toBe(false);
+    expect(appImageArch('HyperclayLocal-1.31.0-arm64.AppImage')).toBe('arm64');
+    expect(appImageArch(name)).toBe('x64');
   });
 
   test('either of two listed keys is accepted during a rotation', () => {
     const next = keygen();
-    expect(verifyAppImageSignature({ fileName: name, sha512: digest, signature: signer.sign(name, digest), publicKeys: [next.publicKey, publicKey] })).toBe(true);
+    expect(verifyAppImageSignature({ ...signed, signature: signer.sign(signed), publicKeys: [next.publicKey, publicKey] })).toBe(true);
   });
 
   test('no seed means no signer, and a seed the app does not know fails', () => {
@@ -83,9 +94,12 @@ describeShell('staging and swapping an AppImage', () => {
     return { version: '1.31.0', downloadedFile: downloaded, files: [{ url, sha512: digest, size: 9 }] };
   }
 
+  const sign = (digest = sha512('new image'), { version = '1.31.0', arch = 'x64', fileName = 'HyperclayLocal-1.31.0.AppImage' } = {}) =>
+    signer.sign({ fileName, version, arch, sha512: digest });
+
   function stage(overrides = {}) {
-    const fetchText = jest.fn().mockResolvedValue(signer.sign('HyperclayLocal-1.31.0.AppImage', sha512('new image')));
-    const options = { appImage, downloadedFile: downloaded, info: info(), feedUrl: FEED_URL, fetchText, publicKeys: [publicKey], ...overrides };
+    const fetchText = jest.fn().mockResolvedValue(sign());
+    const options = { appImage, downloadedFile: downloaded, info: info(), feedUrl: FEED_URL, fetchText, publicKeys: [publicKey], arch: 'x64', ...overrides };
     return { promise: stageAppImage(options), fetchText };
   }
 
@@ -110,7 +124,7 @@ describeShell('staging and swapping an AppImage', () => {
   });
 
   test('a bad signature is refused and the staged copy removed', async () => {
-    await expect(stage({ fetchText: jest.fn().mockResolvedValue(signer.sign('HyperclayLocal-1.31.0.AppImage', sha512('other'))) }).promise)
+    await expect(stage({ fetchText: jest.fn().mockResolvedValue(sign(sha512('other'))) }).promise)
       .rejects.toThrow(/signature/);
     expect(fs.existsSync(stagedPathFor(appImage))).toBe(false);
     await expect(stage({ fetchText: jest.fn().mockRejectedValue(new Error('HTTP 404')) }).promise).rejects.toThrow(/404/);
@@ -121,6 +135,43 @@ describeShell('staging and swapping an AppImage', () => {
     await expect(stage({ info: info(undefined, 'https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-1.31.0-arm64.AppImage') }).promise)
       .rejects.toThrow(/does not list/);
     await expect(stage({ info: { ...info(), version: '1.32.0' } }).promise).rejects.toThrow(/Unexpected update file/);
+  });
+
+  test('the signature file keeps the feed url query and goes after the path', async () => {
+    const { promise, fetchText } = stage({ info: info(undefined, 'https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-1.31.0.AppImage?sha512=abc123') });
+    await promise;
+    expect(fetchText).toHaveBeenCalledWith('https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-1.31.0.AppImage.sig?sha512=abc123');
+  });
+
+  test('an image for the other architecture is refused, even validly signed for it', async () => {
+    const armName = 'HyperclayLocal-1.31.0-arm64.AppImage';
+    const armDownload = path.join(dir, 'cache', armName);
+    fs.writeFileSync(armDownload, 'new image');
+    const armInfo = { version: '1.31.0', downloadedFile: armDownload, files: [{ url: `https://local.hyperclay.com/releases/1.31.0/${armName}`, sha512: sha512('new image'), size: 9 }] };
+    const armSignature = sign(undefined, { arch: 'arm64', fileName: armName });
+    await expect(stage({ downloadedFile: armDownload, info: armInfo, fetchText: jest.fn().mockResolvedValue(armSignature) }).promise)
+      .rejects.toThrow(/Unexpected update file/);
+    await expect(stage({ arch: 'arm64', downloadedFile: armDownload, info: armInfo, fetchText: jest.fn().mockResolvedValue(armSignature) }).promise)
+      .resolves.toBe(stagedPathFor(appImage));
+    await expect(stage({ arch: 'arm64', downloadedFile: armDownload, info: armInfo, fetchText: jest.fn().mockResolvedValue(sign(undefined, { fileName: armName })) }).promise)
+      .rejects.toThrow(/signature/);
+  });
+
+  test('records the highest verified version and refuses an older feed after it', async () => {
+    const seenFile = path.join(dir, 'update-seen');
+    fs.rmSync(await stage({ seenFile }).promise);
+    expect(readSeenVersion(seenFile)).toBe('1.31.0');
+
+    fs.writeFileSync(seenFile, '1.32.0\n');
+    await expect(stage({ seenFile }).promise).rejects.toThrow(/older than v1\.32\.0/);
+    expect(fs.existsSync(stagedPathFor(appImage))).toBe(false);
+    expect(readSeenVersion(seenFile)).toBe('1.32.0');
+  });
+
+  test('a failed signature records nothing as seen', async () => {
+    const seenFile = path.join(dir, 'update-seen');
+    await expect(stage({ seenFile, fetchText: jest.fn().mockResolvedValue(sign(sha512('other'))) }).promise).rejects.toThrow(/signature/);
+    expect(readSeenVersion(seenFile)).toBeNull();
   });
 
   test('commit keeps the old image as .prev and puts the new one under the same name', async () => {
