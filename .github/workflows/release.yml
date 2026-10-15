@@ -365,6 +365,8 @@ jobs:
             -CertificateProfileName "HyperclayLocalPublicCertProfile" `
             -Files "$installerPath" `
             -FileDigest SHA256 `
+            -TimestampRfc3161 "http://timestamp.acs.microsoft.com" `
+            -TimestampDigest SHA256 `
             -Verbose
         shell: pwsh
 
@@ -378,6 +380,16 @@ jobs:
             Write-Error "Signature verification failed!"
             exit 1
           }
+          # Azure Trusted Signing issues three-day certificates, so an untimestamped
+          # signature stops validating three days after the release and Windows then
+          # treats the installer as unsigned. Status is "Valid" here either way, because
+          # the certificate has not expired yet on the runner, so the timestamp is the
+          # only thing that proves the signature will still verify for a downloader.
+          if (-not $sig.TimeStamperCertificate) {
+            Write-Error "Signature has no RFC3161 timestamp; it would expire with the certificate."
+            exit 1
+          }
+          Write-Host "Timestamped by: $($sig.TimeStamperCertificate.Subject)"
         shell: pwsh
 
       - run: node build-scripts/move-executables.js windows
