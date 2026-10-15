@@ -121,7 +121,7 @@ describe('release.js wiring', () => {
     return source.slice(begin, finish);
   }
 
-  function adapter({ skip = false, verdict = { ok: true, summary: '16 passed, 16 total' } } = {}) {
+  function adapter({ skip = false, noInstall = false, verdict = { ok: true, summary: '16 passed, 16 total' } } = {}) {
     const events = [];
     const ui = jest.fn(() => { events.push('ui'); return verdict; });
     const runRelease = jest.fn(async () => ({ outcome: 'complete', state: { version: '1.2.3' } }));
@@ -131,14 +131,14 @@ describe('release.js wiring', () => {
       FILES_TO_UPDATE: ['package.json', 'README.md', 'website/index.html'],
       SKIP_UI_PASS: skip,
       TRANSCRIPT: '/fixture/release.log',
-      flags: { skipUiPass: skip },
+      flags: { skipUiPass: skip, noInstall },
       colors: { cyan: '', reset: '' },
       AbortController,
       process: { chdir: jest.fn(), once: jest.fn(), removeListener: jest.fn() },
       console: { log: jest.fn() },
       initLog: jest.fn(),
       chooseBump: jest.fn(),
-      installLocally: jest.fn(),
+      updateThisMac: jest.fn(),
       log: jest.fn(),
       logSection: jest.fn(),
       logInfo: jest.fn(),
@@ -163,7 +163,7 @@ describe('release.js wiring', () => {
       },
     };
     require('vm').runInNewContext(
-      sourceBetween('function verifyUiPass() {', 'async function installLocally(') +
+      sourceBetween('function verifyUiPass() {', 'async function updateThisMac(') +
       sourceBetween('async function newBuildGates({ kind }) {', '\nmain().catch('),
       context,
       { filename: RELEASE }
@@ -214,8 +214,16 @@ describe('release.js wiring', () => {
     expect(options).toEqual({ repoRoot: context.ROOT_DIR, flags: context.flags });
     expect(dependencies.newBuildGates).toBe(context.newBuildGates);
     expect(dependencies.chooseBump).toBe(context.chooseBump);
-    expect(dependencies.install).toBe(context.installLocally);
+    expect(dependencies.install).toBe(context.updateThisMac);
     expect(dependencies.signal.aborted).toBe(false);
     expect(context.process.removeListener).toHaveBeenCalledTimes(2);
+  });
+
+  test('--no-install hands the coordinator no installer, so this Mac is left to hypersave', async () => {
+    const { context, runRelease } = adapter({ noInstall: true });
+    await context.main();
+    const [, dependencies] = runRelease.mock.calls[0];
+    expect(dependencies.install).toBeUndefined();
+    expect(context.updateThisMac).not.toHaveBeenCalled();
   });
 });

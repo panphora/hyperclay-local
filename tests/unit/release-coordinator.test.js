@@ -456,6 +456,7 @@ function flagsFor(overrides = {}) {
     retrySite: false,
     ignoreWindow: false,
     skipUiPass: false,
+    noInstall: false,
     help: false,
     ...overrides
   };

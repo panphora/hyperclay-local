@@ -1,7 +1,7 @@
 'use strict';
 
 const VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
-const KEYS = ['version', 'bump', 'resume', 'dryRun', 'reconcileOnly', 'resumeSource', 'retrySite', 'ignoreWindow', 'skipUiPass', 'help'];
+const KEYS = ['version', 'bump', 'resume', 'dryRun', 'reconcileOnly', 'resumeSource', 'retrySite', 'ignoreWindow', 'skipUiPass', 'noInstall', 'help'];
 function invalid(message) {
   return Object.assign(new Error(message), { code: 'RELEASE_OPTIONS_INVALID' });
 }
@@ -28,7 +28,7 @@ function bumpVersion(version, bump) {
 function validateOptions(f) {
   if (!f || typeof f !== 'object' || Array.isArray(f) || Object.keys(f).length !== KEYS.length ||
       KEYS.some(key => !Object.prototype.hasOwnProperty.call(f, key))) throw invalid('Invalid release flags');
-  for (const key of ['resume', 'dryRun', 'reconcileOnly', 'retrySite', 'ignoreWindow', 'skipUiPass', 'help']) {
+  for (const key of ['resume', 'dryRun', 'reconcileOnly', 'retrySite', 'ignoreWindow', 'skipUiPass', 'noInstall', 'help']) {
     if (typeof f[key] !== 'boolean') throw invalid(`Invalid ${key} flag`);
   }
   if (f.version !== null) requireVersion(f.version);
@@ -47,12 +47,12 @@ function validateOptions(f) {
 function parseReleaseOptions(argv) {
   if (!Array.isArray(argv) || argv.some(arg => typeof arg !== 'string')) throw invalid('Arguments must be strings');
   const f = { version: null, bump: null, resume: false, dryRun: false, reconcileOnly: false,
-    resumeSource: null, retrySite: false, ignoreWindow: false, skipUiPass: false, help: false };
+    resumeSource: null, retrySite: false, ignoreWindow: false, skipUiPass: false, noInstall: false, help: false };
   for (const arg of argv) {
     if (arg.startsWith('--version=')) { f.version = requireVersion(arg.slice(10)); continue; }
     if (arg.startsWith('--resume-source=')) { f.resumeSource = arg.slice(16); continue; }
     const key = { '--resume': 'resume', '--dry-run': 'dryRun', '--reconcile-only': 'reconcileOnly',
-      '--retry-site': 'retrySite', '--ignore-window': 'ignoreWindow', '--skip-ui-pass': 'skipUiPass',
+      '--retry-site': 'retrySite', '--ignore-window': 'ignoreWindow', '--skip-ui-pass': 'skipUiPass', '--no-install': 'noInstall',
       '--help': 'help', '-h': 'help' }[arg];
     if (key) { f[key] = true; continue; }
     if (['--major', '--minor', '--patch'].includes(arg)) { f.bump = arg.slice(2); continue; }

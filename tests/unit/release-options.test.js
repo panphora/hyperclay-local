@@ -21,7 +21,7 @@ const WINDOW_MESSAGE = 'Release mutations wait until after 18:00 America/New_Yor
 
 const DEFAULT_OPTIONS = Object.freeze({
   version: null, bump: null, resume: false, dryRun: false, reconcileOnly: false,
-  resumeSource: null, retrySite: false, ignoreWindow: false, skipUiPass: false, help: false
+  resumeSource: null, retrySite: false, ignoreWindow: false, skipUiPass: false, noInstall: false, help: false
 });
 
 const SHA40 = 'a1b2c3d4e5f6'.repeat(3) + 'a1b2';
@@ -143,6 +143,9 @@ describe('release caller options', () => {
       .toEqual({ ...DEFAULT_OPTIONS, resume: true, resumeSource: SHA40 });
     expect(options(['--ignore-window'])).toEqual({ ...DEFAULT_OPTIONS, ignoreWindow: true });
     expect(options(['--skip-ui-pass'])).toEqual({ ...DEFAULT_OPTIONS, skipUiPass: true });
+    expect(options(['--no-install'])).toEqual({ ...DEFAULT_OPTIONS, noInstall: true });
+    expect(options(['--ignore-window', '--no-install'])).toEqual({ ...DEFAULT_OPTIONS, ignoreWindow: true, noInstall: true });
+    expect(options(['--resume', '--no-install'])).toEqual({ ...DEFAULT_OPTIONS, resume: true, noInstall: true });
     expect(options(['--version=0.0.0'])).toEqual({ ...DEFAULT_OPTIONS, version: '0.0.0' });
     expect(parseReleaseOptions([])).not.toBe(parseReleaseOptions([]));
   });

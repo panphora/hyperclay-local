@@ -1,9 +1,7 @@
 #!/usr/bin/env node
 
-const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 
 if (process.argv.slice(2).includes('--status-json')) {
   const args = process.argv.slice(2);
@@ -64,7 +62,7 @@ try {
   return;
 }
 if (flags.help) {
-  console.log('Usage: node scripts/release.js [--major|--minor|--patch|--version=X.Y.Z] [--resume] [--dry-run]');
+  console.log('Usage: node scripts/release.js [--major|--minor|--patch|--version=X.Y.Z] [--resume] [--dry-run] [--no-install]');
   console.log('');
   console.log('Finish the recorded release before starting another version. Nothing prompts.');
   console.log('  --major|--minor|--patch  Choose the next version bump');
@@ -76,6 +74,7 @@ if (flags.help) {
   console.log('  --resume-source=SHA     With --resume, repair failed CI at a different full source SHA');
   console.log('  --retry-site            With --resume, explicitly retry a recorded unknown site attempt');
   console.log('  --skip-ui-pass          Explicitly skip the Electron UI suite for new builds');
+  console.log('  --no-install            Leave this Mac\'s app alone; hypersave runs the update canary itself');
   console.log('  --ignore-window         Accepted for compatibility; does not bypass the time policy');
   console.log('  --status-json           Alone, print local read-only release status');
   console.log('');
@@ -162,10 +161,6 @@ function logWarn(message) {
 // UTILITIES
 // ============================================
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
 function elapsed(since) {
   const seconds = Math.round((Date.now() - since) / 1000);
   return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`;
@@ -214,35 +209,23 @@ function verifyUiPass() {
   throw Object.assign(new Error(`The Electron UI suite did not pass: ${verdict.reason}`), { code: 'RELEASE_UI_FAILED' });
 }
 
-// Kept, per the decision to keep auto-install: the DMG no longer exists locally, so
-// it comes back down from R2. Best-effort. A release is already published by this
-// point, and failing to install it on one machine is not a failed release.
-async function installLocally(version) {
-  const name = `HyperclayLocal-${version}-arm64.dmg`;
-  const dmgPath = path.join(os.tmpdir(), name);
-  const volume = `/Volumes/HyperclayLocal ${version}-arm64`;
-
-  try {
-    logInfo(`Downloading ${name}...`);
-    execSafe(`curl -fsSL -o "${dmgPath}" "https://local.hyperclay.com/${name}"`);
-
-    try { execSafe('pkill -f "HyperclayLocal.app"'); } catch {}
-    await sleep(1000);
-
-    execSafe(`hdiutil attach "${dmgPath}" -nobrowse -quiet`);
-    execSafe('rm -rf "/Applications/HyperclayLocal.app"');
-    execSafe(`cp -R "${volume}/HyperclayLocal.app" "/Applications/HyperclayLocal.app"`);
-    execSafe(`hdiutil detach "${volume}" -quiet`);
-    fs.unlinkSync(dmgPath);
-
-    logSuccess('Installed to /Applications');
-    spawn('open', ['/Applications/HyperclayLocal.app'], { detached: true, stdio: 'ignore' }).unref();
-    logSuccess('Launched HyperclayLocal');
-  } catch (error) {
-    try { execSafe(`hdiutil detach "${volume}" -quiet`); } catch {}
-    logWarn(`Could not install locally: ${error.message}`);
-    throw error;
+// The running app updates itself through its own updater; scripts/update-canary.js falls
+// back to the old DMG copy only when it cannot. A release is already published by this
+// point, and failing to update one machine is not a failed release.
+async function updateThisMac(version) {
+  logSection('Update this Mac');
+  const { runCanary, canaryDeps } = require('./update-canary');
+  const result = await runCanary(version, canaryDeps({ log: logInfo }));
+  if (result.outcome === 'self-updated') {
+    logSuccess(`Hyperclay Local ${result.from} → ${version}: ${result.reason || `updated itself in ${result.seconds} s`}`);
+    return;
   }
+  if (result.outcome === 'installed') {
+    logWarn(`Installed ${version} by copying the DMG: ${result.reason}`);
+    return;
+  }
+  logWarn(`Could not update this Mac: ${result.reason}`);
+  throw new Error(result.reason);
 }
 
 async function chooseBump() {
@@ -315,7 +298,7 @@ async function main() {
   try {
     const { runRelease } = require('./release-coordinator');
     const outcome = await runRelease({ repoRoot: ROOT_DIR, flags }, {
-      chooseBump, newBuildGates, install: installLocally,
+      chooseBump, newBuildGates, install: flags.noInstall ? undefined : updateThisMac,
       signal: controller.signal, log: logInfo
     });
     if (outcome.outcome === 'complete') {
