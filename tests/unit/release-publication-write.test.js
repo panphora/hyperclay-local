@@ -312,6 +312,10 @@ function runEndpoint(baseValue) {
   return `repos/${OWNER_REPO}/actions/runs/${baseValue.runId}`;
 }
 
+function attemptEndpoint(baseValue) {
+  return `${runEndpoint(baseValue)}/attempts/${baseValue.row.run_attempt}`;
+}
+
 function jobsEndpoint(baseValue, page) {
   return `${runEndpoint(baseValue)}/attempts/${baseValue.runAttempt}/jobs?per_page=100&page=${page}`;
 }
@@ -2338,13 +2342,13 @@ describe('publication observation', () => {
       const before = fs.readFileSync(path.join(fixture.repoDir, 'state.json'));
       git(fixture.checkout.root, ['update-ref', '-d', `refs/tags/v${VERSION}`]);
       const resumed = failureContext();
-      resumed.gh.push(runEndpoint(fixture), ghOk(fixture.row));
+      resumed.gh.push(attemptEndpoint(fixture), ghOk(fixture.row));
       const result = await reobserveFailure(fixture, resumed, saved);
       expect(result.state).toEqual(saved);
       expect(result.run).toEqual(fixture.row);
       expect(fs.readFileSync(path.join(fixture.repoDir, 'state.json'))).toEqual(before);
       expect(fs.existsSync(failureFile(fixture, saved))).toBe(true);
-      expect(resumed.gh.calls.map(call => call.endpoint)).toEqual([runEndpoint(fixture)]);
+      expect(resumed.gh.calls.map(call => call.endpoint)).toEqual([attemptEndpoint(fixture)]);
       expect(resumed.uuid).not.toHaveBeenCalled();
       expect(resumed.fetch.calls).toHaveLength(0);
       expect(resumed.local.calls.some(call => call.args[0] === 'for-each-ref')).toBe(false);
@@ -2616,11 +2620,11 @@ describe('publication observation', () => {
 
       const later = runObject(fixture, { conclusion: 'failure', updated_at: LATER_UPDATED_AT });
       const observed = failureContext();
-      observed.gh.push(runEndpoint(fixture), ghOk(later));
+      observed.gh.push(attemptEndpoint(fixture), ghOk(later));
       const result = await reobserveFailure(fixture, observed, saved);
       expect(result.state).toEqual(saved);
       expect(result.run).toEqual(later);
-      expect(observed.gh.calls.map(call => call.endpoint)).toEqual([runEndpoint(fixture)]);
+      expect(observed.gh.calls.map(call => call.endpoint)).toEqual([attemptEndpoint(fixture)]);
       expect(observed.uuid).not.toHaveBeenCalled();
       expect(fs.readFileSync(stateFile)).toEqual(stateBefore);
       expect(fs.readFileSync(proofPath)).toEqual(proofBefore);
@@ -2682,7 +2686,7 @@ describe('publication observation', () => {
         fs.writeFileSync(proofPath, Buffer.from(`${JSON.stringify(corrupted)}\n`, 'utf8'), { mode: 0o600 });
         const bytesBefore = fs.readFileSync(proofPath);
         const context = failureContext();
-        context.gh.push(runEndpoint(fixture), ghOk(fixture.row));
+        context.gh.push(attemptEndpoint(fixture), ghOk(fixture.row));
         const error = await capture(reobserveFailure(fixture, context, result.state));
         expect(error.code).toBe(variation.code);
         expect(fs.readFileSync(proofPath)).toEqual(bytesBefore);
@@ -2696,7 +2700,7 @@ describe('publication observation', () => {
       fs.symlinkSync(referent, symlinkProof);
       const referentBefore = fs.readFileSync(referent);
       const symlinkContext = failureContext();
-      symlinkContext.gh.push(runEndpoint(symlinked.fixture), ghOk(symlinked.fixture.row));
+      symlinkContext.gh.push(attemptEndpoint(symlinked.fixture), ghOk(symlinked.fixture.row));
       const symlinkError = await capture(reobserveFailure(symlinked.fixture, symlinkContext, symlinked.result.state));
       expect(symlinkError.code).toBe(FAILURE_CODE);
       expect(fs.lstatSync(symlinkProof).isSymbolicLink()).toBe(true);
@@ -2733,12 +2737,12 @@ describe('publication observation', () => {
       const stateBefore = fs.readFileSync(stateFile);
       const proofBefore = fs.readFileSync(proofPath);
       const resumed = failureContext();
-      resumed.gh.push(runEndpoint(fixture), ghOk(fixture.row));
+      resumed.gh.push(attemptEndpoint(fixture), ghOk(fixture.row));
       const result = await reobserveFailure(fixture, resumed, saved);
       expect(result.state).toEqual(saved);
       expect(fs.readFileSync(stateFile)).toEqual(stateBefore);
       expect(fs.readFileSync(proofPath)).toEqual(proofBefore);
-      expect(resumed.gh.calls.map(call => call.endpoint)).toEqual([runEndpoint(fixture)]);
+      expect(resumed.gh.calls.map(call => call.endpoint)).toEqual([attemptEndpoint(fixture)]);
       expect(resumed.uuid).not.toHaveBeenCalled();
     });
 
@@ -2774,7 +2778,7 @@ describe('publication observation', () => {
       const attempt = saved.attempts[0];
       const row = runObject(fixture, { id: RUN_ID, run_attempt: 1,
         display_title: attempt.expectedTitle, conclusion: 'failure' });
-      const endpoint = `repos/${OWNER_REPO}/actions/runs/${RUN_ID}`;
+      const endpoint = `repos/${OWNER_REPO}/actions/runs/${RUN_ID}/attempts/1`;
       context.gh.push(endpoint, ghOk(row));
       const result = await reobserveFailure(fixture, context, saved);
       expect(result.state).toEqual(saved);

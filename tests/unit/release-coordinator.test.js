@@ -2451,7 +2451,8 @@ describePosix('caller explicit repair', () => {
     expect(harness.uuidCalls).toEqual([FRESH_RELEASE_ID, REPAIR_ATTEMPT_ID]);
     const endpoints = harness.ghCalls.map(call => call.args[10]);
     expect(endpoints.filter(endpoint => endpoint === LEGACY_HISTORY_ENDPOINT)).toHaveLength(1);
-    expect(endpoints.filter(endpoint => endpoint === OLD_RUN_ENDPOINT)).toHaveLength(2);
+    expect(endpoints.filter(endpoint => endpoint === OLD_RUN_ENDPOINT)).toHaveLength(1);
+    expect(endpoints.filter(endpoint => endpoint === `${OLD_RUN_ENDPOINT}/attempts/2`)).toHaveLength(1);
     expect(FERRY_CHILDREN.size).toBe(0);
   });
 

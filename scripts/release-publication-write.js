@@ -1197,8 +1197,9 @@ async function reobserveFailedRelease(input, deps, options) {
   publication.readPublishedSourceVersion({ repoRoot: state.repo.root,
     sourceSha: attempt.sourceSha, version: state.version }, resolved.local);
   const repo = state.repo.remoteRepo.slice(REMOTE_PREFIX.length);
-  const run = await readPolicy.readGithubJson('github.run', {
-    repo, endpoint: `repos/${repo}/actions/runs/${attempt.runId}`
+  // The recorded attempt, not the run's latest: a rerun of the same run is a later attempt.
+  const run = await readPolicy.readGithubJson('github.run-attempt', {
+    repo, endpoint: `repos/${repo}/actions/runs/${attempt.runId}/attempts/${attempt.runAttempt}`
   }, resolved.github, { deadline: end });
   requireFailedRun(state, attempt, run);
   requireCurrentIdentity(state, resolved.local);

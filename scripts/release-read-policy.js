@@ -8,6 +8,7 @@ const GITHUB_OPERATIONS = [
   'github.workflow-definition',
   'github.workflow-runs-page',
   'github.run',
+  'github.run-attempt',
   'github.run-jobs-page'
 ];
 
@@ -460,6 +461,9 @@ function endpointPatterns(operation, repo) {
   }
   if (operation === 'github.run') {
     return [new RegExp(`^${base}runs/${POSITIVE_INTEGER}$`)];
+  }
+  if (operation === 'github.run-attempt') {
+    return [new RegExp(`^${base}runs/${POSITIVE_INTEGER}/attempts/${POSITIVE_INTEGER}$`)];
   }
   if (operation === 'github.run-jobs-page') {
     return [
