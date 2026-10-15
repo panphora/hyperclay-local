@@ -45,7 +45,7 @@ function cleanMac() {
   if (fs.existsSync(distDir)) {
     const files = fs.readdirSync(distDir);
     files.forEach(file => {
-      if (file.endsWith('.dmg') || file.endsWith('.dmg.blockmap')) {
+      if (file.endsWith('.dmg') || file.endsWith('.dmg.blockmap') || file.endsWith('-mac.zip')) {
         removeIfExists(path.join(distDir, file), `dist/${file}`);
         cleaned = true;
       }

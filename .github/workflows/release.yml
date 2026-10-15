@@ -215,7 +215,7 @@ jobs:
 
       - run: node build-scripts/move-executables.js mac
 
-      - name: Verify the DMGs carry a stapled ticket
+      - name: Verify the DMGs and update zips carry a stapled ticket
         run: |
           for dmg in executables/*.dmg; do
             echo "── $dmg"
@@ -228,6 +228,17 @@ jobs:
             xcrun stapler validate /tmp/dmgcheck/*.app
             spctl -a -vvv -t install /tmp/dmgcheck/*.app
             hdiutil detach /tmp/dmgcheck -quiet
+          done
+          # The update zip is what electron-updater installs. Squirrel checks the code
+          # signature, and the stapled ticket lets the swapped app launch offline.
+          ls executables/*-mac.zip
+          for zip in executables/*-mac.zip; do
+            echo "── $zip"
+            rm -rf /tmp/zipcheck && mkdir /tmp/zipcheck
+            ditto -x -k "$zip" /tmp/zipcheck
+            codesign --verify --deep --strict --verbose=2 /tmp/zipcheck/*.app
+            xcrun stapler validate /tmp/zipcheck/*.app
+            spctl -a -vvv -t exec /tmp/zipcheck/*.app
           done
 
       - uses: actions/upload-artifact@v4

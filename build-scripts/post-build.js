@@ -3,6 +3,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 require('dotenv').config();
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { macFeed, macUpdateZips } = require('./update-feed');
 
 // R2 Configuration
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
@@ -23,12 +24,14 @@ function getContentType(filename) {
       return 'text/yaml';
     case '.blockmap':
       return 'application/json';
+    case '.zip':
+      return 'application/zip';
     default:
       return 'application/octet-stream';
   }
 }
 
-async function uploadToR2(filePath, filename) {
+async function uploadToR2(filePath, key, cacheControl) {
   const client = new S3Client({
     region: "auto",
     endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
@@ -39,18 +42,19 @@ async function uploadToR2(filePath, filename) {
   });
 
   const fileContent = fs.readFileSync(filePath);
-  const contentType = getContentType(filename);
-  
+  const contentType = getContentType(key);
+
   const command = new PutObjectCommand({
     Bucket: R2_BUCKET,
-    Key: filename,
+    Key: key,
     Body: fileContent,
     ContentType: contentType,
+    ...(cacheControl ? { CacheControl: cacheControl } : {}),
   });
-  
+
   await client.send(command);
   const sizeMB = (fs.statSync(filePath).size / (1024 * 1024)).toFixed(1);
-  console.log(`✅ Uploaded ${filename} (${sizeMB}MB)`);
+  console.log(`✅ Uploaded ${key} (${sizeMB}MB)`);
 }
 
 async function uploadReleaseInfo(uploadedFiles, publicUrl) {
@@ -214,26 +218,44 @@ async function main() {
     }
   }
 
-  console.log(`\n✅ Upload complete! Files available in R2 bucket: ${R2_BUCKET}`);
-
-  // Generate markdown report
-  if (uploadedFiles.length > 0) {
-    generateReport(uploadedFiles, R2_PUBLIC_URL);
-
-    // Upload release-info.json for hypercheck verification
+  const updateZips = macUpdateZips(files, version);
+  for (const file of updateZips) {
     try {
-      await uploadReleaseInfo(uploadedFiles, R2_PUBLIC_URL);
+      await uploadToR2(
+        path.join(executablesDir, file),
+        `releases/${version}/${file}`,
+        'public, max-age=31536000, immutable'
+      );
     } catch (error) {
-      console.error('❌ Failed to upload release-info.json:', error.message);
-      failedUploads.push('release-info.json');
+      console.error(`❌ Failed to upload ${file}:`, error.message);
+      failedUploads.push(file);
     }
   }
 
+  // The feed and the receipt both announce the release, so neither goes up until every
+  // file they could point at is in the bucket.
   if (failedUploads.length > 0) {
     console.error(`\n❌ ${failedUploads.length} upload(s) failed: ${failedUploads.join(', ')}`);
-    console.error('   Not recording this as a completed release.');
+    console.error('   Not publishing the update feed or recording this as a completed release.');
     process.exit(1);
   }
+
+  if (updateZips.length > 0) {
+    const feedPath = path.join(executablesDir, 'latest-mac.yml');
+    fs.writeFileSync(feedPath, macFeed({
+      dir: executablesDir,
+      version,
+      baseUrl: `${R2_PUBLIC_URL}/releases/${version}`,
+      releaseDate: new Date().toISOString()
+    }));
+    await uploadToR2(feedPath, `updates/archive/${version}/latest-mac.yml`, 'public, max-age=31536000, immutable');
+    await uploadToR2(feedPath, 'updates/stable/latest-mac.yml', 'public, max-age=60');
+  }
+
+  console.log(`\n✅ Upload complete! Files available in R2 bucket: ${R2_BUCKET}`);
+
+  generateReport(uploadedFiles, R2_PUBLIC_URL);
+  await uploadReleaseInfo(uploadedFiles, R2_PUBLIC_URL);
 }
 
 main().catch(error => {

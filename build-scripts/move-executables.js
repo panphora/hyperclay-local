@@ -58,7 +58,7 @@ function moveMacExecutables() {
   if (fs.existsSync(distDir)) {
     const files = fs.readdirSync(distDir);
     files.forEach(file => {
-      if (file.endsWith('.dmg') || file.endsWith('.dmg.blockmap')) {
+      if (file.endsWith('.dmg') || file.endsWith('.dmg.blockmap') || file.endsWith('-mac.zip')) {
         moved |= moveFile(path.join(distDir, file), file);
       }
     });
@@ -133,7 +133,7 @@ function moveAllExecutables() {
     const files = fs.readdirSync(distDir);
     files.forEach(file => {
       // Move all installer files and update metadata
-      if (file.endsWith('.dmg') || file.endsWith('.dmg.blockmap') ||
+      if (file.endsWith('.dmg') || file.endsWith('.dmg.blockmap') || file.endsWith('-mac.zip') ||
           file.endsWith('.exe') || file.endsWith('.exe.blockmap') ||
           file.endsWith('.AppImage') || file.endsWith('.snap') ||
           file.endsWith('.deb') || file.endsWith('.rpm') ||
