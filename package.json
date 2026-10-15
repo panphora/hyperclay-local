@@ -144,7 +144,13 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "azureSignOptions": {
+        "publisherName": "Hyperspace Systems LLC",
+        "endpoint": "https://eus.codesigning.azure.net",
+        "codeSigningAccountName": "Hyperclay",
+        "certificateProfileName": "HyperclayLocalPublicCertProfile"
+      }
     },
     "linux": {
       "icon": "build/icon.png",
@@ -153,10 +159,16 @@
       ]
     },
     "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "oneClick": true,
+      "perMachine": false,
       "artifactName": "HyperclayLocal-Setup-${version}.${ext}"
     },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://local.hyperclay.com/updates/stable"
+      }
+    ],
     "afterPack": "build-scripts/linux-after-pack.js",
     "afterSign": "build-scripts/notarize-submit.js",
     "afterAllArtifactBuild": "build-scripts/staple-dmg.js"

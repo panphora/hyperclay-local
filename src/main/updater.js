@@ -4,6 +4,9 @@ const FEED_URL = 'https://local.hyperclay.com/updates/stable';
 const RECEIPT_URL = 'https://local.hyperclay.com/release-info.json';
 const FIRST_CHECK_MS = 10_000;
 const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
+// NSIS keys a per-user install under HKCU\Software\<guid>, the guid being a UUIDv5 of
+// the appId. A per-machine install keeps it under HKLM and needs elevation to update.
+const WINDOWS_INSTALL_KEY = 'HKCU\\Software\\56279e69-a1ca-58cc-a483-19be13420d85';
 
 function compareVersions(v1, v2) {
   const parts1 = v1.split('.').map(Number);
@@ -18,18 +21,39 @@ function compareVersions(v1, v2) {
 }
 
 // Squirrel replaces the bundle where it sits, so it needs one it can write, and never a
-// translocated or disk-image copy.
-function canInstallInPlace({ platform, isPackaged, exePath, canWrite }) {
-  if (platform !== 'darwin' || !isPackaged) return false;
-  const bundle = path.resolve(exePath, '..', '..', '..');
+// translocated or disk-image copy. The NSIS installer reinstalls into the per-user
+// location it recorded, which must be the folder this exe runs from.
+function canInstallInPlace({ platform, isPackaged, exePath, canWrite, installLocation = null }) {
+  if (!isPackaged) return false;
+  if (platform === 'win32') {
+    if (!installLocation) return false;
+    const dir = path.win32.dirname(exePath);
+    return path.win32.resolve(installLocation).toLowerCase() === dir.toLowerCase() && canWrite(dir);
+  }
+  if (platform !== 'darwin') return false;
+  const bundle = path.posix.resolve(exePath, '..', '..', '..');
   if (!bundle.endsWith('.app')) return false;
   if (bundle.includes('/AppTranslocation/') || bundle.startsWith('/Volumes/')) return false;
-  return canWrite(bundle) && canWrite(path.dirname(bundle));
+  return canWrite(bundle) && canWrite(path.posix.dirname(bundle));
+}
+
+function parseInstallLocation(regOutput) {
+  const match = /^\s*InstallLocation\s+REG_(?:EXPAND_)?SZ\s+(.+?)\s*$/m.exec(regOutput || '');
+  return match ? match[1] : null;
+}
+
+function readWindowsInstallLocation(execFileSync) {
+  try {
+    return parseInstallLocation(execFileSync('reg', ['query', WINDOWS_INSTALL_KEY, '/v', 'InstallLocation'], { encoding: 'utf8', windowsHide: true }));
+  } catch {
+    return null;
+  }
 }
 
 function createUpdater({
   currentVersion,
   installInPlace,
+  installOnQuit = false,
   autoUpdater,
   nativeUpdater,
   fetchJson,
@@ -59,8 +83,9 @@ function createUpdater({
 
   function wireInstaller() {
     autoUpdater.autoDownload = true;
-    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.autoInstallOnAppQuit = installOnQuit;
     autoUpdater.disableDifferentialDownload = true;
+    autoUpdater.disableWebInstaller = true;
     autoUpdater.logger = logger;
     autoUpdater.setFeedURL({ provider: 'generic', url: FEED_URL });
     autoUpdater.on('update-available', (info) => {
@@ -72,10 +97,18 @@ function createUpdater({
       if (state.state === 'downloading') set({ state: 'idle', latestVersion: null });
     });
     // electron-updater reports its own download before Squirrel has staged the bundle;
-    // only Squirrel's event means a click can install at once.
-    nativeUpdater.on('update-downloaded', () => {
-      if (state.latestVersion) set({ state: 'ready', error: null });
-    });
+    // only Squirrel's event means a click can install at once. Without Squirrel (NSIS),
+    // electron-updater's event comes after the sha512 and Authenticode checks.
+    if (nativeUpdater) {
+      nativeUpdater.on('update-downloaded', () => {
+        if (state.latestVersion) set({ state: 'ready', error: null });
+      });
+    } else {
+      autoUpdater.on('update-downloaded', (info) => {
+        if (state.state === 'restarting') return;
+        set({ state: 'ready', latestVersion: info.version, error: null });
+      });
+    }
   }
 
   function check() {
@@ -101,11 +134,11 @@ function createUpdater({
       set({ state: 'ready', error: error.message });
       return { ok: false, error: error.message };
     }
-    autoUpdater.quitAndInstall();
+    autoUpdater.quitAndInstall(true, true);
     return { ok: true };
   }
 
   return { start, check, install, get };
 }
 
-module.exports = { createUpdater, canInstallInPlace, compareVersions };
+module.exports = { createUpdater, canInstallInPlace, compareVersions, parseInstallLocation, readWindowsInstallLocation, WINDOWS_INSTALL_KEY };

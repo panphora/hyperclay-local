@@ -3,7 +3,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 require('dotenv').config();
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-const { macFeed, macUpdateZips } = require('./update-feed');
+const { macFeed, macUpdateZips, windowsFeed, windowsInstallers } = require('./update-feed');
 
 // R2 Configuration
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
@@ -219,7 +219,8 @@ async function main() {
   }
 
   const updateZips = macUpdateZips(files, version);
-  for (const file of updateZips) {
+  const windowsSetup = windowsInstallers(files, version);
+  for (const file of [...updateZips, ...windowsSetup]) {
     try {
       await uploadToR2(
         path.join(executablesDir, file),
@@ -240,16 +241,20 @@ async function main() {
     process.exit(1);
   }
 
-  if (updateZips.length > 0) {
-    const feedPath = path.join(executablesDir, 'latest-mac.yml');
-    fs.writeFileSync(feedPath, macFeed({
-      dir: executablesDir,
-      version,
-      baseUrl: `${R2_PUBLIC_URL}/releases/${version}`,
-      releaseDate: new Date().toISOString()
-    }));
-    await uploadToR2(feedPath, `updates/archive/${version}/latest-mac.yml`, 'public, max-age=31536000, immutable');
-    await uploadToR2(feedPath, 'updates/stable/latest-mac.yml', 'public, max-age=60');
+  const feedOptions = {
+    dir: executablesDir,
+    version,
+    baseUrl: `${R2_PUBLIC_URL}/releases/${version}`,
+    releaseDate: new Date().toISOString()
+  };
+  const feeds = [];
+  if (updateZips.length > 0) feeds.push(['latest-mac.yml', macFeed(feedOptions)]);
+  if (windowsSetup.length > 0) feeds.push(['latest.yml', windowsFeed(feedOptions)]);
+  for (const [name, content] of feeds) {
+    const feedPath = path.join(executablesDir, name);
+    fs.writeFileSync(feedPath, content);
+    await uploadToR2(feedPath, `updates/archive/${version}/${name}`, 'public, max-age=31536000, immutable');
+    await uploadToR2(feedPath, `updates/stable/${name}`, 'public, max-age=60');
   }
 
   console.log(`\n✅ Upload complete! Files available in R2 bucket: ${R2_BUCKET}`);

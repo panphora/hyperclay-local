@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const yaml = require('js-yaml');
-const { macFeed, macUpdateZips } = require('../../build-scripts/update-feed');
+const { macFeed, macUpdateZips, windowsFeed, windowsInstallers } = require('../../build-scripts/update-feed');
 
 describe('mac update feed', () => {
   let dir;
@@ -55,5 +55,54 @@ describe('mac update feed', () => {
       'HyperclayLocal-1.31.0-arm64-mac.zip',
       'HyperclayLocal-1.31.0.dmg'
     ], '1.31.0')).toEqual(['HyperclayLocal-1.31.0-arm64-mac.zip']);
+  });
+});
+
+describe('windows update feed', () => {
+  let dir;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'update-feed-win-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('hashes the signed installer with an absolute versioned url', () => {
+    const bytes = 'signed installer bytes';
+    fs.writeFileSync(path.join(dir, 'HyperclayLocal-Setup-1.31.0.exe'), bytes);
+    fs.writeFileSync(path.join(dir, 'HyperclayLocal-Setup-1.31.0.exe.blockmap'), 'stale');
+    fs.writeFileSync(path.join(dir, 'latest.yml'), 'version: 1.31.0\nsha512: stale-from-electron-builder\n');
+    const hash = crypto.createHash('sha512').update(bytes).digest('base64');
+
+    const feed = yaml.load(windowsFeed({
+      dir,
+      version: '1.31.0',
+      baseUrl: 'https://local.hyperclay.com/releases/1.31.0',
+      releaseDate: '2026-10-15T00:00:00.000Z'
+    }));
+
+    expect(feed).toEqual({
+      version: '1.31.0',
+      files: [{ url: 'https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-Setup-1.31.0.exe', sha512: hash, size: bytes.length }],
+      path: 'https://local.hyperclay.com/releases/1.31.0/HyperclayLocal-Setup-1.31.0.exe',
+      sha512: hash,
+      releaseDate: '2026-10-15T00:00:00.000Z'
+    });
+  });
+
+  test('refuses a release without its installer', () => {
+    fs.writeFileSync(path.join(dir, 'HyperclayLocal-Setup-1.30.3.exe'), 'old');
+    expect(() => windowsFeed({ dir, version: '1.31.0', baseUrl: 'https://x', releaseDate: 'd' }))
+      .toThrow(/HyperclayLocal-Setup-1\.31\.0\.exe/);
+  });
+
+  test('picks only this version installer', () => {
+    expect(windowsInstallers([
+      'HyperclayLocal-Setup-1.30.3.exe',
+      'HyperclayLocal-Setup-1.31.0.exe',
+      'HyperclayLocal-Setup-1.31.0.exe.blockmap'
+    ], '1.31.0')).toEqual(['HyperclayLocal-Setup-1.31.0.exe']);
   });
 });

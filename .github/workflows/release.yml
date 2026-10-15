@@ -333,7 +333,7 @@ jobs:
           path: executables/
           if-no-files-found: error
 
-  # ── Windows: build, sign with Azure Trusted Signing ──
+  # ── Windows: build and sign with Azure Trusted Signing, through electron-builder ──
   build-windows:
     needs: [test-windows, license]
     runs-on: windows-latest
@@ -353,54 +353,70 @@ jobs:
       - name: Build React (production)
         run: npm run build-react-prod
 
-      - name: Build unsigned installer
+      # electron-builder signs HyperclayLocal.exe, the uninstaller and the installer
+      # through win.azureSignOptions (timestamped by default), and only then hashes the
+      # installer. Signing afterwards would change the bytes under the update feed.
+      - name: Build and sign the installer
         run: npm run clean-windows && npx electron-builder --win --publish never
         env:
           NODE_ENV: production
-
-      - name: Install TrustedSigning module
-        run: Install-Module -Name TrustedSigning -Force -Scope CurrentUser -AcceptLicense
-        shell: pwsh
-
-      - name: Sign with Azure Trusted Signing
-        env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-        run: |
-          $installerPath = Resolve-Path "dist\HyperclayLocal-Setup-*.exe"
-          Write-Host "Signing: $installerPath"
-          Invoke-TrustedSigning `
-            -Endpoint "https://eus.codesigning.azure.net" `
-            -CodeSigningAccountName "Hyperclay" `
-            -CertificateProfileName "HyperclayLocalPublicCertProfile" `
-            -Files "$installerPath" `
-            -FileDigest SHA256 `
-            -TimestampRfc3161 "http://timestamp.acs.microsoft.com" `
-            -TimestampDigest SHA256 `
-            -Verbose
-        shell: pwsh
 
-      - name: Verify signature
+      - name: Verify signatures
         run: |
-          $installer = Resolve-Path "dist\HyperclayLocal-Setup-*.exe"
-          $sig = Get-AuthenticodeSignature $installer
-          Write-Host "Signature status: $($sig.Status)"
-          Write-Host "Signer: $($sig.SignerCertificate.Subject)"
-          if ($sig.Status -ne "Valid") {
-            Write-Error "Signature verification failed!"
-            exit 1
-          }
           # Azure Trusted Signing issues three-day certificates, so an untimestamped
           # signature stops validating three days after the release and Windows then
-          # treats the installer as unsigned. Status is "Valid" here either way, because
+          # treats the file as unsigned. Status is "Valid" here either way, because
           # the certificate has not expired yet on the runner, so the timestamp is the
           # only thing that proves the signature will still verify for a downloader.
-          if (-not $sig.TimeStamperCertificate) {
-            Write-Error "Signature has no RFC3161 timestamp; it would expire with the certificate."
+          # electron-updater also compares the signer's CN with publisherName.
+          function Assert-Signed([string]$file) {
+            $sig = Get-AuthenticodeSignature -LiteralPath $file
+            Write-Host "── $file"
+            Write-Host "Signature status: $($sig.Status)"
+            Write-Host "Signer: $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne "Valid") {
+              Write-Error "Signature verification failed: $file"
+              exit 1
+            }
+            if ($sig.SignerCertificate.Subject -notmatch '(^|, )CN=Hyperspace Systems LLC(,|$)') {
+              Write-Error "Signer CN is not Hyperspace Systems LLC, so installed apps would refuse this update: $file"
+              exit 1
+            }
+            if (-not $sig.TimeStamperCertificate) {
+              Write-Error "Signature has no RFC3161 timestamp; it would expire with the certificate: $file"
+              exit 1
+            }
+            Write-Host "Timestamped by: $($sig.TimeStamperCertificate.Subject)"
+          }
+
+          $installer = (Resolve-Path "dist\HyperclayLocal-Setup-*.exe").Path
+          Assert-Signed $installer
+          Assert-Signed "dist\win-unpacked\HyperclayLocal.exe"
+
+          # Without publisherName in app-update.yml, electron-updater skips the
+          # signature check on every downloaded update.
+          $updateConfig = Get-Content -Raw "dist\win-unpacked\resources\app-update.yml"
+          Write-Host $updateConfig
+          if ($updateConfig -notmatch 'publisherName:\s*\r?\n\s*-\s*Hyperspace Systems LLC') {
+            Write-Error "app-update.yml does not name the publisher, so updates would not be signature-checked."
             exit 1
           }
-          Write-Host "Timestamped by: $($sig.TimeStamperCertificate.Subject)"
+
+          # Install the way a user does (per user, no UAC) and check what lands on disk,
+          # through the same registry value the app reads to decide it can update itself.
+          Start-Process -FilePath $installer -ArgumentList "/S" -Wait
+          $key = "HKCU:\Software\56279e69-a1ca-58cc-a483-19be13420d85"
+          $dir = (Get-ItemProperty -Path $key -Name InstallLocation).InstallLocation
+          Write-Host "Installed to: $dir"
+          if (-not $dir.StartsWith($env:LOCALAPPDATA, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Write-Error "The one-click installer did not install per user: $dir"
+            exit 1
+          }
+          Assert-Signed (Join-Path $dir "HyperclayLocal.exe")
+          Assert-Signed (Join-Path $dir "Uninstall HyperclayLocal.exe")
         shell: pwsh
 
       - run: node build-scripts/move-executables.js windows

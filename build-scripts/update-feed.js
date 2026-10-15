@@ -25,6 +25,10 @@ function macFeed({ dir, version, baseUrl, releaseDate }) {
     throw new Error(`Expected one x64 and one arm64 mac update zip for v${version} in ${dir}, found: ${zips.join(', ') || 'none'}`);
   }
   const entries = [x64[0], arm64[0]].map((file) => fileEntry(dir, file, baseUrl));
+  return renderFeed(version, entries, releaseDate);
+}
+
+function renderFeed(version, entries, releaseDate) {
   const lines = [`version: ${version}`, 'files:'];
   for (const entry of entries) {
     lines.push(`  - url: ${entry.url}`, `    sha512: ${entry.sha512}`, `    size: ${entry.size}`);
@@ -33,4 +37,18 @@ function macFeed({ dir, version, baseUrl, releaseDate }) {
   return lines.join('\n') + '\n';
 }
 
-module.exports = { macFeed, macUpdateZips };
+function windowsInstallers(files, version) {
+  return files.filter((file) => file === `HyperclayLocal-Setup-${version}.exe`);
+}
+
+// The installer must be the signed file CI uploads: electron-updater checks this sha512
+// before it checks the Authenticode signature.
+function windowsFeed({ dir, version, baseUrl, releaseDate }) {
+  const installers = windowsInstallers(fs.readdirSync(dir), version);
+  if (installers.length !== 1) {
+    throw new Error(`Expected HyperclayLocal-Setup-${version}.exe in ${dir}`);
+  }
+  return renderFeed(version, [fileEntry(dir, installers[0], baseUrl)], releaseDate);
+}
+
+module.exports = { macFeed, macUpdateZips, windowsFeed, windowsInstallers };

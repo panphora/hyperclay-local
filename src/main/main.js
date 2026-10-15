@@ -31,7 +31,7 @@ const { getAccounts } = require('../sync-engine/api-client');
 const { buildCards, worstState, trayIconVariant, trayTooltip, switchSublines, toLine, trayMenuModel } = require('./ui/card-model');
 const { createNewTeamNotifier } = require('./new-team-notifier');
 const { isAllowedExternalUrl, requireRoot, requireSession, requireAccount, cardMenuModel, disconnectDialog, removeFolderDialog, movePortDialog, flattenConflicts, flattenBlocked, ACTIVITY_THROTTLE_MS, createThrottle, profilePatch, accountSettingsUrl, profileErrorMessage } = require('./ui/main-ipc');
-const { createUpdater, canInstallInPlace } = require('./updater');
+const { createUpdater, canInstallInPlace, readWindowsInstallLocation } = require('./updater');
 
 let manager = null;
 const observers = new Map();
@@ -872,6 +872,7 @@ function startUpdater() {
     platform: process.platform,
     isPackaged: app.isPackaged,
     exePath: app.getPath('exe'),
+    installLocation: process.platform === 'win32' ? readWindowsInstallLocation(require('child_process').execFileSync) : null,
     canWrite: (target) => {
       try {
         fs.accessSync(target, fs.constants.W_OK);
@@ -884,8 +885,9 @@ function startUpdater() {
   updater = createUpdater({
     currentVersion: app.getVersion(),
     installInPlace,
+    installOnQuit: process.platform === 'darwin',
     autoUpdater: installInPlace ? require('electron-updater').autoUpdater : null,
-    nativeUpdater: installInPlace ? require('electron').autoUpdater : null,
+    nativeUpdater: installInPlace && process.platform === 'darwin' ? require('electron').autoUpdater : null,
     fetchJson: async (url) => {
       const response = await fetch(url, { cache: 'no-store' });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
