@@ -5,6 +5,9 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const {
   RESTART_SCRIPT,
+  takeHealthFile,
+  markHealthy,
+  readSkippedVersion,
   verifyAppImageSignature,
   stagedPathFor,
   stageAppImage,
@@ -146,12 +149,24 @@ describe('restarting the AppImage', () => {
     restartAppImage({
       appImage: '/home/ana/Apps/Hyperclay Local.AppImage',
       pid: 4242,
+      previous: '/home/ana/Apps/Hyperclay Local.AppImage.prev',
+      healthFile: '/home/ana/.config/Hyperclay Local/update-healthy',
+      skipFile: '/home/ana/.config/Hyperclay Local/update-skip',
+      version: '1.31.0',
       spawn: spawnMock,
       env: { HOME: '/home/ana', APPIMAGE: '/old', APPDIR: '/tmp/.mount_x', ARGV0: 'x', OWD: '/home/ana', DISPLAY: ':0' }
     });
     const [command, args, options] = spawnMock.mock.calls[0];
     expect(command).toBe('/bin/bash');
-    expect(args).toEqual(['-c', RESTART_SCRIPT, 'hyperclay-local-restart', '4242', '/home/ana/Apps/Hyperclay Local.AppImage']);
+    expect(args).toEqual([
+      '-c', RESTART_SCRIPT, 'hyperclay-local-restart', '4242',
+      '/home/ana/Apps/Hyperclay Local.AppImage',
+      '/home/ana/Apps/Hyperclay Local.AppImage.prev',
+      '/home/ana/.config/Hyperclay Local/update-healthy',
+      '/home/ana/.config/Hyperclay Local/update-skip',
+      '1.31.0',
+      '30'
+    ]);
     expect(options).toMatchObject({ detached: true, stdio: 'ignore' });
     expect(options.env).toEqual({ HOME: '/home/ana', DISPLAY: ':0' });
     expect(child.unref).toHaveBeenCalled();
@@ -165,7 +180,7 @@ describe('restarting the AppImage', () => {
       fs.writeFileSync(image, `#!/bin/sh\necho "$APPIMAGE" > "${marker}"\n`, { mode: 0o755 });
       const old = spawn('sleep', ['1']);
       const exited = new Promise((resolve) => old.on('exit', () => resolve(Date.now())));
-      const script = spawn('/bin/bash', ['-c', RESTART_SCRIPT, 'hyperclay-local-restart', String(old.pid), image], { stdio: 'ignore' });
+      const script = spawn('/bin/bash', ['-c', RESTART_SCRIPT, 'hyperclay-local-restart', String(old.pid), image, '', '', '', '', '30'], { stdio: 'ignore' });
       const done = new Promise((resolve) => script.on('exit', resolve));
       await new Promise((resolve) => setTimeout(resolve, 300));
       expect(fs.existsSync(marker)).toBe(false);
@@ -175,5 +190,112 @@ describe('restarting the AppImage', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describeShell('the update supervisor', () => {
+  let dir;
+  let image;
+  let previous;
+  let healthy;
+  let skip;
+  let goneProcess;
+
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'appimage-supervise-'));
+    image = path.join(dir, 'Hyperclay Local.AppImage');
+    previous = `${image}.prev`;
+    healthy = path.join(dir, 'update-healthy');
+    skip = path.join(dir, 'update-skip');
+    fs.writeFileSync(previous, `#!/bin/sh\necho "old \${HCL_UPDATE_HEALTHY:-unsupervised}" > "${dir}/old-ran"\n`, { mode: 0o755 });
+    const done = spawn('true');
+    goneProcess = done.pid;
+    await new Promise((resolve) => done.on('exit', resolve));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function newImage(body) {
+    fs.writeFileSync(image, `#!/bin/sh\necho $$ > "${dir}/new-pid"\n${body}\n`, { mode: 0o755 });
+  }
+
+  function supervise(timeout = 30) {
+    const script = spawn('/bin/bash', ['-c', RESTART_SCRIPT, 'hyperclay-local-restart', String(goneProcess), image, previous, healthy, skip, '1.31.0', String(timeout)], { stdio: 'ignore' });
+    return new Promise((resolve) => script.on('exit', resolve));
+  }
+
+  function isAlive(pid) {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  test('a new version that reports healthy stays, and keeps .prev for later', async () => {
+    newImage('touch "$HCL_UPDATE_HEALTHY"; sleep 1');
+    expect(await supervise()).toBe(0);
+    expect(fs.readFileSync(image, 'utf8')).toContain('new-pid');
+    expect(fs.existsSync(previous)).toBe(true);
+    expect(fs.existsSync(skip)).toBe(false);
+    expect(fs.existsSync(healthy)).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'old-ran'))).toBe(false);
+  });
+
+  test('a new version that exits before healthy is rolled back and skipped', async () => {
+    newImage('exit 1');
+    expect(await supervise()).toBe(0);
+    expect(fs.readFileSync(path.join(dir, 'old-ran'), 'utf8')).toBe('old unsupervised\n');
+    expect(fs.readFileSync(image, 'utf8')).toContain('old-ran');
+    expect(fs.existsSync(previous)).toBe(false);
+    expect(fs.readFileSync(skip, 'utf8')).toBe('1.31.0\n');
+  });
+
+  test('a new version that hangs past the timeout is stopped, rolled back and skipped', async () => {
+    newImage('exec sleep 60');
+    expect(await supervise(1)).toBe(0);
+    const hungPid = Number(fs.readFileSync(path.join(dir, 'new-pid'), 'utf8'));
+    expect(isAlive(hungPid)).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'old-ran'))).toBe(true);
+    expect(fs.readFileSync(skip, 'utf8')).toBe('1.31.0\n');
+  }, 15000);
+
+  test('when the swap never happened it just starts the image, unsupervised', async () => {
+    newImage('echo "$HCL_UPDATE_HEALTHY" > "' + dir + '/env"');
+    const script = spawn('/bin/bash', ['-c', RESTART_SCRIPT, 'hyperclay-local-restart', String(goneProcess), image, '', healthy, skip, '1.31.0', '30'], { stdio: 'ignore' });
+    expect(await new Promise((resolve) => script.on('exit', resolve))).toBe(0);
+    expect(fs.readFileSync(path.join(dir, 'env'), 'utf8')).toBe('\n');
+    expect(fs.existsSync(skip)).toBe(false);
+  });
+});
+
+describe('health and skip files', () => {
+  let dir;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'appimage-health-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('the health file is taken out of the environment and written once healthy', () => {
+    const env = { HCL_UPDATE_HEALTHY: path.join(dir, 'update-healthy'), HOME: '/home/ana' };
+    const file = takeHealthFile(env);
+    expect(env).toEqual({ HOME: '/home/ana' });
+    markHealthy(file, '1.31.0');
+    expect(fs.readFileSync(file, 'utf8')).toBe('1.31.0\n');
+    expect(takeHealthFile({})).toBeNull();
+    expect(() => markHealthy(null, '1.31.0')).not.toThrow();
+  });
+
+  test('the skipped version is read back, or null when there is none', () => {
+    expect(readSkippedVersion(path.join(dir, 'update-skip'))).toBeNull();
+    fs.writeFileSync(path.join(dir, 'update-skip'), '1.31.0\n');
+    expect(readSkippedVersion(path.join(dir, 'update-skip'))).toBe('1.31.0');
   });
 });

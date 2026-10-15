@@ -5,18 +5,44 @@ const path = require('path');
 const childProcess = require('child_process');
 
 const SIGNATURE_DOMAIN = 'hyperclay-local-appimage-update';
+const HEALTH_ENV = 'HCL_UPDATE_HEALTHY';
 
 // Waits for the old process to be gone, so the single-instance lock is free, then starts
 // the AppImage at its usual path. It runs from bash, not from the AppImage mount, which
 // disappears when the old process exits, and it closes every fd it inherited so the old
 // mount's keepalive pipe does not outlive the old process.
+//
+// After an update it supervises: the new version must create the HCL_UPDATE_HEALTHY file
+// within the timeout. If it exits or hangs first, the script stops it, records its version
+// as skipped, moves <name>.prev back and starts that. This script ships in version N and
+// drives version N+1, so its arguments and the env var name are frozen.
 const RESTART_SCRIPT = `
 alive() { local s; s=$(ps -o stat= -p "$1" 2>/dev/null) || return 1; case $s in Z*|'') return 1;; esac; return 0; }
 if [ -d "/proc/$$/fd" ]; then
   for fd in /proc/$$/fd/*; do fd=\${fd##*/}; [ "$fd" -gt 2 ] && eval "exec $fd>&-"; done
 fi
-while alive "$1"; do sleep 0.2; done
-exec "$2"
+pid=$1 image=$2 previous=$3 healthy=$4 skip=$5 version=$6 timeout=$7
+while alive "$pid"; do sleep 0.2; done
+[ -n "$previous" ] || exec "$image"
+rm -f "$healthy"
+HCL_UPDATE_HEALTHY="$healthy" "$image" &
+child=$!
+ticks=0
+while [ ! -e "$healthy" ]; do
+  if ! alive "$child" || [ "$ticks" -ge $((timeout * 5)) ]; then
+    kill "$child" 2>/dev/null
+    n=0
+    while alive "$child" && [ "$n" -lt 25 ]; do sleep 0.2; n=$((n + 1)); done
+    kill -9 "$child" 2>/dev/null
+    sleep 1
+    printf '%s\\n' "$version" > "$skip"
+    mv -f "$previous" "$image" && exec "$image"
+    exit 1
+  fi
+  sleep 0.2
+  ticks=$((ticks + 1))
+done
+rm -f "$healthy"
 `;
 
 function signedMessage(fileName, sha512) {
@@ -118,8 +144,9 @@ function restartEnv(env) {
   return clean;
 }
 
-function restartAppImage({ appImage, pid, spawn = childProcess.spawn, env = process.env }) {
-  const child = spawn('/bin/bash', ['-c', RESTART_SCRIPT, 'hyperclay-local-restart', String(pid), appImage], {
+function restartAppImage({ appImage, pid, previous = null, healthFile, skipFile, version, timeoutSeconds = 30, spawn = childProcess.spawn, env = process.env }) {
+  const args = [String(pid), appImage, previous || '', healthFile, skipFile, String(version || ''), String(timeoutSeconds)];
+  const child = spawn('/bin/bash', ['-c', RESTART_SCRIPT, 'hyperclay-local-restart', ...args], {
     detached: true,
     stdio: 'ignore',
     cwd: os.homedir(),
@@ -128,8 +155,37 @@ function restartAppImage({ appImage, pid, spawn = childProcess.spawn, env = proc
   child.unref();
 }
 
+// Read once at startup and removed from the environment, so helpers this process
+// starts never inherit it.
+function takeHealthFile(env) {
+  const file = env[HEALTH_ENV] || null;
+  delete env[HEALTH_ENV];
+  return file;
+}
+
+function markHealthy(healthFile, version) {
+  if (!healthFile) return;
+  try {
+    fs.writeFileSync(healthFile, `${version}\n`);
+  } catch (error) {
+    console.error('[UPDATE] Could not report a healthy start:', error.message);
+  }
+}
+
+function readSkippedVersion(skipFile) {
+  try {
+    return fs.readFileSync(skipFile, 'utf8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
   RESTART_SCRIPT,
+  HEALTH_ENV,
+  takeHealthFile,
+  markHealthy,
+  readSkippedVersion,
   signedMessage,
   verifyAppImageSignature,
   sha512File,

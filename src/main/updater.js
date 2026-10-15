@@ -65,6 +65,7 @@ function createUpdater({
   prepareForInstall,
   verifyDownload = null,
   commitInstall = null,
+  skipVersion = null,
   onChange,
   logger = console,
   timers = { setTimeout, setInterval }
@@ -96,6 +97,7 @@ function createUpdater({
     autoUpdater.logger = logger;
     autoUpdater.setFeedURL({ provider: 'generic', url: FEED_URL });
     autoUpdater.on('update-available', (info) => {
+      if (info.version === skipVersion) return;
       if (state.state === 'ready' || state.state === 'restarting') return;
       set({ state: 'downloading', latestVersion: info.version, error: null });
     });
@@ -112,7 +114,7 @@ function createUpdater({
       });
     } else {
       autoUpdater.on('update-downloaded', async (info) => {
-        if (state.state === 'restarting') return;
+        if (state.state === 'restarting' || info.version === skipVersion) return;
         if (state.state === 'ready' && state.latestVersion === info.version) return;
         try {
           if (verifyDownload) await verifyDownload(info);

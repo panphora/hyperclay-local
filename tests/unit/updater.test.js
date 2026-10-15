@@ -250,6 +250,35 @@ describe('install mode for an AppImage', () => {
     expect(updater.get()).toBeNull();
   });
 
+  test('a version that was rolled back is never offered again', async () => {
+    const autoUpdater = fakeAutoUpdater();
+    const verifyDownload = jest.fn().mockResolvedValue();
+    const updater = createUpdater({
+      currentVersion: '1.30.3',
+      installInPlace: true,
+      autoUpdater,
+      nativeUpdater: null,
+      fetchJson: jest.fn(),
+      prepareForInstall: jest.fn(),
+      verifyDownload,
+      commitInstall: jest.fn(),
+      skipVersion: '1.31.0',
+      onChange: () => {},
+      logger: silent,
+      timers: noTimers
+    });
+    updater.start();
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    autoUpdater.emit('update-downloaded', { version: '1.31.0', downloadedFile: '/cache/x' });
+    await flush();
+    expect(updater.get()).toBeNull();
+    expect(verifyDownload).not.toHaveBeenCalled();
+    autoUpdater.emit('update-available', { version: '1.31.1' });
+    autoUpdater.emit('update-downloaded', { version: '1.31.1', downloadedFile: '/cache/y' });
+    await flush();
+    expect(updater.get()).toMatchObject({ state: 'ready', latestVersion: '1.31.1' });
+  });
+
   test('a click drains first, then swaps with our code instead of the stock installer', async () => {
     const { updater, autoUpdater, commitInstall, prepareForInstall } = setup();
     autoUpdater.emit('update-available', { version: '1.31.0' });

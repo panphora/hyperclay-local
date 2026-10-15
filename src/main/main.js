@@ -32,7 +32,7 @@ const { buildCards, worstState, trayIconVariant, trayTooltip, switchSublines, to
 const { createNewTeamNotifier } = require('./new-team-notifier');
 const { isAllowedExternalUrl, requireRoot, requireSession, requireAccount, cardMenuModel, disconnectDialog, removeFolderDialog, movePortDialog, flattenConflicts, flattenBlocked, ACTIVITY_THROTTLE_MS, createThrottle, profilePatch, accountSettingsUrl, profileErrorMessage } = require('./ui/main-ipc');
 const { createUpdater, canInstallInPlace, readWindowsInstallLocation, FEED_URL } = require('./updater');
-const { stageAppImage, commitAppImage, restartAppImage } = require('./appimage-update');
+const { stageAppImage, commitAppImage, restartAppImage, takeHealthFile, markHealthy, readSkippedVersion } = require('./appimage-update');
 const { UPDATE_PUBLIC_KEYS } = require('./update-keys');
 
 let manager = null;
@@ -95,6 +95,7 @@ let tray = null;
 let settings = {};
 let isQuitting = false;
 let updater = null;
+const updateHealthFile = takeHealthFile(process.env);
 
 const ACTIVITY_LIMIT = 100;
 const DISCOVERY_STALE_MS = 30_000;
@@ -871,7 +872,9 @@ async function drainSyncForUpdate() {
 
 function startUpdater() {
   const appImage = process.platform === 'linux' ? process.env.APPIMAGE || null : null;
+  const skipFile = path.join(app.getPath('userData'), 'update-skip');
   let stagedAppImage = null;
+  let stagedVersion = null;
   const installInPlace = canInstallInPlace({
     platform: process.platform,
     isPackaged: app.isPackaged,
@@ -903,7 +906,9 @@ function startUpdater() {
       await drainSyncForUpdate();
       await shutdownForQuit();
     },
+    skipVersion: appImage ? readSkippedVersion(skipFile) : null,
     verifyDownload: appImage ? async (info) => {
+      stagedVersion = info.version;
       stagedAppImage = await stageAppImage({
         appImage,
         downloadedFile: info.downloadedFile,
@@ -918,13 +923,21 @@ function startUpdater() {
       });
     } : null,
     commitInstall: appImage ? () => {
+      let previous = null;
       try {
-        commitAppImage({ appImage, staged: stagedAppImage });
+        previous = commitAppImage({ appImage, staged: stagedAppImage });
       } catch (error) {
         console.error('[UPDATE] Could not swap the AppImage, restarting the current one:', error);
         errorLogger.error('App', 'AppImage update swap failed', error);
       }
-      restartAppImage({ appImage, pid: process.pid });
+      restartAppImage({
+        appImage,
+        pid: process.pid,
+        previous,
+        healthFile: path.join(app.getPath('userData'), 'update-healthy'),
+        skipFile,
+        version: stagedVersion
+      });
       app.exit(0);
     } : null,
     onChange: (info) => sendToPopover('update-available', info)
@@ -2009,6 +2022,7 @@ app.whenReady().then(async () => {
   popover.createPopoverWindow();
 
   startUpdater();
+  markHealthy(updateHealthFile, app.getVersion());
 
   // Defer sync + server auto-restart until after whenReady resolves, so the
   // tray and popover are fully interactive before any potentially-blocking work
