@@ -31,7 +31,9 @@ const { getAccounts } = require('../sync-engine/api-client');
 const { buildCards, worstState, trayIconVariant, trayTooltip, switchSublines, toLine, trayMenuModel } = require('./ui/card-model');
 const { createNewTeamNotifier } = require('./new-team-notifier');
 const { isAllowedExternalUrl, requireRoot, requireSession, requireAccount, cardMenuModel, disconnectDialog, removeFolderDialog, movePortDialog, flattenConflicts, flattenBlocked, ACTIVITY_THROTTLE_MS, createThrottle, profilePatch, accountSettingsUrl, profileErrorMessage } = require('./ui/main-ipc');
-const { createUpdater, canInstallInPlace, readWindowsInstallLocation } = require('./updater');
+const { createUpdater, canInstallInPlace, readWindowsInstallLocation, FEED_URL } = require('./updater');
+const { stageAppImage, commitAppImage, restartAppImage } = require('./appimage-update');
+const { UPDATE_PUBLIC_KEYS } = require('./update-keys');
 
 let manager = null;
 const observers = new Map();
@@ -868,11 +870,15 @@ async function drainSyncForUpdate() {
 }
 
 function startUpdater() {
+  const appImage = process.platform === 'linux' ? process.env.APPIMAGE || null : null;
+  let stagedAppImage = null;
   const installInPlace = canInstallInPlace({
     platform: process.platform,
     isPackaged: app.isPackaged,
     exePath: app.getPath('exe'),
     installLocation: process.platform === 'win32' ? readWindowsInstallLocation(require('child_process').execFileSync) : null,
+    appImage,
+    hasUpdateKeys: UPDATE_PUBLIC_KEYS.length > 0,
     canWrite: (target) => {
       try {
         fs.accessSync(target, fs.constants.W_OK);
@@ -897,6 +903,30 @@ function startUpdater() {
       await drainSyncForUpdate();
       await shutdownForQuit();
     },
+    verifyDownload: appImage ? async (info) => {
+      stagedAppImage = await stageAppImage({
+        appImage,
+        downloadedFile: info.downloadedFile,
+        info,
+        feedUrl: FEED_URL,
+        publicKeys: UPDATE_PUBLIC_KEYS,
+        fetchText: async (url) => {
+          const response = await fetch(url, { cache: 'no-store' });
+          if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+          return response.text();
+        }
+      });
+    } : null,
+    commitInstall: appImage ? () => {
+      try {
+        commitAppImage({ appImage, staged: stagedAppImage });
+      } catch (error) {
+        console.error('[UPDATE] Could not swap the AppImage, restarting the current one:', error);
+        errorLogger.error('App', 'AppImage update swap failed', error);
+      }
+      restartAppImage({ appImage, pid: process.pid });
+      app.exit(0);
+    } : null,
     onChange: (info) => sendToPopover('update-available', info)
   });
   updater.start();

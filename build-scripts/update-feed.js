@@ -51,4 +51,18 @@ function windowsFeed({ dir, version, baseUrl, releaseDate }) {
   return renderFeed(version, [fileEntry(dir, installers[0], baseUrl)], releaseDate);
 }
 
-module.exports = { macFeed, macUpdateZips, windowsFeed, windowsInstallers };
+function linuxAppImages(files, version) {
+  return files.filter((file) => file === `HyperclayLocal-${version}.AppImage` || file === `HyperclayLocal-${version}-arm64.AppImage`).sort();
+}
+
+// appimage-runtime.js rewrites every AppImage after electron-builder has hashed it, so
+// electron-builder's own latest-linux*.yml describe bytes that were never published.
+// electron-updater asks for latest-linux-arm64.yml on arm64 and latest-linux.yml on x64.
+function linuxFeeds({ dir, version, baseUrl, releaseDate }) {
+  return linuxAppImages(fs.readdirSync(dir), version).map((file) => [
+    file.endsWith('-arm64.AppImage') ? 'latest-linux-arm64.yml' : 'latest-linux.yml',
+    renderFeed(version, [fileEntry(dir, file, baseUrl)], releaseDate)
+  ]);
+}
+
+module.exports = { macFeed, macUpdateZips, windowsFeed, windowsInstallers, linuxFeeds, linuxAppImages };

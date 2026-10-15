@@ -22,9 +22,14 @@ function compareVersions(v1, v2) {
 
 // Squirrel replaces the bundle where it sits, so it needs one it can write, and never a
 // translocated or disk-image copy. The NSIS installer reinstalls into the per-user
-// location it recorded, which must be the folder this exe runs from.
-function canInstallInPlace({ platform, isPackaged, exePath, canWrite, installLocation = null }) {
+// location it recorded, which must be the folder this exe runs from. An AppImage is
+// swapped by our own code, which needs its folder writable and a key to check updates.
+function canInstallInPlace({ platform, isPackaged, exePath, canWrite, installLocation = null, appImage = null, hasUpdateKeys = false }) {
   if (!isPackaged) return false;
+  if (platform === 'linux') {
+    if (!appImage || !hasUpdateKeys || !path.posix.isAbsolute(appImage)) return false;
+    return canWrite(appImage) && canWrite(path.posix.dirname(appImage));
+  }
   if (platform === 'win32') {
     if (!installLocation) return false;
     const dir = path.win32.dirname(exePath);
@@ -58,6 +63,8 @@ function createUpdater({
   nativeUpdater,
   fetchJson,
   prepareForInstall,
+  verifyDownload = null,
+  commitInstall = null,
   onChange,
   logger = console,
   timers = { setTimeout, setInterval }
@@ -104,8 +111,16 @@ function createUpdater({
         if (state.latestVersion) set({ state: 'ready', error: null });
       });
     } else {
-      autoUpdater.on('update-downloaded', (info) => {
+      autoUpdater.on('update-downloaded', async (info) => {
         if (state.state === 'restarting') return;
+        if (state.state === 'ready' && state.latestVersion === info.version) return;
+        try {
+          if (verifyDownload) await verifyDownload(info);
+        } catch (error) {
+          logger.log('[UPDATE] Downloaded update rejected:', error.message);
+          set({ state: 'idle', latestVersion: null });
+          return;
+        }
         set({ state: 'ready', latestVersion: info.version, error: null });
       });
     }
@@ -134,11 +149,12 @@ function createUpdater({
       set({ state: 'ready', error: error.message });
       return { ok: false, error: error.message };
     }
-    autoUpdater.quitAndInstall(true, true);
+    if (commitInstall) commitInstall();
+    else autoUpdater.quitAndInstall(true, true);
     return { ok: true };
   }
 
   return { start, check, install, get };
 }
 
-module.exports = { createUpdater, canInstallInPlace, compareVersions, parseInstallLocation, readWindowsInstallLocation, WINDOWS_INSTALL_KEY };
+module.exports = { createUpdater, canInstallInPlace, compareVersions, parseInstallLocation, readWindowsInstallLocation, WINDOWS_INSTALL_KEY, FEED_URL };

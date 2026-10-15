@@ -189,6 +189,78 @@ describe('install mode on Windows (NSIS)', () => {
   });
 });
 
+describe('canInstallInPlace for an AppImage', () => {
+  const base = { platform: 'linux', isPackaged: true, exePath: '/tmp/.mount_x/hyperclay-local-electron', canWrite: () => true, hasUpdateKeys: true };
+
+  test('a writable AppImage with a release key compiled in can swap itself', () => {
+    expect(canInstallInPlace({ ...base, appImage: '/home/ana/Apps/HyperclayLocal.AppImage' })).toBe(true);
+  });
+
+  test('no APPIMAGE, no key, or an unwritable folder keeps the download link', () => {
+    expect(canInstallInPlace({ ...base, appImage: null })).toBe(false);
+    expect(canInstallInPlace({ ...base, appImage: 'relative.AppImage' })).toBe(false);
+    expect(canInstallInPlace({ ...base, appImage: '/home/ana/Apps/HyperclayLocal.AppImage', hasUpdateKeys: false })).toBe(false);
+    expect(canInstallInPlace({ ...base, appImage: '/opt/HyperclayLocal.AppImage', canWrite: (target) => target !== '/opt' })).toBe(false);
+  });
+});
+
+describe('install mode for an AppImage', () => {
+  function setup({ verifyDownload = jest.fn().mockResolvedValue(), prepareForInstall = jest.fn().mockResolvedValue() } = {}) {
+    const autoUpdater = fakeAutoUpdater();
+    const commitInstall = jest.fn();
+    const updater = createUpdater({
+      currentVersion: '1.30.3',
+      installInPlace: true,
+      autoUpdater,
+      nativeUpdater: null,
+      fetchJson: jest.fn(),
+      prepareForInstall,
+      verifyDownload,
+      commitInstall,
+      onChange: () => {},
+      logger: silent,
+      timers: noTimers
+    });
+    updater.start();
+    return { updater, autoUpdater, commitInstall, verifyDownload, prepareForInstall };
+  }
+
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+  test('is ready only after our own checks pass, and never installs on quit', async () => {
+    const { updater, autoUpdater, verifyDownload } = setup();
+    expect(autoUpdater.autoInstallOnAppQuit).toBe(false);
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    const info = { version: '1.31.0', downloadedFile: '/cache/HyperclayLocal-1.31.0.AppImage' };
+    autoUpdater.emit('update-downloaded', info);
+    expect(updater.get().state).toBe('downloading');
+    await flush();
+    expect(verifyDownload).toHaveBeenCalledWith(info);
+    expect(updater.get()).toMatchObject({ state: 'ready', latestVersion: '1.31.0' });
+    autoUpdater.emit('update-downloaded', info);
+    await flush();
+    expect(verifyDownload).toHaveBeenCalledTimes(1);
+  });
+
+  test('a download that fails our checks is never offered', async () => {
+    const { updater, autoUpdater } = setup({ verifyDownload: jest.fn().mockRejectedValue(new Error('bad signature')) });
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    autoUpdater.emit('update-downloaded', { version: '1.31.0', downloadedFile: '/cache/x' });
+    await flush();
+    expect(updater.get()).toBeNull();
+  });
+
+  test('a click drains first, then swaps with our code instead of the stock installer', async () => {
+    const { updater, autoUpdater, commitInstall, prepareForInstall } = setup();
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    autoUpdater.emit('update-downloaded', { version: '1.31.0', downloadedFile: '/cache/x' });
+    await flush();
+    await expect(updater.install()).resolves.toEqual({ ok: true });
+    expect(prepareForInstall.mock.invocationCallOrder[0]).toBeLessThan(commitInstall.mock.invocationCallOrder[0]);
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+  });
+});
+
 describe('link mode', () => {
   function setup(receipt) {
     const changes = [];

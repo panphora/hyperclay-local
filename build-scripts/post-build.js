@@ -1,9 +1,11 @@
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 require('dotenv').config();
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-const { macFeed, macUpdateZips, windowsFeed, windowsInstallers } = require('./update-feed');
+const { macFeed, macUpdateZips, windowsFeed, windowsInstallers, linuxFeeds, linuxAppImages } = require('./update-feed');
+const { createSigner } = require('./update-signing');
 
 // R2 Configuration
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
@@ -192,6 +194,22 @@ async function main() {
     process.exit(1);
   }
 
+  // Signed before anything uploads, so a seed the app does not trust fails the release
+  // while the bucket is untouched.
+  const linuxImages = linuxAppImages(files, version);
+  const signer = createSigner(process.env.HLOCAL_UPDATE_SEED);
+  const linuxUpdateFiles = [];
+  if (linuxImages.length > 0 && !signer) {
+    console.log('::notice title=Linux update feed skipped::HLOCAL_UPDATE_SEED is not set, so this release publishes no Linux update feed and installed AppImages keep linking to the download page.');
+  }
+  if (signer) {
+    for (const file of linuxImages) {
+      const sha512 = crypto.createHash('sha512').update(fs.readFileSync(path.join(executablesDir, file))).digest('base64');
+      fs.writeFileSync(path.join(executablesDir, `${file}.sig`), `${signer.sign(file, sha512)}\n`);
+      linuxUpdateFiles.push(file, `${file}.sig`);
+    }
+  }
+
   console.log(`📦 Uploading ${distributables.length} file(s) to R2...\n`);
 
   // Track uploaded files with URLs
@@ -220,7 +238,7 @@ async function main() {
 
   const updateZips = macUpdateZips(files, version);
   const windowsSetup = windowsInstallers(files, version);
-  for (const file of [...updateZips, ...windowsSetup]) {
+  for (const file of [...updateZips, ...windowsSetup, ...linuxUpdateFiles]) {
     try {
       await uploadToR2(
         path.join(executablesDir, file),
@@ -250,6 +268,7 @@ async function main() {
   const feeds = [];
   if (updateZips.length > 0) feeds.push(['latest-mac.yml', macFeed(feedOptions)]);
   if (windowsSetup.length > 0) feeds.push(['latest.yml', windowsFeed(feedOptions)]);
+  if (signer) feeds.push(...linuxFeeds(feedOptions));
   for (const [name, content] of feeds) {
     const feedPath = path.join(executablesDir, name);
     fs.writeFileSync(feedPath, content);
