@@ -18,6 +18,9 @@ build/*
 !build/icon.icns
 !build/icon.ico
 !build/icon.png
+# electron-builder reads build/installer.nsh as the NSIS include. Ignored, it would never
+# reach a runner, and the Windows installer would quietly build without it.
+!build/installer.nsh
 executables/
 
 # OS generated files

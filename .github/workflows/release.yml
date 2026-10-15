@@ -405,15 +405,16 @@ jobs:
             exit 1
           }
 
-          # Install silently, which the assisted installer does per user (no UAC) when no
-          # install exists yet, and check what lands on disk through the same registry
-          # value the app reads to decide it can update itself.
+          # Install silently, which the one-click installer always does per user (no UAC),
+          # and check what lands on disk through the same registry value the app reads to
+          # decide it can update itself. build/installer.nsh puts a fresh install in
+          # Programs\HyperclayLocal, the folder every older per-user install already uses.
           Start-Process -FilePath $installer -ArgumentList "/S" -Wait
           $key = "HKCU:\Software\56279e69-a1ca-58cc-a483-19be13420d85"
           $dir = (Get-ItemProperty -Path $key -Name InstallLocation).InstallLocation
           Write-Host "Installed to: $dir"
-          if (-not $dir.StartsWith($env:LOCALAPPDATA, [System.StringComparison]::OrdinalIgnoreCase)) {
-            Write-Error "The installer did not install per user: $dir"
+          if ($dir -ne (Join-Path $env:LOCALAPPDATA "Programs\HyperclayLocal")) {
+            Write-Error "The installer did not install to the per-user HyperclayLocal folder: $dir"
             exit 1
           }
           Assert-Signed (Join-Path $dir "HyperclayLocal.exe")
