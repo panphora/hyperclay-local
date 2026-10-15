@@ -1691,6 +1691,11 @@ function tailObservationRoutes(fixture, { attemptId = ATTEMPT_ID, version = VERS
   return [
     {
       method: 'GET',
+      match: new RegExp(`^repos/${repo}/actions/runs/${runId}/attempts/1$`),
+      reply: ghOk(runBody({ attemptId, sourceSha: fixture.sourceSha, mode: 'publish', version, runId }))
+    },
+    {
+      method: 'GET',
       match: new RegExp(`^repos/${repo}/actions/runs/${runId}$`),
       reply: ghOk(runBody({ attemptId, sourceSha: fixture.sourceSha, mode: 'publish', version, runId }))
     },
@@ -2290,13 +2295,34 @@ describePosix('caller explicit repair', () => {
     });
   }
 
+  function rerunBody(fixture, { status, conclusion } = {}) {
+    return {
+      ...runBody({
+        attemptId: ATTEMPT_ID,
+        sourceSha: fixture.sourceSha,
+        mode: 'publish',
+        version: VERSION,
+        status,
+        conclusion
+      }),
+      run_attempt: 2
+    };
+  }
+
   function repairRoutes({ fixture, repairedSourceSha, oldRun = modernFailureRun(fixture),
-    onReady, onPost, legacy = false }) {
+    latestRun = null, onReady, onPost, legacy = false }) {
     let repairReads = 0;
     const routes = [
-      { method: 'GET', match: DEFINITION_ENDPOINT, reply: ghOk(definitionBody()) },
-      { method: 'GET', match: OLD_RUN_ENDPOINT, reply: ghOk(oldRun) }
+      { method: 'GET', match: DEFINITION_ENDPOINT, reply: ghOk(definitionBody()) }
     ];
+    if (latestRun !== null) {
+      routes.push({ method: 'GET', match: `${OLD_RUN_ENDPOINT}/attempts/1`, reply: ghOk(oldRun) });
+    }
+    routes.push({
+      method: 'GET',
+      match: OLD_RUN_ENDPOINT,
+      reply: latestRun === null ? ghOk(oldRun) : latestRun
+    });
     if (legacy) {
       routes.splice(1, 0, {
         method: 'GET',
@@ -2451,8 +2477,97 @@ describePosix('caller explicit repair', () => {
     expect(harness.uuidCalls).toEqual([FRESH_RELEASE_ID, REPAIR_ATTEMPT_ID]);
     const endpoints = harness.ghCalls.map(call => call.args[10]);
     expect(endpoints.filter(endpoint => endpoint === LEGACY_HISTORY_ENDPOINT)).toHaveLength(1);
-    expect(endpoints.filter(endpoint => endpoint === OLD_RUN_ENDPOINT)).toHaveLength(1);
+    expect(endpoints.filter(endpoint => endpoint === OLD_RUN_ENDPOINT)).toHaveLength(3);
     expect(endpoints.filter(endpoint => endpoint === `${OLD_RUN_ENDPOINT}/attempts/2`)).toHaveLength(1);
+    expect(FERRY_CHILDREN.size).toBe(0);
+  });
+
+  testPosix('caller explicit repair: a rerun still running refuses before gates and proves zero POST', async () => {
+    const { fixture, repairedSourceSha } = setupModernRepair();
+    const harness = makeHarness(fixture, { uuids: [REPAIR_ATTEMPT_ID], wall: WALL0 + 10 * 60000 });
+    harness.supplied.gh = repairRoutes({
+      fixture,
+      repairedSourceSha,
+      latestRun: ghOk(rerunBody(fixture, { status: 'in_progress' }))
+    });
+
+    const error = await refusal(release(fixture, { resume: true, resumeSource: repairedSourceSha }, harness));
+
+    expect(error && error.message)
+      .toBe('A later attempt of the failed run is still running; repair after it finishes');
+    expect(harness.posts()).toHaveLength(0);
+    expect(harness.gates).toEqual([]);
+    const lane = readLane(fixture);
+    expect(lane.phase).toBe('failed-ci');
+    expect(lane.activeAttemptId).toBe(ATTEMPT_ID);
+    expect(lane.attempts).toHaveLength(1);
+    expect(FERRY_CHILDREN.size).toBe(0);
+  });
+
+  testPosix('caller explicit repair: a rerun that starts during gates refuses before the POST', async () => {
+    const { fixture, repairedSourceSha } = setupModernRepair();
+    let latestReads = 0;
+    const harness = makeHarness(fixture, { uuids: [REPAIR_ATTEMPT_ID], wall: WALL0 + 10 * 60000 });
+    harness.supplied.gh = repairRoutes({
+      fixture,
+      repairedSourceSha,
+      latestRun: () => {
+        latestReads += 1;
+        return latestReads === 1
+          ? ghOk(modernFailureRun(fixture))
+          : ghOk(rerunBody(fixture, { status: 'queued' }));
+      }
+    });
+
+    const error = await refusal(release(fixture, { resume: true, resumeSource: repairedSourceSha }, harness));
+
+    expect(latestReads).toBe(2);
+    expect(error && error.message)
+      .toBe('A later attempt of the failed run is still running; repair after it finishes');
+    expect(harness.posts()).toHaveLength(0);
+    expect(harness.gates.map((gate) => gate.kind)).toEqual(['repair']);
+    expect(readLane(fixture).phase).toBe('failed-ci');
+    expect(FERRY_CHILDREN.size).toBe(0);
+  });
+
+  testPosix('caller explicit repair: a completed successful rerun proceeds and logs the republish', async () => {
+    const { fixture, repairedSourceSha } = setupModernRepair();
+    const harness = makeHarness(fixture, { uuids: [REPAIR_ATTEMPT_ID], wall: WALL0 + 10 * 60000 });
+    harness.supplied.gh = repairRoutes({
+      fixture,
+      repairedSourceSha,
+      latestRun: ghOk(rerunBody(fixture, { status: 'completed', conclusion: 'success' }))
+    });
+
+    const result = await release(fixture, { resume: true, resumeSource: repairedSourceSha }, harness);
+
+    expect(result.outcome).toBe('pending');
+    expect(harness.gates.map((gate) => gate.kind)).toEqual(['repair']);
+    expect(harness.posts()).toHaveLength(1);
+    expect(JSON.parse(harness.posts()[0].options.input).inputs.attempt_id).toBe(REPAIR_ATTEMPT_ID);
+    expect(harness.logs.some((line) => /attempt 2 succeeded after the recorded failure/.test(line))).toBe(true);
+    expect(FERRY_CHILDREN.size).toBe(0);
+  });
+
+  testPosix('failed-ci resume after a rerun reports the repair instruction', async () => {
+    const { fixture } = setupModernRepair();
+    const harness = makeHarness(fixture, { uuids: [], wall: WALL0 + 10 * 60000 });
+    harness.supplied.gh = routeGh([
+      { method: 'GET', match: `${OLD_RUN_ENDPOINT}/attempts/1`, reply: ghOk(modernFailureRun(fixture)) },
+      {
+        method: 'GET',
+        match: OLD_RUN_ENDPOINT,
+        reply: ghOk(rerunBody(fixture, { status: 'completed', conclusion: 'success' }))
+      }
+    ]);
+
+    const result = await release(fixture, { resume: true }, harness);
+
+    expect(result.outcome).toBe('failed-ci');
+    expect(result.error.code).toBe('WORKFLOW_CI_FAILED');
+    expect(harness.posts()).toHaveLength(0);
+    expect(harness.gates).toEqual([]);
+    expect(readLane(fixture).phase).toBe('failed-ci');
     expect(FERRY_CHILDREN.size).toBe(0);
   });
 

@@ -1207,4 +1207,23 @@ async function reobserveFailedRelease(input, deps, options) {
   return { state, run };
 }
 
-module.exports = { discoverLegacyPublication, reconcileLegacyRelease, reconcileLegacyFailure, reobserveFailedRelease, observePublication, persistPublication, verifyCurrentPublication };
+async function observeLatestAttempt(input, deps, options) {
+  const resolved = resolveDeps(deps);
+  const end = freezeDeadline(options, resolved.now);
+  const state = input.state;
+  const attempt = state.attempts.find(value => value.id === state.activeAttemptId);
+  if (state.phase !== 'failed-ci' || !attempt || !Number.isSafeInteger(attempt.runId)) {
+    throw publicationInvalid('Latest attempt observation requires the bound failed run');
+  }
+  const repo = state.repo.remoteRepo.slice(REMOTE_PREFIX.length);
+  const run = await readPolicy.readGithubJson('github.run', {
+    repo, endpoint: `repos/${repo}/actions/runs/${attempt.runId}`
+  }, resolved.github, { deadline: end });
+  if (!run || run.id !== attempt.runId || !Number.isSafeInteger(run.run_attempt) ||
+      run.run_attempt < attempt.runAttempt || typeof run.status !== 'string') {
+    throw publicationInvalid('The failed run has no readable latest attempt');
+  }
+  return { runAttempt: run.run_attempt, status: run.status, conclusion: run.conclusion };
+}
+
+module.exports = { discoverLegacyPublication, reconcileLegacyRelease, reconcileLegacyFailure, reobserveFailedRelease, observeLatestAttempt, observePublication, persistPublication, verifyCurrentPublication };

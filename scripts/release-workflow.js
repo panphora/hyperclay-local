@@ -17,6 +17,8 @@ const { writeOutput } = require('./release-command');
 const READ_MS = 90000;
 const REQUEST_MS = 30000;
 const UNTITLED_WAIT_MS = 2000;
+// A dispatched release binds attempt 1. A rerun is a later attempt of the same run, so read the bound one.
+const BOUND_RUN_ATTEMPT = 1;
 const MAX_BYTES = 8 * 1024 * 1024;
 const WORKFLOW_PATH = '.github/workflows/release.yml';
 const REPO_FIELDS = [
@@ -413,8 +415,8 @@ async function reconcileWorkflowAttempt(input, suppliedDeps) {
   async function readRun(id, end) {
     for (;;) {
       requireTime(end);
-      const run = await readGithubJson('github.run', {
-        repo, endpoint: `repos/${repo}/actions/runs/${id}`
+      const run = await readGithubJson('github.run-attempt', {
+        repo, endpoint: `repos/${repo}/actions/runs/${id}/attempts/${BOUND_RUN_ATTEMPT}`
       }, githubDeps, { deadline: end });
       checkAbort(deps.signal);
       try {

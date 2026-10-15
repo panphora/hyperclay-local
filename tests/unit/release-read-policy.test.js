@@ -287,6 +287,7 @@ describe('retryRead', () => {
     'github.workflow-definition',
     'github.workflow-runs-page',
     'github.run',
+    'github.run-attempt',
     'github.run-jobs-page',
     'desktop.release-info',
     'desktop.release-info-visible'
@@ -981,6 +982,7 @@ describe('readGithubJson', () => {
       ['github.workflow-definition', `repos/${REPO}/actions/workflows/73`],
       ['github.workflow-runs-page', `repos/${REPO}/actions/workflows/73/runs?event=workflow_dispatch&per_page=100&page=1`],
       ['github.run', runEndpoint],
+      ['github.run-attempt', `repos/${REPO}/actions/runs/1287/attempts/1`],
       ['github.run-jobs-page', `repos/${REPO}/actions/runs/1287/attempts/2/jobs?per_page=100&page=3`]
     ];
     for (const [operation, endpoint] of allowed) {
@@ -1005,6 +1007,10 @@ describe('readGithubJson', () => {
       ['github.run', { repo: REPO, endpoint: `repos/${REPO}/actions/runs/0` }],
       ['github.run', { repo: REPO, endpoint: `repos/${REPO}/actions/runs/1287?per_page=100` }],
       ['github.run', { repo: REPO, endpoint: `repos/${REPO}/actions/workflows/73` }],
+      ['github.run-attempt', { repo: REPO, endpoint: `repos/${REPO}/actions/runs/1287/attempts/0` }],
+      ['github.run-attempt', { repo: REPO, endpoint: `repos/${REPO}/actions/runs/1287` }],
+      ['github.run-attempt', { repo: REPO, endpoint: `repos/${REPO}/actions/runs/1287/attempts/1/jobs` }],
+      ['github.run-attempt', { repo: REPO, endpoint: `repos/${REPO}/actions/runs/1287/attempts/1?per_page=100` }],
       ['github.workflow-runs-page', { repo: REPO, endpoint: `repos/${REPO}/actions/workflows/73/runs?event=workflow_dispatch&per_page=100&page=1&extra=1` }],
       ['github.workflow-runs-page', { repo: REPO, endpoint: `repos/${REPO}/actions/workflows/73/runs?event=push&per_page=100&page=1` }],
       ['github.run-jobs-page', { repo: REPO, endpoint: `repos/${REPO}/actions/runs/1287/jobs?per_page=100&page=1` }],
@@ -1073,6 +1079,7 @@ describe('workflow discovery endpoint', () => {
         ['github.workflow-definition', `repos/${REPO}/actions/workflows/73`],
         ['github.workflow-runs-page', `${runsPage}${createdBound}`],
         ['github.run', `repos/${REPO}/actions/runs/1287`],
+        ['github.run-attempt', `repos/${REPO}/actions/runs/1287/attempts/1`],
         ['github.run-jobs-page', `repos/${REPO}/actions/runs/1287/attempts/2/jobs?per_page=100&page=3`]
       ];
       for (const [operation, endpoint] of operations) {

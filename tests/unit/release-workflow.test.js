@@ -353,7 +353,7 @@ function definitionEndpoint(fx) {
 }
 
 function runEndpoint(id) {
-  return `repos/${REPO}/actions/runs/${id}`;
+  return `repos/${REPO}/actions/runs/${id}/attempts/1`;
 }
 
 function pageEndpoint(requestedAt, page) {

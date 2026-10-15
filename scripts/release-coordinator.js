@@ -19,7 +19,8 @@ const { reconcileWorkflowAttempt } = require('./release-workflow');
 const { readGithubJson } = require('./release-read-policy');
 const { readPublishedSourceVersion } = require('./release-publication');
 const { observePublication, persistPublication, verifyCurrentPublication,
-  reconcileLegacyRelease, reconcileLegacyFailure, reobserveFailedRelease } = require('./release-publication-write');
+  reconcileLegacyRelease, reconcileLegacyFailure, reobserveFailedRelease,
+  observeLatestAttempt } = require('./release-publication-write');
 const { finishReleaseTail, verifyRetainedRelease } = require('./release-tail');
 const { runGitRemote } = require('./release-git-remote');
 const { validateOptions, requireVersion, above, bumpVersion, assertPublishWindow } = require('./release-options');
@@ -233,12 +234,24 @@ async function runRelease({ repoRoot, cacheRoot, flags }, supplied = {}) {
       }
       const observed = await reobserveFailedRelease({ state, repoDir }, publicationDeps);
       state = acknowledge(observed.state);
+      const settled = async () => {
+        const latest = await observeLatestAttempt({ state, repoDir }, publicationDeps);
+        need(latest.status === 'completed',
+          'A later attempt of the failed run is still running; repair after it finishes');
+        return latest;
+      };
+      const latest = await settled();
+      if (latest.runAttempt !== active(state).runAttempt && latest.conclusion === 'success') {
+        d.log(`Run ${active(state).runId} attempt ${latest.runAttempt} succeeded after the recorded failure; ` +
+          `the repair republishes v${state.version} from ${f.resumeSource}`);
+      }
       need(f.resumeSource !== state.sourceSha, 'Repair requires a different source');
       need(requireHeadVersion(state.version) === f.resumeSource, 'Repair source must be the selected checkout HEAD');
       remoteMain(f.resumeSource);
       await gates('repair', state, f.resumeSource);
       need(requireHeadVersion(state.version) === f.resumeSource, 'Repair source changed during build gates');
       remoteMain(f.resumeSource);
+      await settled();
       const workflowId = await workflowDefinition(active(state).workflowId);
       const attempt = makeWorkflowAttempt({ state, repoDir, workflowId, attemptId: d.randomUUID(),
         sourceSha: f.resumeSource, dispatchRef: 'main' });
