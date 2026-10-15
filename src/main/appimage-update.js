@@ -119,7 +119,10 @@ async function stageAppImage({ appImage, downloadedFile, info, feedUrl, fetchTex
 
 // Keeps the running image as <name>.prev (a hard link, so no copy when it can), then
 // renames the staged image over the user's filename, so desktop entries keep working.
-function commitAppImage({ appImage, staged }) {
+// It throws only before the rename. Once the rename has happened the new image is in
+// place and the caller must restart under supervision with the backup, so a failed
+// directory sync is logged, not thrown.
+function commitAppImage({ appImage, staged, logger = console }) {
   if (!staged) throw new Error('No staged AppImage to install');
   const previous = `${appImage}.prev`;
   fs.rmSync(previous, { force: true });
@@ -129,11 +132,15 @@ function commitAppImage({ appImage, staged }) {
     fs.copyFileSync(appImage, previous);
   }
   fs.renameSync(staged, appImage);
-  const dir = fs.openSync(path.dirname(appImage), 'r');
   try {
-    fs.fsyncSync(dir);
-  } finally {
-    fs.closeSync(dir);
+    const dir = fs.openSync(path.dirname(appImage), 'r');
+    try {
+      fs.fsyncSync(dir);
+    } finally {
+      fs.closeSync(dir);
+    }
+  } catch (error) {
+    logger.error('[UPDATE] Could not sync the AppImage folder after the swap:', error.message);
   }
   return previous;
 }

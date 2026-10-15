@@ -325,3 +325,117 @@ describe('link mode', () => {
     await expect(updater.install()).resolves.toEqual({ ok: false });
   });
 });
+
+describe('a failed install after teardown', () => {
+  function setup({ teardownForInstall = jest.fn().mockResolvedValue(), commitInstall = null, nativeUpdater = new EventEmitter() } = {}) {
+    const autoUpdater = fakeAutoUpdater();
+    const relaunch = jest.fn();
+    const updater = createUpdater({
+      currentVersion: '1.30.3',
+      installInPlace: true,
+      autoUpdater,
+      nativeUpdater,
+      fetchJson: jest.fn(),
+      prepareForInstall: jest.fn().mockResolvedValue(),
+      teardownForInstall,
+      relaunch,
+      commitInstall,
+      onChange: () => {},
+      logger: silent,
+      timers: noTimers
+    });
+    updater.start();
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    if (nativeUpdater) nativeUpdater.emit('update-downloaded');
+    else autoUpdater.emit('update-downloaded', { version: '1.31.0' });
+    return { updater, autoUpdater, relaunch, teardownForInstall };
+  }
+
+  test('an installer error after teardown relaunches the current version', async () => {
+    const { updater, autoUpdater, relaunch, teardownForInstall } = setup();
+    autoUpdater.quitAndInstall.mockImplementation(() => {
+      autoUpdater.emit('error', new Error('Squirrel could not install the staged bundle'));
+    });
+    await updater.install();
+    expect(teardownForInstall).toHaveBeenCalledTimes(1);
+    expect(relaunch).toHaveBeenCalledTimes(1);
+    expect(updater.get().error).toBe('Squirrel could not install the staged bundle');
+  });
+
+  test('an installer error arriving later still relaunches, once', async () => {
+    const { updater, autoUpdater, relaunch } = setup();
+    await expect(updater.install()).resolves.toEqual({ ok: true });
+    expect(relaunch).not.toHaveBeenCalled();
+    autoUpdater.emit('error', new Error('installer exited'));
+    autoUpdater.emit('error', new Error('installer exited again'));
+    expect(relaunch).toHaveBeenCalledTimes(1);
+  });
+
+  test('quitAndInstall throwing relaunches', async () => {
+    const { updater, autoUpdater, relaunch } = setup();
+    autoUpdater.quitAndInstall.mockImplementation(() => { throw new Error('spawn failed'); });
+    await expect(updater.install()).resolves.toMatchObject({ ok: false, error: 'spawn failed' });
+    expect(relaunch).toHaveBeenCalledTimes(1);
+  });
+
+  test('commitInstall throwing relaunches', async () => {
+    const commitInstall = jest.fn(() => { throw new Error('swap failed'); });
+    const { updater, relaunch } = setup({ commitInstall, nativeUpdater: null });
+    await expect(updater.install()).resolves.toMatchObject({ ok: false, error: 'swap failed' });
+    expect(relaunch).toHaveBeenCalledTimes(1);
+  });
+
+  test('teardown rejecting relaunches and never installs', async () => {
+    const { updater, autoUpdater, relaunch } = setup({ teardownForInstall: jest.fn().mockRejectedValue(new Error('servers would not stop')) });
+    await expect(updater.install()).resolves.toMatchObject({ ok: false });
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    expect(relaunch).toHaveBeenCalledTimes(1);
+  });
+
+  test('a refused drain stops nothing and relaunches nothing', async () => {
+    const autoUpdater = fakeAutoUpdater();
+    const nativeUpdater = new EventEmitter();
+    const teardownForInstall = jest.fn();
+    const relaunch = jest.fn();
+    const updater = createUpdater({
+      currentVersion: '1.30.3', installInPlace: true, autoUpdater, nativeUpdater, fetchJson: jest.fn(),
+      prepareForInstall: jest.fn().mockRejectedValue(new Error('Sync has unsent changes. Update after it finishes.')),
+      teardownForInstall, relaunch, onChange: () => {}, logger: silent, timers: noTimers
+    });
+    updater.start();
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    nativeUpdater.emit('update-downloaded');
+    await expect(updater.install()).resolves.toMatchObject({ ok: false });
+    autoUpdater.emit('error', new Error('unrelated'));
+    expect(teardownForInstall).not.toHaveBeenCalled();
+    expect(relaunch).not.toHaveBeenCalled();
+    expect(updater.get()).toMatchObject({ state: 'ready', error: 'Sync has unsent changes. Update after it finishes.' });
+  });
+
+  test('the real MacUpdater reporting a Squirrel failure relaunches', async () => {
+    const { MacUpdater } = require('electron-updater/out/MacUpdater');
+    const autoUpdater = fakeAutoUpdater();
+    const noLog = { info() {}, warn() {}, error() {}, log() {} };
+    const core = {
+      _logger: noLog,
+      squirrelDownloadedUpdate: true,
+      autoRunAppAfterInstall: true,
+      nativeUpdater: { quitAndInstall() { autoUpdater.emit('error', new Error('Squirrel could not install the staged bundle')); } },
+      closeServerIfExists() {},
+      handleUpdateDownloaded: MacUpdater.prototype.handleUpdateDownloaded
+    };
+    autoUpdater.quitAndInstall = (...args) => MacUpdater.prototype.quitAndInstall.apply(core, args);
+    const relaunch = jest.fn();
+    const nativeUpdater = new EventEmitter();
+    const updater = createUpdater({
+      currentVersion: '1.30.3', installInPlace: true, autoUpdater, nativeUpdater, fetchJson: jest.fn(),
+      prepareForInstall: jest.fn().mockResolvedValue(), teardownForInstall: jest.fn().mockResolvedValue(),
+      relaunch, onChange: () => {}, logger: silent, timers: noTimers
+    });
+    updater.start();
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    nativeUpdater.emit('update-downloaded');
+    await updater.install();
+    expect(relaunch).toHaveBeenCalledTimes(1);
+  });
+});

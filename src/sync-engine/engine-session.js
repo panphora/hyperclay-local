@@ -231,6 +231,22 @@ module.exports = {
   },
 
   /**
+   * Work this session still owes the server, anywhere it can sit: queued or
+   * executing items, retry timers, lane work (initial passes, structure jobs,
+   * stream handlers) queued or running, structure marks still debouncing,
+   * deletions held before they are sent, and a mass delete awaiting an answer.
+   * Stopping the engine drops all of it, which is why the update drain asks.
+   */
+  hasUnsettledWork() {
+    const queue = this.syncQueue;
+    if (queue.length() > 0 || queue.isProcessingQueue() || queue.retryTimers.size > 0) return true;
+    if (this._lanePending > 0) return true;
+    const structure = this._structure;
+    if (!structure) return false;
+    return structure.dirty.size > 0 || !!structure.timer || !!structure.wakeTimer || !!structure.massDelete;
+  },
+
+  /**
    * Record the generation and signal the session is working under, and return
    * the engine generation this work belongs to: `dropPendingWork` bumps it, so
    * a continuation can tell that its generation ended even without a signal.

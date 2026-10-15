@@ -63,6 +63,8 @@ function createUpdater({
   nativeUpdater,
   fetchJson,
   prepareForInstall,
+  teardownForInstall = async () => {},
+  relaunch = () => {},
   verifyDownload = null,
   commitInstall = null,
   skipVersion = null,
@@ -71,12 +73,24 @@ function createUpdater({
   timers = { setTimeout, setInterval }
 }) {
   let state = { mode: installInPlace ? 'install' : 'link', state: 'idle', latestVersion: null, error: null };
+  let tornDown = false;
+  let relaunching = false;
 
   const get = () => (state.latestVersion ? { ...state } : null);
   const set = (patch) => {
     state = { ...state, ...patch };
     onChange(get());
   };
+
+  // Once teardown has begun, sync, servers and observers are stopped and the popover is
+  // gone, so a failed install can only start this version again, never carry on running.
+  function recover(error) {
+    logger.log('[UPDATE] Install failed after shutdown began, relaunching the current version:', error && error.message);
+    if (relaunching) return;
+    relaunching = true;
+    set({ error: (error && error.message) || 'The update could not be installed.' });
+    relaunch();
+  }
 
   async function checkReceipt() {
     try {
@@ -104,6 +118,7 @@ function createUpdater({
     autoUpdater.on('error', (error) => {
       logger.log('[UPDATE] Updater error:', error && error.message);
       if (state.state === 'downloading') set({ state: 'idle', latestVersion: null });
+      else if (tornDown) recover(error);
     });
     // electron-updater reports its own download before Squirrel has staged the bundle;
     // only Squirrel's event means a click can install at once. Without Squirrel (NSIS),
@@ -151,8 +166,15 @@ function createUpdater({
       set({ state: 'ready', error: error.message });
       return { ok: false, error: error.message };
     }
-    if (commitInstall) commitInstall();
-    else autoUpdater.quitAndInstall(true, true);
+    tornDown = true;
+    try {
+      await teardownForInstall();
+      if (commitInstall) commitInstall();
+      else autoUpdater.quitAndInstall(true, true);
+    } catch (error) {
+      recover(error);
+      return { ok: false, error: error.message };
+    }
     return { ok: true };
   }
 

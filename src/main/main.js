@@ -860,13 +860,13 @@ async function publishServedRoots() {
 // VERSION CHECK
 // =============================================================================
 
+// Refuses the update, leaving everything running, while sync still owes the server
+// anything: stopping would drop it, and the next start cannot always recover it
+// (a pending delete comes back as a download).
 async function drainSyncForUpdate() {
   if (!manager) return;
-  try {
-    await manager.whenAllIdle({ timeoutMs: 30_000 });
-  } catch {
-    const busy = manager.initialRunning > 0 || manager.statuses().some((status) => status.status === 'syncing');
-    if (busy) throw new Error('Sync is still running. Try again in a moment.');
+  if (!(await manager.whenQuiescentForUpdate({ timeoutMs: 30_000 }))) {
+    throw new Error('Sync has unsent changes. Update after it finishes.');
   }
 }
 
@@ -902,9 +902,17 @@ function startUpdater() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return response.json();
     },
-    prepareForInstall: async () => {
-      await drainSyncForUpdate();
-      await shutdownForQuit();
+    prepareForInstall: drainSyncForUpdate,
+    teardownForInstall: shutdownForQuit,
+    relaunch: () => {
+      try {
+        if (appImage) restartAppImage({ appImage, pid: process.pid, healthFile: path.join(app.getPath('userData'), 'update-healthy'), skipFile, version: null });
+        else app.relaunch();
+      } catch (error) {
+        console.error('[UPDATE] Could not relaunch after a failed install:', error);
+        errorLogger.error('App', 'Relaunch after failed update failed', error);
+      }
+      app.exit(0);
     },
     skipVersion: appImage ? readSkippedVersion(skipFile) : null,
     verifyDownload: appImage ? async (info) => {

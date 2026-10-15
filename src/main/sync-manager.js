@@ -571,6 +571,49 @@ class SyncManager extends EventEmitter {
   }
 
   /**
+   * The update drain's test, stricter than `_allIdle` (which the round-trip
+   * driver relies on and stays as it is): no initial pass or bind running or
+   * waiting, no session starting or reconciling, and no engine holding work
+   * anywhere `stopAll` would drop it. An offline or errored session with
+   * pending work is not quiescent.
+   */
+  updateQuiescent() {
+    if (this.initialRunning > 0 || this.initialWaiters.length > 0) return false;
+    for (const entry of this.sessions.values()) {
+      if (entry.bindAbort) return false;
+      if (this._statusFor(entry) === 'syncing') return false;
+      if (entry.engine.hasUnsettledWork()) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Resolves true once `updateQuiescent()` has held for `settleMs`, longer than
+   * the watcher's write stabilization, so a save made just before the click has
+   * reached the engine; resolves false at `timeoutMs`. Never stops anything.
+   */
+  whenQuiescentForUpdate({ timeoutMs = 30_000, settleMs = 1_500, pollMs = 100 } = {}) {
+    return new Promise((resolve) => {
+      const startedAt = Date.now();
+      let quietSince = null;
+      let poll = null;
+      const finish = (quiet) => {
+        clearInterval(poll);
+        resolve(quiet);
+      };
+      const tick = () => {
+        const now = Date.now();
+        if (!this.updateQuiescent()) quietSince = null;
+        else if (quietSince === null) quietSince = now;
+        if (quietSince !== null && now - quietSince >= settleMs) return finish(true);
+        if (now - startedAt >= timeoutMs) return finish(false);
+      };
+      poll = setInterval(tick, pollMs);
+      tick();
+    });
+  }
+
+  /**
    * C3 §5.6: the conflict records behind `statuses()`, in memory because
    * `statuses()` is synchronous. Read at start, and again whenever the executor
    * records a conflict or the user resolves one.

@@ -133,6 +133,22 @@ describeShell('staging and swapping an AppImage', () => {
     expect(fs.statSync(appImage).mode & 0o777).toBe(0o755);
   });
 
+  test('a failed directory sync after the rename still returns the backup', async () => {
+    const staged = await stage().promise;
+    const fsync = jest.spyOn(fs, 'fsyncSync').mockImplementation(() => {
+      throw Object.assign(new Error('directory fsync failed'), { code: 'EIO' });
+    });
+    const logger = { error: jest.fn() };
+    try {
+      expect(commitAppImage({ appImage, staged, logger })).toBe(`${appImage}.prev`);
+    } finally {
+      fsync.mockRestore();
+    }
+    expect(fs.readFileSync(appImage, 'utf8')).toBe('new image');
+    expect(fs.readFileSync(`${appImage}.prev`, 'utf8')).toBe('old image');
+    expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/Could not sync/), 'directory fsync failed');
+  });
+
   test('commit replaces an older .prev and refuses with nothing staged', async () => {
     fs.writeFileSync(`${appImage}.prev`, 'ancient image');
     const staged = await stage().promise;
