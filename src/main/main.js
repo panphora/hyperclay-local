@@ -31,6 +31,7 @@ const { getAccounts } = require('../sync-engine/api-client');
 const { buildCards, worstState, trayIconVariant, trayTooltip, switchSublines, toLine, trayMenuModel } = require('./ui/card-model');
 const { createNewTeamNotifier } = require('./new-team-notifier');
 const { isAllowedExternalUrl, requireRoot, requireSession, requireAccount, cardMenuModel, disconnectDialog, removeFolderDialog, movePortDialog, flattenConflicts, flattenBlocked, ACTIVITY_THROTTLE_MS, createThrottle, profilePatch, accountSettingsUrl, profileErrorMessage } = require('./ui/main-ipc');
+const { createUpdater, canInstallInPlace } = require('./updater');
 
 let manager = null;
 const observers = new Map();
@@ -91,7 +92,7 @@ if (process.platform === 'darwin') {
 let tray = null;
 let settings = {};
 let isQuitting = false;
-let availableUpdate = null;
+let updater = null;
 
 const ACTIVITY_LIMIT = 100;
 const DISCOVERY_STALE_MS = 30_000;
@@ -856,44 +857,47 @@ async function publishServedRoots() {
 // VERSION CHECK
 // =============================================================================
 
-function compareVersions(v1, v2) {
-  const parts1 = v1.split('.').map(Number);
-  const parts2 = v2.split('.').map(Number);
-
-  for (let i = 0; i < 3; i++) {
-    const p1 = parts1[i] || 0;
-    const p2 = parts2[i] || 0;
-    if (p1 > p2) return 1;
-    if (p1 < p2) return -1;
+async function drainSyncForUpdate() {
+  if (!manager) return;
+  try {
+    await manager.whenAllIdle({ timeoutMs: 30_000 });
+  } catch {
+    const busy = manager.initialRunning > 0 || manager.statuses().some((status) => status.status === 'syncing');
+    if (busy) throw new Error('Sync is still running. Try again in a moment.');
   }
-  return 0;
 }
 
-async function checkForUpdates() {
-  try {
-    const response = await fetch('https://cdn.jsdelivr.net/gh/panphora/hyperclay-local@main/package.json');
-
-    if (!response.ok) {
-      console.log('[UPDATE] Failed to check for updates:', response.status);
-      return;
+function startUpdater() {
+  const installInPlace = canInstallInPlace({
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    exePath: app.getPath('exe'),
+    canWrite: (target) => {
+      try {
+        fs.accessSync(target, fs.constants.W_OK);
+        return true;
+      } catch {
+        return false;
+      }
     }
-
-    const remotePackage = await response.json();
-    const remoteVersion = remotePackage.version;
-    const currentVersion = app.getVersion();
-
-    console.log(`[UPDATE] Current version: ${currentVersion}, Latest version: ${remoteVersion}`);
-
-    if (compareVersions(remoteVersion, currentVersion) > 0) {
-      console.log('[UPDATE] New version available!');
-      availableUpdate = { currentVersion, latestVersion: remoteVersion };
-      sendToPopover('update-available', availableUpdate);
-    } else {
-      console.log('[UPDATE] App is up to date');
-    }
-  } catch (error) {
-    console.log('[UPDATE] Update check failed:', error.message);
-  }
+  });
+  updater = createUpdater({
+    currentVersion: app.getVersion(),
+    installInPlace,
+    autoUpdater: installInPlace ? require('electron-updater').autoUpdater : null,
+    nativeUpdater: installInPlace ? require('electron').autoUpdater : null,
+    fetchJson: async (url) => {
+      const response = await fetch(url, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    },
+    prepareForInstall: async () => {
+      await drainSyncForUpdate();
+      await shutdownForQuit();
+    },
+    onChange: (info) => sendToPopover('update-available', info)
+  });
+  updater.start();
 }
 
 // =============================================================================
@@ -1518,7 +1522,7 @@ ipcMain.handle('select-folder', (event) => handleSelectFolder(event));
 
 ipcMain.handle('get-state', async () => ({
   ...(await buildStatePayload()),
-  availableUpdate,
+  availableUpdate: updater ? updater.get() : null,
   appVersion: app.getVersion()
 }));
 
@@ -1546,6 +1550,8 @@ ipcMain.handle('open-browser', (event, url) => {
   shell.openExternal(url);
   return { ok: true };
 });
+
+ipcMain.handle('install-update', () => (updater ? updater.install() : { ok: false }));
 
 // The two global switches, the team commands and the per-card commands (C4 §5.2).
 // The renderer names ids; ports, paths and keys stay in main.
@@ -1970,7 +1976,7 @@ app.whenReady().then(async () => {
   // main thread is mid-block in sync auto-restart.
   popover.createPopoverWindow();
 
-  checkForUpdates();
+  startUpdater();
 
   // Defer sync + server auto-restart until after whenReady resolves, so the
   // tray and popover are fully interactive before any potentially-blocking work
@@ -2059,19 +2065,19 @@ app.on('window-all-closed', () => {
   // Keep app running in tray — popover is not a persistent window
 });
 
-app.on('before-quit', async (event) => {
-  isQuitting = true;
-  sendActivityUpdate.cancel();
-  if (manager) manager.stopDiscoveryTimer();
-  removeServedRoots(servedRootsPath(app.getPath('userData')));
-  popover.destroyPopover();
+let quitCleanup = null;
+let quitCleanupDone = false;
 
-  const sessions = manager ? manager.statuses().length : 0;
-  if (pool.states().length || sessions) {
-    event.preventDefault();
+function shutdownForQuit() {
+  if (!quitCleanup) {
+    quitCleanup = (async () => {
+      isQuitting = true;
+      sendActivityUpdate.cancel();
+      if (manager) manager.stopDiscoveryTimer();
+      removeServedRoots(servedRootsPath(app.getPath('userData')));
+      popover.destroyPopover();
 
-    try {
-      if (sessions) {
+      if (manager && manager.statuses().length) {
         console.log('[APP] Stopping sync engine before quit...');
         await manager.stopAll();
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -2083,12 +2089,21 @@ app.on('before-quit', async (event) => {
       }
 
       await stopObservers();
-
-      app.quit();
-    } catch (error) {
-      console.error('Error during quit cleanup:', error);
-      errorLogger.error('App', 'Error during quit cleanup', error);
-      app.quit();
-    }
+    })().finally(() => {
+      quitCleanupDone = true;
+    });
   }
+  return quitCleanup;
+}
+
+app.on('before-quit', async (event) => {
+  if (quitCleanupDone) return;
+  event.preventDefault();
+  try {
+    await shutdownForQuit();
+  } catch (error) {
+    console.error('Error during quit cleanup:', error);
+    errorLogger.error('App', 'Error during quit cleanup', error);
+  }
+  app.quit();
 });

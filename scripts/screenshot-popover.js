@@ -92,6 +92,7 @@ function installStub(cfg) {
     getState: async () => statePayload(),
     openLogs: noop,
     openBrowser: noop,
+    installUpdate: noop,
     copyText: noop,
 
     setApiKey: async () => ({ success: true, username: profile }),

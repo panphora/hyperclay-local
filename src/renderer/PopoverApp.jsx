@@ -182,8 +182,7 @@ const PopoverApp = () => {
   const [currentView, setCurrentView] = useState('home');
   const [noticesTab, setNoticesTab] = useState('notices');
   const [setupAccountId, setSetupAccountId] = useState(null);
-  const [updateAvailable, setUpdateAvailable] = useState(false);
-  const [updateVersion, setUpdateVersion] = useState(null);
+  const [appUpdate, setAppUpdate] = useState(null);
 
   const [state, setState] = useState(CACHED_STATE);
 
@@ -258,10 +257,7 @@ const PopoverApp = () => {
     api.getState().then((s) => {
       setState((prev) => ({ ...prev, ...s }));
       if (s.actor?.username) setCredUsername((current) => current || s.actor.username);
-      if (s.availableUpdate) {
-        setUpdateAvailable(true);
-        setUpdateVersion(s.availableUpdate.latestVersion);
-      }
+      if (s.availableUpdate) setAppUpdate(s.availableUpdate);
     });
 
     const unsubscribe = [
@@ -311,10 +307,7 @@ const PopoverApp = () => {
         setSetupAccountId(data.accountId);
         setCurrentView('setup');
       }),
-      api.onUpdateAvailable((data) => {
-        setUpdateAvailable(true);
-        setUpdateVersion(data.latestVersion);
-      }),
+      api.onUpdateAvailable((data) => setAppUpdate(data)),
     ];
 
     return () => unsubscribe.forEach((off) => off && off());
@@ -510,7 +503,7 @@ const PopoverApp = () => {
         {currentView === 'home' && (
           <Plate
             banner={state.banner}
-            updateVersion={updateAvailable ? updateVersion : null}
+            appUpdate={appUpdate}
             onReconnect={() => setCurrentView('credentials')}
           />
         )}
@@ -644,7 +637,7 @@ const Header = ({ view, heading, unreadCount, onNotices, onBack }) => (
 
 const plateStyle = { margin: '0 16px 6px', padding: '9px 12px', display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, lineHeight: 1.4 };
 
-const Plate = ({ banner, updateVersion, onReconnect }) => {
+const Plate = ({ banner, appUpdate, onReconnect }) => {
   if (banner === 'reconnect') {
     return (
       <div data-plate="reconnect" style={{ ...plateStyle, ...sunken('bad'), color: '#F5C0C4' }}>
@@ -660,14 +653,30 @@ const Plate = ({ banner, updateVersion, onReconnect }) => {
       </div>
     );
   }
-  if (updateVersion) {
+  if (appUpdate && appUpdate.mode === 'install' && (appUpdate.state === 'ready' || appUpdate.state === 'restarting')) {
+    const restarting = appUpdate.state === 'restarting';
+    return (
+      <Press
+        variant="link"
+        disabled={restarting}
+        onClick={() => window.electronAPI?.installUpdate()}
+        style={{ ...plateStyle, fontFamily: MONO, textAlign: 'left', width: 'calc(100% - 32px)' }}
+      >
+        <span style={{ flex: 1 }}>
+          {restarting ? 'Finishing sync…' : appUpdate.error || `Restart to update to v${appUpdate.latestVersion}`}
+        </span>
+        {!restarting && <span>↻</span>}
+      </Press>
+    );
+  }
+  if (appUpdate && appUpdate.mode === 'link') {
     return (
       <Press
         variant="link"
         onClick={() => window.electronAPI?.openBrowser('https://hyperclaylocal.com/')}
         style={{ ...plateStyle, fontFamily: MONO, textAlign: 'left', width: 'calc(100% - 32px)' }}
       >
-        <span style={{ flex: 1 }}>Update v{updateVersion} available</span>
+        <span style={{ flex: 1 }}>Update v{appUpdate.latestVersion} available</span>
         <span>→</span>
       </Press>
     );
