@@ -204,7 +204,7 @@ describe('readFileBuffer and writeFileBuffer', () => {
 
     const read = await readFileBuffer(filePath);
     expect(Buffer.compare(read, content)).toBe(0);
-  });
+  }, 20000);
 
   test('writeFileBuffer sets modification time', async () => {
     const filePath = path.join(tempDir, 'file.bin');

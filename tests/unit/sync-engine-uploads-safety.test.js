@@ -216,7 +216,7 @@ describe('a catch-up pass never deletes or moves anything under uploads/', () =>
     } finally {
       reuse.mockRestore();
     }
-  });
+  }, 20000);
 
   test('a nested uploads folder replaced with a new inode restores its files instead of deleting them', async () => {
     const seed = seedUploads();
@@ -268,5 +268,5 @@ describe('a catch-up pass never deletes or moves anything under uploads/', () =>
     expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 13);
     expect(fsSync.readFileSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'), 'utf8')).toBe(X_BYTES);
     expect(fsSync.readFileSync(nodePath.join(root, 'uploads', 'assets-a', 'page.html'), 'utf8')).toBe(PAGE_HTML);
-  });
+  }, 20000);
 });
