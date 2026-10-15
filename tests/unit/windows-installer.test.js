@@ -4,7 +4,7 @@ const { spawnSync } = require('child_process');
 
 const root = path.join(__dirname, '..', '..');
 const nsis = require('../../package.json').build.nsis;
-const include = fs.readFileSync(path.join(root, 'build', 'installer.nsh'), 'utf8');
+const include = fs.readFileSync(path.join(root, 'build', 'installer.nsh'), 'utf8').replace(/\r\n/g, '\n');
 
 describe('Windows installer', () => {
   test('is a one-click per-user installer under the published file name', () => {
