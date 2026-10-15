@@ -84,6 +84,9 @@
     ],
     "mac": {
       "icon": "build/icon.icns",
+      "extendInfo": {
+        "HCLUpdateNowArg": 1
+      },
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
@@ -159,8 +162,8 @@
       ]
     },
     "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "oneClick": true,
+      "perMachine": false,
       "artifactName": "HyperclayLocal-Setup-${version}.${ext}"
     },
     "publish": [

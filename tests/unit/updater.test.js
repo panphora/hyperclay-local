@@ -1,6 +1,6 @@
 const { EventEmitter } = require('events');
 const { UUID } = require('builder-util-runtime');
-const { createUpdater, canInstallInPlace, parseInstallLocation, readWindowsInstallLocation, WINDOWS_INSTALL_KEY, WINDOWS_MACHINE_INSTALL_KEY } = require('../../src/main/updater');
+const { createUpdater, canInstallInPlace, parseUpdateNowArg, parseInstallLocation, readWindowsInstallLocation, WINDOWS_INSTALL_KEY, WINDOWS_MACHINE_INSTALL_KEY, REQUEST_TTL_MS } = require('../../src/main/updater');
 
 function fakeAutoUpdater() {
   const updater = new EventEmitter();
@@ -50,6 +50,13 @@ describe('canInstallInPlace on Windows', () => {
 
   test('a per-user install beside a per-machine one keeps the download link', () => {
     expect(canInstallInPlace({ ...base, installLocation: 'C:\\Users\\ana\\AppData\\Local\\Programs\\HyperclayLocal', machineInstallLocation: 'C:\\Program Files\\HyperclayLocal' })).toBe(false);
+    expect(canInstallInPlace({ ...base, installLocation: 'C:\\Users\\ana\\AppData\\Local\\Programs\\HyperclayLocal', machineInstallLocation: 'C:\\Program Files\\HyperclayLocal', exists: () => true })).toBe(false);
+  });
+
+  test('a per-machine entry whose folder no longer exists is ignored, as the installer ignores it', () => {
+    const exists = jest.fn(() => false);
+    expect(canInstallInPlace({ ...base, installLocation: 'C:\\Users\\ana\\AppData\\Local\\Programs\\HyperclayLocal', machineInstallLocation: 'C:\\Program Files\\HyperclayLocal', exists })).toBe(true);
+    expect(exists).toHaveBeenCalledWith('C:\\Program Files\\HyperclayLocal');
   });
 
   test('a per-user install in a folder the user chose can install in place', () => {
@@ -453,5 +460,270 @@ describe('a failed install after teardown', () => {
     nativeUpdater.emit('update-downloaded');
     await updater.install();
     expect(relaunch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('parseUpdateNowArg', () => {
+  const exe = '/Applications/HyperclayLocal.app/Contents/MacOS/HyperclayLocal';
+
+  test('reads the one exact flag wherever Chromium put it', () => {
+    expect(parseUpdateNowArg([exe, '--hyperclay-update-now=1.31.0', '--allow-file-access-from-files'])).toBe('1.31.0');
+    expect(parseUpdateNowArg([exe, '--enable-avfoundation', '--hyperclay-update-now=10.0.12'])).toBe('10.0.12');
+  });
+
+  test('ignores anything that is not exactly the flag and a plain version', () => {
+    for (const arg of [
+      '--hyperclay-update-now', '--hyperclay-update-now=', '--hyperclay-update-now=1.31', '--hyperclay-update-now=1.31.0.1',
+      '--hyperclay-update-now=01.31.0', '--hyperclay-update-now=1.31.0-beta', '--hyperclay-update-now= 1.31.0',
+      '--hyperclay-update-now=1.31.0 ', '-hyperclay-update-now=1.31.0', '--HYPERCLAY-UPDATE-NOW=1.31.0',
+      '/Users/ana/--hyperclay-update-now=1.31.0', '--hyperclay-update-now=1.31.0.html', 'hyperclay://update-now/1.31.0'
+    ]) {
+      expect(parseUpdateNowArg([exe, arg])).toBeNull();
+    }
+    expect(parseUpdateNowArg([exe])).toBeNull();
+    expect(parseUpdateNowArg(undefined)).toBeNull();
+  });
+
+  test('two flags are refused rather than guessed between', () => {
+    expect(parseUpdateNowArg([exe, '--hyperclay-update-now=1.31.0', '--hyperclay-update-now=1.32.0'])).toBeNull();
+  });
+});
+
+describe('update now', () => {
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+  function setup({ installInPlace = true, nativeUpdater = new EventEmitter(), prepareForInstall = jest.fn().mockResolvedValue(), teardownForInstall = jest.fn().mockResolvedValue() } = {}) {
+    const clock = { now: 1_800_000_000_000 };
+    const autoUpdater = fakeAutoUpdater();
+    const relaunch = jest.fn();
+    const requests = [];
+    const fetchJson = jest.fn().mockResolvedValue({ version: '1.31.0' });
+    const updater = createUpdater({
+      currentVersion: '1.30.3',
+      installInPlace,
+      installOnQuit: true,
+      autoUpdater: installInPlace ? autoUpdater : null,
+      nativeUpdater: installInPlace ? nativeUpdater : null,
+      fetchJson,
+      prepareForInstall,
+      teardownForInstall,
+      relaunch,
+      onChange: () => {},
+      onRequest: (record) => requests.push(record),
+      logger: silent,
+      timers: noTimers,
+      now: () => clock.now
+    });
+    updater.start();
+    const states = () => requests.map((record) => record.state);
+    return { updater, autoUpdater, nativeUpdater, relaunch, requests, states, fetchJson, prepareForInstall, clock };
+  }
+
+  test('checks the feed, then installs the requested version through the normal install once Squirrel staged it', async () => {
+    const { updater, autoUpdater, nativeUpdater, states, prepareForInstall } = setup();
+    expect(updater.updateNow('1.31.0')).toMatchObject({ state: 'checking' });
+    await flush();
+    expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    expect(states()).toEqual(['checking', 'accepted']);
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    nativeUpdater.emit('update-downloaded');
+    await flush();
+    expect(states()).toEqual(['checking', 'accepted', 'draining', 'installing']);
+    expect(prepareForInstall).toHaveBeenCalledTimes(1);
+    expect(autoUpdater.quitAndInstall).toHaveBeenCalledWith(true, true);
+  });
+
+  test('an update that is already staged for that version installs at once', async () => {
+    const { updater, autoUpdater, nativeUpdater, states } = setup();
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    nativeUpdater.emit('update-downloaded');
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    updater.updateNow('1.31.0');
+    await flush();
+    expect(states()).toEqual(['draining', 'installing']);
+    expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+    expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+  });
+
+  test('a download already running for that version is accepted without a second check', () => {
+    const { updater, autoUpdater, states } = setup();
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    expect(updater.updateNow('1.31.0')).toMatchObject({ state: 'accepted' });
+    expect(states()).toEqual(['accepted']);
+    expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  test('a feed that does not offer the version yet leaves the request checking, and the next request checks again', async () => {
+    const { updater, autoUpdater, states } = setup();
+    updater.updateNow('1.31.0');
+    await flush();
+    updater.updateNow('1.31.0');
+    await flush();
+    expect(states()).toEqual(['checking', 'checking']);
+    expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(2);
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+  });
+
+  test('a busy sync answers busy, keeps the update ready and running, and a later request installs it', async () => {
+    const prepareForInstall = jest.fn()
+      .mockRejectedValueOnce(new Error('Sync has unsent changes. Update after it finishes.'))
+      .mockResolvedValue();
+    const { updater, autoUpdater, nativeUpdater, requests, relaunch } = setup({ prepareForInstall });
+    updater.updateNow('1.31.0');
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    nativeUpdater.emit('update-downloaded');
+    await flush();
+    expect(requests[requests.length - 1]).toEqual({ version: '1.31.0', state: 'busy', reason: 'Sync has unsent changes. Update after it finishes.', retry: true });
+    expect(updater.get()).toMatchObject({ state: 'ready', latestVersion: '1.31.0' });
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    expect(relaunch).not.toHaveBeenCalled();
+    updater.updateNow('1.31.0');
+    await flush();
+    expect(requests[requests.length - 1].state).toBe('installing');
+    expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+  });
+
+  test('an install that fails after teardown reports failed before relaunching the current version', async () => {
+    const { updater, autoUpdater, nativeUpdater, requests, relaunch } = setup();
+    autoUpdater.quitAndInstall.mockImplementation(() => { throw new Error('spawn failed'); });
+    relaunch.mockImplementation(() => requests.push({ state: 'relaunched' }));
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    nativeUpdater.emit('update-downloaded');
+    updater.updateNow('1.31.0');
+    await flush();
+    expect(requests.map((record) => record.state)).toEqual(['draining', 'installing', 'failed', 'relaunched']);
+    expect(requests[2]).toEqual({ version: '1.31.0', state: 'failed', reason: 'spawn failed', retry: false });
+  });
+
+  test('a second Squirrel event during the drain neither restarts the install nor answers busy', async () => {
+    let finishDrain;
+    const prepareForInstall = jest.fn(() => new Promise((resolve) => { finishDrain = resolve; }));
+    const { updater, autoUpdater, nativeUpdater, states } = setup({ prepareForInstall });
+    updater.updateNow('1.31.0');
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    nativeUpdater.emit('update-downloaded');
+    await flush();
+    nativeUpdater.emit('update-downloaded');
+    await flush();
+    finishDrain();
+    await flush();
+    expect(states()).toEqual(['checking', 'accepted', 'draining', 'installing']);
+    expect(prepareForInstall).toHaveBeenCalledTimes(1);
+    expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+  });
+
+  test('a failed download after acceptance reports failed and leaves the app running', () => {
+    const { updater, autoUpdater, requests, relaunch } = setup();
+    updater.updateNow('1.31.0');
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    autoUpdater.emit('error', new Error('net::ERR_CONNECTION_RESET'));
+    expect(requests[requests.length - 1]).toEqual({ version: '1.31.0', state: 'failed', reason: 'The download failed: net::ERR_CONNECTION_RESET', retry: true });
+    expect(relaunch).not.toHaveBeenCalled();
+  });
+
+  test('a different version staged first is reported, never installed in its place', async () => {
+    const { updater, autoUpdater, nativeUpdater, states } = setup();
+    updater.updateNow('1.31.1');
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    nativeUpdater.emit('update-downloaded');
+    await flush();
+    expect(states()).toEqual(['checking', 'failed']);
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    updater.updateNow('1.31.1');
+    expect(states()).toEqual(['checking', 'failed', 'failed']);
+  });
+
+  test('link mode and versions that are not newer are refused without checking', async () => {
+    const link = setup({ installInPlace: false });
+    expect(link.updater.updateNow('1.31.0')).toMatchObject({ state: 'refused' });
+    await flush();
+    expect(link.fetchJson).not.toHaveBeenCalled();
+    const install = setup();
+    expect(install.updater.updateNow('1.30.3')).toMatchObject({ state: 'refused', reason: 'Already running 1.30.3.' });
+    expect(install.updater.updateNow('1.29.9')).toMatchObject({ state: 'refused' });
+    expect(install.autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  test('without a request, a staged update still waits for a click', async () => {
+    const { autoUpdater, nativeUpdater, requests } = setup();
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    nativeUpdater.emit('update-downloaded');
+    await flush();
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    expect(requests).toEqual([]);
+  });
+
+  test('on Windows the request installs on electron-updater\'s own downloaded event', async () => {
+    const { updater, autoUpdater, states } = setup({ nativeUpdater: null });
+    updater.updateNow('1.31.0');
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    autoUpdater.emit('update-downloaded', { version: '1.31.0' });
+    await flush();
+    expect(states()).toEqual(['checking', 'accepted', 'draining', 'installing']);
+    expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+  });
+
+  test('a request expires 60 s after its last resend: the update is then staged for a click, never installed on its own', async () => {
+    const { updater, autoUpdater, nativeUpdater, states, clock } = setup();
+    updater.updateNow('1.31.0');
+    clock.now += REQUEST_TTL_MS;
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    nativeUpdater.emit('update-downloaded');
+    await flush();
+    expect(states()).toEqual(['checking']);
+    expect(updater.get()).toMatchObject({ state: 'ready', latestVersion: '1.31.0' });
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    clock.now += 6 * 60 * 60 * 1000;
+    nativeUpdater.emit('update-downloaded');
+    await flush();
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    updater.updateNow('1.31.0');
+    await flush();
+    expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+  });
+
+  test('each resend renews the request, so a download slower than 60 s still installs while the canary keeps asking', async () => {
+    const { updater, autoUpdater, nativeUpdater, states, clock } = setup();
+    updater.updateNow('1.31.0');
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    for (let i = 0; i < 6; i += 1) {
+      clock.now += 30_000;
+      updater.updateNow('1.31.0');
+    }
+    clock.now += 30_000;
+    nativeUpdater.emit('update-downloaded');
+    await flush();
+    expect(states().slice(-2)).toEqual(['draining', 'installing']);
+    expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+  });
+
+  test('an expired request is forgotten by a failed download too', () => {
+    const { updater, autoUpdater, states, clock } = setup();
+    updater.updateNow('1.31.0');
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    clock.now += REQUEST_TTL_MS;
+    autoUpdater.emit('error', new Error('net::ERR_CONNECTION_RESET'));
+    expect(states()).toEqual(['checking', 'accepted']);
+  });
+
+  test('while sync drains a resend answers draining, and installing only once teardown has begun', async () => {
+    let finishDrain;
+    const prepareForInstall = jest.fn(() => new Promise((resolve) => { finishDrain = resolve; }));
+    let finishTeardown;
+    const teardownForInstall = jest.fn(() => new Promise((resolve) => { finishTeardown = resolve; }));
+    const { updater, autoUpdater, nativeUpdater, states } = setup({ prepareForInstall, teardownForInstall });
+    autoUpdater.emit('update-available', { version: '1.31.0' });
+    nativeUpdater.emit('update-downloaded');
+    expect(updater.updateNow('1.31.0')).toMatchObject({ state: 'draining' });
+    expect(updater.updateNow('1.31.0')).toMatchObject({ state: 'draining' });
+    expect(teardownForInstall).not.toHaveBeenCalled();
+    finishDrain();
+    await flush();
+    expect(teardownForInstall).toHaveBeenCalledTimes(1);
+    expect(updater.updateNow('1.31.0')).toMatchObject({ state: 'installing' });
+    finishTeardown();
+    await flush();
+    expect(states()).toEqual(['draining', 'draining', 'installing', 'installing']);
   });
 });

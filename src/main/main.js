@@ -31,7 +31,7 @@ const { getAccounts } = require('../sync-engine/api-client');
 const { buildCards, worstState, trayIconVariant, trayTooltip, switchSublines, toLine, trayMenuModel } = require('./ui/card-model');
 const { createNewTeamNotifier } = require('./new-team-notifier');
 const { isAllowedExternalUrl, requireRoot, requireSession, requireAccount, cardMenuModel, disconnectDialog, removeFolderDialog, movePortDialog, flattenConflicts, flattenBlocked, ACTIVITY_THROTTLE_MS, createThrottle, profilePatch, accountSettingsUrl, profileErrorMessage } = require('./ui/main-ipc');
-const { createUpdater, canInstallInPlace, readWindowsInstallLocation, WINDOWS_MACHINE_INSTALL_KEY, FEED_URL } = require('./updater');
+const { createUpdater, canInstallInPlace, parseUpdateNowArg, readWindowsInstallLocation, WINDOWS_MACHINE_INSTALL_KEY, FEED_URL } = require('./updater');
 const { stageAppImage, commitAppImage, restartAppImage, takeHealthFile, markHealthy, readSkippedVersion } = require('./appimage-update');
 const { UPDATE_PUBLIC_KEYS } = require('./update-keys');
 
@@ -870,6 +870,13 @@ async function drainSyncForUpdate() {
   }
 }
 
+// The only answer a --hyperclay-update-now request gets: the process that sent it has
+// already exited, so scripts/update-canary.js reads this file.
+function writeUpdateRequest(record) {
+  const result = writeJsonAtomic(path.join(userData, 'update-request.json'), { ...record, pid: process.pid, at: new Date().toISOString() });
+  if (!result.ok) console.error('[UPDATE] Could not write update-request.json:', result.error);
+}
+
 function startUpdater() {
   const appImage = process.platform === 'linux' ? process.env.APPIMAGE || null : null;
   const skipFile = path.join(app.getPath('userData'), 'update-skip');
@@ -884,6 +891,7 @@ function startUpdater() {
     machineInstallLocation: process.platform === 'win32' ? readWindowsInstallLocation(require('child_process').execFileSync, WINDOWS_MACHINE_INSTALL_KEY) : null,
     appImage,
     hasUpdateKeys: UPDATE_PUBLIC_KEYS.length > 0,
+    exists: (target) => fs.existsSync(target),
     canWrite: (target) => {
       try {
         fs.accessSync(target, fs.constants.W_OK);
@@ -951,7 +959,8 @@ function startUpdater() {
       });
       app.exit(0);
     } : null,
-    onChange: (info) => sendToPopover('update-available', info)
+    onChange: (info) => sendToPopover('update-available', info),
+    onRequest: writeUpdateRequest
   });
   updater.start();
 }
@@ -1975,6 +1984,10 @@ app.on('open-file', (event, p) => {        // macOS Finder/Apple Events
 });
 app.on('second-instance', (event, argv) => {  // Windows/Linux re-launch with file arg
   extractOpenPaths(argv).forEach((p) => (openHandlerReady ? queueOpenPath(p) : pendingOpenPaths.push(p)));
+  // Read here and nowhere else: only a second launch by the same user reaches this argv.
+  // A cold start's own argv, open-file events and the renderer never carry the request.
+  const updateNowVersion = parseUpdateNowArg(argv);
+  if (updateNowVersion && updater) updater.updateNow(updateNowVersion);
 });
 
 app.whenReady().then(async () => {
