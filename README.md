@@ -76,11 +76,11 @@ This local server provides the core functionality needed to run and edit your Hy
 ### Download Pre-built App
 
 1. **Download** the app for your platform:
-   - **macOS (Apple Silicon)**: [HyperclayLocal-1.30.3-arm64.dmg](https://local.hyperclay.com/HyperclayLocal-1.30.3-arm64.dmg) (102.3MB)
-   - **macOS (Intel)**: [HyperclayLocal-1.30.3.dmg](https://local.hyperclay.com/HyperclayLocal-1.30.3.dmg) (108.8MB)
-   - **Windows**: [HyperclayLocal-Setup-1.30.3.exe](https://local.hyperclay.com/HyperclayLocal-Setup-1.30.3.exe) (90.1MB)
-   - **Linux (x86_64)**: [HyperclayLocal-1.30.3.AppImage](https://local.hyperclay.com/HyperclayLocal-1.30.3.AppImage) (123.7MB)
-   - **Linux (ARM64)**: [HyperclayLocal-1.30.3-arm64.AppImage](https://local.hyperclay.com/HyperclayLocal-1.30.3-arm64.AppImage) (123.4MB)
+   - **macOS (Apple Silicon)**: [HyperclayLocal-1.31.0-arm64.dmg](https://local.hyperclay.com/HyperclayLocal-1.31.0-arm64.dmg) (102.3MB)
+   - **macOS (Intel)**: [HyperclayLocal-1.31.0.dmg](https://local.hyperclay.com/HyperclayLocal-1.31.0.dmg) (108.8MB)
+   - **Windows**: [HyperclayLocal-Setup-1.31.0.exe](https://local.hyperclay.com/HyperclayLocal-Setup-1.31.0.exe) (90.1MB)
+   - **Linux (x86_64)**: [HyperclayLocal-1.31.0.AppImage](https://local.hyperclay.com/HyperclayLocal-1.31.0.AppImage) (123.7MB)
+   - **Linux (ARM64)**: [HyperclayLocal-1.31.0-arm64.AppImage](https://local.hyperclay.com/HyperclayLocal-1.31.0-arm64.AppImage) (123.4MB)
 
 2. **Install** and run the app
 
