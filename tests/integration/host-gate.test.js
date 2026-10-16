@@ -9,7 +9,7 @@
 //
 // Skipped unless HOST_GATE=1, because it needs playwright and a downloaded browser,
 // which is a heavy thing to put in front of `npm test` on a developer's machine.
-// HOST_GATE_RUNNER points at the runner in the malleablehtmlfile repo.
+// HOST_GATE_RUNNER points at the runner in the malleabledocument repo.
 
 const fs = require('fs').promises;
 const path = require('path');
@@ -49,7 +49,7 @@ describeGate('Malleable Document host conformance', () => {
 
   test('every check the page runs passes', async () => {
     const runner = process.env.HOST_GATE_RUNNER;
-    if (!runner) throw new Error('HOST_GATE_RUNNER must point at malleablehtmlfile/scripts/host-test.mjs');
+    if (!runner) throw new Error('HOST_GATE_RUNNER must point at malleabledocument/scripts/host-test.mjs');
 
     const url = `http://127.0.0.1:${server.address().port}`;
     let stdout = '';
