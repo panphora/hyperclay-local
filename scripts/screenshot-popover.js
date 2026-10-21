@@ -115,6 +115,7 @@ function installStub(cfg) {
     retryPort: ok,
     changePort: ok,
     openInBrowser: noop,
+    openWorkspace: noop,
     revealFolder: noop,
     openBackups: noop,
     openWeb: noop,
