@@ -142,11 +142,12 @@ async function handleWorkspaceRoute({ req, res, url, root, route, settings, sync
     if (!(await fs.stat(folder)).isDirectory()) throw refusal('missing', 'Folder is missing', 404);
     const documents = (await fs.readdir(folder)).filter(name => /\.html(?:clay)?$/i.test(name)).sort();
     const document = documents.length ? `${parent ? `${parent}/` : ''}${documents[0]}` : null;
-    if (!document) throw refusal('unsupported', 'This folder has no document for uploads', 501);
-    await fileFor(root, document);
+    if (document) await fileFor(root, document);
     const bytes = await readBytes(req, UPLOAD_MAX_BYTES + 1024 * 1024);
-    const response = await upstream(root, req, '/_/upload', { method: 'POST',
-      headers: { 'document-url': rootUrl(root, `/${encoded(document)}`) }, body: bytes });
+    const context = document
+      ? { 'document-url': rootUrl(root, `/${encoded(document)}`) }
+      : { 'upload-folder': encodeURIComponent(parent) };
+    const response = await upstream(root, req, '/_/upload', { method: 'POST', headers: context, body: bytes });
     if (!response.ok) return relayRefusal(res, response);
     const body = await response.json().catch(() => null);
     const uploaded = body?.uploads?.[0]?.url;

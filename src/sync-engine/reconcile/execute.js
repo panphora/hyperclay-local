@@ -27,6 +27,7 @@ const {
   writeFile,
   writeFileBuffer,
   ensureDirectory,
+  fileExists,
 } = require('../file-operations');
 const { calculateChecksum } = require('../utils');
 const {
@@ -642,9 +643,23 @@ async function removeCopy(engine, record) {
  * @param {{path:string, choice:'mine'|'theirs'}} input
  * @returns {Promise<{ok:boolean, error?:string}>}
  */
+const KEEP_BOTH_KINDS = new Set([store.KINDS.BOTH_EDITED, store.KINDS.REJECTED]);
+
+async function conflictedCopyPath(engine, rel) {
+  const ext = path.extname(rel);
+  const stem = rel.slice(0, rel.length - ext.length);
+  const remote = new Set((engine.serverNodesCache || []).map(n => (n.path ? `${n.path}/${n.name}` : n.name)));
+  for (let n = 1; n <= 100; n++) {
+    const candidate = `${stem} (conflicted copy${n === 1 ? '' : ` ${n}`})${ext}`;
+    if (remote.has(candidate)) continue;
+    if (!(await fileExists(path.join(engine.syncFolder, candidate)))) return candidate;
+  }
+  return null;
+}
+
 async function resolveConflict(session, { path: rel, choice } = {}) {
   const engine = engineOf(session);
-  if (choice !== 'mine' && choice !== 'theirs') return { ok: false, error: 'bad-choice' };
+  if (choice !== 'mine' && choice !== 'theirs' && choice !== 'both') return { ok: false, error: 'bad-choice' };
 
   const records = await store.load(engine.metaDir);
   const found = store.byPath(records, rel);
@@ -657,7 +672,22 @@ async function resolveConflict(session, { path: rel, choice } = {}) {
   const known = engine.repo.get(found.key);
   const extra = await entryMeta(engine, found.path, type, known ? known.parentId : undefined);
 
-  if (choice === 'theirs') {
+  let copy = null;
+  if (choice === 'both') {
+    if (!KEEP_BOTH_KINDS.has(found.kind) || !found.remoteCopy) return { ok: false, error: 'no-remote-copy' };
+    copy = await conflictedCopyPath(engine, found.path);
+    if (!copy) return { ok: false, error: 'no-free-name' };
+    const { buffer } = await readLocalBytes(localPath);
+    const written = await writeLocal(engine, copy, isSite ? buffer.toString('utf8') : buffer, { expectLocal: null, explicitCreate: true });
+    if (written.refused) return { ok: false, error: 'copy-taken' };
+    try {
+      await createRemote(engine, null, null, { path: copy, type }, engine.generation);
+    } catch (error) {
+      console.error('[SYNC] keep both: the copy stays local and uploads on the next pass:', error && error.message ? error.message : error);
+    }
+  }
+
+  if (choice === 'theirs' || choice === 'both') {
     if (found.kind === store.KINDS.REMOTE_DELETED) {
       await engine._applyFileDelete(id, found.path, type);
     } else {
@@ -672,7 +702,7 @@ async function resolveConflict(session, { path: rel, choice } = {}) {
     await engine.clearUploadBlock(found.path);
     await store.clear(engine.metaDir, found.key);
     await removeCopy(engine, found);
-    return { ok: true };
+    return copy ? { ok: true, copy } : { ok: true };
   }
 
   const size = (await fs.stat(localPath)).size;

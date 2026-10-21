@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getState: () => ipcRenderer.invoke('get-state'),
   openLogs: () => ipcRenderer.invoke('open-logs'),
   openBrowser: (url) => ipcRenderer.invoke('open-browser', url),
+  openWorkspace: (rootId) => ipcRenderer.invoke('open-workspace', { rootId }),
   installUpdate: () => ipcRenderer.invoke('install-update'),
   copyText: (text) => ipcRenderer.invoke('copy-text', text),
 

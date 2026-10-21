@@ -113,12 +113,15 @@ function cardMenuModel(card, platform = process.platform) {
 }
 
 /** C4 §5.4: one notice row per open conflict, each carrying its session's id. */
+const KEEP_BOTH_KINDS = new Set(['both-edited', 'rejected']);
+
 function flattenConflicts(statuses = []) {
   const conflicts = [];
   for (const status of statuses || []) {
     if (!status) continue;
     for (const conflict of status.conflicts || []) {
-      conflicts.push({ sessionId: status.sessionId, path: conflict.path, kind: conflict.kind });
+      const choices = KEEP_BOTH_KINDS.has(conflict.kind) ? ['mine', 'theirs', 'both'] : ['mine', 'theirs'];
+      conflicts.push({ sessionId: status.sessionId, path: conflict.path, kind: conflict.kind, choices });
     }
   }
   return conflicts;

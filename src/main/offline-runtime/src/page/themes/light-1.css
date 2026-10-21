@@ -1,7 +1,9 @@
 /* Light 1: warm paper, Inter body under a Newsreader serif title, hairline chrome that darkens one small step on movement, from the parent bake-off seat. */
 @import url("https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500&family=Inter:wght@400;500;600&display=swap");
 
-.page-shell {
+@import url("./content.css");
+
+:where(article[data-page], .page-shell) {
   --chart-1: #2F5E9E;
   --chart-2: #164583;
   --chart-3: #5B5953;
@@ -81,37 +83,37 @@
 article[data-page] figure[data-type="chart"] { --chart-1: #2F5E9E; --chart-2: #164583; --chart-3: #5B5953; --chart-4: #23221F; --chart-5: #A1A09B; --chart-6: #6B6862; --chart-text: #23221F; max-width: 100%; }
 article[data-page] figure[data-type="chart"] > svg { display: block; width: 100%; height: auto; color: var(--chart-text); font: 12px Inter, sans-serif; }
 
-.page-shell .page-li {
+:is(article[data-page], .page-shell) .page-li {
   --page-block-gap: 0.35em;
 }
 
-.page-shell .page-editor > h1:first-child {
+:is(article[data-page], .page-shell .page-editor) > h1:first-child {
   margin-bottom: 0.7em;
 }
 
-.page-shell .page-editor > h2 {
+:is(article[data-page], .page-shell .page-editor) > h2 {
   margin-top: 1.6em;
   line-height: 1.4;
 }
 
-.page-shell .page-li[data-kind="bullet"][data-indent="1"]::before,
-.page-shell .page-li[data-kind="bullet"][data-indent="3"]::before,
-.page-shell .page-li[data-kind="bullet"][data-indent="5"]::before,
-.page-shell .page-li[data-kind="bullet"][data-indent="7"]::before {
+:is(article[data-page], .page-shell) .page-li[data-kind="bullet"][data-indent="1"]::before,
+:is(article[data-page], .page-shell) .page-li[data-kind="bullet"][data-indent="3"]::before,
+:is(article[data-page], .page-shell) .page-li[data-kind="bullet"][data-indent="5"]::before,
+:is(article[data-page], .page-shell) .page-li[data-kind="bullet"][data-indent="7"]::before {
   background: none;
   border: 1.5px solid currentColor;
 }
 
-.page-shell .page-li[data-kind="ordered"]::before {
+:is(article[data-page], .page-shell) .page-li[data-kind="ordered"]::before {
   font-size: 15px;
   font-variant-numeric: tabular-nums;
 }
 
-.page-shell .page-li[data-kind="check"]::before {
+:is(article[data-page], .page-shell) .page-li[data-kind="check"]::before {
   border-width: 1.5px;
 }
 
-.page-shell .page-li[data-kind="check"][data-checked="true"] {
+:is(article[data-page], .page-shell) .page-li[data-kind="check"][data-checked="true"] {
   text-decoration-color: rgba(35, 34, 31, 0.30);
 }
 
@@ -215,14 +217,14 @@ article[data-page] figure[data-type="chart"] > svg { display: block; width: 100%
 }
 
 @media (max-width: 560px) {
-  .page-shell {
+  :where(article[data-page], .page-shell) {
     --page-font-size: 16px;
     --page-pad-top: 64px;
     --page-h1-size: 30px;
     --page-indent: 20px;
   }
 
-  .page-shell .page-editor > h1:first-child {
+  :is(article[data-page], .page-shell .page-editor) > h1:first-child {
     margin-bottom: 0.67em;
   }
 

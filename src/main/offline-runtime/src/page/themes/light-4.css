@@ -2,7 +2,9 @@
 
 /* Light 4: warm paper, compact Inter with small 14px section heads, amber selection and frosted faint chrome, from the Gemini Argon bake-off seat. */
 
-.page-shell {
+@import url("./content.css");
+
+:where(article[data-page], .page-shell) {
   --chart-1: #8A6A2E;
   --chart-2: #6d4e0b;
   --chart-3: #6E6A62;
@@ -83,40 +85,40 @@
 article[data-page] figure[data-type="chart"] { --chart-1: #8A6A2E; --chart-2: #6d4e0b; --chart-3: #6E6A62; --chart-4: #2B2926; --chart-5: #9B968C; --chart-6: #3B3833; --chart-text: #2B2926; max-width: 100%; }
 article[data-page] figure[data-type="chart"] > svg { display: block; width: 100%; height: auto; color: var(--chart-text); font: 12px Inter, sans-serif; }
 
-.page-shell .page-editor {
+:is(article[data-page], .page-shell .page-editor) {
   letter-spacing: -0.006em;
 }
 
-.page-shell .page-editor > p {
+:is(article[data-page], .page-shell .page-editor) > p {
   margin-block-end: 0.62em;
 }
 
-.page-shell .page-editor > h2,
-.page-shell .page-editor > h3 {
+:is(article[data-page], .page-shell .page-editor) > h2,
+:is(article[data-page], .page-shell .page-editor) > h3 {
   margin-block: 1.55em 0.4em;
   line-height: 1.4;
   letter-spacing: -0.008em;
 }
 
-.page-shell .page-editor > h1:first-child {
+:is(article[data-page], .page-shell .page-editor) > h1:first-child {
   margin-block-end: 0.67em;
 }
 
-.page-shell .page-editor :not(pre) > code {
+:is(article[data-page], .page-shell .page-editor) :not(pre) > code {
   font-size: 0.86em;
   padding: 1.5px 5px;
   border-radius: 4px;
 }
 
-.page-shell .page-editor .page-li[data-kind="check"][data-checked="true"] {
+:is(article[data-page], .page-shell .page-editor) .page-li[data-kind="check"][data-checked="true"] {
   text-decoration-color: var(--page-ink-faint);
 }
 
-.page-shell .page-editor .page-li[data-kind="check"]::before {
+:is(article[data-page], .page-shell .page-editor) .page-li[data-kind="check"]::before {
   border-width: 1.25px;
 }
 
-.page-shell .page-editor .page-toggle {
+:is(article[data-page], .page-shell .page-editor) .page-toggle {
   padding-block: 7px;
   padding-inline-end: 10px;
   border: 1px solid rgba(31, 30, 27, 0.07);
@@ -126,7 +128,7 @@ article[data-page] figure[data-type="chart"] > svg { display: block; width: 100%
   line-height: 1.45;
 }
 
-.page-shell .page-editor .page-toggle-button::before {
+:is(article[data-page], .page-shell .page-editor) .page-toggle-button::before {
   content: "";
   display: inline-block;
   width: 14px;
@@ -137,11 +139,11 @@ article[data-page] figure[data-type="chart"] > svg { display: block; width: 100%
   vertical-align: -0.05em;
 }
 
-.page-shell .page-editor .page-toggle[aria-expanded="true"] > .page-toggle-button::before {
+:is(article[data-page], .page-shell .page-editor) .page-toggle[aria-expanded="true"] > .page-toggle-button::before {
   transform: rotate(90deg);
 }
 
-.page-shell .page-editor aside.page-callout {
+:is(article[data-page], .page-shell .page-editor) aside.page-callout {
   border-radius: 7px;
 }
 
@@ -244,7 +246,7 @@ article[data-page] figure[data-type="chart"] > svg { display: block; width: 100%
 }
 
 @media (max-width: 560px) {
-  .page-shell {
+  :where(article[data-page], .page-shell) {
     --page-font-size: 15.5px;
     --page-line-height: 1.62;
     --page-h1-size: 23px;

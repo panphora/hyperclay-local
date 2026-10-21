@@ -628,7 +628,7 @@
     {
       "url": "https://clayjs.com/v1/src/page/editor.js",
       "path": "src/page/editor.js",
-      "sha256": "d642891701c5e95a40918ac1112dbb035efcc6bef60547413b2c6271c075486c",
+      "sha256": "3ca366584c54e671b6a6e154f2f56dfa461b2be4d08c858d5c1ab8704b152431",
       "contentType": "text/javascript; charset=utf-8"
     },
     {
@@ -728,27 +728,33 @@
       "contentType": "text/javascript; charset=utf-8"
     },
     {
+      "url": "https://clayjs.com/v1/src/page/themes/content.css",
+      "path": "src/page/themes/content.css",
+      "sha256": "4c1eea0dac3a664343cdcb7d0e1f0c5fa19c39a6e7862ade2c9a5d51b35a9466",
+      "contentType": "text/css; charset=utf-8"
+    },
+    {
       "url": "https://clayjs.com/v1/src/page/themes/light-1.css",
       "path": "src/page/themes/light-1.css",
-      "sha256": "08cd5eb594c13ea5378a6b1cff2aefd2778905cc59c0a6c6f9e38b286d020ac6",
+      "sha256": "b718ba6c494d49c6857ed27cab0049ab8fab59c21a023e9965424c07a72cf972",
       "contentType": "text/css; charset=utf-8"
     },
     {
       "url": "https://clayjs.com/v1/src/page/themes/light-2.css",
       "path": "src/page/themes/light-2.css",
-      "sha256": "b929f15f68a4b59230fd92174190ca0a47f3d4a828113d0918c7ffaaa87edd0c",
+      "sha256": "b39c80e0456f12566acf073ef6f535ee78732e003c114fb688bb9f408eb92c95",
       "contentType": "text/css; charset=utf-8"
     },
     {
       "url": "https://clayjs.com/v1/src/page/themes/light-3.css",
       "path": "src/page/themes/light-3.css",
-      "sha256": "605d46b7b635e6d4a4220ec28bd3ded4cbb6e8931aa6a1b2ca27ddd7e83fe280",
+      "sha256": "1e3d6ecfcf0f385ebf1b4d7416a010476032da9c18a5bc36531c6ae02adaaec6",
       "contentType": "text/css; charset=utf-8"
     },
     {
       "url": "https://clayjs.com/v1/src/page/themes/light-4.css",
       "path": "src/page/themes/light-4.css",
-      "sha256": "3b13f195527833f42260cda3c8f4c2656c1d803827306a4919bc10f247cff010",
+      "sha256": "6f3d25d2979709b6cdab71ad07d835a1e9e4952b905a8655e561f41ca907b0d3",
       "contentType": "text/css; charset=utf-8"
     },
     {

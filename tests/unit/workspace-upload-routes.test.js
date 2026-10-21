@@ -26,6 +26,19 @@ test('upload uses a canonical parent and the root upload writer', async () => {
   expect(invalid.status).toBe(403);
 });
 
+test('upload into a folder with no document goes to that folder\'s assets', async () => {
+  h = await fixture();
+  await fs.mkdir(path.join(h.dir, 'Empty'));
+  await h.startRoot();
+  const request = await h.start();
+  const uploaded = await request('/api/roots/root-a/upload?path=Empty', { method: 'POST', body: multipart('image') });
+  expect(uploaded.status).toBe(200);
+  const result = await uploaded.json();
+  expect(result.path).toMatch(/^uploads\/assets-empty\/image-[0-9a-f]{6}\.png$/);
+  expect(await fs.readFile(path.join(h.dir, result.path), 'utf8')).toBe('image');
+  expect(await fs.readdir(path.join(h.dir, 'Empty'))).toEqual([]);
+});
+
 test('upload preserves the root 413 refusal', async () => {
   h = await fixture();
   await fs.writeFile(path.join(h.dir, 'A.html'), '<html><body>A</body></html>');

@@ -12,7 +12,7 @@ function extractOpenPaths(argv, { exists = require('fs').existsSync } = {}) {
   return argv.slice(1).filter((arg) => !arg.startsWith('-') && OPENABLE.test(arg) && exists(arg));
 }
 
-async function handleOpenPath(rawPath, { roots, startServer, isServerRunning, openExternal, showMessage, revealFolder, personalRoot, htmlClay }) {
+async function handleOpenPath(rawPath, { roots, startServer, isServerRunning, openExternal, openWorkspace, showMessage, revealFolder, personalRoot, htmlClay }) {
   let abs;
   try { abs = path.normalize(await fs.realpath(rawPath)); } catch { return { outcome: 'missing' }; }
   if (!OPENABLE.test(abs)) return { outcome: 'ignored' };
@@ -52,7 +52,8 @@ async function handleOpenPath(rawPath, { roots, startServer, isServerRunning, op
     await showMessage({ type: 'warning', message: `Port ${root.port} is in use by another program.`, detail: 'Fix it from the folder\'s card, then open the file again.', buttons: ['OK'] });
     return { outcome: 'port-taken' };
   }
-  await openExternal(`http://localhost:${root.port}/${rel.map(encodeURIComponent).join('/')}`);
+  if (openWorkspace) await openWorkspace({ path: `/roots/${encodeURIComponent(root.id)}/document?path=${encodeURIComponent(rel.join('/'))}` });
+  else await openExternal(`http://localhost:${root.port}/${rel.map(encodeURIComponent).join('/')}`);
   return { outcome: 'opened', rootId: root.id };
 }
 

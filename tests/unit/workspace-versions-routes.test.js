@@ -1,5 +1,6 @@
 const fs = require('fs').promises;
 const path = require('path');
+const { execFileSync } = require('child_process');
 const { publishRecoveredCopy } = require('../../src/main/utils/backup');
 const { documentEtag } = require('../../src/main/spec-wire');
 const { fixture } = require('./workspace-fixture');
@@ -40,4 +41,11 @@ test('versions include recovered copies, preview is inert, and restore checks th
   expect(backups.length).toBeGreaterThan(0);
   expect(await Promise.all(backups.map(name => fs.readFile(path.join(h.dir, '.hyperclay', 'versions', 'A', name), 'utf8'))))
     .toContain(page('current'));
+});
+
+test('restore backs up unlanded page frames before replacing the room', () => {
+  const output = execFileSync(process.execPath, [path.join(__dirname, '../helpers/local-restore-room-probe.cjs')], {
+    cwd: process.cwd(), encoding: 'utf8', timeout: 30000,
+  });
+  expect(output).toContain('restore room proof passed');
 });

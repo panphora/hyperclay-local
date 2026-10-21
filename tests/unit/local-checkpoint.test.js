@@ -1,4 +1,6 @@
 const { execFileSync } = require('child_process');
+const fs = require('fs').promises;
+const os = require('os');
 const path = require('path');
 const { createLocalCheckpoint } = require('../../src/main/local-checkpoint');
 const { createRooms, LIVE_LIMITS } = require('@panphora/clayjs/server/rooms');
@@ -86,4 +88,86 @@ test('shutdown bounds a stuck checkpoint and reports the dirty room', async () =
   const result = await service.flushDirty({ timeoutMs: 5 });
   expect(result).toEqual({ attempted: 1, unsaved: [room.key], timedOut: true });
   expect(errors).toEqual([[expect.stringContaining('room still unsaved'), { key: room.key, nodeId: room.nodeId }]]);
+});
+
+test('a departure during a running checkpoint schedules the remaining dirty frame', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'checkpoint-departure-'));
+  const key = path.join(dir, 'doc.html');
+  await fs.writeFile(key, '<html></html>');
+  const room = { key, nodeId: 'node-1', seq: 1, emptySince: Date.now() };
+  const tasks = [];
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let started;
+  const writing = new Promise(resolve => { started = resolve; });
+  const rooms = new Map([[key, room]]);
+  rooms.markSaved = () => {};
+  const authority = {
+    rooms, roomIsDirty: () => true, hasParticipatingEditors: () => false,
+    checkpointTargets: () => [{ rootId: 'root-a', identity: room.nodeId, logicalPath: 'doc.html' }],
+    captureAdmission: () => ({}), validateAdmission: () => {},
+    reconcileDisk: async () => ({ kind: 'current' }),
+  };
+  const checkpoint = createLocalCheckpoint({
+    authority, withDocument: async (_, fn) => { started(); await gate; return fn(null, {}); },
+    loadCore: async () => ({ captureCheckpoint: () => ({}), isCheckpointCurrent: () => true }),
+    immediate: fn => { tasks.push(fn); return fn; }, cancelImmediate: () => {}, logError: () => {},
+  });
+  checkpoint.registerWriter('root-a', () => {});
+  try {
+    const first = checkpoint.attempt(key);
+    await writing;
+    expect(checkpoint.departed(room)).toBe(false);
+    release();
+    expect((await first).kind).toBe('current');
+    expect(tasks).toHaveLength(1);
+    expect(checkpoint.pending(key)).toBeInstanceOf(Promise);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('a permanently refused dirty room expires after the retention period', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'checkpoint-expiry-'));
+  const key = path.join(dir, 'doc.html');
+  const html = '<html><body><script type="application/json" merge="count" clay="live">{"n":0}</script></body></html>';
+  await fs.writeFile(key, html);
+  let now = 0;
+  const rooms = createRooms({ now: () => now });
+  const { withDocumentWrite } = require('../../src/main/utils/write-queue');
+  const authority = createLocalAuthority({ rooms, withDocument: withDocumentWrite, now: () => now });
+  const target = authority.bindTarget({ rootId: 'root-a', logicalPath: 'doc.html', canonicalPath: key,
+    origin: 'http://localhost:4000' });
+  const room = rooms.open(key, html, { nodeId: target.identity });
+  rooms.apply(room, 'tab', { name: 'count', n: 1, ops: [{ op: 'add', path: ['n'], n: 1 }] });
+  rooms.leave(room, 'tab', []);
+  const errors = [];
+  const checkpoint = createLocalCheckpoint({ authority, withDocument: withDocumentWrite,
+    loadCore: async () => ({ captureCheckpoint: () => { throw new Error('not a page'); } }),
+    logError: (...args) => errors.push(args) });
+  authority.setCheckpointService(checkpoint);
+  checkpoint.registerWriter('root-a', () => {});
+  try {
+    expect((await checkpoint.attempt(key)).reason).toBe('invalid-document');
+    expect(checkpoint.mayExpire(room)).toBe(true);
+    now = LIVE_LIMITS.retainMs + 1;
+    authority.sweep();
+    expect(rooms.get(key)).toBeNull();
+    expect(errors.filter(([message]) => message.includes('checkpoint refused'))).toHaveLength(1);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('an unjoined arrival leaves a departure checkpoint scheduled', () => {
+  const key = '/tmp/checkpoint-arrival.html';
+  const rooms = createRooms();
+  const authority = createLocalAuthority({ rooms, withDocument: async () => {} });
+  const target = authority.bindTarget({ rootId: 'root-a', logicalPath: 'doc.html', canonicalPath: key,
+    origin: 'http://localhost:4000' });
+  const room = rooms.open(key, '<html></html>', { nodeId: target.identity });
+  const arrived = jest.fn();
+  authority.setCheckpointService({ arrived, departed: jest.fn() });
+  const member = authority.registerEditor(target, { clientId: 'reader', send: () => {} });
+  expect(arrived).not.toHaveBeenCalled();
+  authority.markParticipating(member);
+  expect(arrived).toHaveBeenCalledWith(key);
+  member.close();
+  expect(room).toBeTruthy();
 });

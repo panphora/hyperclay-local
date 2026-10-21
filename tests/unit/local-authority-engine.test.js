@@ -372,22 +372,37 @@ async function holdStructure() {
   return { release, pending };
 }
 
-async function waitForClaim(authority, filePath) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const claimed = authority.captureAdmission.mock.calls
-      .some(([location]) => location.canonicalPath === filePath);
-    if (claimed) return;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  throw new Error(`engine write never claimed ${filePath}`);
+function waitForClaim(authority, filePath) {
+  const capture = authority.captureAdmission;
+  if (capture.mock.calls.some(([location]) => location.canonicalPath === filePath)) return Promise.resolve();
+  return new Promise((resolve) => {
+    const original = capture.getMockImplementation();
+    capture.mockImplementation((location) => {
+      const claim = original(location);
+      if (location.canonicalPath === filePath) {
+        capture.mockImplementation(original);
+        resolve();
+      }
+      return claim;
+    });
+  });
 }
 
-async function waitForFetch(before) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    if (apiClient.getNodeContent.mock.calls.length > before) return;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  throw new Error('the remote fetch never started');
+function pauseNextFetch() {
+  let began;
+  let finish;
+  let settled = false;
+  const started = new Promise((resolve) => { began = resolve; });
+  const response = new Promise((resolve) => { finish = resolve; });
+  apiClient.getNodeContent.mockImplementationOnce(() => {
+    began();
+    return response;
+  });
+  return {
+    started,
+    get settled() { return settled; },
+    release(value) { settled = true; finish(value); },
+  };
 }
 
 test('a queued engine write skips a generation that ended before admission', async () => {
@@ -523,14 +538,10 @@ describe('C2: the engine remote writers through the shared boundary', () => {
       rootId: 'root-a', logicalPath: 'index.html', canonicalPath: filePath, origin: 'http://127.0.0.1:7000', live: live.live,
     });
 
-    let settled = false;
-    let release;
-    apiClient.getNodeContent.mockImplementationOnce(() => new Promise((resolve) => {
-      release = (value) => { settled = true; resolve(value); };
-    }));
+    const fetch = pauseNextFetch();
 
     const download = engine.downloadFile(7, 'index.html');
-    await waitForFetch(0);
+    await fetch.started;
     expect(apiClient.getNodeContent).toHaveBeenCalledTimes(1);
     expect(fs.readFileSync(filePath, 'utf8')).toBe('<html>local</html>');
 
@@ -538,10 +549,10 @@ describe('C2: the engine remote writers through the shared boundary', () => {
       await fs.promises.writeFile(resolved.canonicalPath, '<html>browser</html>');
     });
 
-    expect(settled).toBe(false);
+    expect(fetch.settled).toBe(false);
     expect(fs.readFileSync(filePath, 'utf8')).toBe('<html>browser</html>');
 
-    release({ content: '<html>remote</html>', modifiedAt: '2026-04-08T12:00:00Z' });
+    fetch.release({ content: '<html>remote</html>', modifiedAt: '2026-04-08T12:00:00Z' });
     await download;
 
     expect(fs.readFileSync(filePath, 'utf8')).toBe('<html>remote</html>');
@@ -560,18 +571,15 @@ describe('C2: the engine remote writers through the shared boundary', () => {
     engine.on('file-synced', synced);
 
     const before = apiClient.getNodeContent.mock.calls.length;
-    let release;
-    apiClient.getNodeContent.mockImplementationOnce(() => new Promise((resolve) => {
-      release = resolve;
-    }));
+    const fetch = pauseNextFetch();
 
     const pending = engine.downloadFile(7, 'alias.html');
-    await waitForFetch(before);
+    await fetch.started;
 
     fs.unlinkSync(aliasPath);
     fs.symlinkSync('b.html', aliasPath);
 
-    release({ content: '<html>remote</html>', modifiedAt: '2026-04-08T12:00:00Z' });
+    fetch.release({ content: '<html>remote</html>', modifiedAt: '2026-04-08T12:00:00Z' });
     await pending;
 
     expect(apiClient.getNodeContent.mock.calls.length - before).toBe(1);
@@ -649,10 +657,7 @@ describe('C2: the engine remote writers through the shared boundary', () => {
     engine.on('file-synced', synced);
 
     const before = apiClient.getNodeContent.mock.calls.length;
-    let release;
-    apiClient.getNodeContent.mockImplementationOnce(() => new Promise((resolve) => {
-      release = resolve;
-    }));
+    const fetch = pauseNextFetch();
 
     const pending = engine._applyNodeSavedUpload({
       nodeId: 42,
@@ -662,13 +667,13 @@ describe('C2: the engine remote writers through the shared boundary', () => {
       checksum: 'cs-remote',
       modifiedAt: '2026-04-08T12:00:00Z',
     });
-    await waitForFetch(before);
+    await fetch.started;
 
     fs.unlinkSync(aliasPath);
     fs.symlinkSync('photo-b.png', aliasPath);
 
     const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
-    release({ content: bytes, modifiedAt: '2026-04-08T12:00:00Z', checksum: 'cs-remote', size: bytes.length });
+    fetch.release({ content: bytes, modifiedAt: '2026-04-08T12:00:00Z', checksum: 'cs-remote', size: bytes.length });
     await pending;
 
     expect(apiClient.getNodeContent.mock.calls.length - before).toBe(1);
@@ -697,19 +702,16 @@ describe('C2: the engine remote writers through the shared boundary', () => {
     engine.on('file-synced', synced);
 
     const before = apiClient.getNodeContent.mock.calls.length;
-    let release;
-    apiClient.getNodeContent.mockImplementationOnce(() => new Promise((resolve) => {
-      release = resolve;
-    }));
+    const fetch = pauseNextFetch();
 
     const pending = engine.downloadUploadFile('alias.png', 42);
-    await waitForFetch(before);
+    await fetch.started;
 
     fs.unlinkSync(aliasPath);
     fs.symlinkSync('binary-b.png', aliasPath);
 
     const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
-    release({ content: bytes, modifiedAt: '2026-04-08T12:00:00Z', checksum: 'cs-remote', size: bytes.length });
+    fetch.release({ content: bytes, modifiedAt: '2026-04-08T12:00:00Z', checksum: 'cs-remote', size: bytes.length });
     await pending;
 
     expect(apiClient.getNodeContent.mock.calls.length - before).toBe(1);
@@ -780,13 +782,9 @@ function createReconcileEngine({ syncFolder, rootId, live, authority }) {
   return engine;
 }
 
-async function waitForTarget(authority, filePath) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    if (authority.identityAt(filePath)) return;
-    if (authority.captureAdmission.mock.calls.some(([location]) => location.canonicalPath === filePath)) return;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  throw new Error(`no admitted target for ${filePath}`);
+function waitForTarget(authority, filePath) {
+  if (authority.identityAt(filePath)) return Promise.resolve();
+  return waitForClaim(authority, filePath);
 }
 
 function controlledDirectoryChange(engine) {
@@ -908,18 +906,15 @@ describe('C3: reconcile writes and folder creation through the boundaries', () =
     engine.on('file-synced', synced);
 
     const before = apiClient.getNodeContent.mock.calls.length;
-    let release;
-    apiClient.getNodeContent.mockImplementationOnce(() => new Promise((resolve) => {
-      release = resolve;
-    }));
+    const fetch = pauseNextFetch();
 
     const pending = executeDecision(engine, '7', { action: A.DOWNLOAD }, { path: 'alias.html', type: 'site', parentId: 0 });
-    await waitForFetch(before);
+    await fetch.started;
 
     fs.unlinkSync(aliasPath);
     fs.symlinkSync('b.html', aliasPath);
 
-    release({
+    fetch.release({
       content: '<html>remote</html>',
       nodeType: 'site',
       modifiedAt: '2026-04-08T12:00:00Z',

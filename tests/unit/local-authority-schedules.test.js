@@ -192,12 +192,14 @@ function broadcastsTo() {
   return { calls, live: { broadcast: (...args) => calls.push(args), markBrowserSave: jest.fn() } };
 }
 
-async function waitForFetch(before) {
-  for (let attempt = 0; attempt < 200; attempt++) {
-    if (apiClient.getNodeContent.mock.calls.length > before) return;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  throw new Error('the remote fetch never started');
+function pauseNextFetch() {
+  const started = deferred();
+  const response = deferred();
+  apiClient.getNodeContent.mockImplementationOnce(() => {
+    started.resolve();
+    return response.promise;
+  });
+  return { started: started.promise, release: response.resolve };
 }
 
 describe('L0.fixtures: the write-ordering schedules through their real callers', () => {
@@ -323,11 +325,9 @@ describe('L0.fixtures: the write-ordering schedules through their real callers',
     }));
     expect(room).toBeTruthy();
 
-    let releaseFetch;
-    const fetched = new Promise((resolve) => { releaseFetch = resolve; });
-    apiClient.getNodeContent.mockImplementationOnce(() => fetched);
+    const fetch = pauseNextFetch();
     const download = engine.downloadFile(7, 'a.html');
-    await waitForFetch(0);
+    await fetch.started;
 
     // Zero gates: the paused fetch holds no file lock and no document boundary,
     // which is why a real save of the very same document completes here.
@@ -341,7 +341,7 @@ describe('L0.fixtures: the write-ordering schedules through their real callers',
     expect(pendingKeys()).toEqual([]);
     expect(fs.readFileSync(file, 'utf8')).toContain('"n":5');
 
-    releaseFetch({ content: DOC(9), modifiedAt: '2026-04-08T12:00:00Z' });
+    fetch.release({ content: DOC(9), modifiedAt: '2026-04-08T12:00:00Z' });
     await download;
 
     // The fetch's claim and the file's identity survived the save, so its bytes land.
@@ -353,11 +353,9 @@ describe('L0.fixtures: the write-ordering schedules through their real callers',
 
     // Same schedule again, with the identity replaced while the fetch is paused:
     // the fetched bytes must not apply.
-    let releaseStale;
-    const staleFetch = new Promise((resolve) => { releaseStale = resolve; });
-    apiClient.getNodeContent.mockImplementationOnce(() => staleFetch);
+    const staleFetch = pauseNextFetch();
     const staleDownload = engine.downloadFile(8, 'a.html');
-    await waitForFetch(1);
+    await staleFetch.started;
 
     const foreign = DOC(99);
     fs.writeFileSync(file, foreign);
@@ -367,7 +365,7 @@ describe('L0.fixtures: the write-ordering schedules through their real callers',
     const replaced = h.authority.identityAt(file);
     expect(replaced).not.toBe(target.identity);
 
-    releaseStale({ content: DOC(7), modifiedAt: '2026-04-08T12:00:00Z' });
+    staleFetch.release({ content: DOC(7), modifiedAt: '2026-04-08T12:00:00Z' });
     await staleDownload;
 
     expect(fs.readFileSync(file, 'utf8')).toBe(foreign);

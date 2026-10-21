@@ -34,10 +34,10 @@ function createAutoNamer({ appDataPath, authority, checkpoint, rootFor, rename, 
   let mutation = Promise.resolve();
   const ready = fs.readFile(file, 'utf8').then(text => {
     const stored = JSON.parse(text);
-    if (stored.version !== 1 || !Array.isArray(stored.entries)) return;
+    if (stored.version !== 2 || !Array.isArray(stored.entries)) return;
     for (const item of stored.entries) {
       if (typeof item.rootId === 'string' && typeof item.path === 'string' &&
-          typeof item.nodeIdentity === 'string') entries.set(keyFor(item.rootId, item.path), item);
+          item.fileIdentity && typeof item.fileIdentity.ino === 'string') entries.set(keyFor(item.rootId, item.path), item);
     }
   }).catch(error => {
     if (error.code !== 'ENOENT') logError(`[auto-name] discarded record: ${error.message}`);
@@ -47,16 +47,22 @@ function createAutoNamer({ appDataPath, authority, checkpoint, rootFor, rename, 
     const work = mutation.then(async () => {
       await ready;
       const result = await fn();
+      if (result === false) return result;
       await fs.mkdir(appDataPath, { recursive: true });
-      await atomicWriteFile(file, JSON.stringify({ version: 1, entries: [...entries.values()] }, null, 2) + '\n');
+      await atomicWriteFile(file, JSON.stringify({ version: 2, entries: [...entries.values()] }, null, 2) + '\n');
       return result;
     });
     mutation = work.catch(() => {});
     return work;
   };
 
-  const identity = stat => `${stat.dev}:${stat.ino}`;
-  const statFor = (root, rel) => fs.stat(path.join(root.path, rel));
+  const identity = stat => ({
+    dev: String(stat.dev), ino: String(stat.ino), size: String(stat.size),
+    mtimeNs: String(stat.mtimeNs),
+  });
+  const sameFile = (a, b) => a && b && a.ino !== '0' && b.ino !== '0' &&
+    a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs;
+  const statFor = (root, rel) => fs.lstat(path.join(root.path, rel), { bigint: true });
 
   async function record(root, rel, template) {
     if (template !== 'page' || !UNTITLED.test(path.basename(rel))) return;
@@ -65,7 +71,8 @@ function createAutoNamer({ appDataPath, authority, checkpoint, rootFor, rename, 
     const authorityIdentity = authority?.identityAt(canonical);
     await change(() => {
       const key = keyFor(root.id, rel);
-      entries.set(key, { rootId: root.id, path: rel, nodeIdentity: identity(stat) });
+      entries.set(key, { rootId: root.id, path: rel, recordIdentity: authorityIdentity ?? null,
+        fileIdentity: identity(stat) });
       if (authorityIdentity) active.set(key, authorityIdentity);
     });
   }
@@ -104,25 +111,68 @@ function createAutoNamer({ appDataPath, authority, checkpoint, rootFor, rename, 
       removed.set(key, timer);
       return;
     }
-    let stat;
-    try { stat = await statFor(root, rel); }
-    catch (error) { if (error.code === 'ENOENT') return; throw error; }
-    if (!stat.isFile()) return;
-    const stamp = identity(stat);
-    if (entries.has(key)) {
-      if (removed.has(key)) { clearTimeout(removed.get(key)); removed.delete(key); }
-      if (entries.get(key).nodeIdentity !== stamp) {
-        await change(() => { entries.get(key).nodeIdentity = stamp; });
+    await change(async () => {
+      let stat;
+      try { stat = await statFor(root, rel); }
+      catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+      if (!stat.isFile()) return false;
+      const stamp = identity(stat);
+      if (entries.has(key)) {
+        if (removed.has(key)) { clearTimeout(removed.get(key)); removed.delete(key); }
+        const currentIdentity = authority?.identityAt(await fs.realpath(path.join(root.path, rel)));
+        if (!sameFile(entries.get(key).fileIdentity, stamp) ||
+            (active.has(key) && currentIdentity && String(active.get(key)) !== String(currentIdentity))) {
+          entries.delete(key);
+          active.delete(key);
+          return true;
+        }
+        if (currentIdentity && !active.has(key)) {
+          active.set(key, currentIdentity);
+          entries.get(key).recordIdentity = currentIdentity;
+          return true;
+        }
+        return false;
       }
-      return;
-    }
-    const prior = [...entries].find(([, entry]) => entry.rootId === root.id && entry.nodeIdentity === stamp);
-    if (!prior) return;
-    if (removed.has(prior[0])) { clearTimeout(removed.get(prior[0])); removed.delete(prior[0]); }
-    await change(() => {
+      let prior = null;
+      for (const candidate of entries) {
+        const entry = candidate[1];
+        if (entry.rootId !== root.id || !sameFile(entry.fileIdentity, stamp)) continue;
+        const oldPath = path.join(root.path, entry.path);
+        if (removed.has(candidate[0]) || !(await fs.stat(oldPath).catch(error => {
+          if (error.code === 'ENOENT') return null;
+          throw error;
+        }))) { prior = candidate; break; }
+      }
+      if (!prior) return false;
+      if (removed.has(prior[0])) { clearTimeout(removed.get(prior[0])); removed.delete(prior[0]); }
       entries.delete(prior[0]);
+      const identityInRoom = active.get(prior[0]);
       active.delete(prior[0]);
-      if (path.basename(prior[1].path) === path.basename(rel)) entries.set(key, { ...prior[1], path: rel });
+      if (path.basename(prior[1].path) === path.basename(rel)) {
+        const currentIdentity = authority?.identityAt(await fs.realpath(path.join(root.path, rel)));
+        entries.set(key, { ...prior[1], path: rel,
+          recordIdentity: currentIdentity ?? prior[1].recordIdentity });
+        if (currentIdentity || identityInRoom) active.set(key, currentIdentity ?? identityInRoom);
+      }
+      return true;
+    });
+  }
+
+  async function confirmedWrite(canonicalPath, stamp) {
+    const targets = authority?.checkpointTargets(canonicalPath) ?? [];
+    await change(() => {
+      let changed = false;
+      for (const target of targets) {
+        const key = keyFor(target.rootId, target.logicalPath);
+        const entry = entries.get(key);
+        if (!entry || (active.has(key) && String(active.get(key)) !== String(stamp.identity))) continue;
+        if (!active.has(key) && !sameFile(entry.fileIdentity, identity(stamp))) continue;
+        entry.recordIdentity = stamp.identity;
+        entry.fileIdentity = identity(stamp);
+        active.set(key, stamp.identity);
+        changed = true;
+      }
+      return changed;
     });
   }
 
@@ -138,6 +188,11 @@ function createAutoNamer({ appDataPath, authority, checkpoint, rootFor, rename, 
     const root = rootFor(entry.rootId);
     if (!root) return;
     try {
+      const stat = await statFor(root, entry.path);
+      if (!sameFile(entry.fileIdentity, identity(stat))) {
+        await change(() => { entries.delete(recordKey); active.delete(recordKey); });
+        return;
+      }
       const html = await fs.readFile(key, 'utf8');
       const heading = headingOf(html);
       if (!heading) return;
@@ -188,7 +243,7 @@ function createAutoNamer({ appDataPath, authority, checkpoint, rootFor, rename, 
     removed.clear();
   }
 
-  return { record, command, observe, settle, departed, removeRoot, close, entries };
+  return { record, command, observe, confirmedWrite, settle, departed, removeRoot, close, entries };
 }
 
 module.exports = { createAutoNamer, headingOf, nameFor, tidyName, UNTITLED };

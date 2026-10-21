@@ -192,9 +192,9 @@ describe('state payload (C4 §5.4)', () => {
     ];
 
     expect(flattenConflicts(statuses)).toEqual([
-      { sessionId: 'session-personal', path: 'index.html', kind: 'both-edited' },
-      { sessionId: 'session-west', path: 'notes/a.md', kind: 'both-edited' },
-      { sessionId: 'session-west', path: 'b.md', kind: 'remote-deleted' },
+      { sessionId: 'session-personal', path: 'index.html', kind: 'both-edited', choices: ['mine', 'theirs', 'both'] },
+      { sessionId: 'session-west', path: 'notes/a.md', kind: 'both-edited', choices: ['mine', 'theirs', 'both'] },
+      { sessionId: 'session-west', path: 'b.md', kind: 'remote-deleted', choices: ['mine', 'theirs'] },
     ]);
     expect(flattenConflicts([])).toEqual([]);
     expect(flattenConflicts(undefined)).toEqual([]);

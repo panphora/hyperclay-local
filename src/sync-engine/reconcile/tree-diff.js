@@ -73,10 +73,10 @@ function diffTree({ ledger, disk, unreadable = new Set(), mode, held = new Map()
     const kids = missing.filter((c) => c !== m && under(c.at, m.at) && strongIdentity(c.inode));
     const atProjected = (c) => disk.get(cand.path + c.at.slice(m.at.length))?.inode === c.inode;
     const inside = (c) => (pathsByInode.get(c.inode) || []).some((p) => under(p, cand.path));
-    // A coarse clock can hand a freed folder's inode and birth time to a new folder, so a child must vouch for it.
-    // The uploads root takes only a child at its own relative path: a false match would move the user's folder into it.
+    // A coarse clock can hand a freed folder's inode and birth time to a new folder.
+    // The uploads root needs a child at its own relative path or a false match could move the user's folder into it.
     const vouches = m.at === LOCKED ? atProjected : (c) => atProjected(c) || inside(c);
-    if (kids.length && !kids.some(vouches)) continue;
+    if ((m.at === LOCKED || kids.length) && !kids.some(vouches)) continue;
     relocated.set(m.id, cand.path);
     claimed.add(cand.path);
     for (const child of missing) {

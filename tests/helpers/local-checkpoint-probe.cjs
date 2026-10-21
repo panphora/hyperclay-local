@@ -73,9 +73,8 @@ async function run() {
     const sameValue = authority.rooms.apply(room, 'a', { name: 'game', n: 2,
       ops: [{ op: 'set', path: ['score'], value: 1 }], epoch: room.epoch });
     assert.ok(sameValue.seq > 0);
-    assert.equal(authority.roomIsDirty(room), true);
-    assert.equal((await checkpoint.retry(file)).kind, 'current');
     assert.equal(authority.roomIsDirty(room), false);
+    assert.equal((await checkpoint.retry(file)).kind, 'clean');
     assert.deepEqual(await fs.readdir(versionDir), versionsBefore);
 
     const incompletePath = path.join(dir, 'incomplete.html');
@@ -140,15 +139,16 @@ async function run() {
     assert.match(await fs.readFile(latePath, 'utf8'), /<p data-id="p">ac<\/p>/);
     assert.equal(authority.rooms.state(lateRoom).stores.game.value.score, 1);
     assert.equal(authority.roomIsDirty(lateRoom), true);
+    assert.equal(tasks.length, 1);
 
     const next = authority.registerEditor(target, { clientId: 'a', send: () => {} });
     assert.equal((await frame('a', next, 'game', 3, [{ op: 'add', path: ['score'], n: 1 }])).status, 200);
     next.close();
-    assert.equal(tasks.length, 1);
+    assert.equal(tasks.length, 2);
     await fs.unlink(file);
     await withDocumentWrite(() => ({ canonicalPath: file }), (_locked, token) =>
       authority.observeExternal(target, null, token, { removed: true }));
-    tasks.shift()();
+    tasks.pop()();
     const stale = await checkpoint.attempt(file, room);
     assert.equal(stale.kind, 'refused');
     assert.equal(stale.reason, 'invalid-identity');
@@ -157,6 +157,65 @@ async function run() {
     const copies = await fs.readdir(recovered);
     assert.ok(copies.length > 0);
     assert.ok((await fs.readFile(path.join(recovered, copies[0]), 'utf8')).includes('"score":2'));
+
+    createApp({ root, localAuthority: authority, localCheckpoint: checkpoint, devHooks: null });
+
+    const removedAfterRead = path.join(dir, 'removed-after-read.html');
+    await fs.writeFile(removedAfterRead, html);
+    const removedTarget = authority.bindTarget({ rootId: root.id, logicalPath: 'removed-after-read.html',
+      canonicalPath: removedAfterRead, origin });
+    const removedRoom = await authority.roomFor(removedTarget,
+      () => ({ canonicalPath: removedAfterRead, identity: removedTarget.identity }));
+    authority.rooms.apply(removedRoom, 'e', {
+      name: 'page', n: 1, epoch: removedRoom.epoch,
+      pageGeneration: removedRoom.pageTransition?.id ?? null,
+      ops: [{ op: 'set', path: ['y', 'edit-e-1'], value: fixture.update }],
+    });
+    const originalStat = fs.stat;
+    let unlinkedAtWrite = false;
+    fs.stat = async (name, options) => {
+      if (name === removedAfterRead && options?.bigint && !unlinkedAtWrite) {
+        unlinkedAtWrite = true;
+        await fs.unlink(name);
+      }
+      return originalStat(name, options);
+    };
+    let afterRead;
+    try { afterRead = await checkpoint.attempt(removedAfterRead); }
+    finally { fs.stat = originalStat; }
+    assert.equal(unlinkedAtWrite, true);
+    assert.deepEqual({ kind: afterRead.kind, reason: afterRead.reason },
+      { kind: 'refused', reason: 'invalid-identity' });
+    await assert.rejects(fs.stat(removedAfterRead), { code: 'ENOENT' });
+
+    const replacedAfterRead = path.join(dir, 'replaced-after-read.html');
+    await fs.writeFile(replacedAfterRead, html);
+    const replacedTarget = authority.bindTarget({ rootId: root.id, logicalPath: 'replaced-after-read.html',
+      canonicalPath: replacedAfterRead, origin });
+    const replacedRoom = await authority.roomFor(replacedTarget,
+      () => ({ canonicalPath: replacedAfterRead, identity: replacedTarget.identity }));
+    authority.rooms.apply(replacedRoom, 'f', {
+      name: 'page', n: 1, epoch: replacedRoom.epoch,
+      pageGeneration: replacedRoom.pageTransition?.id ?? null,
+      ops: [{ op: 'set', path: ['y', 'edit-f-1'], value: fixture.update }],
+    });
+    const replacement = path.join(dir, 'replacement.tmp');
+    await fs.writeFile(replacement, html.replace('abc', 'another document'));
+    let swappedAtWrite = false;
+    fs.stat = async (name, options) => {
+      if (name === replacedAfterRead && options?.bigint && !swappedAtWrite) {
+        swappedAtWrite = true;
+        await fs.rename(replacement, name);
+      }
+      return originalStat(name, options);
+    };
+    let afterSwap;
+    try { afterSwap = await checkpoint.attempt(replacedAfterRead); }
+    finally { fs.stat = originalStat; }
+    assert.equal(swappedAtWrite, true);
+    assert.deepEqual({ kind: afterSwap.kind, reason: afterSwap.reason },
+      { kind: 'refused', reason: 'invalid-identity' });
+    assert.match(await fs.readFile(replacedAfterRead, 'utf8'), /another document/);
     console.log('checkpoint proof passed');
   } finally {
     for (const member of members) member.close();

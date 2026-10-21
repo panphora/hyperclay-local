@@ -438,6 +438,53 @@ describe('uploads', () => {
     expect(res.status).toBe(400);
   });
 
+  const uploadToFolder = (buffer, filename, folder) => request(app)
+    .post('/_/upload')
+    .set('Host', 'localhost')
+    .set('Origin', 'http://localhost:4321')
+    .set('Upload-Folder', encodeURIComponent(folder))
+    .attach('file', buffer, filename);
+
+  test('a folder with no document stores the file in that folder\'s assets', async () => {
+    await fs.mkdir(path.join(dir, 'Q3 Plans'));
+    const res = await uploadToFolder(Buffer.from('PNGDATA'), 'cover.png', 'Q3 Plans');
+    expect(res.status).toBe(200);
+    const [file] = res.body.uploads;
+    expect(file.url).toMatch(/^\/_\/uploads\/assets-q3-plans\/cover-[0-9a-f]{6}\.png$/);
+    expect(await fs.readFile(path.join(assets('assets-q3-plans'), file.name), 'utf8')).toBe('PNGDATA');
+  });
+
+  test('the root folder as the upload context uses the default assets folder', async () => {
+    const res = await uploadToFolder(Buffer.from('X'), 'a.png', '');
+    expect(res.status).toBe(200);
+    expect(res.body.uploads[0].url).toMatch(/^\/_\/uploads\/assets-document\/a-[0-9a-f]{6}\.png$/);
+  });
+
+  test('a missing upload folder is a 404 and writes nothing', async () => {
+    const res = await uploadToFolder(Buffer.from('X'), 'a.png', 'Nowhere');
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('not-found');
+    await expect(fs.readdir(path.join(dir, 'uploads'))).rejects.toThrow();
+  });
+
+  test('an upload folder outside the root is refused', async () => {
+    const res = await uploadToFolder(Buffer.from('X'), 'a.png', '../outside');
+    expect(res.status).toBe(400);
+  });
+
+  test('Document-URL wins over an upload folder', async () => {
+    await fs.mkdir(path.join(dir, 'Notes'));
+    const res = await request(app)
+      .post('/_/upload')
+      .set('Host', 'localhost')
+      .set('Origin', 'http://localhost:4321')
+      .set('Document-URL', 'http://localhost/index.html')
+      .set('Upload-Folder', 'Notes')
+      .attach('file', Buffer.from('X'), 'a.png');
+    expect(res.status).toBe(200);
+    expect(res.body.uploads[0].url).toMatch(/^\/_\/uploads\/assets-index\//);
+  });
+
   test('uploading to a document that does not exist is a 404', async () => {
     const res = await upload(Buffer.from('X'), 'a.png', 'http://localhost/missing.html');
     expect(res.status).toBe(404);

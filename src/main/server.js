@@ -68,6 +68,20 @@ function isJsonContentType(contentType) {
 // pair separately, and /_/save never did: it read `Page-URL` alone, so a spec-following
 // client got a 400 on the one route the whole protocol is about. Reading the pair in
 // one place is what stops a seventh route from drifting the same way.
+function uploadFolderHeader(req) {
+  const raw = req && req.headers ? req.headers['upload-folder'] : undefined;
+  if (typeof raw !== 'string') return null;
+  let rel;
+  try {
+    rel = decodeURIComponent(raw);
+  } catch {
+    throw new PathError(400, 'Invalid upload folder');
+  }
+  if (rel === '') return '';
+  validateSegments(rel);
+  return rel;
+}
+
 function documentUrlHeader(req) {
   return (req && req.headers && (req.headers['document-url'] || req.headers['page-url'])) || null;
 }
@@ -243,9 +257,17 @@ async function serveHtml(res, filePath, frame = null) {
   const stamped = injectDocumentEtag(html, documentEtag(html));
   if (!frame) return res.send(stamped);
   const { injectWorkspaceBridge } = require('@panphora/hyperclay-workspace/server');
-  return res.send(injectWorkspaceBridge(stamped.toString('utf8'), {
-    nodeId: frame.wireId, framed: true, origin: frame.shellOrigin,
-  }));
+  const raw = stamped.toString('latin1');
+  const bridged = injectWorkspaceBridge(raw, {
+    nodeId: frame.wireId, framed: true, origin: frame.shellOrigin, hostSuffix: 'localhost',
+  });
+  let at = 0;
+  while (at < raw.length && raw[at] === bridged[at]) at++;
+  const added = bridged.length - raw.length;
+  if (added < 0 || bridged.slice(at + added) !== raw.slice(at)) throw new Error('Workspace bridge changed document bytes');
+  return res.send(Buffer.concat([
+    stamped.subarray(0, at), Buffer.from(bridged.slice(at, at + added), 'utf8'), stamped.subarray(at),
+  ]));
 }
 
 // Translate a data-api result object ({ status, headers?, json?, raw? }) into a
@@ -1887,7 +1909,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     async function commitDocument({
       name, filePath, content, dataLossPrev, userDriven, saveId, origin = 'save',
       target = null, token = null, ifMatch = undefined, pageConversion = undefined,
-      persistentToken = null,
+      persistentToken = null, readIdentity = null,
     }) {
       // ANCILLARY DISK CONVENTION: versions dir and backups use baseName without
       // extension (matches platform's versions/{baseName}/ layout).
@@ -1956,7 +1978,18 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
 
         // Write via temp + rename: a crash or a full disk can never leave the
         // served file holding partial bytes.
-        await atomicWriteFile(filePath, content);
+        const beforeRename = readIdentity ? async () => {
+          const current = await fs.stat(filePath, { bigint: true }).catch(error => {
+            if (error.code === 'ENOENT') return null;
+            throw error;
+          });
+          if (!current || ['dev', 'ino', 'size', 'mtimeNs'].some(name => current[name] !== readIdentity[name])) {
+            const error = new Error('Checkpoint target changed since it was read');
+            error.code = 'moved-or-deleted';
+            throw error;
+          }
+        } : null;
+        await atomicWriteFile(filePath, content, 'utf8', beforeRename);
 
         // Mark as browser save so file watcher doesn't send redundant notification.
         // Key is full path with extension so it matches engine-watcher's wasBrowserSave check.
@@ -2395,7 +2428,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     // the derived artifacts, for the same reason the save route is: the document is
     // already written, backed up and broadcast by that point.
     // Returns the bytes stored on disk.
-    const publishHostWrite = async ({ name, filePath, html, target = null, token = null }) => {
+    const publishHostWrite = async ({ name, filePath, html, target = null, token = null, beforeWrite = null }) => {
       // Response-scoped root metadata (a save token, this host's own documentetag)
       // comes back from clients and from a stored version, and none of it belongs in
       // the bytes this writes: stripped here, once, so the data-loss writeBack and the
@@ -2423,6 +2456,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
             html: formatted,
           });
         }
+        if (beforeWrite && await beforeWrite() === false) return null;
         await createBackup(baseDir, backupName, formatted);
         await atomicWriteFile(filePath, formatted);
         // A write through this app, not an external editor. Marked so the file
@@ -2555,23 +2589,41 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     app.post('/upload', async (req, res, next) => {
       if (!req.originalUrl.startsWith('/_/upload')) return next();
       const href = documentUrlHeader(req);
-      if (!href) {
+      let folderRel = null;
+      try {
+        folderRel = href ? null : uploadFolderHeader(req);
+      } catch (error) {
+        return res.status(400).json({ msg: error.message, msgType: 'error', code: 'bad-request' });
+      }
+      if (!href && folderRel === null) {
         return res.status(400).json({ msg: 'Document-URL header required.', msgType: 'error', code: 'bad-request' });
       }
-      const docName = resolveResourceFromHref(href);
+      const docName = href ? resolveResourceFromHref(href) : null;
       try {
         // The upload is authorized by the document existing and being writable,
         // exactly as a save is. A file that is not there cannot be uploaded to.
-        const docPath = await resolveWriteTarget(paths, docName);
-        const docStats = await fs.stat(docPath).catch(() => null);
-        if (!docStats || !docStats.isFile()) {
-          return res.status(404).json({ msg: 'That document does not exist.', msgType: 'error', code: 'not-found' });
+        // The workspace window names a folder instead when the folder holds no document.
+        let docPath = null;
+        let folderPath = null;
+        if (docName !== null) {
+          docPath = await resolveWriteTarget(paths, docName);
+          const docStats = await fs.stat(docPath).catch(() => null);
+          if (!docStats || !docStats.isFile()) {
+            return res.status(404).json({ msg: 'That document does not exist.', msgType: 'error', code: 'not-found' });
+          }
+        } else {
+          await paths.ready();
+          folderPath = folderRel ? await resolveWritePath(paths, folderRel) : paths.baseReal;
+          const folderStats = await fs.stat(folderPath).catch(() => null);
+          if (!folderStats || !folderStats.isDirectory()) {
+            return res.status(404).json({ msg: 'That folder does not exist.', msgType: 'error', code: 'not-found' });
+          }
         }
 
         const authority = ctx.localAuthority;
         const origin = `${req.protocol}://${req.get('host')}`;
-        const docLocation = { rootId: ctx.root.id, logicalPath: docName, canonicalPath: docPath };
-        const docClaim = authority ? authority.captureAdmission(docLocation) : null;
+        const docLocation = docName !== null ? { rootId: ctx.root.id, logicalPath: docName, canonicalPath: docPath } : null;
+        const docClaim = authority && docLocation ? authority.captureAdmission(docLocation) : null;
 
         const part = await readUploadPart(req, UPLOAD_MAX_BYTES);
         if (!part) {
@@ -2581,7 +2633,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           return res.status(415).json({ msg: 'That kind of file cannot be uploaded.', msgType: 'error', code: 'unsupported-type' });
         }
 
-        const dirRel = `${UPLOADS_FOLDER}/${assetsFolderName(docName)}`;
+        const dirRel = `${UPLOADS_FOLDER}/${assetsFolderName(docName ?? folderRel)}`;
         const dirPath = authority ? await resolveWritePath(paths, dirRel) : null;
         const dirLocation = authority
           ? { rootId: ctx.root.id, logicalPath: dirRel, canonicalPath: dirPath }
@@ -2592,21 +2644,26 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         if (ctx.localAuthority) {
           stored = await withStructureChange(async (token) => {
             assertStructureContext(token);
-            let freshPath;
-            try {
-              freshPath = await resolveWriteTarget(paths, docName);
-            } catch {
-              throw movedOrDeleted();
-            }
-            if (freshPath !== docPath) throw movedOrDeleted();
-            const freshStats = await fs.stat(freshPath).catch(() => null);
-            if (!freshStats || !freshStats.isFile()) throw movedOrDeleted();
-            if (ctx.isKnownPath && !ctx.isKnownPath(docName, freshPath, ctx.root.id)) throw movedOrDeleted();
-            try {
-              authority.validateAdmission(docClaim, { ...docLocation, canonicalPath: freshPath }, token, { allowInitialBind: true });
-            } catch (error) {
-              if (error && error.code === 'moved') throw movedOrDeleted();
-              throw error;
+            if (docName !== null) {
+              let freshPath;
+              try {
+                freshPath = await resolveWriteTarget(paths, docName);
+              } catch {
+                throw movedOrDeleted();
+              }
+              if (freshPath !== docPath) throw movedOrDeleted();
+              const freshStats = await fs.stat(freshPath).catch(() => null);
+              if (!freshStats || !freshStats.isFile()) throw movedOrDeleted();
+              if (ctx.isKnownPath && !ctx.isKnownPath(docName, freshPath, ctx.root.id)) throw movedOrDeleted();
+              try {
+                authority.validateAdmission(docClaim, { ...docLocation, canonicalPath: freshPath }, token, { allowInitialBind: true });
+              } catch (error) {
+                if (error && error.code === 'moved') throw movedOrDeleted();
+                throw error;
+              }
+            } else {
+              const freshFolder = await fs.stat(folderPath).catch(() => null);
+              if (!freshFolder || !freshFolder.isDirectory()) throw movedOrDeleted();
             }
 
             const dirAbs = await resolveWritePath(paths, dirRel);
@@ -2954,22 +3011,32 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           return;
         }
 
-        // Mandatory and before anything is written: a read-only versions directory
-        // must not allow a destructive restore with no way back.
-        if (current !== null) {
-          const backupName = rel.replace(/\.(html|htmlclay)$/i, '');
-          const safety = await createBackup(baseDir, backupName, current.toString('utf8'));
-          if (!safety) {
-            console.error(`Refusing to restore ${rel}: safety backup failed`);
-            refusal = { status: 500, message: 'could not create a safety backup' };
-            return;
-          }
-        }
-
         const authorityWrite = Boolean(ctx.localAuthority && target && token);
         const published = await publishHostWrite({
           name: rel, filePath: canonicalPath, html, target, token,
+          beforeWrite: async () => {
+            if (current === null) return true;
+            const backupName = rel.replace(/\.(html|htmlclay)$/i, '');
+            let safetyHtml;
+            try {
+              safetyHtml = ctx.localCheckpoint
+                ? await ctx.localCheckpoint.safetyBackup(canonicalPath, current.toString('utf8'))
+                : current.toString('utf8');
+            } catch (error) {
+              console.error(`Refusing to restore ${rel}: live room cannot be backed up`, error);
+              refusal = { status: 500, message: 'live room cannot be backed up' };
+              return false;
+            }
+            const safety = await createBackup(baseDir, backupName, safetyHtml);
+            if (!safety) {
+              console.error(`Refusing to restore ${rel}: safety backup failed`);
+              refusal = { status: 500, message: 'could not create a safety backup' };
+              return false;
+            }
+            return true;
+          },
         });
+        if (refusal) return;
         restoredEtag = documentEtag(published);
         // publishHostWrite morphs view-mode tabs on the saved lane (once per alias
         // already, when an authority published it), but an edit-mode tab is not

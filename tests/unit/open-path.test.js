@@ -104,6 +104,14 @@ describe('handleOpenPath', () => {
     expect(deps.showMessage).not.toHaveBeenCalled();
   });
 
+  test('opens a registered document in the workspace when available', async () => {
+    const file = await writeFile(personalDir, 'My page.html');
+    const deps = makeDeps({ roots: () => [personalState()], openWorkspace: jest.fn().mockResolvedValue(undefined) });
+    expect(await handleOpenPath(file, deps)).toEqual({ outcome: 'opened', rootId: 'personal' });
+    expect(deps.openWorkspace).toHaveBeenCalledWith({ path: '/roots/personal/document?path=My%20page.html' });
+    expect(deps.openExternal).not.toHaveBeenCalled();
+  });
+
   test('opens a file in a team root on that root\'s port', async () => {
     const file = await writeFile(path.join(teamDir, 'site'), 'index.html');
     const deps = makeDeps({

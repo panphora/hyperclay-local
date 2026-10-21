@@ -11,11 +11,13 @@ const REPO_ROOT = path.join(__dirname, '..', '..');
 const SRC_ROOT = path.join(REPO_ROOT, 'src');
 const ALLOWED = path.join('src', 'main', 'utils', 'root-live.js');
 const EXTENSIONS = new Set(['.js', '.cjs', '.jsx']);
+// The bundled ClayJS runtime the workspace window serves offline: browser code, never loaded by Local.
+const VENDORED = path.join(SRC_ROOT, 'main', 'offline-runtime');
 
 function collectFiles(dir, found = []) {
   for (const dirent of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, dirent.name);
-    if (dirent.isDirectory()) collectFiles(full, found);
+    if (dirent.isDirectory()) { if (full !== VENDORED) collectFiles(full, found); }
     else if (EXTENSIONS.has(path.extname(dirent.name))) found.push(full);
   }
   return found;

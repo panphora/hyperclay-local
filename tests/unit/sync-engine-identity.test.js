@@ -7,6 +7,8 @@ const {
   getInodeSync,
   upgradeIdentities
 } = require('../../src/sync-engine/node-map');
+const { snapshotDisk } = require('../../src/sync-engine/reconcile/disk-snapshot');
+const { diffTree } = require('../../src/sync-engine/reconcile/tree-diff');
 
 const SHAPE = /^\d+:\d+$/;
 
@@ -47,22 +49,37 @@ describe('a file identity', () => {
     expect(getInodeSync(before)).toBeNull();
   });
 
-  test('differs from the identity of the folder that was deleted to make room', async () => {
+  test('a reused folder identity does not relocate an unrelated folder into uploads', async () => {
     const gone = path.join(tmpDir, 'uploads');
+    const child = path.join(gone, 'photo.png');
     await fs.mkdir(gone);
+    await fs.writeFile(child, 'original');
     const oldIdentity = getInodeSync(gone);
-    const oldIno = inoOf(gone);
+    const ledger = new Map([
+      ['10', { type: 'folder', path: 'uploads', inode: oldIdentity }],
+      ['11', { type: 'upload', path: 'uploads/photo.png', inode: getInodeSync(child) }]
+    ]);
 
     await fs.rm(gone, { recursive: true, force: true });
     const fresh = path.join(tmpDir, 'new-project');
     await fs.mkdir(fresh);
+    await fs.writeFile(path.join(fresh, 'notes.txt'), 'unrelated');
     const newIdentity = getInodeSync(fresh);
+    expect(newIdentity).toMatch(SHAPE);
 
-    expect(newIdentity).not.toBe(oldIdentity);
-    if (inoOf(fresh) === oldIno) {
-      expect(newIdentity).toBe(`${oldIno}:${newIdentity.split(':')[1]}`);
-      expect(newIdentity).not.toBe(oldIdentity);
-    }
+    const { entries } = await snapshotDisk(tmpDir);
+    entries.get('new-project').inode = oldIdentity;
+    const { ops } = diffTree({ ledger, disk: entries, mode: 'catchup' });
+
+    expect(ops).toContainEqual({ op: 'restoreLocked', from: null });
+    expect(ops).toContainEqual({ op: 'new', kind: 'folder', path: 'new-project' });
+    expect(ops).not.toContainEqual({ op: 'restoreLocked', from: 'new-project' });
+
+    const emptyLedger = new Map([['10', ledger.get('10')]]);
+    const emptyOps = diffTree({ ledger: emptyLedger, disk: entries, mode: 'catchup' }).ops;
+    expect(emptyOps).toContainEqual({ op: 'restoreLocked', from: null });
+    expect(emptyOps).toContainEqual({ op: 'new', kind: 'folder', path: 'new-project' });
+    expect(emptyOps).not.toContainEqual({ op: 'restoreLocked', from: 'new-project' });
   });
 });
 

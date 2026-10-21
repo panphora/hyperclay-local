@@ -413,7 +413,7 @@ const PopoverApp = () => {
     const api = window.electronAPI;
     if (!api) return;
 
-    if (action === 'open') api.openInBrowser(card.rootId);
+    if (action === 'open') api.openWorkspace(card.rootId);
     else if (action === 'reveal') api.revealFolder(card.rootId);
     else if (action === 'more') api.showCardMenu(card.rootId);
     else if (action === 'web') api.openWeb(card.accountId);
@@ -744,6 +744,7 @@ const HomeView = ({ cards, banner, syncActive, serverLoading, onChooseFolder, on
   const keyRevoked = banner === 'reconnect' || banner === 'server-update';
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '4px 16px 0' }}>
+      <Press onClick={() => window.electronAPI?.openWorkspace()} style={{ height: 36, marginTop: 8 }}>Open workspace</Press>
       {!personal && <FirstRun serverLoading={serverLoading} onChooseFolder={onChooseFolder} />}
       {personal && cards.length === 1 && <Hero card={personal} keyRevoked={keyRevoked} onAction={onAction} />}
       {(personal ? cards.length > 1 : cards.length > 0) && (
@@ -992,6 +993,8 @@ const NoticesView = ({
   );
 };
 
+const CONFLICT_LABELS = { mine: 'Keep mine', theirs: 'Keep theirs', both: 'Keep both' };
+
 const logRow = (first) => ({ padding: '7px 10px', boxShadow: first ? 'none' : `inset 0 1px 0 ${C.line}` });
 
 const NoticeRows = ({ errors, conflicts, blocked, cards, onMarkErrorRead, onDismissError, onResolveConflict, onResolveMassDelete, onRevealFile }) => {
@@ -1019,8 +1022,9 @@ const NoticeRows = ({ errors, conflicts, blocked, cards, onMarkErrorRead, onDism
               </span>
             </div>
             <div style={{ display: 'flex', gap: 6, marginTop: 6, paddingLeft: 16 }}>
-              <Press onClick={() => onResolveConflict(conflict.sessionId, conflict.path, 'mine')} style={small}>Keep mine</Press>
-              <Press onClick={() => onResolveConflict(conflict.sessionId, conflict.path, 'theirs')} style={small}>Keep theirs</Press>
+              {(conflict.choices || ['mine', 'theirs']).map((choice) => (
+                <Press key={choice} onClick={() => onResolveConflict(conflict.sessionId, conflict.path, choice)} style={small}>{CONFLICT_LABELS[choice]}</Press>
+              ))}
             </div>
           </div>
         );

@@ -16,6 +16,8 @@ const { createLocalCheckpoint } = require('./local-checkpoint');
 const { withDocumentWrite } = require('./utils/write-queue');
 const { RootServerPool } = require('./root-servers');
 const { createShellServer } = require('./workspace/shell-server');
+const { createWorkspaceWindow } = require('./workspace/window');
+const { createWorkspaceLifecycle } = require('./workspace/lifecycle');
 const { SyncManager } = require('./sync-manager');
 const { RootObserver } = require('./root-observer');
 const { createRootLive } = require('./utils/root-live');
@@ -141,6 +143,24 @@ const shellServer = createShellServer({
     syncStatuses: manager?.statuses() || [],
   }),
   rootTitleFor,
+});
+let workspaceLifecycle;
+const workspaceWindow = createWorkspaceWindow({
+  shellServer, roots: rootsState, onFlushResult: result => workspaceLifecycle.receiveFlushResult(result),
+  onRendererGone: () => workspaceLifecycle.rendererGone(),
+});
+workspaceLifecycle = createWorkspaceLifecycle({
+  workspace: workspaceWindow,
+  checkpoint: localCheckpoint,
+  showMessage: options => dialog.showMessageBox(options),
+  execute: async (kind, _rootId, run) => {
+    if (kind === 'update-restart') await drainSyncForUpdate();
+    if (kind === 'quit' || kind === 'update-restart') await shutdownForQuit();
+    else {
+      await run();
+      workspaceWindow.destroy();
+    }
+  },
 });
 
 const userData = app.getPath('userData');
@@ -641,6 +661,7 @@ function showAboutDialog() {
 }
 
 const TRAY_ITEM_CLICKS = {
+  'Open workspace': () => workspaceWindow.openWorkspace(),
   'Start Server': () => handleStartServer(),
   'Stop Server': () => handleStopServer(),
   'Enable Sync': () => startPersonalSync(),
@@ -941,7 +962,10 @@ function startUpdater() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return response.json();
     },
-    prepareForInstall: drainSyncForUpdate,
+    prepareForInstall: async () => {
+      const result = await workspaceLifecycle.requestTransition('update-restart');
+      if (!result.ok) throw new Error('The update was cancelled while saving edits.');
+    },
     teardownForInstall: shutdownForQuit,
     relaunch: () => {
       try {
@@ -1046,31 +1070,35 @@ async function handleSelectFolder(event) {
   const running = personalEngine();
   const session = personalSession();
   const resume = !!(running && running.isRunning && session);
-  if (resume) await manager.stop(session.id);
+  const change = async () => {
+    if (resume) await manager.stop(session.id);
 
-  if (root) {
-    root.path = check.path;
-    if (session) {
-      session.id = crypto.randomUUID();
-      session.legacyMetaDir = legacyMetaDirName(check.path);
+    if (root) {
+      root.path = check.path;
+      if (session) {
+        session.id = crypto.randomUUID();
+        session.legacyMetaDir = legacyMetaDirName(check.path);
+      }
+    } else {
+      settings.roots = [...(settings.roots || []), {
+        id: crypto.randomUUID(),
+        kind: 'personal',
+        path: check.path,
+        port: PERSONAL_PORT,
+        trustedAt: null
+      }];
     }
-  } else {
-    settings.roots = [...(settings.roots || []), {
-      id: crypto.randomUUID(),
-      kind: 'personal',
-      path: check.path,
-      port: PERSONAL_PORT,
-      trustedAt: null
-    }];
-  }
-  saveSettings(settings);
+    saveSettings(settings);
 
-  if (settings.serverEnabled) {
-    await pool.sync(rootsSnapshot(), { enabled: true });
-  }
-  await afterRootsChanged();
+    if (settings.serverEnabled) await pool.sync(rootsSnapshot(), { enabled: true });
+    await afterRootsChanged();
 
-  if (resume) await startPersonalSync();
+    if (resume) await startPersonalSync();
+  };
+  if (root) {
+    const barrier = await workspaceLifecycle.requestTransition('remove-root', { rootId: root.id, run: change });
+    if (!barrier.ok) return { success: false, error: barrier.error };
+  } else await change();
 
   return { success: true, folder: check.path };
 }
@@ -1090,16 +1118,20 @@ async function handleStartServer() {
 
 async function handleStopServer() {
   try {
-    settings.serverEnabled = false;
-    saveSettings(settings);
+    const barrier = await workspaceLifecycle.requestTransition('stop-server', { run: async () => {
+      settings.serverEnabled = false;
+      saveSettings(settings);
 
-    await pool.sync(rootsSnapshot(), { enabled: false });
-    await afterRootsChanged();
+      await pool.sync(rootsSnapshot(), { enabled: false });
+      await afterRootsChanged();
+    } });
+    return barrier;
   } catch (error) {
     console.error('Error stopping server:', error);
     errorLogger.error('App', 'Failed to stop server', error);
     await afterRootsChanged();
     dialog.showErrorBox('Server Error', `Failed to stop server: ${error.message}`);
+    return { ok: false, error: 'stop-failed' };
   }
 }
 
@@ -1107,7 +1139,7 @@ async function handleStopServer() {
 // or a key never crosses this boundary.
 async function setServerEnabled(on) {
   if (on) await handleStartServer();
-  else await handleStopServer();
+  else return await handleStopServer();
   return { ok: true };
 }
 
@@ -1220,11 +1252,14 @@ async function confirmAndChangePort(rootId) {
   }));
   if (response !== 0) return { ok: false, error: 'cancelled' };
 
-  root.port = nextPort;
-  saveSettings(settings);
+  const barrier = await workspaceLifecycle.requestTransition('change-port', { rootId, run: async () => {
+    root.port = nextPort;
+    saveSettings(settings);
 
-  await pool.sync(rootsSnapshot(), { enabled: settings.serverEnabled });
-  await afterRootsChanged();
+    await pool.sync(rootsSnapshot(), { enabled: settings.serverEnabled });
+    await afterRootsChanged();
+  } });
+  if (!barrier.ok) return barrier;
 
   return { ok: true, port: nextPort };
 }
@@ -1564,10 +1599,14 @@ async function confirmAndRemoveFolder(rootId) {
   const { response } = await dialog.showMessageBox(removeFolderDialog({ folder: root.path, port: root.port }));
   if (response !== 0) return { ok: false, error: 'cancelled' };
 
-  const result = await manager.removeRoot(rootId);
-  await pool.sync(rootsSnapshot(), { enabled: settings.serverEnabled });
-  await afterRootsChanged();
-  return result;
+  let removed;
+  const barrier = await workspaceLifecycle.requestTransition('remove-root', { rootId, run: async () => {
+    removed = await manager.removeRoot(rootId);
+    await pool.sync(rootsSnapshot(), { enabled: settings.serverEnabled });
+    await afterRootsChanged();
+  } });
+  if (!barrier.ok) return barrier;
+  return removed;
 }
 
 async function openTeamWeb(accountId) {
@@ -1652,6 +1691,14 @@ ipcMain.handle('open-browser', (event, url) => {
 });
 
 ipcMain.handle('install-update', () => (updater ? updater.install() : { ok: false }));
+ipcMain.handle('open-workspace', async (event, { rootId } = {}) => {
+  if (!fromPopover(event)) return { ok: false, error: 'forbidden' };
+  const root = rootId == null ? null : rootsState().find(item => item.id === rootId);
+  if (rootId != null && !root) return { ok: false, error: 'unknown' };
+  if (root && root.state !== 'running') await handleStartServer();
+  await workspaceWindow.openWorkspace(root ? { path: `/roots/${encodeURIComponent(root.id)}/files` } : {});
+  return { ok: true };
+});
 
 // The two global switches, the team commands and the per-card commands (C4 §5.2).
 // The renderer names ids; ports, paths and keys stay in main.
@@ -1989,6 +2036,7 @@ function openPath(p) {
     startServer: handleStartServer,
     isServerRunning: serverRunning,
     openExternal: (url) => shell.openExternal(url),
+    openWorkspace: options => workspaceWindow.openWorkspace(options),
     showMessage: (opts) => dialog.showMessageBox(opts),
     revealFolder: (dir) => shell.openPath(dir),
     personalRoot: () => personalRoot(settings.roots || []),
@@ -2195,8 +2243,14 @@ function shutdownForQuit() {
       }
 
       await stopObservers();
-    })().finally(() => {
+      workspaceWindow.destroy();
+      await shellServer.stop();
+    })().then(() => {
       quitCleanupDone = true;
+    }, error => {
+      quitCleanup = null;
+      isQuitting = false;
+      throw error;
     });
   }
   return quitCleanup;
@@ -2206,10 +2260,10 @@ app.on('before-quit', async (event) => {
   if (quitCleanupDone) return;
   event.preventDefault();
   try {
-    await shutdownForQuit();
+    const result = await workspaceLifecycle.requestTransition('quit');
+    if (result.ok) app.quit();
   } catch (error) {
     console.error('Error during quit cleanup:', error);
     errorLogger.error('App', 'Error during quit cleanup', error);
   }
-  app.quit();
 });

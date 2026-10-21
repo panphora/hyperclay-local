@@ -823,7 +823,6 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     if (warm && String(warm.nodeId) === String(target.identity ?? identityAt(target.canonicalPath))) {
       rooms.open(target.canonicalPath, '');
     }
-    checkpointService?.arrived(target.canonicalPath);
     return member;
   }
 
@@ -852,6 +851,7 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     const record = registry.get(member.target.canonicalPath);
     if (!record || !record.members.has(member)) return null;
     member.participating = true;
+    checkpointService?.arrived(member.target.canonicalPath);
     return member;
   }
 
@@ -984,7 +984,13 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
       const room = rooms.get(key);
       if (room && room.emptySince === null) rooms.leave(room, null, []);
     }
-    rooms.sweep((key) => connectedIds(key));
+    rooms.sweep((key) => connectedIds(key), { mayExpire: room => checkpointService?.mayExpire?.(room) || !roomIsDirty(room) });
+    for (const key of rooms.keys()) {
+      const room = rooms.get(key);
+      if (room && checkpointService?.mayExpire?.(room) && room.emptySince !== null &&
+          now() - room.emptySince >= core.LIVE_LIMITS.retainMs && !connectedIds(key).length &&
+          !registry.get(key)?.members.size) rooms.drop(key);
+    }
     const t = now();
     for (const [key, bucket] of buckets) if (t - bucket.at > bucket.idleMs) buckets.delete(key);
   }
@@ -1078,6 +1084,10 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
       mtimeNs: stat.mtimeNs,
     };
     record.confirmed = stamp;
+    if (sender !== 'file-watcher') {
+      try { await checkpointService?.confirmedWrite?.(canonicalPath, stamp); }
+      catch (error) { console.error('[auto-name] failed to confirm write:', error); }
+    }
     if (HTML_PATH.test(canonicalPath)) record.baseline = typeof bytes === 'string' ? bytes : bytes.toString('utf8');
 
     // A binary asset has no live tags to reconcile and no HTML to hand editors.

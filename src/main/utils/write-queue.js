@@ -126,8 +126,9 @@ let tmpCounter = 0;
 const RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
 const RENAME_ATTEMPTS = 6;
 
-async function renameWithRetry(tmpPath, filePath) {
+async function renameWithRetry(tmpPath, filePath, beforeRename = null) {
   if (process.platform !== 'win32') {
+    if (beforeRename) await beforeRename();
     await fs.rename(tmpPath, filePath);
     return;
   }
@@ -137,6 +138,7 @@ async function renameWithRetry(tmpPath, filePath) {
   let delay = 10;
   for (let attempt = 1; ; attempt++) {
     try {
+      if (beforeRename) await beforeRename();
       await fs.rename(tmpPath, filePath);
       return;
     } catch (error) {
@@ -157,8 +159,9 @@ async function renameWithRetry(tmpPath, filePath) {
  * @param {string} filePath - canonical resolved absolute path
  * @param {string|Buffer} content
  * @param {string|null} encoding - null for Buffer content
+ * @param {Function|null} beforeRename - optional target check after the temp is durable
  */
-async function atomicWriteFile(filePath, content, encoding = 'utf8') {
+async function atomicWriteFile(filePath, content, encoding = 'utf8', beforeRename = null) {
   const dir = path.dirname(filePath);
   await fs.mkdir(dir, { recursive: true });
 
@@ -182,7 +185,7 @@ async function atomicWriteFile(filePath, content, encoding = 'utf8') {
     await handle.chmod(mode);
     await handle.close();
     handle = null;
-    await renameWithRetry(tmpPath, filePath);
+    await renameWithRetry(tmpPath, filePath, beforeRename);
   } catch (error) {
     if (handle) {
       try { await handle.close(); } catch {}

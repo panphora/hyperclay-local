@@ -297,23 +297,23 @@ test('the file plus sender bucket answers 429 after the burst and refills with t
   const b = join('cB');
 
   for (let n = 1; n <= 40; n += 1) {
-    const res = await postFrame({ name: 'count', n, conn: a.member.conn, ops: [set(1)] });
+    const res = await postFrame({ name: 'count', n, conn: a.member.conn, ops: [set(n)] });
     expect(res.status).toBe(200);
   }
 
-  const over = await postFrame({ name: 'count', n: 41, conn: a.member.conn, ops: [set(1)] });
+  const over = await postFrame({ name: 'count', n: 41, conn: a.member.conn, ops: [set(41)] });
   expect(over.status).toBe(429);
   expect(over.headers['retry-after']).toBe('1');
   expect(over.body).toEqual({ msg: 'Too many live updates. Slow down.', msgType: 'error', code: 'rate-limited' });
 
   // A second client id on the same file from the same sender buys no bucket.
-  const other = await postFrame({ name: 'count', n: 1, conn: b.member.conn, ops: [set(1)] }, { clientId: 'cB' });
+  const other = await postFrame({ name: 'count', n: 1, conn: b.member.conn, ops: [set(-1)] }, { clientId: 'cB' });
   expect(other.status).toBe(429);
 
   expect((await getState()).body.seq).toBe(40);
 
   h.state.now += 1000;
-  const refilled = await postFrame({ name: 'count', n: 42, conn: a.member.conn, ops: [set(1)] });
+  const refilled = await postFrame({ name: 'count', n: 42, conn: a.member.conn, ops: [set(42)] });
   expect(refilled.status).toBe(200);
   expect(refilled.body.seq).toBe(41);
 });

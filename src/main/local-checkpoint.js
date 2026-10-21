@@ -12,6 +12,9 @@ function createLocalCheckpoint({
   const running = new Map();
   const scheduled = new Map();
   const retries = new Map();
+  const rerun = new Set();
+  const permanentRefusals = new WeakSet();
+  const permanentReasons = new Set(['invalid-document', 'unavailable', 'unsupported-projection', 'needs-adoption']);
   let autoNamer = null;
   let sweepTimer = null;
   const identityOf = (room) => String(room.nodeId ?? room.key);
@@ -38,6 +41,10 @@ function createLocalCheckpoint({
   }
 
   function refusal(room, reason, error) {
+    if (permanentReasons.has(reason)) {
+      if (permanentRefusals.has(room)) return { kind: 'refused', reason };
+      permanentRefusals.add(room);
+    }
     logError('[local-checkpoint] checkpoint refused', {
       key: room.key, nodeId: room.nodeId, reason,
       ...(error ? { error: error.message } : {}),
@@ -83,7 +90,14 @@ function createLocalCheckpoint({
           return { kind: 'refused', reason: 'invalid-identity' };
         }
         let currentHtml;
-        try { currentHtml = await fs.readFile(key, 'utf8'); }
+        let readIdentity;
+        try {
+          const handle = await fs.open(key, 'r');
+          try {
+            readIdentity = await handle.stat({ bigint: true });
+            currentHtml = await handle.readFile('utf8');
+          } finally { await handle.close(); }
+        }
         catch (error) {
           if (error.code === 'ENOENT') return { kind: 'refused', reason: 'invalid-identity' };
           throw error;
@@ -110,11 +124,14 @@ function createLocalCheckpoint({
         if (rendered.kind !== 'ok') return { kind: 'refused', reason: rendered.reason ?? 'invalid-document' };
         const written = await writers.get(target.rootId)({
           name: target.logicalPath, filePath: key, content: rendered.html, dataLossPrev: currentHtml,
-          userDriven: false, saveId: '', origin: 'checkpoint', target, token,
+          userDriven: false, saveId: '', origin: 'checkpoint', target, token, readIdentity,
         });
         return { kind: 'ok', revision: rendered.revision, written };
       });
-      if (result.kind === 'ok' || result.kind === 'current') clearRetry(identityOf(room));
+      if (result.kind === 'ok' || result.kind === 'current') {
+        clearRetry(identityOf(room));
+        permanentRefusals.delete(room);
+      }
       if (result.kind === 'refused') return refusal(room, result.reason, result.error);
       return result;
     } catch (error) {
@@ -132,9 +149,16 @@ function createLocalCheckpoint({
     const identity = identityOf(room);
     if (running.has(identity)) return running.get(identity);
     clearPending(identity);
+    const startedAt = room.seq;
     const work = Promise.resolve().then(() => perform(key, room));
     const settled = work.finally(() => {
       if (running.get(identity) === settled) running.delete(identity);
+      const departedDuringWrite = rerun.delete(identity);
+      if (authority.rooms.get(room.key) === room && dirty(room) &&
+          !authority.hasParticipatingEditors(room.key) &&
+          (departedDuringWrite || room.seq !== startedAt) && !permanentRefusals.has(room)) {
+        service.departed(room);
+      }
       if (autoNamer && !dirty(room) && room.emptySince !== null && !authority.hasParticipatingEditors(room.key)) {
         autoNamer.departed(room);
       }
@@ -147,7 +171,23 @@ function createLocalCheckpoint({
     registerWriter(rootId, write) { writers.set(rootId, write); },
     unregisterWriter(rootId) { writers.delete(rootId); },
     setAutoNamer(service) { autoNamer = service; },
+    confirmedWrite(key, stamp) { return autoNamer?.confirmedWrite(key, stamp); },
+    mayExpire(room) { return permanentRefusals.has(room); },
     dirty,
+    async safetyBackup(key, currentHtml) {
+      const room = authority.rooms.get(key);
+      if (!dirty(room)) return currentHtml;
+      const core = await loadCore();
+      const capture = core.captureCheckpoint(room, { nodeId: room.nodeId, roomKey: key });
+      const { JSDOM } = require('jsdom');
+      const rendered = core.renderCheckpoint(currentHtml, capture, {
+        createDocument: createDocument ?? (() => new JSDOM('<!doctype html><html><body></body></html>', {
+          runScripts: undefined, resources: undefined,
+        }).window.document),
+      });
+      if (rendered.kind !== 'ok') throw new Error(`Cannot back up live room: ${rendered.reason}`);
+      return rendered.html;
+    },
     attempt,
     pending(key) {
       const room = authority.rooms.get(key);
@@ -161,7 +201,8 @@ function createLocalCheckpoint({
         return false;
       }
       const identity = identityOf(room);
-      if (scheduled.has(identity) || running.has(identity)) return false;
+      if (running.has(identity)) { rerun.add(identity); return false; }
+      if (scheduled.has(identity)) return false;
       let resolve;
       const promise = new Promise(done => { resolve = done; });
       const handle = immediate(async () => {

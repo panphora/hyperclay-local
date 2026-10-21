@@ -3,6 +3,8 @@ const os = require('os');
 const path = require('path');
 const { createAutoNamer } = require('../../src/main/workspace/auto-name');
 const { createLocalCheckpoint } = require('../../src/main/local-checkpoint');
+const { createLocalAuthority } = require('../../src/main/local-authority');
+const { withDocumentWrite, atomicWriteFile } = require('../../src/main/utils/write-queue');
 
 let dir;
 afterEach(async () => { if (dir) await fs.rm(dir, { recursive: true, force: true }); dir = null; });
@@ -33,7 +35,7 @@ async function setup(html = '<article data-page><h1>First Heading</h1></article>
   });
   const namer = createAutoNamer({ appDataPath: dir, authority, checkpoint, rootFor: () => root, rename });
   await namer.record(root, 'untitled.html', 'page');
-  return { namer, root, room, rename, setDirty: value => { dirty = value; },
+  return { namer, root, room, rename, authority, checkpoint, setDirty: value => { dirty = value; },
     setEditor: value => { editor = value; }, setPending: value => { pending = value; },
     setRel: value => { rel = value; } };
 }
@@ -111,14 +113,80 @@ test('an external rename to a personal name ends auto naming', async () => {
   expect(namer.entries.size).toBe(0);
 });
 
-test('an atomic content save at the same path keeps the auto-name record current', async () => {
-  const { namer, root } = await setup();
-  const oldIdentity = [...namer.entries.values()][0].nodeIdentity;
+test('a confirmed atomic save keeps auto naming eligible', async () => {
+  const { namer, root, room } = await setup();
+  const oldIdentity = [...namer.entries.values()][0].fileIdentity;
   await fs.writeFile(path.join(root.path, 'replacement.html'), '<article data-page><h1>Updated</h1></article>');
   await fs.rename(path.join(root.path, 'replacement.html'), path.join(root.path, 'untitled.html'));
+  const stamp = await fs.stat(room.key, { bigint: true });
+  await namer.confirmedWrite(room.key, { identity: room.nodeId, ...stamp });
   await namer.observe(root, 'change', 'untitled.html');
   expect(namer.entries.size).toBe(1);
-  expect([...namer.entries.values()][0].nodeIdentity).not.toBe(oldIdentity);
+  expect([...namer.entries.values()][0].fileIdentity).not.toEqual(oldIdentity);
+  await namer.settle(room.key);
+  expect(await fs.readFile(path.join(root.path, 'updated.html'), 'utf8')).toContain('Updated');
+});
+
+test('the authority confirms its own atomic save to the auto namer', async () => {
+  dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'auto-name-confirmed-')));
+  const root = { id: 'root-a', path: dir };
+  const file = path.join(dir, 'untitled.html');
+  const first = '<article data-page><h1>First</h1></article>';
+  const updated = '<article data-page><h1>Updated</h1></article>';
+  await fs.writeFile(file, first);
+  const authority = createLocalAuthority({ withDocument: withDocumentWrite });
+  const target = authority.bindTarget({ rootId: root.id, logicalPath: 'untitled.html',
+    canonicalPath: file, origin: 'http://localhost:4000' });
+  const room = authority.rooms.open(file, first, { nodeId: target.identity });
+  authority.rooms.leave(room, null, []);
+  const rename = jest.fn(async (_, from, name) => fs.rename(path.join(dir, from), path.join(dir, name)));
+  const namer = createAutoNamer({ appDataPath: path.join(dir, 'meta'), authority,
+    checkpoint: { dirty: () => false, pending: () => null }, rootFor: () => root, rename });
+  authority.setCheckpointService({ confirmedWrite: namer.confirmedWrite, wake: () => {} });
+  await namer.record(root, 'untitled.html', 'page');
+  await withDocumentWrite(() => target, async (_locked, token) => {
+    await atomicWriteFile(file, updated);
+    await authority.confirmKnownWrite(target, updated, token);
+  });
+  expect(authority.checkpointTargets(file)).toHaveLength(1);
+  expect(authority.rooms.get(file)).toBe(room);
+  expect(room.emptySince).not.toBeNull();
+  expect(namer.entries.size).toBe(1);
+  await namer.observe(root, 'change', 'untitled.html');
+  expect(namer.entries.size).toBe(1);
+  expect([...namer.entries.values()][0].fileIdentity.ino).toBe(String((await fs.stat(file)).ino));
+  await namer.settle(file);
+  expect(rename).toHaveBeenCalledTimes(1);
+  expect(await fs.readFile(path.join(dir, 'updated.html'), 'utf8')).toBe(updated);
+});
+
+test('a replacement while stopped cannot inherit auto naming after restart', async () => {
+  const { root, room, rename, authority, checkpoint } = await setup();
+  await fs.writeFile(path.join(root.path, 'replacement.html'), '<article data-page><h1>Replacement</h1></article>');
+  await fs.rename(path.join(root.path, 'replacement.html'), room.key);
+  const restarted = createAutoNamer({ appDataPath: dir, authority, checkpoint, rootFor: () => root, rename });
+  await restarted.settle(room.key);
+  expect(rename).not.toHaveBeenCalled();
+  expect(restarted.entries.size).toBe(0);
+  expect(await fs.readFile(room.key, 'utf8')).toContain('Replacement');
+});
+
+test('an observed replacement drops auto naming before departure', async () => {
+  const { namer, root, room, rename } = await setup();
+  await fs.writeFile(path.join(root.path, 'replacement.html'), '<article data-page><h1>Replacement</h1></article>');
+  await fs.rename(path.join(root.path, 'replacement.html'), room.key);
+  await namer.observe(root, 'change', 'untitled.html');
+  await namer.settle(room.key);
+  expect(rename).not.toHaveBeenCalled();
+  expect(namer.entries.size).toBe(0);
+});
+
+test('an unknown inode never matches an auto-name record', async () => {
+  const { namer, room, rename } = await setup();
+  [...namer.entries.values()][0].fileIdentity.ino = '0';
+  await namer.settle(room.key);
+  expect(rename).not.toHaveBeenCalled();
+  expect(namer.entries.size).toBe(0);
 });
 
 test('the checkpoint exposes scheduled work until an editor arrival cancels it', async () => {

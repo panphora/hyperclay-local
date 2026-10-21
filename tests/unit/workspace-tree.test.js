@@ -105,3 +105,24 @@ test('only a registered frame request injects the package bridge, and save strip
   const disk = await fs.readFile(path.join(h.dir, 'A.html'), 'utf8');
   expect(disk).not.toContain('data-hyperclay-bridge');
 });
+
+test('a framed windows-1252 document keeps its original bytes', async () => {
+  h = await fixture();
+  const bytes = Buffer.concat([
+    Buffer.from('<html><head></head><body>caf', 'ascii'), Buffer.from([0xe9]),
+    Buffer.from('</body></html>', 'ascii'),
+  ]);
+  await fs.writeFile(path.join(h.dir, 'A.html'), bytes);
+  h.root.port = 0;
+  rootServer = new RootServer(h.root, { workspaceFrame: (...args) => h.shell.frame(...args) });
+  expect((await rootServer.start()).ok).toBe(true);
+  h.root.port = rootServer.server.address().port;
+  const request = await h.start();
+  const doc = await (await request('/api/roots/root-a/document?path=A.html')).json();
+  const response = await fetch(doc.frameUrl.replace('localhost', '127.0.0.1'));
+  const served = Buffer.from(await response.arrayBuffer());
+  expect(served.includes(Buffer.from([0x63, 0x61, 0x66, 0xe9]))).toBe(true);
+  expect(served.includes(Buffer.from([0xef, 0xbf, 0xbd]))).toBe(false);
+  expect(served.toString('latin1')).toContain('data-hyperclay-bridge');
+  expect(served.toString('latin1')).toContain('hostSuffix":"localhost"');
+});
