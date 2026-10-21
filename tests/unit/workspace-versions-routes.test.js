@@ -49,3 +49,10 @@ test('restore backs up unlanded page frames before replacing the room', () => {
   });
   expect(output).toContain('restore room proof passed');
 });
+
+test('restoring a live document with no page needs no rendered safety backup', () => {
+  const output = execFileSync(process.execPath, [path.join(__dirname, '../helpers/local-restore-nonpage-probe.cjs')], {
+    cwd: process.cwd(), encoding: 'utf8', timeout: 30000,
+  });
+  expect(output).toContain('restore non-page proof passed');
+});

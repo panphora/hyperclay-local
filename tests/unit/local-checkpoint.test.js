@@ -171,3 +171,18 @@ test('an unjoined arrival leaves a departure checkpoint scheduled', () => {
   member.close();
   expect(room).toBeTruthy();
 });
+
+test('a non-page render refusal writes no backup, and another refusal still refuses', async () => {
+  const html = '<!doctype html><html><head><script type="application/json" clay="live" merge="todos">{"items":["a"]}</script></head><body><ul></ul></body></html>';
+  const room = { key: '/tmp/todo.html', nodeId: 'todo', stores: new Map() };
+  const authority = { rooms: { get: () => room }, roomIsDirty: () => true };
+  const core = reason => ({ captureCheckpoint: () => ({}), renderCheckpoint: () => ({ kind: 'refused', reason }) });
+  const service = createLocalCheckpoint({ authority, withDocument: async () => {},
+    loadCore: async () => core('invalid-document') });
+  await expect(service.safetyBackup('/tmp/todo.html', html)).resolves.toBe(html);
+
+  const refusing = createLocalCheckpoint({ authority, withDocument: async () => {},
+    loadCore: async () => core('needs-adoption') });
+  await expect(refusing.safetyBackup('/tmp/todo.html', html))
+    .rejects.toThrow('Cannot back up live room: needs-adoption');
+});

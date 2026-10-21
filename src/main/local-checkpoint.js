@@ -185,7 +185,10 @@ function createLocalCheckpoint({
           runScripts: undefined, resources: undefined,
         }).window.document),
       });
-      if (rendered.kind !== 'ok') throw new Error(`Cannot back up live room: ${rendered.reason}`);
+      if (rendered.kind !== 'ok') {
+        if (rendered.reason === 'invalid-document') return currentHtml;
+        throw new Error(`Cannot back up live room: ${rendered.reason}`);
+      }
       return rendered.html;
     },
     attempt,

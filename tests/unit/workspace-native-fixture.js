@@ -8,7 +8,7 @@ function nativeFixture(overrides = {}) {
   session.setPermissionRequestHandler = handler => { session.requestPermission = handler; };
   session.setPermissionCheckHandler = handler => { session.checkPermission = handler; };
   session.setDevicePermissionHandler = handler => { session.devicePermission = handler; };
-  const ipcMain = { handle: (name, handler) => handlers.set(name, handler) };
+  const ipcMain = { handle: (name, handler) => handlers.set(name, handler), on: (name, handler) => handlers.set(name, handler) };
   const dock = { show: jest.fn(), hide: jest.fn() };
   const external = jest.fn();
   class FakeWindow extends EventEmitter {

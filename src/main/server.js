@@ -258,7 +258,8 @@ async function serveHtml(res, filePath, frame = null) {
   if (!frame) return res.send(stamped);
   const { injectWorkspaceBridge } = require('@panphora/hyperclay-workspace/server');
   const raw = stamped.toString('latin1');
-  const bridged = injectWorkspaceBridge(raw, {
+  const bom = raw.startsWith('\xef\xbb\xbf') ? raw.slice(0, 3) : '';
+  const bridged = bom + injectWorkspaceBridge(raw.slice(bom.length), {
     nodeId: frame.wireId, framed: true, origin: frame.shellOrigin, hostSuffix: 'localhost',
   });
   let at = 0;

@@ -4,12 +4,13 @@ const { createWorkspaceLifecycle } = require('../../src/main/workspace/lifecycle
 const { fixture } = require('./workspace-fixture');
 
 function harness({ replies = [[{ id: 'A', revision: 1, durable: true }]], checkpointResult, dialogResponse = 1,
-  hasWindow = true, timeout = false } = {}) {
+  hasWindow = true, hasFlushListener = true, timeout = false } = {}) {
   const order = [];
   let lifecycle;
   let call = 0;
   const workspace = {
     hasWindow: () => hasWindow,
+    hasFlushListener: () => hasFlushListener,
     requestFlush: jest.fn(id => {
       const participants = replies[Math.min(call++, replies.length - 1)];
       if (!timeout) queueMicrotask(() => lifecycle.receiveFlushResult({ requestId: id, participants }));
@@ -119,6 +120,27 @@ test('repeated Quit reuses its active promise; no window still checkpoints', asy
   expect(h.checkpoint.flushDirty).toHaveBeenCalledTimes(1);
 });
 
+test('a window with no flush listener quits at once, with no dialog and no request', async () => {
+  const h = harness({ hasFlushListener: false });
+  expect(await h.lifecycle.requestTransition('quit')).toEqual({ ok: true });
+  expect(h.workspace.requestFlush).not.toHaveBeenCalled();
+  expect(h.showMessage).not.toHaveBeenCalled();
+  expect(h.checkpoint.flushDirty).toHaveBeenCalledTimes(1);
+  expect(h.order).toEqual(['checkpoint', 'sync', 'servers', 'observers', 'window', 'finish']);
+});
+
+test('a listener that unsubscribes before the transition quits like one that never registered', async () => {
+  let listeners = 0;
+  const h = harness({ hasFlushListener: false });
+  h.workspace.hasFlushListener = () => listeners > 0;
+  listeners = 1;
+  expect(h.workspace.hasFlushListener()).toBe(true);
+  listeners = 0;
+  expect(await h.lifecycle.requestTransition('quit')).toEqual({ ok: true });
+  expect(h.workspace.requestFlush).not.toHaveBeenCalled();
+  expect(h.showMessage).not.toHaveBeenCalled();
+});
+
 test('real root source save reaches disk before shutdown executes', async () => {
   const h = await fixture();
   try {
@@ -128,7 +150,7 @@ test('real root source save reaches disk before shutdown executes', async () => 
     const request = await h.start();
     let lifecycle;
     let sent = false;
-    const workspace = { hasWindow: () => true, show: jest.fn(), requestFlush: id => {
+    const workspace = { hasWindow: () => true, hasFlushListener: () => true, show: jest.fn(), requestFlush: id => {
       void (async () => {
         if (!sent) {
           sent = true;

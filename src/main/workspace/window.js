@@ -15,6 +15,7 @@ function createWorkspaceWindow({ electron = require('electron'), shellServer, ro
   let window = null;
   let starting = null;
   let permissionSession = null;
+  let flushListeners = 0;
   const shellOrigin = () => shellServer.origin;
   const rootFor = origin => roots().find(root => origin === `http://localhost:${root.port}` && root.state === 'running');
   const isRoot = value => !!rootFor(originOf(value));
@@ -42,6 +43,10 @@ function createWorkspaceWindow({ electron = require('electron'), shellServer, ro
     return isAllowedExternalUrl(url) || isRoot(url) ? open(url) : external(url);
   });
   ipcMain.handle('workspace-flush-result', (event, result) => trusted(event) ? onFlushResult(result) : false);
+  ipcMain.on('workspace-flush-listener', (event, added) => {
+    if (!trusted(event) || (added !== true && added !== false)) return;
+    flushListeners = added ? flushListeners + 1 : Math.max(0, flushListeners - 1);
+  });
 
   function refusePermission(origin, permission) {
     if (window && !window.isDestroyed()) window.webContents.send('workspace-permission-refused', { origin, permission });
@@ -94,6 +99,7 @@ function createWorkspaceWindow({ electron = require('electron'), shellServer, ro
   function destroy() {
     if (window && !window.isDestroyed()) window.destroy();
     window = null;
+    flushListeners = 0;
     if (platform === 'darwin') app.dock.hide();
   }
 
@@ -121,14 +127,16 @@ function createWorkspaceWindow({ electron = require('electron'), shellServer, ro
         webPreferences: { session: dedicated, preload: path.join(__dirname, 'workspace-preload.js'),
           contextIsolation: true, sandbox: true, nodeIntegration: false } });
       const current = window;
+      flushListeners = 0;
       installPermissions(dedicated);
       current.on('close', event => {
         event.preventDefault();
         current.hide();
         if (platform === 'darwin') app.dock.hide();
       });
-      current.on('closed', () => { if (window === current) window = null; });
-      current.webContents.on('render-process-gone', onRendererGone);
+      current.on('closed', () => { flushListeners = 0; if (window === current) window = null; });
+      current.webContents.on('render-process-gone', () => { flushListeners = 0; onRendererGone(); });
+      current.webContents.on('did-navigate', () => { flushListeners = 0; });
       current.webContents.on('select-bluetooth-device', (event, _devices, callback) => {
         event.preventDefault();
         callback('');
@@ -158,6 +166,7 @@ function createWorkspaceWindow({ electron = require('electron'), shellServer, ro
   return {
     openWorkspace, destroy, show: () => { if (window && !window.isDestroyed()) show(); },
     hasWindow: () => !!(window && !window.isDestroyed()),
+    hasFlushListener: () => flushListeners > 0,
     requestFlush: requestId => window?.webContents.send('workspace-flush-request', { requestId }),
     allowedNavigation,
   };

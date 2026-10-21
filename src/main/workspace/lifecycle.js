@@ -7,7 +7,7 @@ function createWorkspaceLifecycle({ workspace, checkpoint, showMessage, execute,
 
   function flush(request) {
     return new Promise((resolve, reject) => {
-      if (!workspace.hasWindow()) return resolve([]);
+      if (!workspace.hasWindow() || !workspace.hasFlushListener?.()) return resolve([]);
       const flushId = `${request.id}:${++request.round}`;
       const timer = setTimer(() => {
         request.pending = null;

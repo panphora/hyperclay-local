@@ -126,3 +126,25 @@ test('a framed windows-1252 document keeps its original bytes', async () => {
   expect(served.toString('latin1')).toContain('data-hyperclay-bridge');
   expect(served.toString('latin1')).toContain('hostSuffix":"localhost"');
 });
+
+test('a framed document that starts with a BOM keeps it first and the bridge after the doctype', async () => {
+  h = await fixture();
+  const bytes = Buffer.concat([
+    Buffer.from([0xef, 0xbb, 0xbf]),
+    Buffer.from('<!doctype html><html><head><title>x</title></head><body>A</body></html>', 'ascii'),
+  ]);
+  await fs.writeFile(path.join(h.dir, 'A.html'), bytes);
+  h.root.port = 0;
+  rootServer = new RootServer(h.root, { workspaceFrame: (...args) => h.shell.frame(...args) });
+  expect((await rootServer.start()).ok).toBe(true);
+  h.root.port = rootServer.server.address().port;
+  const request = await h.start();
+  const doc = await (await request('/api/roots/root-a/document?path=A.html')).json();
+  const response = await fetch(doc.frameUrl.replace('localhost', '127.0.0.1'));
+  const served = Buffer.from(await response.arrayBuffer());
+  expect(served.subarray(0, 3)).toEqual(Buffer.from([0xef, 0xbb, 0xbf]));
+  const text = served.toString('utf8');
+  expect(text.indexOf('<!doctype html>')).toBe(1);
+  expect(text.indexOf('data-hyperclay-bridge')).toBeGreaterThan(text.indexOf('<!doctype html>'));
+  expect(text.indexOf('data-hyperclay-bridge')).toBeGreaterThan(text.indexOf('<head>'));
+});
