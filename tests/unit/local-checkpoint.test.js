@@ -172,7 +172,7 @@ test('an unjoined arrival leaves a departure checkpoint scheduled', () => {
   expect(room).toBeTruthy();
 });
 
-test('a non-page render refusal writes no backup, and another refusal still refuses', async () => {
+test('a non-page document writes no rendered backup, and a page document that cannot render refuses', async () => {
   const html = '<!doctype html><html><head><script type="application/json" clay="live" merge="todos">{"items":["a"]}</script></head><body><ul></ul></body></html>';
   const room = { key: '/tmp/todo.html', nodeId: 'todo', stores: new Map() };
   const authority = { rooms: { get: () => room }, roomIsDirty: () => true };
@@ -181,8 +181,11 @@ test('a non-page render refusal writes no backup, and another refusal still refu
     loadCore: async () => core('invalid-document') });
   await expect(service.safetyBackup('/tmp/todo.html', html)).resolves.toBe(html);
 
+  const page = '<!doctype html><html><body><article data-page="1"></article></body></html>';
+  await expect(service.safetyBackup('/tmp/todo.html', page))
+    .rejects.toThrow('Cannot back up live room: invalid-document');
   const refusing = createLocalCheckpoint({ authority, withDocument: async () => {},
     loadCore: async () => core('needs-adoption') });
-  await expect(refusing.safetyBackup('/tmp/todo.html', html))
+  await expect(refusing.safetyBackup('/tmp/todo.html', page))
     .rejects.toThrow('Cannot back up live room: needs-adoption');
 });

@@ -176,7 +176,7 @@ function createLocalCheckpoint({
     dirty,
     async safetyBackup(key, currentHtml) {
       const room = authority.rooms.get(key);
-      if (!dirty(room)) return currentHtml;
+      if (!dirty(room) || !/<article\b[^>]*\bdata-page(?:\s|=|>)/i.test(currentHtml)) return currentHtml;
       const core = await loadCore();
       const capture = core.captureCheckpoint(room, { nodeId: room.nodeId, roomKey: key });
       const { JSDOM } = require('jsdom');
@@ -185,10 +185,7 @@ function createLocalCheckpoint({
           runScripts: undefined, resources: undefined,
         }).window.document),
       });
-      if (rendered.kind !== 'ok') {
-        if (rendered.reason === 'invalid-document') return currentHtml;
-        throw new Error(`Cannot back up live room: ${rendered.reason}`);
-      }
+      if (rendered.kind !== 'ok') throw new Error(`Cannot back up live room: ${rendered.reason}`);
       return rendered.html;
     },
     attempt,
