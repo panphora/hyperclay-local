@@ -39,7 +39,7 @@ module.exports = {
 
     let observer = this.observer;
     if (!observer) {
-      observer = new RootObserver({ path: this.syncFolder }, { live: this.live });
+      observer = new RootObserver({ path: this.syncFolder }, { live: this.live, localAuthority: this.localAuthority });
       observer.setRemoteApplyCheck((rel) => this.isRecentRemoteApply(rel));
       observer.start();
       this.privateObserver = observer;

@@ -17,8 +17,11 @@ const path = require('path');
 const { createRooms } = require('@panphora/clayjs/server/rooms');
 const { liveSync } = require('livesync-hyperclay');
 const { createLocalAuthority } = require('../../src/main/local-authority');
-const { createApp, boundedWriter } = require('../../src/main/server');
+const { createApp, boundedWriter, handleAuthorityLiveStream } = require('../../src/main/server');
 const { startLiveDataFixture } = require('../helpers/local-live-data');
+const { createRootLive } = require('../../src/main/utils/root-live');
+const { withStructureChange } = require('../../src/main/utils/write-queue');
+const { EventEmitter } = require('events');
 const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 const { servedDocumentEtag, withoutInjectedDocumentEtag } = require('../helpers/served-metadata');
 
@@ -612,6 +615,61 @@ describe('the marked data lane', () => {
 });
 
 describe('the direct stream with a registry', () => {
+  // A response the real handler drives by hand, so a refusal can be asserted on
+  // before anything reaches a socket.
+  const streamResponse = () => {
+    const listeners = new Map();
+    const res = {
+      statusCode: null,
+      body: null,
+      contentType: null,
+      headerNames: [],
+      flushed: 0,
+      writes: 0,
+      setHeader(name) { res.headerNames.push(name); },
+      flushHeaders() { res.flushed += 1; },
+      status(code) { res.statusCode = code; return res; },
+      type(value) { res.contentType = value; return res; },
+      send(value) { res.body = value; return res; },
+      destroy() {},
+      on(event, fn) {
+        if (!listeners.has(event)) listeners.set(event, new Set());
+        listeners.get(event).add(fn);
+      },
+      removeListener(event, fn) { listeners.get(event)?.delete(fn); },
+      write() { res.writes += 1; return true; },
+    };
+    return res;
+  };
+
+  test('a target that goes stale while it resolves is refused before headers and registers nothing', async () => {
+    const h = harness();
+    const fixture = await fixtureFor(h);
+    const canonical = path.join(dir, FILE);
+    const key = `${fixture.root.id}:${FILE}`;
+    const location = { rootId: fixture.root.id, logicalPath: FILE, canonicalPath: canonical };
+    const target = h.authority.bindTarget({ ...location, origin: fixture.origin, live: null });
+
+    await withStructureChange((token) => h.authority.setAdmission(token, { ...location, active: false }));
+    await withStructureChange((token) => h.authority.setAdmission(token, { ...location, active: true }));
+    expect(h.authority.isCurrentTarget(target)).toBe(false);
+
+    const req = Object.assign(new EventEmitter(), { query: { 'client-id': 'cA' }, headers: {} });
+    const res = streamResponse();
+    const ctx = { root: fixture.root, live: createRootLive(fixture.root), localAuthority: h.authority };
+    await handleAuthorityLiveStream(ctx, req, res, { file: FILE, lane: 'live', resolveTarget: async () => target });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body).toBe('File not found');
+    expect(res.contentType).toBe('text/plain');
+    expect(res.headerNames).toEqual([]);
+    expect(res.flushed).toBe(0);
+    expect(res.writes).toBe(0);
+    expect(h.authority.connectedIds(canonical)).toEqual([]);
+    expect(h.authority.hasUnjoinedEditors(canonical)).toBe(false);
+    expect([...liveSync.subscribers(key)].length).toBe(0);
+  });
+
   test('a malformed client id is refused before any header or registration', async () => {
     const h = harness();
     const fixture = await fixtureFor(h);

@@ -10,6 +10,7 @@ const request = require('supertest');
 const { createRooms } = require('@panphora/clayjs/server/rooms');
 const { createLocalAuthority } = require('../../src/main/local-authority');
 const { createLocalLiveData } = require('../../src/main/local-live-data');
+const { withStructureChange } = require('../../src/main/utils/write-queue');
 const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 
 const CANONICAL = '/tmp/live-data-doc.html';
@@ -36,7 +37,7 @@ const waitFor = async (condition) => {
 // from memory; withDocument is one serialized chain the test can hold open to
 // model a disk operation in flight.
 function harness({ page = PAGE(0) } = {}) {
-  const state = { now: 1000, epoch: 0, id: 0, reads: 0, documents: 0 };
+  const state = { now: 1000, epoch: 0, id: 0, reads: 0, documents: 0, readHold: null };
   const core = createRooms({ now: () => state.now, newEpoch: () => `e${++state.epoch}` });
   let hold = null;
   let chain = Promise.resolve();
@@ -52,7 +53,11 @@ function harness({ page = PAGE(0) } = {}) {
   const authority = createLocalAuthority({
     rooms: core,
     withDocument,
-    readSaved: async () => { state.reads += 1; return page; },
+    readSaved: async () => {
+      state.reads += 1;
+      if (state.readHold) await state.readHold;
+      return page;
+    },
     now: () => state.now,
     newId: () => `id${++state.id}`,
   });
@@ -80,6 +85,8 @@ function harness({ page = PAGE(0) } = {}) {
     setFailure: (value) => { failure = value; },
     hold: (promise) => { hold = promise; },
     releaseHold: () => { hold = null; },
+    holdRead: (promise) => { state.readHold = promise; },
+    releaseRead: () => { state.readHold = null; },
   };
 }
 
@@ -101,6 +108,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   h.releaseHold();
+  h.releaseRead();
   await closeLoopback();
 });
 
@@ -470,6 +478,47 @@ test('core refusals keep their hosted statuses and never move the sequence', asy
 
   expect((await getState()).body.seq).toBe(1);
   expect((await getState()).body.stores.count.value).toEqual({ n: 7 });
+});
+
+// The cold read is what makes the room, so a target retired and readmitted while
+// that read is in flight is a target the room no longer belongs to.
+const staleDuringColdRead = async () => {
+  const gate = deferred();
+  h.holdRead(gate.promise);
+  await waitFor(() => h.state.reads === 1);
+  await withStructureChange((token) => h.authority.setAdmission(token, { rootId: 'root-a', logicalPath: 'doc.html', active: false }));
+  await withStructureChange((token) => h.authority.setAdmission(token, { rootId: 'root-a', logicalPath: 'doc.html', active: true }));
+  expect(h.authority.isCurrentTarget(h.target)).toBe(false);
+  gate.resolve();
+  h.releaseRead();
+};
+
+test('a state read whose target goes stale during the cold open is 404, not the old room', async () => {
+  const a = join('cA');
+  const pending = getState({ clientId: 'cA' }).then((res) => res);
+  await staleDuringColdRead();
+
+  const res = await pending;
+  expect(res.status).toBe(404);
+  expect(res.body).toEqual({ msg: 'No file here.', msgType: 'error', code: 'not-found' });
+  expect(res.body.stores).toBeUndefined();
+  expect(res.body.seq).toBeUndefined();
+  expect(res.body.conn).toBeUndefined();
+  expect(a.events).toEqual([]);
+});
+
+test('a frame whose target goes stale during the cold open is 404, not the old 503', async () => {
+  const a = join('cA');
+  const b = join('cB');
+  const pending = postFrame({ name: 'count', n: 1, conn: a.member.conn, ops: [set(7)] }).then((res) => res);
+  await staleDuringColdRead();
+
+  const res = await pending;
+  expect(res.status).toBe(404);
+  expect(res.body).toEqual({ msg: 'No file here.', msgType: 'error', code: 'not-found' });
+  expect(b.events).toEqual([]);
+  expect(a.events).toEqual([]);
+  expect(h.core.get(CANONICAL).seq).toBe(0);
 });
 
 test('a missing file is 404, a moved one 404, and an unexpected failure a generic 500', async () => {

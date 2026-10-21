@@ -19,11 +19,13 @@ const { liveSync } = require('livesync-hyperclay');
 const { createLocalAuthority } = require('../../src/main/local-authority');
 const { handleSharedSyncStreamV2 } = require('../../src/main/server');
 const { createRootLive } = require('../../src/main/utils/root-live');
+const { withStructureChange } = require('../../src/main/utils/write-queue');
 const { startLiveDataFixture } = require('../helpers/local-live-data');
 
 const DOC = (count) => `<!doctype html>\n<html><body><script type="application/json" merge="store" clay="live">{"count":${count}}</script></body></html>\n`;
 const ADD = { op: 'add', path: ['count'], n: 1 };
 const FILE = 'index.html';
+const SECOND = 'second.html';
 const SAME_ORIGIN = { 'Sec-Fetch-Site': 'same-origin' };
 
 const deferred = () => {
@@ -651,11 +653,130 @@ describe('the shared v2 writer', () => {
     });
 
     expect(res.frames[0]).toBe('event: cursor\ndata: {"v":2,"member":0,"error":"not-found"}\n\n');
+    // The member's resolution retargeted the same logical route away from the file
+    // the entry resolved to, so the entry is stale before it is paired: it gets its
+    // own not-found cursor and registers no snapshot on either path.
+    expect(res.frames[1]).toBe('event: cursor\ndata: {"v":2,"sub":0,"error":"not-found"}\n\n');
     expect(h.authority.connectedIds(oldPath)).toEqual([]);
     expect(h.authority.connectedIds(movedPath)).toEqual([]);
-    expect(h.authority.hasUnjoinedEditors(oldPath)).toBe(true);
+    expect(h.authority.hasUnjoinedEditors(oldPath)).toBe(false);
     req.emit('close');
     expect(h.authority.hasUnjoinedEditors(oldPath)).toBe(false);
+  });
+
+  test('an entry that goes stale while a later one resolves is not-found and registers nothing', async () => {
+    const h = harness();
+    const fixture = await fixtureFor(h, { rootId: 'writer-stale' });
+    const canonical = path.join(dir, FILE);
+    const secondPath = path.join(dir, SECOND);
+    const key = `${fixture.root.id}:${FILE}`;
+    const secondKey = `${fixture.root.id}:${SECOND}`;
+    const doc = documentUrl(fixture);
+    const other = documentUrl(fixture, SECOND);
+    await fs.writeFile(secondPath, DOC(0));
+
+    // The first entry resolves at once; the second is held on the disk, and the
+    // test uses that window to retire and readmit the first document's route.
+    const resolve = bindTargets(h, fixture, dir);
+    const entered = deferred();
+    const release = deferred();
+    let held = false;
+    let first = null;
+    const resolveTarget = (req, { href } = {}) => {
+      const name = new URL(href).pathname.replace(/^\//, '');
+      if (name === FILE) {
+        const target = resolve(req, { href });
+        if (!first) first = target;
+        return target;
+      }
+      if (held) return resolve(req, { href });
+      held = true;
+      entered.resolve();
+      return release.promise.then(() => resolve(req, { href }));
+    };
+
+    const req = syntheticRequest(fixture);
+    const res = syntheticResponse({ accepted: true });
+    const ctx = { root: fixture.root, live: createRootLive(fixture.root), localAuthority: h.authority };
+    const done = handleSharedSyncStreamV2(ctx, req, res, {
+      resolveTarget,
+      s: [`live:0:${doc}`, `live:0:${other}`],
+      m: [`cA:${doc}`, `cB:${other}`],
+      v: '2',
+    });
+
+    await entered.promise;
+    expect(h.authority.isCurrentTarget(first)).toBe(true);
+    await withStructureChange((token) => h.authority.setAdmission(token, { rootId: fixture.root.id, logicalPath: FILE, active: false }));
+    await withStructureChange((token) => h.authority.setAdmission(token, { rootId: fixture.root.id, logicalPath: FILE, active: true }));
+    expect(h.authority.isCurrentTarget(first)).toBe(false);
+    release.resolve();
+    await done;
+
+    // The stale entry and its member carry their own not-found cursors, and the
+    // second document's live entry and member are admitted as usual.
+    expect(res.frames[0]).toBe('event: cursor\ndata: {"v":2,"member":0,"error":"not-found"}\n\n');
+    expect(res.frames[1]).toBe('event: cursor\ndata: {"v":2,"member":1}\n\n');
+    expect(res.frames[2]).toBe('event: cursor\ndata: {"v":2,"sub":0,"error":"not-found"}\n\n');
+    expect(res.frames[3]).toContain('"sub":1');
+    expect(res.frames[3]).not.toContain('not-found');
+    expect(res.writes).toBe(4);
+
+    expect(h.authority.connectedIds(canonical)).toEqual([]);
+    expect(h.authority.hasUnjoinedEditors(canonical)).toBe(false);
+    expect([...liveSync.subscribers(key)].length).toBe(0);
+
+    expect(h.authority.connectedIds(secondPath)).toEqual(['cB']);
+    expect([...liveSync.subscribers(secondKey)].length).toBe(1);
+    expect(h.authority.publish(secondPath, 'data', { seq: 7 })).toBe(1);
+    expect(res.frames[4]).toBe('event: m1\ndata: {"event":"data","data":{"seq":7}}\n\n');
+    expect(res.frames.some((frame) => frame.startsWith('event: m0'))).toBe(false);
+
+    req.emit('close');
+    expect(h.authority.connectedIds(secondPath)).toEqual([]);
+    expect([...liveSync.subscribers(secondKey)].length).toBe(0);
+  });
+
+  test('a member whose proof went stale while the connection resolved registers nothing', async () => {
+    const h = harness();
+    const fixture = await fixtureFor(h, { rootId: 'writer-stale-member' });
+    const canonical = path.join(dir, FILE);
+    const key = `${fixture.root.id}:${FILE}`;
+    const doc = documentUrl(fixture);
+    const location = {
+      rootId: fixture.root.id, logicalPath: FILE, canonicalPath: canonical, origin: fixture.origin, live: null,
+    };
+    const stale = h.authority.bindTarget(location);
+
+    await withStructureChange((token) => h.authority.setAdmission(token, { rootId: fixture.root.id, logicalPath: FILE, active: false }));
+    await withStructureChange((token) => h.authority.setAdmission(token, { rootId: fixture.root.id, logicalPath: FILE, active: true }));
+    expect(h.authority.isCurrentTarget(stale)).toBe(false);
+
+    // The entry resolves to a fresh proof of the same document; the member is still
+    // holding the proof its route had before it was retired and readmitted.
+    let calls = 0;
+    const req = syntheticRequest(fixture);
+    const res = syntheticResponse({ accepted: true });
+    const ctx = { root: fixture.root, live: createRootLive(fixture.root), localAuthority: h.authority };
+    await handleSharedSyncStreamV2(ctx, req, res, {
+      resolveTarget: () => (calls++ === 0 ? h.authority.bindTarget(location) : stale),
+      s: [`live:0:${doc}`],
+      m: [`cA:${doc}`],
+      v: '2',
+    });
+
+    expect(res.frames[0]).toBe('event: cursor\ndata: {"v":2,"member":0,"error":"not-found"}\n\n');
+    expect(res.frames[1]).toContain('"sub":0');
+    expect(res.frames[1]).not.toContain('not-found');
+    expect(res.frames.some((frame) => frame.startsWith('event: m0'))).toBe(false);
+    expect(h.authority.connectedIds(canonical)).toEqual([]);
+    expect(h.authority.publish(canonical, 'data', { seq: 7 })).toBe(0);
+    expect([...liveSync.subscribers(key)].length).toBe(1);
+    expect(h.authority.hasUnjoinedEditors(canonical)).toBe(true);
+
+    req.emit('close');
+    expect(h.authority.hasUnjoinedEditors(canonical)).toBe(false);
+    expect([...liveSync.subscribers(key)].length).toBe(0);
   });
 
   test('33 refused writes across cursor, member and snapshot sinks tear the connection down once', async () => {

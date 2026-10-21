@@ -14,7 +14,7 @@ const {
   resolveWritePath,
   realpathNearestParent
 } = require('./utils/path-resolver.js');
-const { withFileLock, atomicWriteFile } = require('./utils/write-queue.js');
+const { withFileLock, withDocumentWrite, withStructureChange, assertWriteContext, assertStructureContext, atomicWriteFile } = require('./utils/write-queue.js');
 const crypto = require('crypto');
 const busboy = require('busboy');
 const { scopeTailwindLink } = require('./utils/tailwind-scoping.js');
@@ -34,7 +34,7 @@ const { createHelperDispatcher } = require('./helpers/dispatcher');
 const errorLogger = require('./error-logger');
 const formatHtml = require('./format-html');
 const { hasHtmlRoot } = formatHtml;
-const { serveSiteApiLocal, extractSiteDataLocal, applySiteDataLocal } = require('./utils/data-api');
+const { serveSiteApiLocal, extractSiteDataLocal, prepareSiteDataWriteLocal, applySiteDataLocal } = require('./utils/data-api');
 const { readDataQuery } = require('./utils/data-query');
 const { writeApiSidecar } = require('./utils/api-sidecar');
 const dataGuard = require('./data-loss-guard');
@@ -374,7 +374,8 @@ function assetsDirFor(docRelPath) {
 // of the SAME bytes converge on one file, and whichever loses the exclusive
 // create reads back what the winner wrote and agrees with it. The tail lengthens
 // only on a genuine hash prefix collision between different content.
-async function storeUpload(paths, dirRel, fileName, content) {
+async function storeUpload(paths, dirRel, fileName, content, token = null, onCandidate = null) {
+  if (token) assertStructureContext(token);
   const { stem, ext } = splitUploadName(fileName);
   const digest = crypto.createHash('sha256').update(content).digest('hex');
   for (let len = 6; len <= 32; len += 2) {
@@ -382,6 +383,7 @@ async function storeUpload(paths, dirRel, fileName, content) {
     const rel = `${dirRel}/${name}`;
     validateSegments(rel);
     const abs = await resolveWritePath(paths, rel);
+    const target = onCandidate ? await onCandidate({ rel, abs }) : null;
     let handle = null;
     try {
       // 'wx' is O_EXCL: it creates or it fails, it never truncates. A plain write
@@ -390,7 +392,7 @@ async function storeUpload(paths, dirRel, fileName, content) {
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
       const existing = await fs.readFile(abs);
-      if (existing.equals(content)) return { name, bytes: content.length };
+      if (existing.equals(content)) return { name, bytes: content.length, canonicalPath: abs, wrote: false };
       continue;
     }
     try {
@@ -398,7 +400,7 @@ async function storeUpload(paths, dirRel, fileName, content) {
     } finally {
       await handle.close();
     }
-    return { name, bytes: content.length };
+    return { name, bytes: content.length, canonicalPath: abs, wrote: true, ...(target ? { target } : {}) };
   }
   throw new PathError(409, 'Could not find a free name for that file.');
 }
@@ -794,6 +796,18 @@ async function handleSharedSyncStreamV2(ctx, req, res, { resolveTarget, s, m, v 
   const resolvedMembers = await Promise.all(members.map((member) => resolveOne(member.href)));
   if (closed) return;
 
+  // An earlier resolution has had time to go stale while a later one was awaited,
+  // so every resolved target is rechecked before it can pair or register: one that
+  // is no longer current is answered exactly as one that was never found.
+  for (let i = 0; i < resolvedEntries.length; i += 1) {
+    const target = resolvedEntries[i];
+    if (target && !ctx.localAuthority.isCurrentTarget(target)) resolvedEntries[i] = null;
+  }
+  for (let j = 0; j < resolvedMembers.length; j += 1) {
+    const target = resolvedMembers[j];
+    if (target && !ctx.localAuthority.isCurrentTarget(target)) resolvedMembers[j] = null;
+  }
+
   const matchedLiveEntries = new Set();
   const admittedMembers = resolvedMembers.map((target, j) => {
     if (!target) return null;
@@ -978,6 +992,13 @@ async function handleAuthorityLiveStream(ctx, req, res, { file, lane, resolveTar
   }
   if (closed) return;
 
+  // The resolution proves the document only while its target is still current: a
+  // route retired and readmitted while it resolved is refused with the route's
+  // existing not-found text before any header, subscription or registration.
+  if (!authority.isCurrentTarget(target)) {
+    return res.status(404).type('text/plain').send('File not found');
+  }
+
   // SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -1121,7 +1142,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     // stable identity for that file. `{ fresh: false }` answers an already-bound
     // logical target without touching the disk, so a warm frame reaches its held
     // room immediately; `{ fresh: true }` always resolves and checks again.
-    const resolveLiveTarget = (req, { fresh = false, href: named = undefined } = {}) => {
+    const resolveLiveTarget = (req, { fresh = false, href: named = undefined, unbound = false } = {}) => {
       const origin = `http://${req.headers.host}`;
       const dataRequest = req.originalUrl.split('?')[0] === '/_/sync/data';
       // A v2 shared entry names its own document; every other caller names the
@@ -1147,13 +1168,86 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         const bound = ctx.localAuthority.findBoundTarget(logical);
         if (bound) return bound;
       }
-      return (async () => {
+      const resolveCandidate = async () => {
         validateSegments(name);
         const real = await resolveReadPath(paths, name);
         const stats = await fs.stat(real).catch(() => null);
         if (!stats || !stats.isFile()) throw new PathError(404, 'File not found');
-        return ctx.localAuthority.bindTarget({ ...logical, canonicalPath: real, live: ctx.live });
+        return { ...logical, canonicalPath: real, live: ctx.live };
+      };
+      return (async () => {
+        const candidate = await resolveCandidate();
+        if (unbound) return candidate;
+        const claim = ctx.localAuthority.captureAdmission(candidate);
+        return withDocumentWrite(
+          () => ({ canonicalPath: candidate.canonicalPath }),
+          async (_locked, token) => {
+            const current = await resolveCandidate();
+            if (current.canonicalPath !== candidate.canonicalPath) throw new PathError(404, 'File not found');
+            ctx.localAuthority.validateAdmission(claim, current, token, { allowInitialBind: true });
+            return ctx.localAuthority.bindTarget(current);
+          },
+        );
       })();
+    };
+
+    // The one refusal a queued save can still be given: the name it was resolved
+    // against no longer resolves to the document the request claimed. The message
+    // is the route's existing one, so a client's refresh prompt is unchanged.
+    const movedOrDeleted = () => {
+      const error = new Error('This file has been moved or deleted. Please refresh the page.');
+      error.status = 409;
+      error.code = 'moved-or-deleted';
+      return error;
+    };
+
+    // A write to one served document. Without an authority this is the plain
+    // per-file lock this route always took. With one, the request captures a
+    // read-only claim on the location it names BEFORE it queues, then re-resolves
+    // and rechecks that claim inside the shared boundary: the canonical path, the
+    // root's known-path admission, the root incarnation, the identity the path
+    // carries now and its admission revision. The staged target is admitted only
+    // after all of that, so a stale queued save is refused instead of landing on
+    // whatever occupies the path by the time it is admitted, and a refused write
+    // leaves no identity and no binding behind.
+    const runDocumentWrite = async (req, name, claimedPath, fn, { explicitCreate = false } = {}) => {
+      if (!ctx.localAuthority) {
+        return withFileLock(claimedPath, () => fn({ canonicalPath: claimedPath }, null));
+      }
+
+      const authority = ctx.localAuthority;
+      const location = { rootId: ctx.root.id, logicalPath: name, canonicalPath: claimedPath };
+      const claim = authority.captureAdmission(location);
+      const origin = `${req.protocol}://${req.get('host')}`;
+
+      return withDocumentWrite(async () => ({ canonicalPath: claimedPath }), async (_locked, token) => {
+        let freshPath;
+        try {
+          freshPath = await resolveWriteTarget(paths, name);
+        } catch {
+          throw movedOrDeleted();
+        }
+        if (freshPath !== claimedPath) throw movedOrDeleted();
+        const known = !ctx.isKnownPath || ctx.isKnownPath(name, freshPath, ctx.root.id);
+        if (!known || (explicitCreate && authority.isRetired(location))) {
+          const absent = explicitCreate &&
+            await fs.stat(freshPath).then(() => false, (error) => error.code === 'ENOENT');
+          if (!absent) throw movedOrDeleted();
+        }
+        let target;
+        try {
+          target = authority.admitWriteTarget(
+            claim,
+            { ...location, canonicalPath: freshPath, origin, live },
+            token,
+            { explicitCreate },
+          );
+        } catch (error) {
+          if (error && error.code === 'moved') throw movedOrDeleted();
+          throw error;
+        }
+        return fn(target, token);
+      });
     };
 
     // DNS-rebinding hardening for the WHOLE origin. Binding to
@@ -1736,164 +1830,253 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     // Disk sync is handled by polling + /sync/download (stripped content).
     console.log(`[LiveSync] Ready for browser-to-browser sync (no file watcher broadcast)`);
 
+    // Hosted parity for the page-write refusals (hyperclay's
+    // server-lib/page-write-http.js is the source of this table): the shared rooms
+    // package refuses an unauthorized page initialization or conversion by
+    // throwing one of its two error classes, and both hosts answer with the same
+    // status, code and Retry-After. The rooms package stays lazily required, so
+    // this only pulls it in on the refusal path of a save.
+    const PAGE_WRITE_REFUSALS = {
+      'file-changed': [428, 'page-condition-required'],
+      'invalid-header': [400, 'page-conversion-refused'],
+      'invalid-capture': [422, 'page-conversion-refused'],
+      'invalid-source': [409, 'page-conversion-refused'],
+      'ambiguous-source': [409, 'page-conversion-refused'],
+      'room-page-authority': [409, 'page-conversion-refused'],
+      'implicit-conversion': [409, 'page-conversion-required'],
+      'source-changed': [409, 'page-conversion-stale'],
+      'room-changed': [409, 'page-conversion-stale'],
+      'room-required': [409, 'page-conversion-stale'],
+      'page-converting': [503, 'page-converting', 1],
+      budget: [503, 'page-capacity', 60],
+      'receipt-capacity': [503, 'page-capacity', 60],
+    };
+
+    const pageWriteFailure = (error) => {
+      if (!error) return null;
+      const { PageConversionError, PageFormatError } = require('@panphora/clayjs/server/rooms');
+      if (error instanceof PageFormatError) {
+        return { statusCode: 409, code: 'page-format', message: error.message };
+      }
+      if (!(error instanceof PageConversionError)) return null;
+      const [statusCode, code, retryAfter] = PAGE_WRITE_REFUSALS[error.reason] || [500, 'page-write-failed'];
+      return {
+        statusCode,
+        code,
+        message: statusCode === 500 ? 'Could not complete the page write.' : error.message,
+        reason: error.reason,
+        ...(retryAfter === undefined ? {} : { retryAfter }),
+      };
+    };
+
     // The second half of a save, shared by POST /save and POST /_/api/<file>:
     // first-save backup, Tailwind link scoping, formatting, version backup,
     // atomic write, etag record, saved-lane broadcast, sidecar, data-loss guard,
     // Tailwind compile and sync provenance. The caller must hold
-    // withFileLock(filePath). Returns the bytes that reached disk.
-    async function commitDocument({ name, filePath, content, dataLossPrev, userDriven, saveId, origin = 'save' }) {
+    // withFileLock(filePath) -- or, for a browser save, the shared document
+    // boundary whose admitted target and ownership token it passes in. This
+    // helper is already owned and never acquires a gate of its own. Returns the
+    // bytes that reached disk.
+    async function commitDocument({
+      name, filePath, content, dataLossPrev, userDriven, saveId, origin = 'save',
+      target = null, token = null, ifMatch = undefined, pageConversion = undefined,
+    }) {
       // ANCILLARY DISK CONVENTION: versions dir and backups use baseName without
       // extension (matches platform's versions/{baseName}/ layout).
       // Do NOT reuse `backupName` as a liveSync channel key — liveSync keys must
       // carry the extension (Rule 1).
       const backupName = name.replace(/\.(html|htmlclay)$/, '');
 
-      // Check if this is the first save (no versions exist yet)
-      const siteVersionsDir = path.join(baseDir, VERSIONS_DIR, backupName);
-      let isFirstSave = false;
-      try {
-        const versionFiles = await fs.readdir(siteVersionsDir);
-        isFirstSave = versionFiles.length === 0;
-      } catch (error) {
-        // Directory doesn't exist yet, so this is the first save
-        isFirstSave = true;
-      }
+      // Normalized once, and before anything is admitted or backed up: the page
+      // admission below has to decide against the exact bytes this call would
+      // store, and a refusal must leave no backup and no written byte behind.
+      content = formatHtml(scopeTailwindLink(name, content));
 
-      // If first save, backup the existing site content first
-      if (isFirstSave) {
+      const authority = ctx.localAuthority;
+      const authorityWrite = Boolean(authority && target && token);
+      let pageToken = null;
+      try {
+        if (authorityWrite) {
+          // The shared rooms package owns page authority: an initialization or a
+          // conversion is admitted here, before the first backup, and its
+          // reservation is held across the backup and the atomic write so no
+          // frame can change the room while the disk result is pending.
+          const { checkPageWriteAdmission } = require('@panphora/clayjs/server/rooms');
+          const rooms = authority.rooms;
+          const open = rooms.get(filePath);
+          const room = open && String(open.nodeId) === String(target.identity) ? open : null;
+          const currentHtml = dataLossPrev ?? '';
+          const admission = checkPageWriteAdmission({
+            currentHtml, html: content, header: pageConversion ?? null, ifMatch, room,
+          });
+          if (admission === 'initial') {
+            pageToken = rooms.reservePageInitial(filePath, {
+              nodeId: target.identity, currentHtml, html: content, ifMatch,
+            });
+          } else if (admission === 'conversion') {
+            pageToken = rooms.reservePage(filePath, {
+              nodeId: target.identity, header: pageConversion, currentHtml, html: content, ifMatch,
+            });
+          }
+        }
+
+        // Check if this is the first save (no versions exist yet)
+        const siteVersionsDir = path.join(baseDir, VERSIONS_DIR, backupName);
+        let isFirstSave = false;
         try {
-          const existingContent = await fs.readFile(filePath, 'utf8');
-          await createBackup(baseDir, backupName, existingContent);
-          console.log(`Created initial backup of existing ${name}`);
+          const versionFiles = await fs.readdir(siteVersionsDir);
+          isFirstSave = versionFiles.length === 0;
         } catch (error) {
-          // File doesn't exist yet, that's OK
+          // Directory doesn't exist yet, so this is the first save
+          isFirstSave = true;
         }
-      }
 
-      content = scopeTailwindLink(name, content);
+        // If first save, backup the existing site content first
+        if (isFirstSave) {
+          try {
+            const existingContent = await fs.readFile(filePath, 'utf8');
+            await createBackup(baseDir, backupName, existingContent);
+            console.log(`Created initial backup of existing ${name}`);
+          } catch (error) {
+            // File doesn't exist yet, that's OK
+          }
+        }
 
-      // Format HTML to match platform output (consistent checksums)
-      content = formatHtml(content);
+        // Create backup of the new content
+        await createBackup(baseDir, backupName, content);
 
-      // Create backup of the new content
-      await createBackup(baseDir, backupName, content);
+        // Write via temp + rename: a crash or a full disk can never leave the
+        // served file holding partial bytes.
+        await atomicWriteFile(filePath, content);
 
-      // Write via temp + rename: a crash or a full disk can never leave the
-      // served file holding partial bytes.
-      await atomicWriteFile(filePath, content);
+        // Mark as browser save so file watcher doesn't send redundant notification.
+        // Key is full path with extension so it matches engine-watcher's wasBrowserSave check.
+        live.markBrowserSave(name);
 
-      // Mark as browser save so file watcher doesn't send redundant notification.
-      // Key is full path with extension so it matches engine-watcher's wasBrowserSave check.
-      live.markBrowserSave(name);
-
-      // Recorded from the bytes actually written, so a later conflict can tell a
-      // second tab of this person's from a text editor. Set after the write, since
-      // before it this would claim authorship of a save that then failed.
-      // Keyed on the canonical filePath, the same key the write queue uses, so two
-      // spellings of one file (an in-tree symlink, or a case-insensitive volume) can
-      // never keep two separate records of who last wrote it.
-      //
-      // The mtime rides along with the stamp because the stamp alone cannot answer
-      // the question. A file can go B -> C -> B, and once it is back at B the digest
-      // matches this host's last write again, so an external editor's undo reads
-      // exactly like another of this person's tabs. The mtime moved for both of those
-      // writes and does not come back.
-      const wroteAt = await fs.stat(filePath, { bigint: true }).catch(() => null);
-      store.etags.set(filePath, {
-        etag: documentEtag(content),
-        mtimeNs: wroteAt ? wroteAt.mtimeNs : null,
-        // Who wrote these bytes: 'save' for a tab, 'api' for a write with no tab
-        // behind it. /save reads it to decide whether a conflicting stamp is
-        // honestly another tab's, because a data API write is nobody's tab.
-        writer: origin,
-        // §6's receipt, bound here and nowhere else: this is the one moment this
-        // host knows both which request's body it stored and what those stored
-        // bytes stamp to. An id-less save records '' and so replaces any id
-        // remembered from an earlier one, which is what keeps a remembered id from
-        // outliving its own bytes when a later save happens to restore them.
-        saveId
-      });
-
-      // Morph view-mode tabs with the persisted on-disk HTML. Edit-mode tabs
-      // are untouched — they sync via /live-sync/save on the live lane.
-      //
-      // A data API write has no tab behind it to relay its snapshot, so it has to
-      // reach edit-mode tabs the way an external disk change does: the same
-      // `external-change` notify the observer's _notifyExternal sends, so ClayJS
-      // runs it through dirty-region protection before morphing. The saved-lane
-      // broadcast stays, for the viewers. Same payload as the observer, different
-      // sender — the writer here is the data API, not the file system.
-      if (origin === 'api') {
-        live.notify(name, {
-          msgType: 'warning',
-          msg: `${path.basename(name)} was updated through the data API`,
-          action: 'reload',
-          data: Buffer.byteLength(content, 'utf8') <= MAX_EXTERNAL_HTML
-            ? { kind: 'external-change', html: content, sender: 'data-api', etag: documentEtag(content) }
-            : { kind: 'external-change', sender: 'data-api' },
+        // Recorded from the bytes actually written, so a later conflict can tell a
+        // second tab of this person's from a text editor. Set after the write, since
+        // before it this would claim authorship of a save that then failed.
+        // Keyed on the canonical filePath, the same key the write queue uses, so two
+        // spellings of one file (an in-tree symlink, or a case-insensitive volume) can
+        // never keep two separate records of who last wrote it.
+        //
+        // The mtime rides along with the stamp because the stamp alone cannot answer
+        // the question. A file can go B -> C -> B, and once it is back at B the digest
+        // matches this host's last write again, so an external editor's undo reads
+        // exactly like another of this person's tabs. The mtime moved for both of those
+        // writes and does not come back.
+        const wroteAt = await fs.stat(filePath, { bigint: true }).catch(() => null);
+        store.etags.set(filePath, {
+          etag: documentEtag(content),
+          mtimeNs: wroteAt ? wroteAt.mtimeNs : null,
+          // Who wrote these bytes: 'save' for a tab, 'api' for a write with no tab
+          // behind it. /save reads it to decide whether a conflicting stamp is
+          // honestly another tab's, because a data API write is nobody's tab.
+          writer: origin,
+          // §6's receipt, bound here and nowhere else: this is the one moment this
+          // host knows both which request's body it stored and what those stored
+          // bytes stamp to. An id-less save records '' and so replaces any id
+          // remembered from an earlier one, which is what keeps a remembered id from
+          // outliving its own bytes when a later save happens to restore them.
+          saveId
         });
-        live.broadcast(name, { html: content, sender: 'data-api' }, { lane: 'saved' });
-      } else {
-        live.broadcast(name, { html: content, sender: 'server-save' }, { lane: 'saved' });
-      }
 
-      // Refresh the per-site API data sidecar BEFORE the fallible Tailwind compile,
-      // so a Tailwind failure can't skip it and leave stale API data on disk
-      // (mirrors the platform ordering in node-content.js). Non-fatal: a sidecar
-      // error must never fail the save.
-      try {
-        await writeApiSidecar(baseDir, name, content);
-      } catch (e) {
-        console.error('writeApiSidecar failed (non-fatal):', e && e.message ? e.message : e);
-      }
+        // The bytes are on disk: the page reservation commits into the one room,
+        // and the authority stamps and publishes exactly what landed, once per
+        // registered alias of this canonical file.
+        if (pageToken) authority.rooms.commitPage(pageToken);
+        if (authorityWrite) {
+          await authority.confirmKnownWrite(target, content, token, {
+            sender: origin === 'api' ? 'data-api' : 'server-save',
+          });
+        }
 
-      // Data-clobber guard (non-blocking, non-fatal). A browser /save is always
-      // a UI save, split by the userDriven bit into ui-gestured / ui-background.
-      // A data API write has no tab behind it at all, so it is judged as an
-      // external edit, exactly like a write the watcher saw on disk.
-      {
-        const dataLossProv = origin === 'api' ? 'external' : dataGuard.provenanceForLocalSave(userDriven);
-        dataGuard.runDataLossGuard({
-          baseDir, name, newHtml: content, prevContent: dataLossPrev, prov: dataLossProv, live,
-        }).catch(err => console.error('[data-guard] /save guard error:', err && err.message ? err.message : err));
-      }
-
-      // Generate Tailwind CSS if site uses it. `tailwindName` from
-      // getTailwindCssName includes any path prefix present in the URL
-      // (e.g. "blog/post"), so path.join naturally nests the CSS file. After
-      // the replaceTailwindLink above, the URL is always scoped to the site's
-      // folder, which mirrors the platform's
-      // public-assets/tailwindcss/{username}/{path}/{baseName}.css layout.
-      // Non-fatal, for the same reason as the sidecar above and the two remote
-      // writers: the file is already written, backed up and broadcast by this
-      // point, so a compiler error must not report the save as failed, and must
-      // not skip the snapshot cache below.
-      const tailwindName = getTailwindCssName(content);
-      if (tailwindName) {
+        // Morph view-mode tabs with the persisted on-disk HTML. Edit-mode tabs
+        // are untouched — they sync via /live-sync/save on the live lane.
+        //
+        // A data API write has no tab behind it to relay its snapshot, so it has to
+        // reach edit-mode tabs the way an external disk change does: the same
+        // `external-change` notify the observer's _notifyExternal sends, so ClayJS
+        // runs it through dirty-region protection before morphing. The saved-lane
+        // broadcast stays, for the viewers. Same payload as the observer, different
+        // sender — the writer here is the data API, not the file system.
+        //
+        // With an authority the saved lane is already published, once per alias, by
+        // the confirmation above; this route is still its own publisher for a
+        // no-authority caller, which is every legacy createApp(dir).
+        if (origin === 'api') {
+          live.notify(name, {
+            msgType: 'warning',
+            msg: `${path.basename(name)} was updated through the data API`,
+            action: 'reload',
+            data: Buffer.byteLength(content, 'utf8') <= MAX_EXTERNAL_HTML
+              ? { kind: 'external-change', html: content, sender: 'data-api', etag: documentEtag(content) }
+              : { kind: 'external-change', sender: 'data-api' },
+          });
+        }
+        if (!authorityWrite) {
+          live.broadcast(name, { html: content, sender: origin === 'api' ? 'data-api' : 'server-save' }, { lane: 'saved' });
+        }
+        // Refresh the per-site API data sidecar BEFORE the fallible Tailwind compile,
+        // so a Tailwind failure can't skip it and leave stale API data on disk
+        // (mirrors the platform ordering in node-content.js). Non-fatal: a sidecar
+        // error must never fail the save.
         try {
-          const css = await compileTailwind(content);
-          const cssPath = await resolveTailwindWrite(tailwindName);
-          await atomicWriteFile(cssPath, css);
-          console.log(`Generated Tailwind CSS: ${TAILWIND_DIR}/${tailwindName}.css`);
+          await writeApiSidecar(baseDir, name, content);
         } catch (e) {
-          console.error('compileTailwind failed (non-fatal):', e && e.message ? e.message : e);
+          console.error('writeApiSidecar failed (non-fatal):', e && e.message ? e.message : e);
         }
-      }
 
-      // Record the provenance bit for platform sync. The sync engine reads it
-      // when uploading, so the platform guard can split a UI save from a
-      // background-script save. The snapshot beside it comes from
-      // /live-sync/save, which is why this merges rather than replaces: the two
-      // lanes contribute different halves of the same entry.
-      {
-        const prev = store.snapshots.get(name);
-        store.snapshots.set(name, {
-          html: prev ? prev.html : null,
-          userDriven,
-          timestamp: Date.now()
-        });
+        // Data-clobber guard (non-blocking, non-fatal). A browser /save is always
+        // a UI save, split by the userDriven bit into ui-gestured / ui-background.
+        // A data API write has no tab behind it at all, so it is judged as an
+        // external edit, exactly like a write the watcher saw on disk.
+        {
+          const dataLossProv = origin === 'api' ? 'external' : dataGuard.provenanceForLocalSave(userDriven);
+          dataGuard.runDataLossGuard({
+            baseDir, name, newHtml: content, prevContent: dataLossPrev, prov: dataLossProv, live,
+          }).catch(err => console.error('[data-guard] /save guard error:', err && err.message ? err.message : err));
+        }
+
+        // Generate Tailwind CSS if site uses it. `tailwindName` from
+        // getTailwindCssName includes any path prefix present in the URL
+        // (e.g. "blog/post"), so path.join naturally nests the CSS file. After
+        // the replaceTailwindLink above, the URL is always scoped to the site's
+        // folder, which mirrors the platform's
+        // public-assets/tailwindcss/{username}/{path}/{baseName}.css layout.
+        // Non-fatal, for the same reason as the sidecar above and the two remote
+        // writers: the file is already written, backed up and broadcast by this
+        // point, so a compiler error must not report the save as failed, and must
+        // not skip the snapshot cache below.
+        const tailwindName = getTailwindCssName(content);
+        if (tailwindName) {
+          try {
+            const css = await compileTailwind(content);
+            const cssPath = await resolveTailwindWrite(tailwindName);
+            await atomicWriteFile(cssPath, css);
+            console.log(`Generated Tailwind CSS: ${TAILWIND_DIR}/${tailwindName}.css`);
+          } catch (e) {
+            console.error('compileTailwind failed (non-fatal):', e && e.message ? e.message : e);
+          }
+        }
+
+        // Record the provenance bit for platform sync. The sync engine reads it
+        // when uploading, so the platform guard can split a UI save from a
+        // background-script save. The snapshot beside it comes from
+        // /live-sync/save, which is why this merges rather than replaces: the two
+        // lanes contribute different halves of the same entry.
+        {
+          const prev = store.snapshots.get(name);
+          store.snapshots.set(name, {
+            html: prev ? prev.html : null,
+            userDriven,
+            timestamp: Date.now()
+          });
+        }
+        return content;
+      } finally {
+        if (pageToken) authority.rooms.releasePage(pageToken);
       }
-      return content;
     }
 
     // Spec §3: /_/save takes the document as text, and this route has exactly one
@@ -2000,9 +2183,15 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         // read, the first-save check, the backup, the write, and the derived
         // sidecar/Tailwind work. Serializing only the write would still let two
         // concurrent saves read the same stale base and compute from it.
-        await withFileLock(filePath, async () => {
+        //
+        // With an authority this is the shared document boundary instead, and the
+        // path every read, stat and write below uses is the one that boundary
+        // admitted: re-resolved, rechecked against the root's known paths and
+        // against the identity this request captured before it queued.
+        await runDocumentWrite(req, name, filePath, async (target, token) => {
+        const canonicalPath = target.canonicalPath;
         // Ensure directory exists for subfolder files
-        await fs.mkdir(path.dirname(filePath), { recursive: true });
+        await fs.mkdir(path.dirname(canonicalPath), { recursive: true });
 
         // Capture the pre-write body for the data-clobber guard (cold-start seed
         // + whole-file Revert). Read once, before the overwrite below.
@@ -2019,7 +2208,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         let storedBytes = null;
         let unreadable = null;
         try {
-          storedBytes = await fs.readFile(filePath);
+          storedBytes = await fs.readFile(canonicalPath);
         } catch (e) {
           if (e.code !== 'ENOENT') unreadable = e;
         }
@@ -2065,8 +2254,8 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
             // the wrong answer available here is the reassuring one. A stamp this host
             // recorded for a data API write belongs to no tab of this person's, so it
             // never answers `another-tab`: the caller is being told about the API.
-            const ours = store.etags.get(filePath);
-            const now = await fs.stat(filePath, { bigint: true }).catch(() => null);
+            const ours = store.etags.get(canonicalPath);
+            const now = await fs.stat(canonicalPath, { bigint: true }).catch(() => null);
             const untouchedSinceOurWrite =
               !!ours && ours.mtimeNs !== null && !!now && now.mtimeNs === ours.mtimeNs;
 
@@ -2081,13 +2270,16 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
               // being told its own earlier save is what moved the document, which is
               // not a conflict with anybody: it adopts this stamp and re-sends rather
               // than alarming somebody about themselves.
-              saveId: saveReceiptFor(store, filePath, currentEtag)
+              saveId: saveReceiptFor(store, canonicalPath, currentEtag)
             };
             return;
           }
         }
 
-        content = await commitDocument({ name, filePath, content, dataLossPrev, userDriven, saveId });
+        content = await commitDocument({
+          name, filePath: canonicalPath, content, dataLossPrev, userDriven, saveId,
+          target, token, ifMatch, pageConversion: req.headers['page-conversion'],
+        });
         });
 
         if (conflict && conflict.status === 500) {
@@ -2134,6 +2326,25 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         });
         console.log(`Saved: ${name}`);
       } catch (error) {
+        // A page initialization or conversion the shared rooms package refused,
+        // and a queued save whose document is no longer the one it claimed, are
+        // answers rather than server faults: same envelope, same codes and the
+        // same Retry-After the hosted host sends.
+        const failure = pageWriteFailure(error);
+        if (failure) {
+          if (failure.retryAfter !== undefined) res.set('Retry-After', String(failure.retryAfter));
+          console.log(`Refused a save of ${name}: ${failure.code}`);
+          return res.status(failure.statusCode).json({
+            msg: failure.message,
+            msgType: 'error',
+            code: failure.code,
+            ...(failure.reason === undefined ? {} : { reason: failure.reason }),
+          });
+        }
+        if (error && error.code === 'moved-or-deleted') {
+          console.log(`Refused a save of ${name}: ${error.code}`);
+          return res.status(409).json({ msg: error.message, msgType: 'error', code: 'moved-or-deleted' });
+        }
         console.error(`Error saving file ${name}:`, error);
         errorLogger.error('Server', `Save error: ${name}`, error);
         res.status(500).json({
@@ -2170,7 +2381,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     // the derived artifacts, for the same reason the save route is: the document is
     // already written, backed up and broadcast by that point.
     // Returns the bytes stored on disk.
-    const publishHostWrite = async ({ name, filePath, html }) => {
+    const publishHostWrite = async ({ name, filePath, html, target = null, token = null }) => {
       // Response-scoped root metadata (a save token, this host's own documentetag)
       // comes back from clients and from a stored version, and none of it belongs in
       // the bytes this writes: stripped here, once, so the data-loss writeBack and the
@@ -2178,14 +2389,46 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       html = stripSaveToken(html);
       const backupName = name.replace(/\.(html|htmlclay)$/, '');
       const formatted = formatHtml(scopeTailwindLink(name, html));
-      await createBackup(baseDir, backupName, formatted);
-      await atomicWriteFile(filePath, formatted);
-      // A write through this app, not an external editor. Marked so the file
-      // watcher doesn't treat it as a fresh change and re-run the guard (which
-      // would raise a spurious new event).
-      live.markBrowserSave(name);
-      // Morph view-mode tabs with the persisted on-disk HTML.
-      live.broadcast(name, { html: formatted, sender: 'server-save' }, { lane: 'saved' });
+      // An already owned helper: a caller arrives inside runDocumentWrite's boundary,
+      // so this claims nothing and locks nothing of its own. With an authority it
+      // proves that boundary and writes the path that boundary admitted.
+      const authority = ctx.localAuthority;
+      const authorityWrite = Boolean(authority && target && token);
+      if (authorityWrite) {
+        assertWriteContext(token, target.canonicalPath);
+        filePath = target.canonicalPath;
+      }
+      let pageToken = null;
+      try {
+        if (authorityWrite) {
+          // Explicit replacement admission, before the first backup, and held across
+          // the backup and the atomic write: no frame can change the room while the
+          // disk result is pending.
+          pageToken = authority.rooms.reservePageReplacement(filePath, {
+            nodeId: target.identity,
+            html: formatted,
+          });
+        }
+        await createBackup(baseDir, backupName, formatted);
+        await atomicWriteFile(filePath, formatted);
+        // A write through this app, not an external editor. Marked so the file
+        // watcher doesn't treat it as a fresh change and re-run the guard (which
+        // would raise a spurious new event).
+        live.markBrowserSave(name);
+        if (authorityWrite) {
+          // The bytes are on disk: the reservation commits into the one room and the
+          // authority stamps and publishes exactly what landed, once per registered
+          // alias of this canonical file. That is why the old single-root broadcast
+          // below is the no-authority path only.
+          if (pageToken) authority.rooms.commitPage(pageToken);
+          await authority.confirmKnownWrite(target, formatted, token, { sender: 'server-save' });
+        } else {
+          // Morph view-mode tabs with the persisted on-disk HTML.
+          live.broadcast(name, { html: formatted, sender: 'server-save' }, { lane: 'saved' });
+        }
+      } finally {
+        if (pageToken) authority.rooms.releasePage(pageToken);
+      }
       try { await writeApiSidecar(baseDir, name, formatted); } catch {}
       const tailwindName = getTailwindCssName(formatted);
       if (tailwindName) {
@@ -2309,6 +2552,11 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           return res.status(404).json({ msg: 'That document does not exist.', msgType: 'error', code: 'not-found' });
         }
 
+        const authority = ctx.localAuthority;
+        const origin = `${req.protocol}://${req.get('host')}`;
+        const docLocation = { rootId: ctx.root.id, logicalPath: docName, canonicalPath: docPath };
+        const docClaim = authority ? authority.captureAdmission(docLocation) : null;
+
         const part = await readUploadPart(req, UPLOAD_MAX_BYTES);
         if (!part) {
           return res.status(400).json({ msg: 'No file to upload.', msgType: 'error', code: 'bad-request' });
@@ -2318,9 +2566,83 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         }
 
         const dirRel = `${UPLOADS_FOLDER}/${assetsFolderName(docName)}`;
-        const dirAbs = await resolveWritePath(paths, dirRel);
-        await fs.mkdir(dirAbs, { recursive: true });
-        const stored = await storeUpload(paths, dirRel, part.filename, part.content);
+        const dirPath = authority ? await resolveWritePath(paths, dirRel) : null;
+        const dirLocation = authority
+          ? { rootId: ctx.root.id, logicalPath: dirRel, canonicalPath: dirPath }
+          : null;
+        const dirClaim = authority ? authority.captureAdmission(dirLocation) : null;
+
+        let stored;
+        if (ctx.localAuthority) {
+          stored = await withStructureChange(async (token) => {
+            assertStructureContext(token);
+            let freshPath;
+            try {
+              freshPath = await resolveWriteTarget(paths, docName);
+            } catch {
+              throw movedOrDeleted();
+            }
+            if (freshPath !== docPath) throw movedOrDeleted();
+            const freshStats = await fs.stat(freshPath).catch(() => null);
+            if (!freshStats || !freshStats.isFile()) throw movedOrDeleted();
+            if (ctx.isKnownPath && !ctx.isKnownPath(docName, freshPath, ctx.root.id)) throw movedOrDeleted();
+            try {
+              authority.validateAdmission(docClaim, { ...docLocation, canonicalPath: freshPath }, token, { allowInitialBind: true });
+            } catch (error) {
+              if (error && error.code === 'moved') throw movedOrDeleted();
+              throw error;
+            }
+
+            const dirAbs = await resolveWritePath(paths, dirRel);
+            if (dirAbs !== dirPath) throw movedOrDeleted();
+            try {
+              authority.validateAdmission(dirClaim, dirLocation, token, { allowRetired: true });
+            } catch (error) {
+              if (error && error.code === 'moved') throw movedOrDeleted();
+              throw error;
+            }
+            const retired = authority.isRetired(dirLocation);
+            const before = await fs.stat(dirAbs).then((stat) => stat, (error) => {
+              if (error.code === 'ENOENT') return null;
+              if (retired) throw movedOrDeleted();
+              throw error;
+            });
+            if (retired && before) throw movedOrDeleted();
+            await fs.mkdir(dirAbs, { recursive: true });
+            const after = await fs.stat(dirAbs);
+            if (!after.isDirectory()) throw movedOrDeleted();
+            if (!before) authority.setAdmission(token, { ...dirLocation, active: true, prefix: true });
+            const written = await storeUpload(paths, dirRel, part.filename, part.content, token, async ({ rel, abs }) => {
+              const location = { rootId: ctx.root.id, logicalPath: rel, canonicalPath: abs };
+              if (authority.isRetired(location)) {
+                const occupied = await fs.stat(abs).then(() => true, (error) => {
+                  if (error.code === 'ENOENT') return false;
+                  throw movedOrDeleted();
+                });
+                if (occupied) throw movedOrDeleted();
+              }
+              try {
+                return authority.admitWriteTarget(
+                  authority.captureAdmission(location),
+                  { ...location, origin, live },
+                  token,
+                  { explicitCreate: true }
+                );
+              } catch (error) {
+                if (error && error.code === 'moved') throw movedOrDeleted();
+                throw error;
+              }
+            });
+            if (written.wrote) {
+              await authority.confirmKnownWrite(written.target, part.content, token, { publish: false });
+            }
+            return written;
+          });
+        } else {
+          const dirAbs = await resolveWritePath(paths, dirRel);
+          await fs.mkdir(dirAbs, { recursive: true });
+          stored = await storeUpload(paths, dirRel, part.filename, part.content);
+        }
 
         // A host path, resolved by GET /_/uploads/ on whatever port this root is
         // served from. Percent-encoded per segment, while the stored name keeps its
@@ -2393,20 +2715,35 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         return res.status(400).json({ error: 'choice must be dismiss | revert | restore' });
       }
 
-      const writeBack = async (html) => {
-        await publishHostWrite({ name: resolved.name, filePath: resolved.filePath, html });
-      };
-
       // A1: the restore region is read-modify-write too — the current body is
       // read, the guard decides against it, and writeBack publishes. All of it
       // holds the same canonical-path queue slot a concurrent /save would need.
-      const result = await withFileLock(resolved.filePath, async () => {
+      let result;
+      try {
+        result = await runDocumentWrite(req, resolved.name, resolved.filePath, async (target, token) => {
+        const canonicalPath = target.canonicalPath;
+        const writeBack = async (html) => {
+          await publishHostWrite({
+            name: resolved.name, filePath: canonicalPath, html, target, token,
+          });
+        };
         let currentHtml = '';
-        try { currentHtml = await fs.readFile(resolved.filePath, 'utf8'); } catch {}
+        try { currentHtml = await fs.readFile(canonicalPath, 'utf8'); } catch {}
         return await dataGuard.resolveGuard({
           baseDir, name: resolved.name, id, choice, currentHtml, writeBack, live,
         });
-      });
+        });
+      } catch (error) {
+        // Express 4 does not consume a rejected async handler's promise, so an
+        // escaping failure would hang the request rather than answer it. A path
+        // that moved while this write was queued is the one refusal the queue
+        // itself gives; everything else keeps the route's existing answer.
+        console.error(`Error resolving data-loss for ${resolved.name}:`, error && error.message ? error.message : error);
+        if (error && error.code === 'moved-or-deleted') {
+          return res.status(error.status || 409).json({ error: error.message });
+        }
+        return res.status(500).json({ error: 'data-loss resolution failed' });
+      }
       if (!result.ok) return res.status(result.statusCode || 400).json({ error: result.error });
       // rider 1: after a local Dismiss, nudge the platform (and thence the owner's
       // other devices) to clear the same incident. nodeId from the node map is an
@@ -2546,14 +2883,15 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // slot a concurrent /save would need (A1).
       let refusal = null;
       try {
-        await withFileLock(filePath, async () => {
+        await runDocumentWrite(req, rel, filePath, async (target, token) => {
+        const canonicalPath = target.canonicalPath;
         // The safety backup is mandatory, so a live file that exists but cannot be
         // read is a hard refusal rather than a skipped backup: proceeding would
         // destroy the bytes with no recovery copy, which is the one thing a
         // restore must never do. A file that is simply absent has nothing to lose.
         let current = null;
         try {
-          current = await fs.readFile(filePath);
+          current = await fs.readFile(canonicalPath);
         } catch (error) {
           if (error.code !== 'ENOENT') {
             console.error(`Refusing to restore ${rel}: current file cannot be read`);
@@ -2594,16 +2932,31 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           }
         }
 
-        const published = await publishHostWrite({ name: rel, filePath, html });
-        // publishHostWrite morphs view-mode tabs on the saved lane, but an
-        // edit-mode tab is not listening there, so the restore is announced the
-        // way any other host-side write is (CONTRACTS 9a).
-        ctx.observer?.publishExternal(rel, Buffer.from(published, 'utf8'), `${path.basename(rel)} was restored from a backup`);
+        const authorityWrite = Boolean(ctx.localAuthority && target && token);
+        const published = await publishHostWrite({
+          name: rel, filePath: canonicalPath, html, target, token,
         });
+        // publishHostWrite morphs view-mode tabs on the saved lane (once per alias
+        // already, when an authority published it), but an edit-mode tab is not
+        // listening there, so the restore is announced the way any other host-side
+        // write is (CONTRACTS 9a). With an authority the saved lane is already
+        // published, so this must not send a second, duplicate one.
+        ctx.observer?.publishExternal(
+          rel,
+          Buffer.from(published, 'utf8'),
+          `${path.basename(rel)} was restored from a backup`,
+          { saved: !authorityWrite }
+        );
+        }, { explicitCreate: true });
       } catch (error) {
         // Express 4 does not consume a rejected async handler's promise, so an
-        // escaping failure would hang the request rather than answer it.
+        // escaping failure would hang the request rather than answer it. The one
+        // refusal the queue itself gives is a path that moved while this restore
+        // was queued, and it answers with the 409 clients already branch on.
         console.error(`Error restoring ${rel}:`, error && error.message ? error.message : error);
+        if (error && error.code === 'moved-or-deleted') {
+          return versionError(res, error.status || 409, error.message);
+        }
         return versionError(res, 500, 'write error');
       }
 
@@ -2623,6 +2976,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // raw paths and follow symlinks on its own.
       let cssPath;
       let htmlPath;
+      let sourceName;
       let name;
       try {
         // Express already decodes regex-route captures (router/layer.js decode_param),
@@ -2640,12 +2994,14 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       } catch {}
 
       try {
-        htmlPath = await resolveDerivedWrite(`${name}.html`);
+        sourceName = `${name}.html`;
+        htmlPath = await resolveDerivedWrite(sourceName);
         try {
           await fs.stat(htmlPath);
         } catch (error) {
           if (error.code !== 'ENOENT') throw error;
-          htmlPath = await resolveDerivedWrite(`${name}.htmlclay`);
+          sourceName = `${name}.htmlclay`;
+          htmlPath = await resolveDerivedWrite(sourceName);
         }
       } catch (error) {
         return res.status(error.status === 400 ? 400 : 403).send('');
@@ -2656,16 +3012,17 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // write. Unqueued, a compile of H0 that started before a concurrent /save
       // finishes after it and overwrites the H1 stylesheet the save published.
       try {
-        const css = await withFileLock(htmlPath, async () => {
-          // Re-check inside the lock: we may have queued behind exactly the save
-          // that just published a fresher stylesheet, and recompiling from our
-          // own stale read would throw it away.
+        const css = await runDocumentWrite(req, sourceName, htmlPath, async (target) => {
+          // Re-check inside the boundary: we may have queued behind exactly the
+          // save that just published a fresher stylesheet, and recompiling from
+          // our own stale read would throw it away.
+          const freshCssPath = await resolveTailwindWrite(name);
           try {
-            return await fs.readFile(cssPath, 'utf8');
+            return await fs.readFile(freshCssPath, 'utf8');
           } catch {}
-          const html = await fs.readFile(htmlPath, 'utf8');
+          const html = await fs.readFile(target.canonicalPath, 'utf8');
           const compiled = await compileTailwind(html);
-          await atomicWriteFile(cssPath, compiled);
+          await atomicWriteFile(freshCssPath, compiled);
           console.log(`Auto-generated Tailwind CSS: ${TAILWIND_DIR}/${name}.css`);
           return compiled;
         });
@@ -2684,10 +3041,26 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     async function readApiDocument(req, res, name, sourcePath) {
       const query = readDataQuery(req.originalUrl);
       if (query.error) return res.status(400).json(query.error);
-      const result = query.present
-        ? await extractSiteDataLocal(baseDir, name, query.text, { sourcePath })
-        : await serveSiteApiLocal(baseDir, name, { sourcePath });
-      return sendApiResult(res, result);
+      if (!ctx.localAuthority) {
+        const result = query.present
+          ? await extractSiteDataLocal(baseDir, name, query.text, { sourcePath })
+          : await serveSiteApiLocal(baseDir, name, { sourcePath });
+        return sendApiResult(res, result);
+      }
+      try {
+        const result = await runDocumentWrite(req, name, sourcePath, async (target, token) => {
+          const options = { sourcePath: target.canonicalPath, boundary: { target, token } };
+          return query.present
+            ? extractSiteDataLocal(baseDir, name, query.text, options)
+            : serveSiteApiLocal(baseDir, name, options);
+        });
+        return sendApiResult(res, result);
+      } catch (error) {
+        if (error && error.code === 'moved-or-deleted') {
+          return res.status(409).json({ msg: error.message, msgType: 'error', code: 'moved-or-deleted' });
+        }
+        throw error;
+      }
     }
 
     app.get(/^\/api\/(.+)\.(html|htmlclay)$/, async (req, res, next) => {
@@ -2733,17 +3106,36 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         return res.status(error.status || 400).json({ error: error.message });
       }
       try {
-        const result = await applySiteDataLocal(baseDir, name, data, {
-          sourcePath,
-          ifMatch: req.headers['if-match'],
-          ...(query.present ? { dataParam: query.text } : {}),
-          commit: (html, previous) => commitDocument({
-            name, filePath: sourcePath, content: html, dataLossPrev: previous, userDriven: false, saveId: '', origin: 'api'
-          })
-        });
+        const preparedWrite = ctx.localAuthority
+          ? await prepareSiteDataWriteLocal(query.present ? { dataParam: query.text } : {})
+          : null;
+        if (preparedWrite?.result) return sendApiResult(res, preparedWrite.result);
+        const result = ctx.localAuthority
+          ? await runDocumentWrite(req, name, sourcePath, async (target, token) => applySiteDataLocal(baseDir, name, data, {
+              sourcePath: target.canonicalPath,
+              boundary: { target, token },
+              preparedWrite,
+              ifMatch: req.headers['if-match'],
+              ...(query.present ? { dataParam: query.text } : {}),
+              commit: (html, previous) => commitDocument({
+                name, filePath: target.canonicalPath, content: html, dataLossPrev: previous,
+                userDriven: false, saveId: '', origin: 'api', target, token
+              })
+            }))
+          : await applySiteDataLocal(baseDir, name, data, {
+              sourcePath,
+              ifMatch: req.headers['if-match'],
+              ...(query.present ? { dataParam: query.text } : {}),
+              commit: (html, previous) => commitDocument({
+                name, filePath: sourcePath, content: html, dataLossPrev: previous, userDriven: false, saveId: '', origin: 'api'
+              })
+            });
         if (result.status === 200) console.log(`Wrote data into ${name}`);
         return sendApiResult(res, result);
       } catch (error) {
+        if (error && error.code === 'moved-or-deleted') {
+          return res.status(409).json({ msg: error.message, msgType: 'error', code: 'moved-or-deleted' });
+        }
         console.error('Site API write error:', error);
         return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });
       }
@@ -2796,8 +3188,18 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         return res.status(error.status || 400).json({ error: error.message });
       }
       try {
-        return sendApiResult(res, await extractSiteDataLocal(baseDir, name, query.text, { sourcePath }));
+        if (!ctx.localAuthority) {
+          return sendApiResult(res, await extractSiteDataLocal(baseDir, name, query.text, { sourcePath }));
+        }
+        const result = await runDocumentWrite(req, name, sourcePath, async (target, token) =>
+          extractSiteDataLocal(baseDir, name, query.text, {
+            sourcePath: target.canonicalPath, boundary: { target, token }
+          }));
+        return sendApiResult(res, result);
       } catch (error) {
+        if (error && error.code === 'moved-or-deleted') {
+          return res.status(409).json({ msg: error.message, msgType: 'error', code: 'moved-or-deleted' });
+        }
         console.error('Data endpoint error:', error);
         return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });
       }
@@ -3041,6 +3443,7 @@ module.exports = {
   createApp,
   boundedWriter,
   handleSharedSyncStreamV2,
+  handleAuthorityLiveStream,
   resolveResourceFromHref,
   validateAndResolvePath,
   stripSystemRouteMarker,

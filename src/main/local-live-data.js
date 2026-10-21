@@ -102,7 +102,7 @@ function createLocalLiveData({ authority, resolveTarget } = {}) {
     return origin === rootOrigin(req);
   };
 
-  const openRoom = (req, target) => authority.roomFor(target, () => resolveTarget(req, { fresh: true }));
+  const openRoom = (req, target) => authority.roomFor(target, () => resolveTarget(req, { fresh: true, unbound: true }));
 
   async function post(req, res) {
     try {
@@ -127,6 +127,7 @@ function createLocalLiveData({ authority, resolveTarget } = {}) {
       // The warm path resolves a registered target without touching the disk, so
       // an unproven frame is refused before any read.
       if (!authority.currentEditor(target, clientId, body.conn)) {
+        if (!authority.isCurrentTarget(target)) return failWith(res, NOT_FOUND);
         return fail(res, 503, 'not-connected', MESSAGE['not-connected'], 1);
       }
       if (!authority.rateLimit(target.canonicalPath + '\n' + req.ip)) {
@@ -140,6 +141,8 @@ function createLocalLiveData({ authority, resolveTarget } = {}) {
         return refused(res, err);
       }
       if (!room) return fail(res, 503, 'busy', MESSAGE.busy, 60);
+      // The cold read may have outlived the target it opened the room for.
+      if (!authority.isCurrentTarget(target)) return failWith(res, NOT_FOUND);
 
       // A member reference is not lasting authority: the cold read may have
       // outlived its connection. Recheck the exact proof and collect the
@@ -213,6 +216,8 @@ function createLocalLiveData({ authority, resolveTarget } = {}) {
         return refused(res, err);
       }
       if (!room) return fail(res, 503, 'busy', MESSAGE.busy, 60);
+      // The cold read may have outlived the target it opened the room for.
+      if (!authority.isCurrentTarget(target)) return failWith(res, NOT_FOUND);
 
       // The newest still-current connection for this exact proof, chosen after
       // any cold read. Without one there is no personal receipt and no conn: a

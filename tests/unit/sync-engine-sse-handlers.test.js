@@ -65,15 +65,15 @@ let sseMock;
 // to be a directory that really exists, so it is os.tmpdir() rather than a literal
 // '/tmp' — on Windows that resolves to a nonexistent D:\tmp and realpathSync threw
 // at module load, taking the whole suite down before a single test ran. os.tmpdir()
-// still differs from its own realpath on macOS, which is the case this pins.
+// can differ from its realpath on macOS, so the fixture uses that realpath.
 const TMP_BASE = os.tmpdir();
-const SYNC_ROOT = path.join(TMP_BASE, 'test-sync');
+const SYNC_ROOT = path.join(realFs.realpathSync.native(TMP_BASE), 'test-sync');
 const META_ROOT = path.join(TMP_BASE, 'test-meta');
 // realpathSync.native, not realpathSync: on Windows the plain version keeps the 8.3
 // short name TEMP hands out (C:/Users/RUNNER~1/...), while the engine resolves through
 // fs.promises.realpath, which is libuv-backed and expands it (C:/Users/runneradmin/...).
 // The native call matches what the code under test actually produces.
-const canonicalSyncFolder = path.join(realFs.realpathSync.native(TMP_BASE), 'test-sync');
+const canonicalSyncFolder = SYNC_ROOT;
 
 beforeEach(() => {
   jest.useFakeTimers();

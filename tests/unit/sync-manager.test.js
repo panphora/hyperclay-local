@@ -81,6 +81,7 @@ const initialSync = require('../../src/sync-engine/engine-initial-sync');
 const nodeMap = require('../../src/sync-engine/node-map');
 const { createRootLive } = require('../../src/main/utils/root-live');
 const { RootObserver } = require('../../src/main/root-observer');
+const { withStructureChange } = require('../../src/main/utils/write-queue');
 const { SyncManager } = require('../../src/main/sync-manager');
 
 const FORWARDED = ['sync-start', 'sync-complete', 'sync-error', 'file-synced', 'sync-stats',
@@ -101,6 +102,20 @@ async function waitFor(predicate, timeoutMs = 5000) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error('timed out waiting for the manager');
+}
+
+// Holds the exclusive structure gate open, so a call site that acquires it can be
+// observed between its own preparation and its registration.
+async function holdStructureGate() {
+  let release;
+  let entered;
+  const holding = new Promise((resolve) => { entered = resolve; });
+  const gate = withStructureChange(() => {
+    entered();
+    return new Promise((resolve) => { release = resolve; });
+  });
+  await holding;
+  return { gate, release: () => release() };
 }
 
 const dirs = [];
@@ -362,5 +377,106 @@ describe('SyncManager sessions', () => {
     expect(entry.runner.state).toBe('stopped');
     expect(entry.engine.runner).toBeNull();
     expect(entry.engine.isRunning).toBe(false);
+  });
+
+  it('registers its root under the session owner and closes only that owner', async () => {
+    const localAuthority = { registerRoot: jest.fn(() => ({})), closeRoot: jest.fn() };
+    manager.localAuthority = localAuthority;
+
+    await manager.start(sessionA, rootA);
+
+    expect(localAuthority.registerRoot).toHaveBeenCalledWith(
+      { ...rootA, canonicalPath: fs.realpathSync(rootA.path) },
+      { owner: sessionA.id },
+    );
+    expect(localAuthority.closeRoot).not.toHaveBeenCalled();
+
+    await manager.stop(sessionA.id);
+
+    expect(localAuthority.closeRoot).toHaveBeenCalledWith(rootA.id, { owner: sessionA.id });
+    expect(localAuthority.closeRoot).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for the structure gate before it registers its root (D2f2)', async () => {
+    const localAuthority = { registerRoot: jest.fn(() => ({})), closeRoot: jest.fn() };
+    manager.localAuthority = localAuthority;
+    apiClient.listNodes.mockResolvedValue(completeList([]));
+
+    // The manager reaches the gate only after it has canonicalized the root, so the
+    // realpath is the boundary that says the call site is next, not merely later.
+    const realpath = fs.promises.realpath.bind(fs.promises);
+    let reached = null;
+    const atRealpath = new Promise((resolve) => { reached = resolve; });
+    const realpathSpy = jest.spyOn(fs.promises, 'realpath').mockImplementation(async (...args) => {
+      const result = await realpath(...args);
+      reached();
+      return result;
+    });
+
+    const { gate, release } = await holdStructureGate();
+    let started = null;
+    try {
+      started = manager.start(sessionA, rootA);
+      await atRealpath;
+      await flush();
+
+      expect(localAuthority.registerRoot).not.toHaveBeenCalled();
+
+      release();
+      await gate;
+      await started;
+
+      expect(localAuthority.registerRoot).toHaveBeenCalledTimes(1);
+      expect(localAuthority.registerRoot).toHaveBeenCalledWith(
+        { ...rootA, canonicalPath: fs.realpathSync(rootA.path) },
+        { owner: sessionA.id },
+      );
+      expect(manager.get(sessionA.id).isRunning).toBe(true);
+    } finally {
+      realpathSpy.mockRestore();
+      release();
+      await started?.catch(() => {});
+    }
+  });
+
+  it('waits for the structure gate before it closes its owner (D2f2)', async () => {
+    const localAuthority = { registerRoot: jest.fn(() => ({})), closeRoot: jest.fn() };
+    manager.localAuthority = localAuthority;
+    apiClient.listNodes.mockResolvedValue(completeList([]));
+
+    await manager.start(sessionA, rootA);
+    const engine = manager.get(sessionA.id);
+
+    // The engine's own stop is the boundary: it finishes before the manager reaches
+    // the close, so the zero-close assertion runs at the call site and not before.
+    const engineStop = engine.stop.bind(engine);
+    let reached = null;
+    const atEngineStop = new Promise((resolve) => { reached = resolve; });
+    const stopSpy = jest.spyOn(engine, 'stop').mockImplementation(async (...args) => {
+      const result = await engineStop(...args);
+      reached();
+      return result;
+    });
+
+    const { gate, release } = await holdStructureGate();
+    let stopping = null;
+    try {
+      stopping = manager.stop(sessionA.id);
+      await atEngineStop;
+      await flush();
+
+      expect(localAuthority.closeRoot).not.toHaveBeenCalled();
+
+      release();
+      await gate;
+      await stopping;
+
+      expect(localAuthority.closeRoot).toHaveBeenCalledTimes(1);
+      expect(localAuthority.closeRoot).toHaveBeenCalledWith(rootA.id, { owner: sessionA.id });
+    } finally {
+      stopSpy.mockRestore();
+      release();
+      await stopping?.catch(() => {});
+    }
   });
 });

@@ -59,7 +59,12 @@ const nodeMapModule = require('../../src/sync-engine/node-map');
 const { createRootLive } = require('../../src/main/utils/root-live');
 const { SyncEngine } = require('../../src/sync-engine/index');
 
-const flush = () => new Promise((resolve) => setImmediate(resolve));
+const flush = async () => {
+  const deadline = Date.now() + 1000;
+  do {
+    await new Promise((resolve) => setImmediate(resolve));
+  } while (!apiClient.getNodeContent.mock.calls.length && Date.now() < deadline);
+};
 
 let engine = null;
 let syncFolder = null;
@@ -74,7 +79,7 @@ async function startEngine(opts) {
   engine.startUnifiedWatcher = jest.fn();
   engine.connectToStream = jest.fn();
 
-  syncFolder = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-generation-'));
+  syncFolder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'engine-generation-')));
   await engine.init(
     'hcsk_test',
     'acme',

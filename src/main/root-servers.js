@@ -3,6 +3,7 @@ const http = require('http');
 const { createApp, sweepExpiredSnapshots } = require('./server');
 const { createRootLive } = require('./utils/root-live');
 const { pruneAllVersions } = require('./utils/prune-versions');
+const { withStructureChange } = require('./utils/write-queue');
 
 const SNAPSHOT_SWEEP_MS = 60 * 1000;
 
@@ -32,6 +33,10 @@ class RootServer {
       this.error = 'Folder not found';
       return { ok: false, code: 'error' };
     }
+    const canonicalPath = await this.canonicalPath();
+    if (this.deps.localAuthority) {
+      await withStructureChange(() => this.deps.localAuthority.registerRoot({ ...this.root, canonicalPath }));
+    }
     const ctx = {
       root: this.root,
       live: createRootLive(this.root),
@@ -45,13 +50,21 @@ class RootServer {
     };
     const app = createApp(ctx);
     this.app = app;
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const server = http.createServer(app);
       server.on('connection', (s) => { this.sockets.add(s); s.on('close', () => this.sockets.delete(s)); });
-      server.once('error', (err) => {
+      server.once('error', async (err) => {
         this.server = null;
         this.state = err.code === 'EADDRINUSE' ? 'port-taken' : 'error';
         this.error = err.code === 'ENOENT' ? 'Folder not found' : err.message;
+        try {
+          if (this.deps.localAuthority) {
+            await withStructureChange(() => this.deps.localAuthority.closeRoot(this.root.id));
+          }
+        } catch (closeError) {
+          reject(closeError);
+          return;
+        }
         resolve({ ok: false, code: this.state });
       });
       server.listen(this.root.port, '127.0.0.1', () => {
@@ -62,6 +75,10 @@ class RootServer {
         resolve({ ok: true });
       });
     });
+  }
+
+  async canonicalPath() {
+    try { return await fs.realpath(this.root.path); } catch { return this.root.path; }
   }
 
   pruneVersions() {
@@ -85,7 +102,9 @@ class RootServer {
     // Last, once the sockets and their streams are gone: this root's rooms are
     // released and its registrations dropped. Other roots stay connected, and a
     // repeat stop (no server) is harmless because closeRoot is idempotent.
-    this.deps.localAuthority?.closeRoot(this.root.id);
+    if (this.deps.localAuthority) {
+      await withStructureChange(() => this.deps.localAuthority.closeRoot(this.root.id));
+    }
     this.state = 'stopped';
   }
 }

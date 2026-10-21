@@ -15,6 +15,7 @@ const { validateRootPath, defaultTeamFolder, allocateTeamPort } = require('./roo
 const { realpathNearestParent } = require('./utils/path-resolver');
 const { getServerBaseUrl } = require('./utils/utils');
 const { createRootLive } = require('./utils/root-live');
+const { withStructureChange } = require('./utils/write-queue');
 const { RootObserver } = require('./root-observer');
 const { load: loadConflicts, list: listConflicts } = require('../sync-engine/reconcile/conflicts');
 
@@ -68,11 +69,11 @@ function isoOrNull(value) {
 }
 
 class SyncManager extends EventEmitter {
-  constructor({ userData, deviceId, serverUrl, getApiKey, settingsStore, observerFor = null, takeSnapshot = () => null }) {
+  constructor({ userData, deviceId, serverUrl, getApiKey, settingsStore, observerFor = null, takeSnapshot = () => null, localAuthority = null }) {
     super();
     // v1 settings never stored a server, so the manager falls back to the same default the
     // engine does; without it discovery asks `null/_/sync/accounts` and every session 428s.
-    Object.assign(this, { userData, deviceId, serverUrl: getServerBaseUrl(serverUrl), getApiKey, settingsStore, takeSnapshot });
+    Object.assign(this, { userData, deviceId, serverUrl: getServerBaseUrl(serverUrl), getApiKey, settingsStore, takeSnapshot, localAuthority });
     this.ownObservers = new Map();
     this.observerFor = observerFor || ((rootId) => this._ownObserver(rootId));
     this.sessions = new Map();
@@ -146,9 +147,10 @@ class SyncManager extends EventEmitter {
     // CONTRACTS §6-7: a missing folder or another identity's metadata pauses the session before
     // anything reads its baseline or its disk; a folder that came back clears its own pause.
     let rootMarker = false;
+    let refused = false;
     if (!setup) {
       const refusal = await this.localRefusal(session, root, resumed);
-      if (refusal) this.persistPaused(session.id, refusal);
+      if (refusal) { this.persistPaused(session.id, refusal); refused = true; }
       else if (['folder-missing', 'folder-replaced'].includes(this.pausedReasonFor(session))) this.persistPaused(session.id, null);
       rootMarker = (await this.readIdentity(session))?.rootMarker === true;
     }
@@ -225,6 +227,21 @@ class SyncManager extends EventEmitter {
       }
     }
 
+    // The session is its own owner of the root's authority registration: a root
+    // whose server stops mid-session stays registered for as long as this session
+    // runs. A refused or missing folder has no canonical path to register.
+    if (!refused && this.localAuthority) {
+      let canonicalPath = null;
+      try {
+        canonicalPath = await fs.realpath(root.path);
+      } catch {
+        canonicalPath = null;
+      }
+      if (canonicalPath) {
+        await withStructureChange(() => this.localAuthority.registerRoot({ ...root, canonicalPath }, { owner: session.id }));
+      }
+    }
+
     await this._acquireInitialSlot();
     try {
       const result = await engine.init(apiKey, session.cached?.username, root.path, this.serverUrl,
@@ -235,6 +252,7 @@ class SyncManager extends EventEmitter {
           live: createRootLive(root),
           snapshots: { take: (rel) => this.takeSnapshot(rel, root.id) },
           observer,
+          localAuthority: this.localAuthority,
           logger,
         });
       if (!result.success) {
@@ -426,6 +444,11 @@ class SyncManager extends EventEmitter {
     }
     entry.observer.setRemoteApplyCheck(null);
     const result = await entry.engine.stop();
+    // Only this session's owner goes: another session, or the root's own server,
+    // keeps its registration and rooms.
+    if (this.localAuthority) {
+      await withStructureChange(() => this.localAuthority.closeRoot(entry.root.id, { owner: entry.session.id }));
+    }
     entry.engine.clearApiKey();
     for (const [name, fn] of entry.listeners) entry.engine.off(name, fn);
     return result;
@@ -442,7 +465,7 @@ class SyncManager extends EventEmitter {
     let obs = this.ownObservers.get(rootId);
     if (!obs) {
       const root = this.settingsStore.get().roots.find((r) => r.id === rootId);
-      obs = new RootObserver(root, { live: createRootLive(root) });
+      obs = new RootObserver(root, { live: createRootLive(root), localAuthority: this.localAuthority });
       obs.start();
       this.ownObservers.set(rootId, obs);
     }

@@ -32,7 +32,7 @@ const { decide, A } = require('./reconcile/decide');
 const { SYNC_CONFIG } = require('./constants');
 const nodeMap = require('./node-map');
 const { getConsentRegistry, resolveWritePath } = require('../main/utils/path-resolver');
-const { withFileLock } = require('../main/utils/write-queue');
+const { withLocalDocumentWrite, withLocalDirectoryChange, claimLocalDocumentTarget } = require('./local-boundary');
 
 /**
  * The machine fields of a refused connect: the HTTP status, plus the `code` its
@@ -104,21 +104,23 @@ module.exports = {
 
   // Every repo.set in this file records syncedAt: Date.now() so delete-conflict checks use per-file timestamps, not the stale global lastSyncedAt.
   async _applyNodeSavedSite(data) {
+    const gen = this.generation;
     const localFilename = data.path;
     this.resolveContainedPath(localFilename);
-    // A1/A3: canonical resolved path — the file to write AND the queue key,
-    // resolved through the same registry the route server uses.
-    const localPath = await resolveWritePath(getConsentRegistry(this.syncFolder), localFilename);
 
     if (typeof data.content !== 'string') {
       throw new Error(`node-saved for site ${data.nodeId} missing inline content`);
     }
 
+    const tracked = this.repo.get(data.nodeId);
+    const remoteAtThisPath = !tracked || tracked.path === localFilename;
+
     // A1: read, checksum-compare, back up and write are ONE critical section.
     // Reading the local body outside it would let a concurrent /save land in
     // between, so an up-to-date check could pass against bytes that are already
     // stale by the time the write happens.
-    const applied = await withFileLock(localPath, async () => {
+    const applied = await withLocalDocumentWrite(this, localFilename, async (target, token) => {
+      const localPath = target.canonicalPath;
       let preApplyContent = null;
       try {
         const localContent = await readFile(localPath);
@@ -151,11 +153,25 @@ module.exports = {
 
       await writeFile(localPath, data.content, new Date(data.modifiedAt));
 
+      if (token) {
+        await this.localAuthority.confirmKnownWrite(target, data.content, token, {
+          sender: 'sync-engine',
+        });
+      }
+
       // A1: derived artifacts belong in the same critical section as the write
       // that causes them. Skipping them here leaves an H0 sidecar and an H0
       // stylesheet serving against H1 bytes — and because writeFile stamps the
       // remote modifiedAt, an H0 sidecar can outrank H1 by mtime permanently.
-      await refreshDerivedArtifacts(this.syncFolder, localFilename, data.content);
+      // A sidecar or stylesheet failure after a confirmed authority write is
+      // logged: the confirmed bytes are already published, so the disk write is
+      // not unapplied and the room confirmation must stand.
+      try {
+        await refreshDerivedArtifacts(this.syncFolder, localFilename, data.content);
+      } catch (error) {
+        if (!token) throw error;
+        console.error('[SYNC] SSE node-saved: derived artifact refresh failed:', error && error.message ? error.message : error);
+      }
 
       const inode = await nodeMap.getInode(localPath);
       const cs = await calculateChecksum(data.content);
@@ -168,14 +184,17 @@ module.exports = {
       });
 
       return { upToDate: false, preApplyContent };
-    });
+    }, { generation: gen, explicitCreate: remoteAtThisPath });
 
-    if (applied.upToDate) return;
+    if (applied.stale || applied.upToDate) return;
     const preApplyContent = applied.preApplyContent;
 
     // Morph view-mode tabs with the just-persisted content. Edit-mode tabs get
     // the platform's live-sync relay (pre-strip snapshot) on the live lane.
-    this.live.broadcast(localFilename, { html: data.content, sender: 'sync-engine' }, { lane: 'saved' });
+    // An authority confirmation already published every alias of this file.
+    if (!this.localAuthority) {
+      this.live.broadcast(localFilename, { html: data.content, sender: 'sync-engine' }, { lane: 'saved' });
+    }
 
     console.log(`[SYNC] SSE node-saved: Wrote site ${localFilename}`);
     this.stats.filesDownloaded++;
@@ -204,7 +223,10 @@ module.exports = {
     const gen = this.generation;
     const localFilename = data.path;
     this.resolveContainedPath(localFilename);
-    const localPath = path.join(this.syncFolder, localFilename);
+    const claim = this.localAuthority ? await claimLocalDocumentTarget(this, localFilename) : null;
+    // A1/A3: canonical resolved path — the file to write AND the queue key,
+    // resolved through the same registry the route server uses.
+    const localPath = claim?.canonicalPath ?? await resolveWritePath(getConsentRegistry(this.syncFolder), localFilename);
 
     try {
       const localContent = await readFileBuffer(localPath);
@@ -225,22 +247,61 @@ module.exports = {
       // File doesn't exist locally — fall through to fetch
     }
 
+    const tracked = this.repo.get(data.nodeId);
+    const remoteAtThisPath = !tracked || tracked.path === localFilename;
+
     console.log(`[SYNC] SSE node-saved: fetching upload content for nodeId ${data.nodeId}`);
     const fetched = await getNodeContent(this.conn, data.nodeId);
     if (gen !== this.generation) return;
 
-    await createBinaryBackupIfExists(localPath, localFilename, this.syncFolder, this.emit.bind(this), this.logger);
+    // The fetch is network time, so the local bytes are re-read and re-compared
+    // inside the boundary: an apply that arrived while it was in flight must not
+    // be overwritten by these older bytes.
+    const applied = await withLocalDocumentWrite(this, localFilename, async (target, token) => {
+      const canonicalPath = target.canonicalPath;
 
-    await writeFileBuffer(localPath, fetched.content, fetched.modifiedAt);
+      try {
+        const currentContent = await readFileBuffer(canonicalPath);
+        const currentChecksum = calculateBufferChecksum(currentContent);
+        if (currentChecksum === fetched.checksum) {
+          console.log(`[SYNC] SSE node-saved: upload ${data.path} already up to date`);
+          const inode = await nodeMap.getInode(canonicalPath);
+          await this.repo.set(data.nodeId, {
+            type: 'upload',
+            path: localFilename,
+            checksum: currentChecksum,
+            inode,
+            syncedAt: Date.now()
+          });
+          return { upToDate: true };
+        }
+      } catch (e) {
+        // File doesn't exist locally — fall through to write
+      }
 
-    const inode = await nodeMap.getInode(localPath);
-    await this.repo.set(data.nodeId, {
-      type: 'upload',
-      path: localFilename,
-      checksum: fetched.checksum,
-      inode,
-      syncedAt: Date.now()
-    });
+      await createBinaryBackupIfExists(canonicalPath, localFilename, this.syncFolder, this.emit.bind(this), this.logger);
+
+      await writeFileBuffer(canonicalPath, fetched.content, fetched.modifiedAt);
+
+      if (token) {
+        await this.localAuthority.confirmKnownWrite(target, fetched.content, token, {
+          sender: 'sync-engine',
+        });
+      }
+
+      const inode = await nodeMap.getInode(canonicalPath);
+      await this.repo.set(data.nodeId, {
+        type: 'upload',
+        path: localFilename,
+        checksum: fetched.checksum,
+        inode,
+        syncedAt: Date.now()
+      });
+
+      return { upToDate: false };
+    }, { generation: gen, claim, explicitCreate: remoteAtThisPath });
+
+    if (applied.stale || applied.upToDate) return;
 
     console.log(`[SYNC] SSE node-saved: Wrote upload ${localFilename}`);
     this.stats.uploadsDownloaded++;
@@ -259,11 +320,17 @@ module.exports = {
       return;
     }
 
+    const gen = this.generation;
     const localFolderPath = data.path;
     this.resolveContainedPath(localFolderPath);
-    const localPath = path.join(this.syncFolder, localFolderPath);
 
-    await this._applyRemoteFsChange([localFolderPath], () => ensureDirectory(localPath));
+    let localPath = null;
+    const created = await withLocalDirectoryChange(this, localFolderPath, (target) => {
+      localPath = target.canonicalPath;
+      return this._applyRemoteFsChange([localFolderPath], () => ensureDirectory(target.canonicalPath));
+    }, { generation: gen });
+    if (created && created.stale) return;
+    if (gen !== this.generation) return;
 
     const inode = await nodeMap.getInode(localPath);
     await this.repo.set(data.nodeId, {

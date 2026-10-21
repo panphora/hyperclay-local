@@ -12,7 +12,7 @@
  * Reused rather than re-implemented: the api client (getNodeContent,
  * putNodeContent, createNode, deleteNode), the backup helpers
  * (createBackupIfExists, createBinaryBackupIfExists), the atomic publish
- * (writeFile/writeFileBuffer and withFileLock), refreshDerivedArtifacts, the
+ * (writeFile/writeFileBuffer and the shared document boundary), refreshDerivedArtifacts, the
  * data-loss guard, live.markBrowserSave, and the engine's `_applyFileDelete`
  * for `trash-local` (the `.trash/` move and its collision handling).
  *
@@ -36,7 +36,8 @@ const {
   putNodeContent,
 } = require('../api-client');
 const { createBackupIfExists, createBinaryBackupIfExists } = require('../../main/utils/backup');
-const { withFileLock, atomicWriteFile } = require('../../main/utils/write-queue');
+const { atomicWriteFile } = require('../../main/utils/write-queue');
+const { withLocalDocumentWrite, withLocalDirectoryChange, claimLocalDocumentTarget } = require('../local-boundary');
 const { getConsentRegistry, resolveWritePath } = require('../../main/utils/path-resolver');
 const { refreshDerivedArtifacts } = require('../../main/utils/derived-artifacts');
 const dataGuard = require('../../main/data-loss-guard');
@@ -117,12 +118,15 @@ const CHANGED = 'changed';
  * write: a generation that ended, or local bytes that changed since the caller read them
  * (`null` = the file was absent), refuse the write. Returns `{ localPath, refused }`.
  */
-async function writeLocal(engine, rel, content, { modifiedAt = null, gen, expectLocal } = {}) {
+async function writeLocal(engine, rel, content, { modifiedAt = null, gen, expectLocal, claim = null, explicitCreate = false } = {}) {
   const isSite = SITE_PATTERN.test(rel);
-  const localPath = await localPathFor(engine, rel);
+  const generation = gen !== undefined ? gen : engine.generation;
 
+  let localPath = null;
   let refused = null;
-  const previous = await withFileLock(localPath, async () => {
+  const previous = await withLocalDocumentWrite(engine, rel, async (target, token) => {
+    localPath = target.canonicalPath;
+
     if (gen !== undefined && gen !== engine.generation) {
       refused = STALE;
       return null;
@@ -159,16 +163,29 @@ async function writeLocal(engine, rel, content, { modifiedAt = null, gen, expect
 
     if (isSite) {
       await writeFile(localPath, content, modifiedAt);
-      if (typeof content === 'string') {
-        await refreshDerivedArtifacts(engine.syncFolder, rel, content);
-      }
     } else {
       await writeFileBuffer(localPath, content, modifiedAt);
     }
 
-    return prev;
-  });
+    if (token) {
+      await engine.localAuthority.confirmKnownWrite(target, content, token, {
+        sender: 'sync-engine',
+      });
+    }
 
+    if (isSite && typeof content === 'string') {
+      try {
+        await refreshDerivedArtifacts(engine.syncFolder, rel, content);
+      } catch (error) {
+        if (!token) throw error;
+        console.error('[SYNC] reconcile: derived artifact refresh failed:', error && error.message ? error.message : error);
+      }
+    }
+
+    return prev;
+  }, { generation, claim, explicitCreate });
+
+  if (previous && previous.stale) return { localPath, refused: STALE };
   if (refused) return { localPath, refused };
 
   if (isSite && typeof content === 'string') {
@@ -351,8 +368,13 @@ async function settleUpload(engine, nodeId, entry, context, localChecksum) {
 async function downloadFolder(engine, nodeId, entry, context, gen) {
   const rel = context.path || relPathOf(entry, context, nodeId);
   engine.resolveContainedPath(rel);
-  const localPath = path.join(engine.syncFolder, rel);
-  const created = await engine._applyRemoteFsChange([rel], () => ensureDirectory(localPath));
+
+  let localPath = null;
+  const created = await withLocalDirectoryChange(engine, rel, (target) => {
+    localPath = target.canonicalPath;
+    return engine._applyRemoteFsChange([rel], () => ensureDirectory(target.canonicalPath));
+  }, { generation: gen });
+  if (created && created.stale) return { action: A.DOWNLOAD, stale: true };
   if (!created) engine.cascade.consume(rel);
   if (gen !== engine.generation) return { action: A.DOWNLOAD, stale: true };
 
@@ -377,10 +399,11 @@ async function download(engine, nodeId, entry, context, gen) {
   if (open) return refreshRemoteCopy(engine, nodeId, rel, open, gen);
 
   const expectLocal = await localChecksumOf(engine, rel);
+  const claim = engine.localAuthority ? await claimLocalDocumentTarget(engine, rel) : null;
   const response = await getNodeContent(engine.conn, idOf(nodeId));
   if (gen !== engine.generation) return { action: A.DOWNLOAD, stale: true };
 
-  const written = await writeLocal(engine, rel, response.content, { modifiedAt: response.modifiedAt, gen, expectLocal });
+  const written = await writeLocal(engine, rel, response.content, { modifiedAt: response.modifiedAt, gen, expectLocal, claim, explicitCreate: !entry || entry.path === rel });
   if (written.refused === STALE) return { action: A.DOWNLOAD, stale: true };
   if (written.refused === CHANGED) {
     return conflicted(engine, nodeId, entry, context, {

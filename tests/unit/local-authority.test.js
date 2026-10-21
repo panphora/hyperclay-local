@@ -3,14 +3,38 @@
 // disk boundary (withDocument) is injected, so cold-load coalescing and the
 // warm fast path are observable without touching a real file.
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { createRooms } = require('@panphora/clayjs/server/rooms');
 const { createLocalAuthority, LocalAuthorityError } = require('../../src/main/local-authority');
+const { withDocumentWrite } = require('../../src/main/utils/write-queue');
 
 const tag = (name, value) => `<script type="application/json" merge="${name}" clay="live">${JSON.stringify(value)}</script>`;
 const doc = (value) => `<!doctype html><html><body>${tag('count', value)}</body></html>`;
 
 const CANONICAL = '/tmp/authority-doc.html';
 const ALIAS = '/tmp/authority-alias.html';
+
+const dirs = [];
+function tempDoc(name, html) {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'authority-binding-')));
+  dirs.push(dir);
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, html);
+  return file;
+}
+
+afterEach(() => {
+  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+async function confirmSave(authority, target, html) {
+  return withDocumentWrite(async () => target, async (resolved, token) => {
+    await fs.promises.writeFile(resolved.canonicalPath, html);
+    return authority.confirmKnownWrite(resolved, html, token);
+  });
+}
 
 function harness({ html = doc({ n: 0 }), readSaved } = {}) {
   const state = { now: 1000, epoch: 0, id: 0 };
@@ -346,4 +370,122 @@ test('findBoundTarget answers only the exact logical root/path/origin it bound',
   expect(h.authority.findBoundTarget({ rootId: 'root-b', logicalPath: '/alias/doc.html', origin: 'http://127.0.0.1:7001' })).toBe(alias);
   aliasMember.close();
   expect(h.authority.findBoundTarget({ rootId: 'root-b', logicalPath: '/alias/doc.html', origin: 'http://127.0.0.1:7001' })).toBeNull();
+});
+
+test('a retargeted alias stops receiving the saved broadcast of the file it left', async () => {
+  const aPath = tempDoc('a.html', doc({ n: 0 }));
+  const bPath = tempDoc('b.html', doc({ n: 0 }));
+  const h = harness();
+  const leftLive = { broadcast: jest.fn() };
+  const movedLive = { broadcast: jest.fn() };
+  const writerLive = { broadcast: jest.fn() };
+
+  h.bind({ rootId: 'root-b', logicalPath: '/alias/doc.html', canonicalPath: aPath, origin: 'http://127.0.0.1:7001', live: leftLive });
+  const target = h.bind({ canonicalPath: aPath, live: writerLive });
+  h.bind({ rootId: 'root-b', logicalPath: '/alias/doc.html', canonicalPath: bPath, origin: null, live: movedLive });
+
+  const html = doc({ n: 1 });
+  await confirmSave(h.authority, target, html);
+
+  expect(leftLive.broadcast).not.toHaveBeenCalled();
+  expect(movedLive.broadcast).not.toHaveBeenCalled();
+  expect(writerLive.broadcast).toHaveBeenCalledTimes(1);
+  expect(writerLive.broadcast).toHaveBeenCalledWith('/doc.html', { html, sender: 'server-save' }, { lane: 'saved' });
+});
+
+test('a first nonbroadcasting binding does not shadow a later broadcasting binding', async () => {
+  const aPath = tempDoc('a.html', doc({ n: 0 }));
+  const h = harness();
+  const live = { broadcast: jest.fn() };
+
+  h.bind({ rootId: 'root-a', logicalPath: '/doc.html', canonicalPath: aPath, origin: 'http://127.0.0.1:7000', live: null });
+  const target = h.bind({ rootId: 'root-a', logicalPath: '/doc.html', canonicalPath: aPath, origin: 'http://127.0.0.1:7001', live });
+
+  const html = doc({ n: 1 });
+  await confirmSave(h.authority, target, html);
+
+  expect(live.broadcast).toHaveBeenCalledTimes(1);
+  expect(live.broadcast).toHaveBeenCalledWith('/doc.html', { html, sender: 'server-save' }, { lane: 'saved' });
+});
+
+test('registerRoot keys each root by id and closeRoot drops only that root’s bindings', () => {
+  const h = harness();
+  const a = h.bind();
+  const alias = h.bind({ rootId: 'root-b', logicalPath: '/alias/doc.html', origin: 'http://127.0.0.1:7001' });
+  const memberA = h.authority.registerEditor(a, { clientId: 'cA', send: () => {} });
+  const memberB = h.authority.registerEditor(alias, { clientId: 'cB', send: () => {} });
+
+  expect(h.authority.registerRoot({ id: 'root-a', path: '/tmp/root-a', canonicalPath: '/tmp/root-a-canonical' }))
+    .toEqual({ id: 'root-a', canonicalPath: '/tmp/root-a-canonical' });
+  h.authority.registerRoot({ id: 'root-b', path: '/tmp/root-b' });
+  expect(() => h.authority.registerRoot({})).toThrow('registerRoot requires root id');
+  expect(() => h.authority.registerRoot({ id: 'root-c' })).toThrow('registerRoot requires canonical root path');
+
+  h.authority.closeRoot('root-a');
+
+  expect(h.authority.findBoundTarget({ rootId: 'root-a', logicalPath: '/doc.html', origin: 'http://127.0.0.1:7000' })).toBeNull();
+  expect(h.authority.findBoundTarget({ rootId: 'root-b', logicalPath: '/alias/doc.html', origin: 'http://127.0.0.1:7001' })).toBe(alias);
+  expect(alias.identity).toBe(a.identity);
+  expect(h.authority.currentEditor(alias, 'cB', memberB.conn)).toBe(memberB);
+  expect(h.authority.connectedIds(CANONICAL)).toEqual(['cB']);
+  expect(memberA.close()).toBeUndefined();
+
+  memberB.close();
+});
+
+test('closing and reopening a root with the same path leaves the old target stale', async () => {
+  const h = harness();
+  const file = tempDoc('doc.html', doc({ n: 0 }));
+  const root = path.dirname(file);
+  const origin = 'http://127.0.0.1:7000';
+  const location = { rootId: 'root-a', logicalPath: '/doc.html', canonicalPath: file, origin, live: true };
+  h.authority.registerRoot({ id: 'root-a', canonicalPath: root, path: root }, { owner: 'server' });
+  const old = h.authority.bindTarget(location);
+  const room = await h.authority.roomFor(old, () => old);
+
+  expect(h.authority.isCurrentTarget(old)).toBe(true);
+  expect(room.nodeId).toBe(old.identity);
+
+  h.authority.closeRoot('root-a');
+  h.authority.registerRoot({ id: 'root-a', canonicalPath: root, path: root }, { owner: 'server' });
+
+  // The same path and the same canonical identity came back, so only the dropped
+  // route and the new incarnation can tell the old target from the new one.
+  expect(h.authority.identityAt(file)).toBe(old.identity);
+  expect(h.authority.isCurrentTarget(old)).toBe(false);
+  expect(h.authority.findBoundTarget({ rootId: 'root-a', logicalPath: '/doc.html', origin })).toBeNull();
+
+  const fresh = h.authority.bindTarget(location);
+  const freshMember = h.authority.registerEditor(fresh, { clientId: 'cA', send: () => {} });
+  expect(fresh).not.toBe(old);
+  expect(h.authority.isCurrentTarget(fresh)).toBe(true);
+  expect(h.authority.findBoundTarget({ rootId: 'root-a', logicalPath: '/doc.html', origin })).toBe(fresh);
+  expect(h.authority.currentEditor(fresh, 'cA', freshMember.conn)).toBe(freshMember);
+  expect(await h.authority.roomFor(fresh, () => fresh)).toBe(room);
+  // The reopened root's route holds the same path and identity again, so the old
+  // target is stale by its incarnation alone.
+  expect(h.authority.isCurrentTarget(old)).toBe(false);
+});
+
+test('an alias bound before its root is registered stays current after registration', async () => {
+  const h = harness();
+  const target = h.bind();
+  const alias = h.bind({ rootId: 'root-b', logicalPath: '/alias/doc.html', origin: 'http://127.0.0.1:7001' });
+  const member = h.authority.registerEditor(alias, { clientId: 'cB', send: () => {} });
+
+  expect(h.authority.isCurrentTarget(target)).toBe(true);
+  expect(h.authority.isCurrentTarget(alias)).toBe(true);
+
+  h.authority.registerRoot({ id: 'root-a', path: '/tmp/root-a', canonicalPath: '/tmp/root-a-canonical' });
+  h.authority.registerRoot({ id: 'root-b', path: '/tmp/root-b' });
+
+  expect(h.authority.isCurrentTarget(target)).toBe(true);
+  expect(h.authority.isCurrentTarget(alias)).toBe(true);
+  expect(h.authority.findBoundTarget({ rootId: 'root-b', logicalPath: '/alias/doc.html', origin: 'http://127.0.0.1:7001' })).toBe(alias);
+  expect(h.authority.currentEditor(alias, 'cB', member.conn)).toBe(member);
+
+  h.authority.closeRoot('root-a');
+  expect(h.authority.isCurrentTarget(target)).toBe(false);
+  expect(h.authority.isCurrentTarget(alias)).toBe(true);
+  member.close();
 });

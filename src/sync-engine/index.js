@@ -34,6 +34,7 @@ class SyncEngine extends EventEmitter {
     this.serverUrl = null;
     this.syncFolder = null;
     this.observer = null; // RootObserver for this root (owned by the root, not by the engine)
+    this.localAuthority = null; // the app's one authority, injected by the manager
     this._disposeObserver = null; // unsubscribes from the observer's raw feed
     this.privateObserver = null; // an observer this engine built itself, when none was passed
     this._subscribedObserver = null; // the observer whose raw feed this engine listens to
@@ -254,6 +255,7 @@ class SyncEngine extends EventEmitter {
     this.live = opts.live || createRootLive(null);
     this.snapshots = opts.snapshots || { take: (rel) => getLegacySnapshot(rel) };
     this.observer = opts.observer || null;
+    this.localAuthority = opts.localAuthority || null;
     if (opts.logger) this.logger = opts.logger;
 
     // Set server URL with fallback to environment-based default

@@ -11,6 +11,8 @@ const { makeIsKnownPath } = require('./utils/known-path');
 const popover = require('./popover');
 const { PERSONAL_PORT, personalRoot, validateRootPath, defaultTeamFolder, allocateTeamPort } = require('./roots');
 const { migrateSettings, legacyMetaDirName } = require('./settings-v2');
+const { createLocalAuthority } = require('./local-authority');
+const { withDocumentWrite } = require('./utils/write-queue');
 const { RootServerPool } = require('./root-servers');
 const { SyncManager } = require('./sync-manager');
 const { RootObserver } = require('./root-observer');
@@ -106,6 +108,8 @@ let trayIconName = null;
 let firstDiscoveryForKey = true;
 let notifyNewTeam = null;
 
+const localAuthority = createLocalAuthority({ withDocument: withDocumentWrite });
+
 const pool = new RootServerPool({
   devHooks: getDevHooks(),
   isKnownPath,
@@ -113,6 +117,7 @@ const pool = new RootServerPool({
   helpersFor,
   syncEngineForRoot: (rootId) => engineRegistry.forRoot(rootId),
   person: () => currentDocumentPerson(),
+  localAuthority,
 });
 
 const userData = app.getPath('userData');
@@ -267,7 +272,7 @@ function observerFor(rootId) {
   if (!observer) {
     const root = (settings.roots || []).find((r) => r.id === rootId);
     if (!root) return null;
-    observer = new RootObserver(root, { live: createRootLive(root) });
+    observer = new RootObserver(root, { live: createRootLive(root), localAuthority });
     observer.on('lease-released', () => releaseObserver(rootId));
     observers.set(rootId, observer);
   }
@@ -2022,7 +2027,8 @@ app.whenReady().then(async () => {
     getApiKey: getDecryptedApiKey,
     settingsStore: { get: () => settings, save: saveSettings },
     observerFor,
-    takeSnapshot: (rel, rootId) => getAndClearSnapshot(rel, rootId)
+    takeSnapshot: (rel, rootId) => getAndClearSnapshot(rel, rootId),
+    localAuthority,
   });
   setupSyncEventHandlers();
 

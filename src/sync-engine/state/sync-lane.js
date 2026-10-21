@@ -1,9 +1,12 @@
+const { assertOutsideWriteBoundary } = require('../../main/utils/write-queue');
+
 function attachLane(engine) {
   engine._lane = Promise.resolve();
   engine._laneDepth = 0;
   engine._laneStarted = 0;
   engine._lanePending = 0;
   engine.serial = function serial(fn) {
+    assertOutsideWriteBoundary();
     engine._lanePending++;
     const run = async () => {
       engine._laneDepth++;

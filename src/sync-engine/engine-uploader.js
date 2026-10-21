@@ -28,8 +28,7 @@ const { validateFileName, validateFullPath, validateUploadPath } = require('./va
 const { ERROR_PRIORITY } = require('./constants');
 const nodeMap = require('./node-map');
 const dataGuard = require('../main/data-loss-guard');
-const { getConsentRegistry, resolveWritePath } = require('../main/utils/path-resolver');
-const { withFileLock } = require('../main/utils/write-queue');
+const { withLocalDocumentWrite, claimLocalDocumentTarget } = require('./local-boundary');
 const { refreshDerivedArtifacts } = require('../main/utils/derived-artifacts');
 
 module.exports = {
@@ -43,6 +42,9 @@ module.exports = {
   async downloadFile(nodeId, relativePath) {
     const gen = this.generation;
     try {
+      const claim = this.localAuthority ? await claimLocalDocumentTarget(this, relativePath) : null;
+      const tracked = this.repo.get(nodeId);
+      const remoteAtThisPath = !tracked || tracked.path === relativePath;
       const { content, modifiedAt } = await getNodeContent(
         this.conn,
         nodeId
@@ -50,10 +52,6 @@ module.exports = {
       if (gen !== this.generation) return;
 
       this.resolveContainedPath(relativePath);
-      // A1/A3: canonical resolved path — the file to write AND the queue key.
-      // The route server resolves through the same registry, so a browser /save
-      // and this download contend for one slot instead of two.
-      const localPath = await resolveWritePath(getConsentRegistry(this.syncFolder), relativePath);
 
       const isHtmlSite = /\.(html|htmlclay)$/i.test(relativePath);
 
@@ -61,7 +59,9 @@ module.exports = {
       // pre-download body outside the lock would let a concurrent /save land
       // between the read and the write, so the guard would compare against a
       // body that is no longer what we are about to overwrite.
-      const preDownloadContent = await withFileLock(localPath, async () => {
+      const outcome = await withLocalDocumentWrite(this, relativePath, async (target, token) => {
+        const localPath = target.canonicalPath;
+
         // Data-clobber guard: capture the last-good local body before overwriting,
         // so a synced-down (external) write that destroys saved data is detectable.
         // markBrowserSave() below suppresses the watcher, so this is the only place
@@ -86,16 +86,32 @@ module.exports = {
         // Write file with server modification time (ensures directories exist)
         await writeFile(localPath, content, modifiedAt);
 
+        if (token) {
+          await this.localAuthority.confirmKnownWrite(target, content, token, {
+            sender: 'sync-engine',
+          });
+        }
+
         // A1: derived artifacts belong in the same critical section as the write
         // that causes them. Skipping them here leaves an H0 sidecar and an H0
         // stylesheet serving against H1 bytes — and because writeFile stamps the
         // remote modifiedAt, an H0 sidecar can outrank H1 by mtime permanently.
+        // After a confirmed authority write a sidecar or stylesheet failure is
+        // logged rather than thrown: the confirmed bytes are already published.
         if (isHtmlSite && typeof content === 'string') {
-          await refreshDerivedArtifacts(this.syncFolder, relativePath, content);
+          try {
+            await refreshDerivedArtifacts(this.syncFolder, relativePath, content);
+          } catch (error) {
+            if (!token) throw error;
+            console.error('[SYNC] download: derived artifact refresh failed:', error && error.message ? error.message : error);
+          }
         }
 
-        return previous;
-      });
+        return { previous };
+      }, { generation: gen, claim, explicitCreate: remoteAtThisPath });
+
+      if (outcome.stale) return;
+      const preDownloadContent = outcome.previous;
 
       // A synced-down apply is an off-page (external) write from the local
       // perspective; preDownloadContent is the last-good local copy.
@@ -342,19 +358,34 @@ module.exports = {
     const gen = this.generation;
     this.resolveContainedPath(serverPath);
     try {
+      const claim = this.localAuthority ? await claimLocalDocumentTarget(this, serverPath) : null;
+      const tracked = this.repo.get(nodeId);
+      const remoteAtThisPath = !tracked || tracked.path === serverPath;
       const { content, modifiedAt } = await getNodeContent(
         this.conn,
         nodeId
       );
       if (gen !== this.generation) return;
 
-      const localPath = path.join(this.syncFolder, serverPath);
+      const applied = await withLocalDocumentWrite(this, serverPath, async (target, token) => {
+        const localPath = target.canonicalPath;
 
-      // Create binary backup if file exists (preserves images, PDFs, etc.)
-      await createBinaryBackupIfExists(localPath, serverPath, this.syncFolder, this.emit.bind(this), this.logger);
+        // Create binary backup if file exists (preserves images, PDFs, etc.)
+        await createBinaryBackupIfExists(localPath, serverPath, this.syncFolder, this.emit.bind(this), this.logger);
 
-      // Write file
-      await writeFileBuffer(localPath, content, modifiedAt);
+        // Write file
+        await writeFileBuffer(localPath, content, modifiedAt);
+
+        if (token) {
+          await this.localAuthority.confirmKnownWrite(target, content, token, {
+            sender: 'sync-engine',
+          });
+        }
+
+        return { written: true };
+      }, { generation: gen, claim, explicitCreate: remoteAtThisPath });
+
+      if (applied.stale) return;
 
       console.log(`[SYNC] Downloaded upload: ${serverPath}`);
 

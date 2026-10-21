@@ -13,7 +13,7 @@ const fs = require('fs').promises;
 const path = require('upath');
 const { extractData, extractViaTag, parseExtractionRules, writeViaTag, writeWithRules } = require('./data-extractor');
 const { writeApiSidecarData, deleteApiSidecar, readFreshSidecar } = require('./api-sidecar');
-const { withFileLock } = require('./write-queue');
+const { withFileLock, assertWriteContext } = require('./write-queue');
 const { documentEtag, ifMatchSatisfied } = require('../spec-wire');
 
 // Map an api-tag extraction failure to the platform's author-facing 400 bodies
@@ -98,8 +98,12 @@ function unusableDataParam(dataParam) {
 // `sourcePath`, when given, is the caller's phase-4 canonical resolved path.
 // Rebuilding `path.join(baseDir, name)` here would follow symlinks independently
 // of the one canonical pass in path-resolver.js.
-async function serveSiteApiLocal(baseDir, name, { sourcePath } = {}) {
+async function serveSiteApiLocal(baseDir, name, { sourcePath, boundary } = {}) {
   sourcePath = sourcePath || path.join(baseDir, name);
+  if (boundary) {
+    assertWriteContext(boundary.token, boundary.target.canonicalPath);
+    return serveSiteApiInLock(baseDir, name, boundary.target.canonicalPath);
+  }
   // A1: the freshness stat, the source read, the extraction and the sidecar
   // refresh are ONE critical section on the source file's queue slot — the same
   // slot /save takes. Unqueued, a cache-miss GET can extract from H0 while a
@@ -157,9 +161,14 @@ async function serveSiteApiInLock(baseDir, name, sourcePath) {
 // GET <name>?data={...} — query-driven extraction with relaxed-JSON rules.
 // The failure mapping lives in mapQueryError, shared with the write path's
 // caller-rules mode so a bad ?data= reads the same on either verb.
-async function extractSiteDataLocal(baseDir, name, dataParam, { sourcePath } = {}) {
+async function extractSiteDataLocal(baseDir, name, dataParam, { sourcePath, boundary } = {}) {
   const unusable = unusableDataParam(dataParam);
   if (unusable) return unusable;
+
+  if (boundary) {
+    assertWriteContext(boundary.token, boundary.target.canonicalPath);
+    sourcePath = boundary.target.canonicalPath;
+  }
 
   let stored;
   try {
@@ -222,26 +231,31 @@ function mapWriteError(error) {
 // can write a projection the tag does not describe. The parameter is validated
 // and parsed BEFORE the lock: a bad one is the caller's own input, and answering
 // it must not wait on — or leak anything about — the file.
-async function applySiteDataLocal(baseDir, name, data, options = {}) {
-  const { ifMatch, commit } = options;
-  const sourcePath = options.sourcePath || path.join(baseDir, name);
+async function prepareSiteDataWriteLocal(options = {}) {
   const supplied = Object.prototype.hasOwnProperty.call(options, 'dataParam');
-  let rules;
-  if (supplied) {
-    const unusable = unusableDataParam(options.dataParam);
-    if (unusable) return unusable;
-    try {
-      rules = await parseExtractionRules(options.dataParam);
-    } catch (err) {
-      const mapped = mapQueryError(err);
-      if (!mapped) throw err;
-      return { status: 400, json: mapped };
-    }
+  if (!supplied) return { supplied, rules: undefined };
+  const unusable = unusableDataParam(options.dataParam);
+  if (unusable) return { result: unusable };
+  try {
+    return { supplied, rules: await parseExtractionRules(options.dataParam) };
+  } catch (err) {
+    const mapped = mapQueryError(err);
+    if (!mapped) throw err;
+    return { result: { status: 400, json: mapped } };
   }
-  return await withFileLock(sourcePath, async () => {
+}
+
+async function applySiteDataLocal(baseDir, name, data, options = {}) {
+  const { ifMatch, commit, boundary } = options;
+  const sourcePath = options.sourcePath || path.join(baseDir, name);
+  const prepared = options.preparedWrite || await prepareSiteDataWriteLocal(options);
+  if (prepared.result) return prepared.result;
+  const { supplied, rules } = prepared;
+  const inner = async () => {
+    const admittedPath = boundary ? boundary.target.canonicalPath : sourcePath;
     let stored;
     try {
-      stored = await fs.readFile(sourcePath);
+      stored = await fs.readFile(admittedPath);
     } catch (e) {
       if (e.code !== 'ENOENT') throw e;
       return { status: 404, json: { error: 'Site content not found', message: 'The site exists but has no content' } };
@@ -297,7 +311,13 @@ async function applySiteDataLocal(baseDir, name, data, options = {}) {
     const written = result.changed ? await commit(result.html, previous) : previous;
     const fresh = supplied ? await extractData(written, rules) : await extractViaTag(written, 'api');
     return { status: 200, headers: { ETag: documentEtag(Buffer.from(written, 'utf8')) }, json: fresh };
-  });
+  };
+
+  if (boundary) {
+    assertWriteContext(boundary.token, boundary.target.canonicalPath);
+    return await inner();
+  }
+  return await withFileLock(sourcePath, inner);
 }
 
-module.exports = { mapApiTagError, serveSiteApiLocal, extractSiteDataLocal, applySiteDataLocal };
+module.exports = { mapApiTagError, serveSiteApiLocal, extractSiteDataLocal, prepareSiteDataWriteLocal, applySiteDataLocal };

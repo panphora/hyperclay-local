@@ -13,6 +13,7 @@
 
 const fs = require('fs').promises;
 const path = require('upath');
+const { AsyncLocalStorage } = require('node:async_hooks');
 
 const chains = new Map();
 
@@ -34,6 +35,80 @@ function withFileLock(key, fn) {
     if (chains.get(key) === tail) chains.delete(key);
   });
   return run;
+}
+
+const boundaryScope = new AsyncLocalStorage();
+const boundaryTokens = new WeakMap();
+const boundaryQueue = [];
+let boundaryReaders = 0;
+let boundaryWriter = false;
+
+function assertOutsideWriteBoundary() {
+  if (boundaryScope.getStore()?.released === false) {
+    throw new Error('Nested document boundary or engine lane acquisition');
+  }
+}
+
+function drainBoundaries() {
+  if (boundaryWriter) return;
+  while (boundaryQueue.length) {
+    const next = boundaryQueue[0];
+    if (next.exclusive && boundaryReaders) return;
+    boundaryQueue.shift();
+    if (next.exclusive) boundaryWriter = true;
+    else boundaryReaders++;
+    next.resolve();
+    if (next.exclusive) return;
+  }
+}
+
+async function withBoundary(exclusive, fn) {
+  assertOutsideWriteBoundary();
+  await new Promise(resolve => {
+    boundaryQueue.push({ exclusive, resolve });
+    drainBoundaries();
+  });
+  const token = Object.freeze({});
+  const state = { token, exclusive, canonicalPath: null, released: false };
+  boundaryTokens.set(token, state);
+  try {
+    return await boundaryScope.run(state, () => fn(state));
+  } finally {
+    state.released = true;
+    if (exclusive) boundaryWriter = false;
+    else boundaryReaders--;
+    drainBoundaries();
+  }
+}
+
+function assertWriteContext(token, canonicalPath) {
+  const state = boundaryTokens.get(token);
+  if (!state || state.released || boundaryScope.getStore() !== state ||
+      (!state.exclusive && state.canonicalPath !== canonicalPath)) {
+    throw new Error('Document boundary ownership required');
+  }
+}
+
+function assertStructureContext(token) {
+  const state = boundaryTokens.get(token);
+  if (!state || state.released || boundaryScope.getStore() !== state || !state.exclusive) {
+    throw new Error('Structure boundary ownership required');
+  }
+}
+
+function withDocumentWrite(resolveTarget, fn) {
+  return withBoundary(false, async state => {
+    const target = await resolveTarget();
+    if (typeof target?.canonicalPath !== 'string' || !target.canonicalPath) {
+      throw new TypeError('Expected an admitted canonical target');
+    }
+    state.canonicalPath = target.canonicalPath;
+    return withFileLock(target.canonicalPath, () => fn(target, state.token));
+  });
+}
+
+function withStructureChange(fn) {
+  return withBoundary(true, state => fn(state.token));
 }
 
 let tmpCounter = 0;
@@ -122,4 +197,13 @@ function pendingKeys() {
   return [...chains.keys()];
 }
 
-module.exports = { withFileLock, atomicWriteFile, pendingKeys };
+module.exports = {
+  withFileLock,
+  withDocumentWrite,
+  withStructureChange,
+  assertWriteContext,
+  assertStructureContext,
+  assertOutsideWriteBoundary,
+  atomicWriteFile,
+  pendingKeys,
+};
