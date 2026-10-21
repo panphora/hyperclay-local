@@ -14,6 +14,7 @@ const { migrateSettings, legacyMetaDirName } = require('./settings-v2');
 const { createLocalAuthority } = require('./local-authority');
 const { withDocumentWrite } = require('./utils/write-queue');
 const { RootServerPool } = require('./root-servers');
+const { createShellServer } = require('./workspace/shell-server');
 const { SyncManager } = require('./sync-manager');
 const { RootObserver } = require('./root-observer');
 const { createRootLive } = require('./utils/root-live');
@@ -118,6 +119,21 @@ const pool = new RootServerPool({
   syncEngineForRoot: (rootId) => engineRegistry.forRoot(rootId),
   person: () => currentDocumentPerson(),
   localAuthority,
+  workspaceFrame: (rootId, rel, wireId) => shellServer.frame(rootId, rel, wireId),
+});
+
+const shellServer = createShellServer({
+  authority: localAuthority,
+  rootPool: pool,
+  observerFor,
+  settings: () => settings,
+  appVersion: app.getVersion(),
+  connection: () => ({
+    online: connected(settings) && !(manager?.statuses() || []).some(status => status.status === 'offline'),
+    account: { signedIn: connected(settings), username: settings.syncUsername || null },
+    syncStatuses: manager?.statuses() || [],
+  }),
+  rootTitleFor,
 });
 
 const userData = app.getPath('userData');
@@ -842,6 +858,7 @@ async function updateUI() {
 
 async function afterRootsChanged() {
   syncObservers();
+  shellServer.rootsChanged();
   await updateUI();
   await publishServedRoots();
 }
@@ -1272,6 +1289,12 @@ function setupSyncEventHandlers() {
   });
 
   manager.on('status-changed', () => {
+    for (const status of manager.statuses()) {
+      const state = status.status === 'paused' ? 'paused' :
+        status.status === 'offline' || status.status === 'error' ? 'offline' : 'synced';
+      shellServer.syncChanged(status.rootId, state);
+    }
+    shellServer.connectionChanged(connected(settings) && !manager.statuses().some(status => status.status === 'offline'));
     updateUI().catch(error => console.error('[SYNC] Failed to update the UI:', error.message));
   });
 }

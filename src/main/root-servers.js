@@ -16,9 +16,9 @@ async function isDirectory(dir) {
 }
 
 class RootServer {
-  constructor(root, { devHooks, isKnownPath, observer = null, helpers = null, syncEngineFor = null, person = null, localAuthority = null }) {
+  constructor(root, { devHooks, isKnownPath, observer = null, helpers = null, syncEngineFor = null, person = null, localAuthority = null, workspaceFrame = null }) {
     this.root = root;
-    this.deps = { devHooks, isKnownPath, observer, helpers, syncEngineFor, person, localAuthority };
+    this.deps = { devHooks, isKnownPath, observer, helpers, syncEngineFor, person, localAuthority, workspaceFrame };
     this.app = null;
     this.server = null;
     this.sockets = new Set();
@@ -47,6 +47,7 @@ class RootServer {
       syncEngineFor: this.deps.syncEngineFor,
       person: this.deps.person,
       localAuthority: this.deps.localAuthority,
+      workspaceFrame: this.deps.workspaceFrame,
     };
     const app = createApp(ctx);
     this.app = app;

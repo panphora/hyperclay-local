@@ -65,7 +65,11 @@ function stripNames(html, names) {
  * @returns {string} the same string when there was nothing to remove
  */
 function stripSaveToken(html) {
-  return typeof html === 'string' ? stripNames(html, EPHEMERAL_ATTRS) : html;
+  if (typeof html !== 'string') return html;
+  const withoutBridge = html.includes('data-hyperclay-bridge') || html.includes('data-hyperclay-comments')
+    ? require('@panphora/hyperclay-workspace/server').stripWorkspaceBridge(html)
+    : html;
+  return stripNames(withoutBridge, EPHEMERAL_ATTRS);
 }
 
 /**

@@ -235,10 +235,15 @@ async function resolveWriteTarget(paths, name) {
 // the attribute cannot describe a version other than the one being served. The
 // file itself is untouched, and every response gets it, in view and edit mode:
 // the repair fetch needs it as much as the navigation that preceded it.
-async function serveHtml(res, filePath) {
+async function serveHtml(res, filePath, frame = null) {
   const html = await fs.readFile(filePath);
   res.set('Content-Type', 'text/html');
-  return res.send(injectDocumentEtag(html, documentEtag(html)));
+  const stamped = injectDocumentEtag(html, documentEtag(html));
+  if (!frame) return res.send(stamped);
+  const { injectWorkspaceBridge } = require('@panphora/hyperclay-workspace/server');
+  return res.send(injectWorkspaceBridge(stamped.toString('utf8'), {
+    nodeId: frame.wireId, framed: true, origin: frame.shellOrigin,
+  }));
 }
 
 // Translate a data-api result object ({ status, headers?, json?, raw? }) into a
@@ -3290,7 +3295,12 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         // only the immediate parent counts, compared without case: the disk
         // usually is, and `Assets-board/` is the same folder.
         const uploaded = refusedUpload(realPath) && inUploadsFolder(realPath);
-        if (htmlMatch && !uploaded) return await serveHtml(res, realPath);
+        if (htmlMatch && !uploaded) {
+          const wireId = Number(req.query['workspace-frame']);
+          const frame = Number.isSafeInteger(wireId) && wireId > 0 && ctx.workspaceFrame
+            ? ctx.workspaceFrame(ctx.root.id, htmlMatch[1], wireId) : null;
+          return await serveHtml(res, realPath, frame);
+        }
         // An SVG is a document: it can carry <script>, and served inline from
         // this origin it runs with the same authority as the page beside it.
         // Uploads accept SVG precisely BECAUSE serving it inert is possible, so
