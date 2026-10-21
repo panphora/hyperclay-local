@@ -12,6 +12,7 @@ const popover = require('./popover');
 const { PERSONAL_PORT, personalRoot, validateRootPath, defaultTeamFolder, allocateTeamPort } = require('./roots');
 const { migrateSettings, legacyMetaDirName } = require('./settings-v2');
 const { createLocalAuthority } = require('./local-authority');
+const { createLocalCheckpoint } = require('./local-checkpoint');
 const { withDocumentWrite } = require('./utils/write-queue');
 const { RootServerPool } = require('./root-servers');
 const { createShellServer } = require('./workspace/shell-server');
@@ -110,6 +111,8 @@ let firstDiscoveryForKey = true;
 let notifyNewTeam = null;
 
 const localAuthority = createLocalAuthority({ withDocument: withDocumentWrite });
+const localCheckpoint = createLocalCheckpoint({ authority: localAuthority, withDocument: withDocumentWrite });
+localAuthority.setCheckpointService(localCheckpoint);
 
 const pool = new RootServerPool({
   devHooks: getDevHooks(),
@@ -119,6 +122,7 @@ const pool = new RootServerPool({
   syncEngineForRoot: (rootId) => engineRegistry.forRoot(rootId),
   person: () => currentDocumentPerson(),
   localAuthority,
+  localCheckpoint,
   workspaceFrame: (rootId, rel, wireId) => shellServer.frame(rootId, rel, wireId),
 });
 

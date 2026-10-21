@@ -16,9 +16,9 @@ async function isDirectory(dir) {
 }
 
 class RootServer {
-  constructor(root, { devHooks, isKnownPath, observer = null, helpers = null, syncEngineFor = null, person = null, localAuthority = null, workspaceFrame = null }) {
+  constructor(root, { devHooks, isKnownPath, observer = null, helpers = null, syncEngineFor = null, person = null, localAuthority = null, localCheckpoint = null, workspaceFrame = null }) {
     this.root = root;
-    this.deps = { devHooks, isKnownPath, observer, helpers, syncEngineFor, person, localAuthority, workspaceFrame };
+    this.deps = { devHooks, isKnownPath, observer, helpers, syncEngineFor, person, localAuthority, localCheckpoint, workspaceFrame };
     this.app = null;
     this.server = null;
     this.sockets = new Set();
@@ -47,6 +47,7 @@ class RootServer {
       syncEngineFor: this.deps.syncEngineFor,
       person: this.deps.person,
       localAuthority: this.deps.localAuthority,
+      localCheckpoint: this.deps.localCheckpoint,
       workspaceFrame: this.deps.workspaceFrame,
     };
     const app = createApp(ctx);
@@ -56,6 +57,7 @@ class RootServer {
       server.on('connection', (s) => { this.sockets.add(s); s.on('close', () => this.sockets.delete(s)); });
       server.once('error', async (err) => {
         this.server = null;
+        this.deps.localCheckpoint?.unregisterWriter(this.root.id);
         this.state = err.code === 'EADDRINUSE' ? 'port-taken' : 'error';
         this.error = err.code === 'ENOENT' ? 'Folder not found' : err.message;
         try {
@@ -100,6 +102,10 @@ class RootServer {
     for (const s of this.sockets) s.destroy();
     this.sockets.clear();
     await new Promise((resolve) => server.close(() => resolve()));
+    if (this.deps.localCheckpoint) {
+      await this.deps.localCheckpoint.flushDirty({ rootId: this.root.id });
+      this.deps.localCheckpoint.unregisterWriter(this.root.id);
+    }
     // Last, once the sockets and their streams are gone: this root's rooms are
     // released and its registrations dropped. Other roots stay connected, and a
     // repeat stop (no server) is harmless because closeRoot is idempotent.
@@ -145,12 +151,14 @@ class RootServerPool {
     if (this.sweepTimer) return;
     this.sweepTimer = setInterval(() => sweepExpiredSnapshots(), SNAPSHOT_SWEEP_MS);
     this.sweepTimer.unref?.();
+    this.deps.localCheckpoint?.startSweep();
   }
 
   stopSweep() {
     if (!this.sweepTimer) return;
     clearInterval(this.sweepTimer);
     this.sweepTimer = null;
+    this.deps.localCheckpoint?.stopSweep();
   }
 
   async retry(rootId) { const rs = this.servers.get(rootId); return rs ? rs.start() : { ok: false }; }

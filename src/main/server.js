@@ -34,7 +34,7 @@ const { createHelperDispatcher } = require('./helpers/dispatcher');
 const errorLogger = require('./error-logger');
 const formatHtml = require('./format-html');
 const { hasHtmlRoot } = formatHtml;
-const { serveSiteApiLocal, extractSiteDataLocal, prepareSiteDataWriteLocal, applySiteDataLocal } = require('./utils/data-api');
+const { mapApiTagError, serveSiteApiLocal, extractSiteDataLocal, prepareSiteDataWriteLocal, applySiteDataLocal } = require('./utils/data-api');
 const { readDataQuery } = require('./utils/data-query');
 const { writeApiSidecar } = require('./utils/api-sidecar');
 const dataGuard = require('./data-loss-guard');
@@ -42,6 +42,8 @@ const { documentEtag, ifMatchSatisfied } = require('./spec-wire');
 const { MAX_EXTERNAL_HTML } = require('./root-observer');
 const { buildEnvelope } = require('../sync-engine/control-lane-core.cjs');
 const { createLocalLiveData } = require('./local-live-data.js');
+const { hasPageStore, loadPageModules, authoritativePageHtml } = require('./utils/page-api');
+const cheerio = require('cheerio');
 
 // Initialize Eta
 const eta = new Eta({
@@ -1885,6 +1887,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     async function commitDocument({
       name, filePath, content, dataLossPrev, userDriven, saveId, origin = 'save',
       target = null, token = null, ifMatch = undefined, pageConversion = undefined,
+      persistentToken = null,
     }) {
       // ANCILLARY DISK CONVENTION: versions dir and backups use baseName without
       // extension (matches platform's versions/{baseName}/ layout).
@@ -1923,6 +1926,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
               nodeId: target.identity, header: pageConversion, currentHtml, html: content, ifMatch,
             });
           }
+          if (persistentToken) rooms.checkPersistent(persistentToken, { html: content });
         }
 
         // Check if this is the first save (no versions exist yet)
@@ -1992,7 +1996,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         if (pageToken) authority.rooms.commitPage(pageToken);
         if (authorityWrite) {
           await authority.confirmKnownWrite(target, content, token, {
-            sender: origin === 'api' ? 'data-api' : 'server-save',
+            sender: origin === 'api' ? 'data-api' : 'server-save', persistentToken,
           });
         }
 
@@ -2082,6 +2086,10 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       } finally {
         if (pageToken) authority.rooms.releasePage(pageToken);
       }
+    }
+
+    if (ctx.localCheckpoint) {
+      ctx.localCheckpoint.registerWriter(ctx.root.id, (write) => commitDocument(write));
     }
 
     // Spec §3: /_/save takes the document as text, and this route has exactly one
@@ -2487,7 +2495,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // `wire` because this host serves §11's two routes, so `clay.wire` pages and
       // the `htmlclay wire` CLI can drive a local process from a document here.
       const body = { spec: 1, extensions: ['conditional', 'data-read', 'data-write', 'format', 'receipts', 'scoped-stylesheet', 'sync', 'sync-worker', 'upload', 'wire'] };
-      if (ctx.localAuthority) body.extensions.push('live-data', 'live-provenance');
+      if (ctx.localAuthority) body.extensions.push('live-data', 'live-provenance', 'page');
       // `people` (§9) when the app supplies a person: one app-wide profile, so the
       // answer is the same in every root. Never `members`: a profile is not a directory.
       if (ctx.person) body.extensions.push('people');
@@ -3057,6 +3065,54 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     // treated as the data API. Must come before the static catch-all. Reads the
     // requested extension, since
     // .htmlclay sites exist locally too.
+    const pageFailure = (error) => {
+      if (error?.code === 'revision-required') return { status: 428, json: { code: error.code, error: error.message } };
+      if (error?.code === 'revision-stale') return { status: 409, json: { code: error.code, error: error.message } };
+      if (error?.code === 'invalid-content' || error?.code === 'incomplete-page' ||
+          error?.code === 'unknown-page-content' || error?.code === 'unsupported-projection' ||
+          error?.code === 'invalid-document' ||
+          (error?.name === 'PersistentReservationError' && error.code === 'invalid-target') ||
+          ['WriteRejected', 'WriteRefused', 'ShapeMismatch', 'EmptyListInsert', 'RuleTargetReadOnly', 'WriteNotRoundTripped'].includes(error?.name)) {
+        return { status: 422, json: { code: 'invalid-content', error: error.message } };
+      }
+      if (error?.name === 'NoRulesTag') {
+        return { status: 400, json: { error: 'No api rules tag', message: 'This page has no rules tag with data-rules-name~="api".' } };
+      }
+      const mapped = mapApiTagError(error);
+      return mapped ? { status: 400, json: mapped } : null;
+    };
+
+    async function pageOptions(query) {
+      if (!query.present) return { codec: (await loadPageModules()).codec };
+      const prepared = await prepareSiteDataWriteLocal({ dataParam: query.text });
+      if (prepared.result) return { result: prepared.result };
+      return { codec: (await loadPageModules()).codec, rules: prepared.rules };
+    }
+
+    async function readPageApi(target, token, name, query) {
+      const stored = await fs.readFile(target.canonicalPath).catch((error) => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
+      if (!stored) return null;
+      const html = stored.toString('utf8');
+      if (!hasPageStore(html)) return null;
+      const changed = await ctx.localAuthority.reconcileDisk(target, html, token);
+      if (changed.kind === 'replacement') throw movedOrDeleted();
+      const options = await pageOptions(query);
+      if (options.result) return options.result;
+      try {
+        const authoritative = await authoritativePageHtml(ctx.localAuthority, target, html);
+        const { readPageDocument } = await loadPageModules();
+        const page = await readPageDocument(cheerio.load, authoritative, options);
+        return { status: 200, headers: { ETag: documentEtag(stored), 'Page-Revision': page.revision }, json: page.data };
+      } catch (error) {
+        const refusal = pageFailure(error);
+        if (refusal) return refusal;
+        throw error;
+      }
+    }
+
     async function readApiDocument(req, res, name, sourcePath) {
       const query = readDataQuery(req.originalUrl);
       if (query.error) return res.status(400).json(query.error);
@@ -3069,6 +3125,8 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       try {
         const result = await runDocumentWrite(req, name, sourcePath, async (target, token) => {
           const options = { sourcePath: target.canonicalPath, boundary: { target, token } };
+          const page = await readPageApi(target, token, name, query);
+          if (page) return page;
           return query.present
             ? extractSiteDataLocal(baseDir, name, query.text, options)
             : serveSiteApiLocal(baseDir, name, options);
@@ -3130,17 +3188,69 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           : null;
         if (preparedWrite?.result) return sendApiResult(res, preparedWrite.result);
         const result = ctx.localAuthority
-          ? await runDocumentWrite(req, name, sourcePath, async (target, token) => applySiteDataLocal(baseDir, name, data, {
-              sourcePath: target.canonicalPath,
-              boundary: { target, token },
-              preparedWrite,
-              ifMatch: req.headers['if-match'],
-              ...(query.present ? { dataParam: query.text } : {}),
-              commit: (html, previous) => commitDocument({
-                name, filePath: target.canonicalPath, content: html, dataLossPrev: previous,
-                userDriven: false, saveId: '', origin: 'api', target, token
-              })
-            }))
+          ? await runDocumentWrite(req, name, sourcePath, async (target, token) => {
+              const stored = await fs.readFile(target.canonicalPath).catch((error) => {
+                if (error.code === 'ENOENT') return null;
+                throw error;
+              });
+              const previous = stored?.toString('utf8');
+              if (stored && hasPageStore(previous)) {
+                const etag = documentEtag(stored);
+                const changed = await ctx.localAuthority.reconcileDisk(target, previous, token);
+                if (changed.kind === 'replacement') throw movedOrDeleted();
+                if (!req.headers['page-if-match']) {
+                  return { status: 428, headers: { ETag: etag }, json: { code: 'revision-required', error: 'Page-If-Match is required' } };
+                }
+                if (!req.headers['if-match']) {
+                  return { status: 428, headers: { ETag: etag }, json: { code: 'etag-required', error: 'If-Match is required' } };
+                }
+                if (String(req.headers['if-match']).trim() === '*' || !ifMatchSatisfied(req.headers['if-match'], stored)) {
+                  return { status: 412, headers: { ETag: etag }, json: { error: 'Precondition Failed', message: `${name} changed since you read it. Nothing was written.` } };
+                }
+                const room = ctx.localAuthority.rooms.get(target.canonicalPath);
+                const held = room && String(room.nodeId) === String(target.identity)
+                  ? ctx.localAuthority.rooms.holdPersistent(target.canonicalPath, { nodeId: target.identity, requireClean: false })
+                  : null;
+                try {
+                  const authoritative = await authoritativePageHtml(ctx.localAuthority, target, previous);
+                  const options = { codec: (await loadPageModules()).codec,
+                    ...(query.present ? { rules: preparedWrite.rules } : {}) };
+                  const { readPageDocument, writePageDocument } = await loadPageModules();
+                  const current = await readPageDocument(cheerio.load, authoritative, options);
+                  if (current.revision !== req.headers['page-if-match']) {
+                    return { status: 409, headers: { ETag: etag, 'Page-Revision': current.revision },
+                      json: { code: 'revision-stale', error: 'The page revision has changed' } };
+                  }
+                  const result = await writePageDocument(cheerio.load, authoritative, data, {
+                    ...options, expectedRevision: current.revision,
+                  });
+                  const written = result.html === previous ? previous : await commitDocument({
+                    name, filePath: target.canonicalPath, content: result.html, dataLossPrev: previous,
+                    userDriven: false, saveId: '', origin: 'api', target, token, persistentToken: held,
+                  });
+                  const fresh = await readPageDocument(cheerio.load, written, options);
+                  return { status: 200, headers: { ETag: documentEtag(Buffer.from(written, 'utf8')),
+                    'Page-Revision': fresh.revision }, json: fresh.data };
+                } catch (error) {
+                  const refusal = pageFailure(error);
+                  if (refusal) return refusal;
+                  throw error;
+                } finally {
+                  if (held) ctx.localAuthority.rooms.releasePersistent(held);
+                }
+              }
+              return applySiteDataLocal(baseDir, name, data, {
+                sourcePath: target.canonicalPath,
+                boundary: { target, token },
+                preparedWrite,
+                ifMatch: req.headers['if-match'],
+                ...(query.present ? { dataParam: query.text } : {}),
+                commit: (html, previous) => commitDocument({
+                  name, filePath: target.canonicalPath, content: html, dataLossPrev: previous,
+                  userDriven: false, saveId: '', origin: 'api', target, token
+                })
+              });
+            })
           : await applySiteDataLocal(baseDir, name, data, {
               sourcePath,
               ifMatch: req.headers['if-match'],
@@ -3154,6 +3264,10 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       } catch (error) {
         if (error && error.code === 'moved-or-deleted') {
           return res.status(409).json({ msg: error.message, msgType: 'error', code: 'moved-or-deleted' });
+        }
+        if (error?.name === 'PersistentReservationError') {
+          const status = error.code === 'checkpointing' ? 503 : 409;
+          return res.status(status).json({ code: error.code, error: error.message });
         }
         console.error('Site API write error:', error);
         return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });

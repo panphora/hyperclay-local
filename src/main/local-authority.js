@@ -34,6 +34,8 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
   if (!rooms) rooms = core.createRooms({ now });
   if (!readSaved) readSaved = (target) => fs.promises.readFile(target.canonicalPath, 'utf8');
 
+  let checkpointService = null;
+
   const registry = new Map();
   const buckets = new Map();
   // One entry per admitted logical root/path/origin. The canonical path is what
@@ -809,6 +811,9 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
         if (result && result.writerChanged) {
           sendTo(key, 'data-writer', { epoch: room.epoch, writer: result.writer });
         }
+        if (member.participating && ![...record.members].some((entry) => entry.participating)) {
+          checkpointService?.departed(room);
+        }
       },
     };
     record.members.add(member);
@@ -818,6 +823,7 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     if (warm && String(warm.nodeId) === String(target.identity ?? identityAt(target.canonicalPath))) {
       rooms.open(target.canonicalPath, '');
     }
+    checkpointService?.arrived(target.canonicalPath);
     return member;
   }
 
@@ -847,6 +853,11 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     if (!record || !record.members.has(member)) return null;
     member.participating = true;
     return member;
+  }
+
+  function hasParticipatingEditors(canonicalPath) {
+    const record = registry.get(canonicalPath);
+    return Boolean(record && [...record.members].some((member) => member.participating));
   }
 
   function hasUnjoinedEditors(canonicalPath) {
@@ -978,6 +989,21 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     for (const [key, bucket] of buckets) if (t - bucket.at > bucket.idleMs) buckets.delete(key);
   }
 
+  function checkpointTargets(canonicalPath) {
+    return [...logical.values()].filter((target) => target.canonicalPath === canonicalPath && isCurrentTarget(target));
+  }
+
+  function roomIsDirty(room) {
+    return core.roomIsDirty(room);
+  }
+
+  async function reconcileDisk(target, html, token) {
+    assertWriteContext(token, target.canonicalPath);
+    const record = registry.get(target.canonicalPath);
+    if (!record || record.baseline == null || record.baseline === html) return { kind: 'current' };
+    return observeExternal(target, html, token);
+  }
+
   const HTML_PATH = /\.(html?|htmlclay)$/i;
 
   function broadcastSaved(target, html, sender) {
@@ -1014,7 +1040,7 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
    * alias once. It acquires no second gate or file lock; a broadcast failure never
    * undoes the confirmed disk write.
    */
-  async function confirmKnownWrite(target, bytes, token, { sender = 'server-save', publish = true } = {}) {
+  async function confirmKnownWrite(target, bytes, token, { sender = 'server-save', publish = true, persistentToken = null } = {}) {
     const canonicalPath = target && target.canonicalPath;
     assertWriteContext(token, canonicalPath);
 
@@ -1058,8 +1084,11 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     if (!HTML_PATH.test(canonicalPath)) return stamp;
 
     const html = typeof bytes === 'string' ? bytes : bytes.toString('utf8');
-    const result = rooms.fileWritten(canonicalPath, html);
+    const result = persistentToken
+      ? rooms.writtenPersistent(persistentToken, { html })
+      : rooms.fileWritten(canonicalPath, html);
     if (result) publishState(canonicalPath);
+    checkpointService?.wake(canonicalPath);
     if (publish) {
       for (const binding of bindingsFor(canonicalPath, target)) {
         try {
@@ -1255,6 +1284,10 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
 
   return {
     rooms,
+    setCheckpointService(service) { checkpointService = service; },
+    roomIsDirty,
+    checkpointTargets,
+    reconcileDisk,
     bindTarget,
     admitWriteTarget,
     findBoundTarget,
@@ -1266,6 +1299,8 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     newestEditor,
     connectedIds,
     markParticipating,
+    hasParticipatingEditors,
+    wakeCheckpoint(key) { checkpointService?.wake(key); },
     hasUnjoinedEditors,
     roomFor,
     publish,

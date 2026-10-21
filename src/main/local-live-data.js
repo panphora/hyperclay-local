@@ -169,6 +169,8 @@ function createLocalLiveData({ authority, resolveTarget } = {}) {
       if (result.duplicate) return res.json({ duplicate: true, seq: result.seq, epoch: result.epoch });
       if (result.stale) return res.json({ stale: true, epoch: result.epoch });
 
+      authority.wakeCheckpoint?.(target.canonicalPath);
+
       const frame = {
         epoch: result.epoch,
         seq: result.seq,
