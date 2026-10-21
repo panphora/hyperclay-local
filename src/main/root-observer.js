@@ -153,11 +153,12 @@ class RootObserver extends EventEmitter {
       });
       outcome = await withDocumentWrite(async () => {
         const currentPath = await resolveWritePath(registry, rel);
-        if (currentPath !== claimedPath || authority.identityAt(currentPath) !== target.identity) {
+        const retired = authority.isRetired({ rootId: this.root.id ?? null, logicalPath: rel, canonicalPath: currentPath });
+        if (currentPath !== claimedPath || (authority.identityAt(currentPath) !== target.identity && !retired)) {
           throw new StaleObservationError();
         }
         return { canonicalPath: currentPath };
-      }, async (resolved) => this._classifyHtml(resolved.canonicalPath, rel, target, { settled }));
+      }, async (resolved, token) => this._classifyHtml(resolved.canonicalPath, rel, target, token, { settled }));
     } catch (error) {
       // A name that now resolves elsewhere belongs to the newer event that moved it.
       if (error instanceof StaleObservationError) return true;
@@ -194,7 +195,7 @@ class RootObserver extends EventEmitter {
    * write and a real external replacement are told apart by what is on disk.
    * Publication to editors happens here; the raw feed waits for the release.
    */
-  async _classifyHtml(canonicalPath, rel, target, { settled }) {
+  async _classifyHtml(canonicalPath, rel, target, token, { settled }) {
     const before = await this._stat(canonicalPath);
     let bytes = null;
     try { bytes = await fs.readFile(canonicalPath); } catch { bytes = null; }
@@ -217,16 +218,26 @@ class RootObserver extends EventEmitter {
       return { kind: 'self' };
     }
 
-    this._notifyExternal(rel, bytes);
+    const changed = await this.localAuthority.observeExternal(target, bytes.toString('utf8'), token);
+    this._notifyExternal(rel, bytes, null, {
+      reason: changed.kind === 'replacement' ? 'external-replacement' : undefined,
+      recovered: changed.recovered,
+    });
     return { kind: 'external', bytes };
   }
 
   async _observeUnlink(rel) {
     const registry = getConsentRegistry(this.root.path);
     let replaced;
+    let removal;
     try {
-      await withDocumentWrite(async () => ({ canonicalPath: await resolveWritePath(registry, rel) }), async (resolved) => {
+      await withDocumentWrite(async () => ({ canonicalPath: await resolveWritePath(registry, rel) }), async (resolved, token) => {
         replaced = !!(await this._stat(resolved.canonicalPath));
+        if (!replaced) {
+          removal = await this.localAuthority.observeExternal({
+            rootId: this.root.id ?? null, logicalPath: rel, canonicalPath: resolved.canonicalPath, live: this.live,
+          }, null, token, { removed: true });
+        }
       });
     } catch (error) {
       this._logObservation(rel, error);
@@ -236,6 +247,16 @@ class RootObserver extends EventEmitter {
     // A replacement is on disk: the watcher's unlink is a delayed event for a
     // file that was replaced, not a deletion.
     if (replaced) return true;
+
+    this.live.notify(rel, {
+      msgType: 'warning',
+      msg: `${path.basename(rel)} was removed on disk outside this tab`,
+      action: 'reload',
+      data: {
+        kind: 'external-change', sender: 'file-system', reason: 'external-replacement',
+        ...(removal?.recovered && { recovered: removal.recovered }),
+      },
+    });
 
     // Removal point. E adds recovery and retirement here, after the release.
     this.emit('raw', { event: 'unlink', rel });
@@ -247,9 +268,10 @@ class RootObserver extends EventEmitter {
     const registry = getConsentRegistry(this.root.path);
     let absent;
     try {
-      await withStructureChange(async () => {
+      await withStructureChange(async (token) => {
         const canonicalPath = await resolveWritePath(registry, rel);
         absent = !(await this._stat(canonicalPath));
+        if (absent) await this.localAuthority.observeRemovedPrefix(this.root.id ?? null, rel, canonicalPath, token);
       });
     } catch (error) {
       this._logObservation(rel, error);
@@ -282,7 +304,12 @@ class RootObserver extends EventEmitter {
   }
 
   async _stat(canonicalPath) {
-    try { return await fs.stat(canonicalPath, { bigint: true }); } catch { return null; }
+    try {
+      return await fs.stat(canonicalPath, { bigint: true });
+    } catch (error) {
+      if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
+      throw error;
+    }
   }
 
   _logObservation(rel, error) {
@@ -306,7 +333,7 @@ class RootObserver extends EventEmitter {
     }).catch((err) => console.error('[data-guard] observer guard error:', err && err.message ? err.message : err));
   }
 
-  _notifyExternal(rel, bytes, msg, { saved = true } = {}) {
+  _notifyExternal(rel, bytes, msg, { saved = true, reason, recovered } = {}) {
     const html = bytes.toString('utf8');
     const etag = documentEtag(bytes);
     this.live.notify(rel, {
@@ -314,8 +341,8 @@ class RootObserver extends EventEmitter {
       msg: msg || `${path.basename(rel)} changed on disk outside this tab`,
       action: 'reload',
       data: bytes.length <= MAX_EXTERNAL_HTML
-        ? { kind: 'external-change', html, sender: 'file-system', etag }
-        : { kind: 'external-change', sender: 'file-system' },
+        ? { kind: 'external-change', html, sender: 'file-system', etag, ...(reason && { reason }), ...(recovered && { recovered }) }
+        : { kind: 'external-change', sender: 'file-system', ...(reason && { reason }), ...(recovered && { recovered }) },
     });
     if (saved) this.live.broadcast(rel, { html, sender: 'file-watcher' }, { lane: 'saved' });
     this.emit('change', { rel, kind: 'external', html, etag });

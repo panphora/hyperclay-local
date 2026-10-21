@@ -1,11 +1,12 @@
 const fs = require('fs').promises;
+const path = require('upath');
 const {
   withFileLock,
   withDocumentWrite,
   withStructureChange,
   assertStructureContext,
 } = require('../main/utils/write-queue');
-const { getConsentRegistry, resolveWritePath } = require('../main/utils/path-resolver');
+const { getConsentRegistry, resolveWritePath, realpathNearestParent } = require('../main/utils/path-resolver');
 const { LocalAuthorityError } = require('../main/local-authority');
 
 class StaleLocalWriteError extends Error {}
@@ -13,6 +14,27 @@ class StaleLocalWriteError extends Error {}
 async function canonicalPathFor(engine, rel) {
   engine.resolveContainedPath(rel);
   return resolveWritePath(getConsentRegistry(engine.syncFolder), rel);
+}
+
+async function structureEntryFor(engine, rel) {
+  const registry = getConsentRegistry(engine.syncFolder);
+  await registry.ready();
+  engine.resolveContainedPath(rel);
+  const lexical = path.resolve(path.join(engine.syncFolder, rel));
+  const parent = await realpathNearestParent(path.dirname(lexical));
+  const location = path.join(parent, path.basename(lexical));
+  const stat = await fs.lstat(location).catch((error) => {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
+    throw error;
+  });
+  if (!stat) return { location, canonical: location, exists: false };
+  return {
+    location,
+    canonical: stat.isSymbolicLink() ? await resolveWritePath(registry, rel) : location,
+    isDir: stat.isDirectory(),
+    isSymlink: stat.isSymbolicLink(),
+    exists: true,
+  };
 }
 
 async function claimLocalDocumentTarget(engine, rel) {
@@ -102,4 +124,35 @@ async function withLocalDirectoryChange(engine, rel, fn, { generation = engine.g
   }
 }
 
-module.exports = { withLocalDocumentWrite, withLocalDirectoryChange, claimLocalDocumentTarget };
+async function withLocalStructureDelete(engine, rel, move, { generation = engine.generation, isDir = false } = {}) {
+  const authority = engine.localAuthority;
+  if (!authority) return { legacy: true };
+  return withStructureChange(async (token) => {
+    assertStructureContext(token);
+    if (generation !== engine.generation) return { stale: true };
+    const source = await structureEntryFor(engine, rel);
+    if (!source.exists) {
+      authority.setAdmission(token, {
+        rootId: engine.rootId,
+        logicalPath: rel,
+        canonicalPath: source.canonical,
+        active: false,
+        prefix: isDir,
+      });
+      return { missing: true };
+    }
+    const plan = authority.prepareStructure(token, {
+      rootId: engine.rootId,
+      steps: [{ from: source, fromRel: rel, to: null }],
+    });
+    try {
+      await move(source.location);
+      authority.commitStructure(plan, 1, token);
+      return { moved: true };
+    } finally {
+      authority.releaseStructure(plan, token);
+    }
+  });
+}
+
+module.exports = { withLocalDocumentWrite, withLocalDirectoryChange, withLocalStructureDelete, claimLocalDocumentTarget, structureEntryFor };

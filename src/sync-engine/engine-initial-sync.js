@@ -424,14 +424,23 @@ module.exports = {
       const newFullPath = path.join(this.syncFolder, relativePath);
       try {
         this.live.markBrowserSave(relativePath);
-        if (localFiles.has(relativePath)) {
-          const aside = await this._moveOccupantAside(relativePath);
-          if (aside) {
-            localFiles.set(aside, localFiles.get(relativePath));
+        if (this.localAuthority) {
+          const outcome = await this._authorityRelocate(knownPath, relativePath);
+          if (outcome.stale || outcome.missing) throw new Error(`Source moved before correlation: ${knownPath}`);
+          if (outcome.aside && localFiles.has(relativePath)) {
+            localFiles.set(outcome.aside, localFiles.get(relativePath));
             localFiles.delete(relativePath);
           }
+        } else {
+          if (localFiles.has(relativePath)) {
+            const aside = await this._moveOccupantAside(relativePath);
+            if (aside) {
+              localFiles.set(aside, localFiles.get(relativePath));
+              localFiles.delete(relativePath);
+            }
+          }
+          await moveFile(oldFullPath, newFullPath);
         }
-        await moveFile(oldFullPath, newFullPath);
 
         const localInfo = localFiles.get(knownPath);
         localFiles.delete(knownPath);

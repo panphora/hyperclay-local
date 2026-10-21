@@ -21,7 +21,7 @@ const { scopeTailwindLink } = require('./utils/tailwind-scoping.js');
 const { stripSaveToken, injectDocumentEtag } = require('./utils/root-attrs.js');
 const { createRootLive } = require('./utils/root-live.js');
 const { replayStore } = require('./sync-replay.js');
-const { VERSIONS_DIR, TAILWIND_DIR } = require('./utils/artifact-paths.js');
+const { VERSIONS_DIR, RECOVERED_DIR, TAILWIND_DIR } = require('./utils/artifact-paths.js');
 const { canonicalizeBase, rebaseOntoCanonical, assertRealDirChain } = require('./utils/real-dir-chain.js');
 const { VERSION_NAME, sortKey, collisionSuffix, compareNewestFirst } = require('./utils/prune-versions.js');
 const {
@@ -2482,9 +2482,11 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // `wire` because this host serves §11's two routes, so `clay.wire` pages and
       // the `htmlclay wire` CLI can drive a local process from a document here.
       const body = { spec: 1, extensions: ['conditional', 'data-read', 'data-write', 'format', 'receipts', 'scoped-stylesheet', 'sync', 'sync-worker', 'upload', 'wire'] };
+      if (ctx.localAuthority) body.extensions.push('live-data', 'live-provenance');
       // `people` (§9) when the app supplies a person: one app-wide profile, so the
       // answer is the same in every root. Never `members`: a profile is not a directory.
-      if (ctx.person) body.extensions = [...body.extensions, 'people'].sort();
+      if (ctx.person) body.extensions.push('people');
+      body.extensions.sort();
       const href = documentUrlHeader(req);
       if (href) {
         try {
@@ -2778,11 +2780,15 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     // folder without its extension, which is what the save path backs up under.
     const versionsDirFor = (rel) =>
       path.join(baseDir, VERSIONS_DIR, rel.replace(/\.(html|htmlclay)$/i, ''));
+    const recoveredDirFor = (rel) =>
+      path.join(baseDir, RECOVERED_DIR, rel.replace(/\.(html|htmlclay)$/i, ''));
+    const recoveredName = (name) => name.startsWith('recovered-');
+    const storedVersionName = (name) => recoveredName(name) ? name.slice('recovered-'.length) : name;
 
     // Exactly one generated filename, and a document: anything else is refused
     // rather than resolved, so no name can address something outside the store.
     const isVersionName = (name) =>
-      VERSION_NAME.test(name) && name.toLowerCase().endsWith('.html');
+      VERSION_NAME.test(storedVersionName(name)) && storedVersionName(name).toLowerCase().endsWith('.html');
 
     // The refusal shape: both spellings of the message that clients read, and a
     // code only where the spec's registry names one for the status.
@@ -2795,9 +2801,9 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
 
     // The versions directory as a real directory chain, so a directory symlink
     // planted under `.hyperclay` cannot redirect a restore read out of tree.
-    const versionsDirReal = async (rel) => {
+    const versionsDirReal = async (rel, recovered = false) => {
       const canonicalBase = await canonicalizeBase(baseDir);
-      const dir = rebaseOntoCanonical(canonicalBase, baseDir, versionsDirFor(rel));
+      const dir = rebaseOntoCanonical(canonicalBase, baseDir, recovered ? recoveredDirFor(rel) : versionsDirFor(rel));
       await assertRealDirChain(canonicalBase, dir);
       return dir;
     };
@@ -2805,7 +2811,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     // The history of one document, newest first, in htmlclay's entry shape. The
     // instant is parsed rather than read off the name (a name carries a zone), so
     // two versions written either side of a DST fall-back still order correctly.
-    const listVersionEntries = async (dir) => {
+    const listVersionEntries = async (dir, recovered = false) => {
       let names;
       try { names = await fs.readdir(dir); } catch { return []; }
       const entries = [];
@@ -2818,10 +2824,11 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       }
       entries.sort(compareNewestFirst);
       return entries.map((entry) => ({
-        name: entry.name,
+        name: recovered ? `recovered-${entry.name}` : entry.name,
         time: new Date(sortKey(entry)).toISOString(),
         seq: collisionSuffix(entry.name),
         size: entry.size,
+        ...(recovered ? { kind: 'recovered' } : {}),
       }));
     };
 
@@ -2836,7 +2843,10 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       } catch (error) {
         return versionError(res, error.status || 404, 'document not found');
       }
-      const versions = await listVersionEntries(versionsDirFor(match[1]));
+      const versions = [
+        ...await listVersionEntries(versionsDirFor(match[1])),
+        ...await listVersionEntries(recoveredDirFor(match[1]), true),
+      ].sort((a, b) => (new Date(b.time) - new Date(a.time)) || (b.seq - a.seq));
       res.set('Cache-Control', 'no-store');
       return res.json({ ok: true, name: path.basename(filePath), versions });
     });
@@ -2854,7 +2864,9 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       }
       let data;
       try {
-        data = await fs.readFile(path.join(await versionsDirReal(match[1]), match[2]));
+        data = await fs.readFile(path.join(
+          await versionsDirReal(match[1], recoveredName(match[2])), storedVersionName(match[2])
+        ));
       } catch {
         return versionError(res, 404, 'version not found');
       }
@@ -2902,7 +2914,9 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
 
         let data = null;
         try {
-          data = await fs.readFile(path.join(await versionsDirReal(rel), versionName));
+          data = await fs.readFile(path.join(
+            await versionsDirReal(rel, recoveredName(versionName)), storedVersionName(versionName)
+          ));
         } catch {
           refusal = { status: 404, message: 'version not found' };
           return;

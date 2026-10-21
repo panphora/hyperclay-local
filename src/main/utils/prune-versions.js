@@ -109,6 +109,12 @@ function compareNewestFirst(a, b) {
  * @returns {{kept: number, deleted: string[]}}
  */
 async function pruneSiteVersions(baseDir, siteVersionsDir, now = Date.now()) {
+  const recoveredRoot = path.resolve(baseDir, '.hyperclay/recovered');
+  const candidate = path.resolve(siteVersionsDir);
+  if (candidate === recoveredRoot || candidate.startsWith(`${recoveredRoot}/`)) {
+    console.warn(`[BACKUP] Refusing to prune recovered copies: ${siteVersionsDir}`);
+    return { kept: 0, deleted: [] };
+  }
   let canonicalBase;
   let chainDir;
   try {

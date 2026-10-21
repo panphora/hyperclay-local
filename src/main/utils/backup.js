@@ -15,7 +15,7 @@ const {
   compareNewestFirst
 } = require('./prune-versions');
 const { withFileLock } = require('./write-queue');
-const { VERSIONS_DIR } = require('./artifact-paths');
+const { VERSIONS_DIR, RECOVERED_DIR } = require('./artifact-paths');
 const { canonicalizeBase, rebaseOntoCanonical, assertRealDirChain } = require('./real-dir-chain');
 
 /**
@@ -188,6 +188,20 @@ async function publishVersion(dir, ext, content, encoding) {
       await fsyncDir(dir);
     }
   });
+}
+
+async function publishRecoveredCopy(baseDir, rel, html) {
+  if (typeof html !== 'string' || !/\.(html|htmlclay)$/i.test(rel) || path.isAbsolute(rel) || rel.includes('\\') ||
+      rel.split('/').some((part) => !part || part === '.' || part === '..' || part.startsWith('.'))) {
+    throw new Error('Invalid recovered document path');
+  }
+  const dir = path.join(baseDir, RECOVERED_DIR, rel.replace(/\.(html|htmlclay)$/i, ''));
+  const canonicalBase = await canonicalizeBase(baseDir);
+  const canonicalDir = rebaseOntoCanonical(canonicalBase, baseDir, dir);
+  await assertRealDirChain(canonicalBase, canonicalDir);
+  await fs.mkdir(dir, { recursive: true });
+  await assertRealDirChain(canonicalBase, canonicalDir);
+  return publishVersion(dir, '.html', html, 'utf8');
 }
 
 // The directory chain from the served folder down to the versions directory must
@@ -401,6 +415,7 @@ async function createBinaryBackupIfExists(filePath, uploadPath, baseDir, emit, l
 
 module.exports = {
   generateTimestamp,
+  publishRecoveredCopy,
   createBackup,
   createBackupIfExists,
   createBinaryBackup,

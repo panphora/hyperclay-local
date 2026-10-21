@@ -300,6 +300,91 @@ describe('B3a: the browser save through the shared boundary', () => {
     ]);
   });
 
+  test('a folder move admitted first makes a pre-resolved child save return 409', async () => {
+    const h = harness();
+    const oldDir = path.join(h.dir, 'old');
+    const newDir = path.join(h.dir, 'new');
+    fs.mkdirSync(oldDir);
+    const oldFile = path.join(oldDir, 'page.html');
+    const newFile = path.join(newDir, 'page.html');
+    fs.writeFileSync(oldFile, DOC(0));
+    h.authority.registerRoot({ id: 'root-a', path: h.dir, canonicalPath: h.dir }, { owner: 'server' });
+    const target = h.authority.bindTarget({ rootId: 'root-a', logicalPath: 'old/page.html', canonicalPath: oldFile });
+    const room = h.core.open(oldFile, DOC(0), { nodeId: target.identity });
+    const { authority, claims } = countClaims(h.authority);
+    const a = await startApp({ dir: h.dir, rootId: 'root-a', authority });
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const moving = withStructureChange(async (token) => {
+      await held;
+      const plan = h.authority.prepareStructure(token, {
+        rootId: 'root-a',
+        steps: [structureStep({ from: oldDir, to: newDir, fromRel: 'old', toRel: 'new', isDir: true })],
+      });
+      try {
+        fs.renameSync(oldDir, newDir);
+        h.authority.commitStructure(plan, 1, token);
+      } finally {
+        h.authority.releaseStructure(plan, token);
+      }
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    const pending = save(a.server, 'old/page.html', DOC(1)).then((res) => res);
+    await waitFor(() => claims.length > 0, 'the save to capture the old child');
+
+    release();
+    await moving;
+    const response = await pending;
+
+    expect(response.status).toBe(409);
+    expect(fs.existsSync(oldDir)).toBe(false);
+    expect(fs.readFileSync(newFile, 'utf8')).toBe(DOC(0));
+    expect(h.core.get(newFile)).toBe(room);
+    expect(h.authority.identityAt(newFile)).toBe(target.identity);
+    await expect(fsp.access(path.join(h.dir, '.hyperclay', 'versions'))).rejects.toThrow();
+  });
+
+  test('an external replacement retires a queued save claim before it can write', async () => {
+    const h = harness();
+    const file = path.join(h.dir, 'page.html');
+    fs.writeFileSync(file, DOC(0));
+    h.authority.registerRoot({ id: 'root-a', path: h.dir, canonicalPath: h.dir }, { owner: 'server' });
+    const oldTarget = h.authority.bindTarget({ rootId: 'root-a', logicalPath: 'page.html', canonicalPath: file });
+    const room = await h.authority.roomFor(oldTarget, async () => ({
+      rootId: 'root-a', logicalPath: 'page.html', canonicalPath: file, identity: oldTarget.identity,
+    }));
+    expect(h.core.apply(room, 'client', {
+      name: 'count', n: 1, epoch: room.epoch, ops: [{ op: 'set', path: ['n'], value: 7 }],
+    }, { connected: ['client'] }).error).toBeUndefined();
+    const { authority, claims } = countClaims(h.authority);
+    const a = await startApp({ dir: h.dir, rootId: 'root-a', authority });
+    const foreign = DOC(99);
+    fs.writeFileSync(file, foreign);
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    let entered;
+    const started = new Promise((resolve) => { entered = resolve; });
+    const observed = withDocumentWrite(async () => ({ canonicalPath: file }), async (_target, token) => {
+      entered();
+      await held;
+      await h.authority.observeExternal(oldTarget, foreign, token);
+    });
+    await started;
+    const pending = save(a.server, 'page.html', DOC(1)).then((res) => res);
+    await waitFor(() => claims.length > 0, 'the save to capture the old generation');
+
+    release();
+    await observed;
+    const response = await pending;
+
+    expect(response.status).toBe(409);
+    expect(fs.readFileSync(file, 'utf8')).toBe(foreign);
+    expect(h.authority.identityAt(file)).not.toBe(oldTarget.identity);
+    expect(h.core.get(file)).toBeNull();
+    expect(fs.readdirSync(path.join(h.dir, '.hyperclay', 'recovered', 'page'))).toHaveLength(1);
+    await expect(fsp.access(path.join(h.dir, '.hyperclay', 'versions'))).rejects.toThrow();
+  });
+
   test('a queued save whose name resolves elsewhere is refused before mkdir or backup', async () => {
     const h = harness();
     fs.mkdirSync(path.join(h.dir, 'sub-real'));

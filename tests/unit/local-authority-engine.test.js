@@ -1,7 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createRooms } = require('@panphora/clayjs/server/rooms');
+const { createRooms, serializeLive, stampOf } = require('@panphora/clayjs/server/rooms');
 const { createLocalAuthority } = require('../../src/main/local-authority');
 const { validateSegments } = require('../../src/main/utils/path-resolver');
 const { withDocumentWrite, withStructureChange } = require('../../src/main/utils/write-queue');
@@ -24,6 +24,8 @@ const EventEmitter = require('events');
 const NodeRepository = require('../../src/sync-engine/state/node-repository');
 const sseHandlers = require('../../src/sync-engine/engine-sse');
 const uploaderHandlers = require('../../src/sync-engine/engine-uploader');
+const initialSyncHandlers = require('../../src/sync-engine/engine-initial-sync');
+const watcherHandlers = require('../../src/sync-engine/engine-watcher');
 const apiClient = require('../../src/sync-engine/api-client');
 const { documentEtag } = require('../../src/main/spec-wire');
 const { A } = require('../../src/sync-engine/reconcile/decide');
@@ -31,6 +33,308 @@ const { A } = require('../../src/sync-engine/reconcile/decide');
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const tag = (name, value) => `<script type="application/json" merge="${name}" clay="live">${JSON.stringify(value)}</script>`;
 const doc = (value) => `<!doctype html><html><body>${tag('count', value)}</body></html>`;
+
+describe('D3: authority-owned deletes', () => {
+  function setup() {
+    const rooms = createRooms({});
+    const authority = createLocalAuthority({ rooms, withDocument: withDocumentWrite });
+    authority.registerRoot({ id: 'root-a', canonicalPath: dir, path: dir }, { owner: 'server' });
+    const instance = createEngine({ syncFolder: dir, rootId: 'root-a', live: { broadcast: jest.fn(), markBrowserSave: jest.fn() }, authority });
+    Object.assign(instance, initialSyncHandlers, watcherHandlers);
+    return { rooms, authority, instance };
+  }
+
+  test('file delete retires the old URL only after moving the clean room to trash', async () => {
+    const { rooms, authority, instance } = setup();
+    const file = path.join(dir, 'a.html');
+    const target = authority.bindTarget({ rootId: 'root-a', logicalPath: 'a.html', canonicalPath: file });
+    rooms.open(file, doc({ n: 0 }), { nodeId: target.identity });
+    await instance.repo.set(7, { type: 'site', path: 'a.html' });
+
+    await instance._applyFileDelete(7, 'a.html', 'site');
+
+    expect(fs.existsSync(file)).toBe(false);
+    expect(fs.readFileSync(path.join(dir, '.trash', 'a.html'), 'utf8')).toBe('<html>a</html>');
+    expect(rooms.get(file)).toBeNull();
+    expect(authority.isRetired({ rootId: 'root-a', logicalPath: 'a.html', canonicalPath: file })).toBe(true);
+    expect(instance.repo.has(7)).toBe(false);
+  });
+
+  test('a dirty room refuses a file delete before disk and node map change', async () => {
+    const { rooms, authority, instance } = setup();
+    const file = path.join(dir, 'a.html');
+    const target = authority.bindTarget({ rootId: 'root-a', logicalPath: 'a.html', canonicalPath: file });
+    const room = rooms.open(file, doc({ n: 0 }), { nodeId: target.identity });
+    expect(rooms.apply(room, 'client', {
+      name: 'count', n: 1, epoch: room.epoch, ops: [{ op: 'set', path: ['n'], value: 1 }],
+    }, { connected: ['client'] }).error).toBeUndefined();
+    await instance.repo.set(7, { type: 'site', path: 'a.html' });
+
+    await expect(instance._applyFileDelete(7, 'a.html', 'site')).rejects.toMatchObject({ code: 'peers-editing' });
+
+    expect(fs.readFileSync(file, 'utf8')).toBe('<html>a</html>');
+    expect(rooms.get(file)).toBe(room);
+    expect(instance.repo.has(7)).toBe(true);
+    expect(authority.isRetired({ rootId: 'root-a', logicalPath: 'a.html', canonicalPath: file })).toBe(false);
+  });
+
+  test('a missing folder retires its unopened descendants and removes its node map entries', async () => {
+    const { authority, instance } = setup();
+    await instance.repo.set(7, { type: 'folder', path: 'gone' });
+    await instance.repo.set(8, { type: 'site', path: 'gone/child.html' });
+
+    await instance._applyFolderDelete(7, 'gone');
+
+    expect(instance.repo.has(7)).toBe(false);
+    expect(instance.repo.has(8)).toBe(false);
+    expect(authority.isRetired({ rootId: 'root-a', logicalPath: 'gone/child.html', canonicalPath: path.join(dir, 'gone', 'child.html') })).toBe(true);
+  });
+
+  test('a missing file relocation leaves the sync time unchanged when the destination is absent', async () => {
+    const { authority, instance } = setup();
+    await instance.repo.set(7, { type: 'site', path: 'missing.html', syncedAt: 12345 });
+
+    await instance._applyFileRelocate(7, 'missing.html', 'new.html', 'site');
+
+    expect(instance.repo.get(7)).toEqual(expect.objectContaining({ path: 'new.html', syncedAt: 12345 }));
+    expect(fs.existsSync(path.join(dir, 'new.html'))).toBe(false);
+    expect(authority.isRetired({
+      rootId: 'root-a', logicalPath: 'missing.html', canonicalPath: path.join(dir, 'missing.html'),
+    })).toBe(true);
+  });
+
+  test('folder trash collision commits retirement and drops each descendant room', async () => {
+    const { rooms, authority, instance } = setup();
+    const oldDir = path.join(dir, 'work');
+    const child = path.join(oldDir, 'child.html');
+    fs.mkdirSync(oldDir);
+    fs.writeFileSync(child, doc({ n: 0 }));
+    fs.mkdirSync(path.join(dir, '.trash', 'work'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.trash', 'work', 'existing.html'), 'keep');
+    const target = authority.bindTarget({ rootId: 'root-a', logicalPath: 'work/child.html', canonicalPath: child });
+    rooms.open(child, doc({ n: 0 }), { nodeId: target.identity });
+    await instance.repo.set(7, { type: 'folder', path: 'work' });
+    await instance.repo.set(8, { type: 'site', path: 'work/child.html' });
+
+    await instance._applyFolderDelete(7, 'work');
+
+    expect(fs.existsSync(oldDir)).toBe(false);
+    const relocated = fs.readdirSync(path.join(dir, '.trash')).filter((name) => name.startsWith('work.'));
+    expect(relocated).toHaveLength(1);
+    expect(fs.readFileSync(path.join(dir, '.trash', relocated[0], 'child.html'), 'utf8')).toBe(doc({ n: 0 }));
+    expect(fs.readFileSync(path.join(dir, '.trash', 'work', 'existing.html'), 'utf8')).toBe('keep');
+    expect(rooms.get(child)).toBeNull();
+    expect(authority.isRetired({ rootId: 'root-a', logicalPath: 'work/child.html', canonicalPath: child })).toBe(true);
+    expect(instance.repo.has(7)).toBe(false);
+    expect(instance.repo.has(8)).toBe(false);
+  });
+
+  test('an occupied file destination moves aside first and rekeys both clean rooms', async () => {
+    const { rooms, authority, instance } = setup();
+    const source = path.join(dir, 'a.html');
+    const destination = path.join(dir, 'b.html');
+    const aside = path.join(dir, 'b (conflicted copy).html');
+    const a = authority.bindTarget({ rootId: 'root-a', logicalPath: 'a.html', canonicalPath: source });
+    const b = authority.bindTarget({ rootId: 'root-a', logicalPath: 'b.html', canonicalPath: destination });
+    const aRoom = rooms.open(source, doc({ n: 0 }), { nodeId: a.identity });
+    const bRoom = rooms.open(destination, doc({ n: 0 }), { nodeId: b.identity });
+    await instance.repo.set(7, { type: 'site', path: 'a.html' });
+
+    await instance._applyFileRelocate(7, 'a.html', 'b.html', 'site');
+
+    expect(fs.readFileSync(destination, 'utf8')).toBe('<html>a</html>');
+    expect(fs.readFileSync(aside, 'utf8')).toBe('<html>b</html>');
+    expect(rooms.get(destination)).toBe(aRoom);
+    expect(rooms.get(aside)).toBe(bRoom);
+    expect(authority.identityAt(destination)).toBe(a.identity);
+    expect(authority.identityAt(aside)).toBe(b.identity);
+    expect(authority.isRetired({ rootId: 'root-a', logicalPath: 'a.html', canonicalPath: source })).toBe(true);
+  });
+
+  test('a dirty destination refuses relocation before either rename or tombstone', async () => {
+    const { rooms, authority, instance } = setup();
+    const destination = path.join(dir, 'b.html');
+    const b = authority.bindTarget({ rootId: 'root-a', logicalPath: 'b.html', canonicalPath: destination });
+    const room = rooms.open(destination, doc({ n: 0 }), { nodeId: b.identity });
+    expect(rooms.apply(room, 'client', {
+      name: 'count', n: 1, epoch: room.epoch, ops: [{ op: 'set', path: ['n'], value: 2 }],
+    }, { connected: ['client'] }).error).toBeUndefined();
+    await instance.repo.set(7, { type: 'site', path: 'a.html' });
+
+    await expect(instance._applyFileRelocate(7, 'a.html', 'b.html', 'site'))
+      .rejects.toMatchObject({ code: 'peers-editing' });
+
+    expect(fs.readFileSync(path.join(dir, 'a.html'), 'utf8')).toBe('<html>a</html>');
+    expect(fs.readFileSync(destination, 'utf8')).toBe('<html>b</html>');
+    expect(instance.repo.get(7).path).toBe('a.html');
+    expect(authority.isRetired({ rootId: 'root-a', logicalPath: 'a.html', canonicalPath: path.join(dir, 'a.html') })).toBe(false);
+  });
+
+  test('a room made dirty after a confirmed flush refuses relocation before rename', async () => {
+    const { rooms, authority, instance } = setup();
+    const source = path.join(dir, 'a.html');
+    const target = authority.bindTarget({ rootId: 'root-a', logicalPath: 'a.html', canonicalPath: source });
+    const room = rooms.open(source, doc({ n: 0 }), { nodeId: target.identity });
+    await instance.repo.set(7, { type: 'site', path: 'a.html' });
+    expect(rooms.apply(room, 'client', {
+      name: 'count', n: 1, epoch: room.epoch, ops: [{ op: 'set', path: ['n'], value: 1 }],
+    }, { connected: ['client'] }).error).toBeUndefined();
+    const savedValue = serializeLive({ n: 1 });
+    const saved = `<!doctype html><html><body><script type="application/json" merge="count" clay="live" live-at="${stampOf(room.epoch, room.seq, savedValue)}" live-by="client:1">${savedValue}</script></body></html>`;
+    fs.writeFileSync(source, saved);
+    rooms.fileWritten(source, saved);
+    expect(room.stores.get('count').landed).toBe(room.stores.get('count').last);
+    expect(rooms.apply(room, 'client', {
+      name: 'count', n: 2, epoch: room.epoch, ops: [{ op: 'set', path: ['n'], value: 2 }],
+    }, { connected: ['client'] }).error).toBeUndefined();
+
+    await expect(instance._applyFileRelocate(7, 'a.html', 'c.html', 'site'))
+      .rejects.toMatchObject({ code: 'peers-editing' });
+
+    expect(fs.readFileSync(source, 'utf8')).toBe(saved);
+    expect(fs.existsSync(path.join(dir, 'c.html'))).toBe(false);
+    expect(rooms.get(source)).toBe(room);
+    expect(instance.repo.get(7).path).toBe('a.html');
+  });
+
+  test('a failed second rename commits only the completed occupant aside', async () => {
+    const { rooms, authority, instance } = setup();
+    const source = path.join(dir, 'a.html');
+    const destination = path.join(dir, 'b.html');
+    const aside = path.join(dir, 'b (conflicted copy).html');
+    const a = authority.bindTarget({ rootId: 'root-a', logicalPath: 'a.html', canonicalPath: source });
+    const b = authority.bindTarget({ rootId: 'root-a', logicalPath: 'b.html', canonicalPath: destination });
+    const aRoom = rooms.open(source, doc({ n: 0 }), { nodeId: a.identity });
+    const bRoom = rooms.open(destination, doc({ n: 0 }), { nodeId: b.identity });
+    await instance.repo.set(7, { type: 'site', path: 'a.html' });
+    const rename = fs.promises.rename;
+    let renames = 0;
+    const spy = jest.spyOn(fs.promises, 'rename').mockImplementation((from, to) => {
+      renames += 1;
+      if (renames === 2) return Promise.reject(Object.assign(new Error('second rename failed'), { code: 'EACCES' }));
+      return rename(from, to);
+    });
+    try {
+      await expect(instance._applyFileRelocate(7, 'a.html', 'b.html', 'site'))
+        .rejects.toThrow('second rename failed');
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(renames).toBe(2);
+    expect(fs.readFileSync(source, 'utf8')).toBe('<html>a</html>');
+    expect(fs.readFileSync(aside, 'utf8')).toBe('<html>b</html>');
+    expect(fs.existsSync(destination)).toBe(false);
+    expect(rooms.get(source)).toBe(aRoom);
+    expect(rooms.get(aside)).toBe(bRoom);
+    expect(authority.identityAt(source)).toBe(a.identity);
+    expect(authority.identityAt(aside)).toBe(b.identity);
+    expect(instance.repo.get(7).path).toBe('a.html');
+  });
+
+  test('a folder relocation rekeys an open child and retires unopened old descendants', async () => {
+    const { rooms, authority, instance } = setup();
+    const oldDir = path.join(dir, 'old');
+    fs.mkdirSync(oldDir);
+    const oldChild = path.join(oldDir, 'child.html');
+    fs.writeFileSync(oldChild, doc({ n: 0 }));
+    fs.writeFileSync(path.join(oldDir, 'unopened.html'), '<html>other</html>');
+    const target = authority.bindTarget({ rootId: 'root-a', logicalPath: 'old/child.html', canonicalPath: oldChild });
+    const room = rooms.open(oldChild, doc({ n: 0 }), { nodeId: target.identity });
+    await instance.repo.set(7, { type: 'folder', path: 'old' });
+    await instance.repo.set(8, { type: 'site', path: 'old/child.html' });
+
+    await instance._applyFolderRelocate(7, 'old', 'new');
+
+    const newChild = path.join(dir, 'new', 'child.html');
+    expect(fs.readFileSync(newChild, 'utf8')).toBe(doc({ n: 0 }));
+    expect(rooms.get(newChild)).toBe(room);
+    expect(authority.identityAt(newChild)).toBe(target.identity);
+    expect(authority.isRetired({ rootId: 'root-a', logicalPath: 'old/unopened.html', canonicalPath: path.join(oldDir, 'unopened.html') })).toBe(true);
+    expect(instance.repo.get(8).path).toBe('new/child.html');
+  });
+
+  test('a child write boundary finishes before a queued folder move rekeys its room', async () => {
+    const { rooms, authority, instance } = setup();
+    const oldDir = path.join(dir, 'old');
+    fs.mkdirSync(oldDir);
+    const oldChild = path.join(oldDir, 'child.html');
+    fs.writeFileSync(oldChild, doc({ n: 0 }));
+    const target = authority.bindTarget({ rootId: 'root-a', logicalPath: 'old/child.html', canonicalPath: oldChild });
+    const room = rooms.open(oldChild, doc({ n: 0 }), { nodeId: target.identity });
+    await instance.repo.set(7, { type: 'folder', path: 'old' });
+    await instance.repo.set(8, { type: 'site', path: 'old/child.html' });
+    let entered;
+    let release;
+    const started = new Promise((resolve) => { entered = resolve; });
+    const held = new Promise((resolve) => { release = resolve; });
+    const saving = withDocumentWrite(async () => ({ canonicalPath: oldChild }), async () => {
+      entered();
+      await held;
+      fs.writeFileSync(oldChild, doc({ n: 1 }));
+    });
+    await started;
+    const moving = instance._applyFolderRelocate(7, 'old', 'new');
+    await flush();
+    expect(fs.existsSync(oldChild)).toBe(true);
+    expect(fs.existsSync(path.join(dir, 'new', 'child.html'))).toBe(false);
+
+    release();
+    await saving;
+    await moving;
+
+    const newChild = path.join(dir, 'new', 'child.html');
+    expect(fs.readFileSync(newChild, 'utf8')).toBe(doc({ n: 1 }));
+    expect(rooms.get(newChild)).toBe(room);
+    expect(authority.identityAt(newChild)).toBe(target.identity);
+  });
+
+  test('initial sync correlation moves the room with the file it matches', async () => {
+    const { rooms, authority, instance } = setup();
+    const source = path.join(dir, 'a.html');
+    const destination = path.join(dir, 'b.html');
+    const target = authority.bindTarget({ rootId: 'root-a', logicalPath: 'a.html', canonicalPath: source });
+    const room = rooms.open(source, doc({ n: 0 }), { nodeId: target.identity });
+    const localFiles = new Map([
+      ['a.html', { path: source }],
+      ['b.html', { path: destination }],
+    ]);
+    const map = new Map([['7', { type: 'site', path: 'a.html' }]]);
+
+    await instance.correlateServerFile({ nodeId: 7, path: 'b.html' }, localFiles, map);
+
+    expect(map.get('7').path).toBe('b.html');
+    expect(localFiles.has('b (conflicted copy).html')).toBe(true);
+    expect(fs.readFileSync(destination, 'utf8')).toBe('<html>a</html>');
+    expect(rooms.get(destination)).toBe(room);
+    expect(authority.isRetired({ rootId: 'root-a', logicalPath: 'a.html', canonicalPath: source })).toBe(true);
+  });
+
+  test('locked folder restoration holds the structure gate and preserves its room', async () => {
+    const { rooms, authority, instance } = setup();
+    const oldFolder = path.join(dir, 'moved-uploads');
+    const oldChild = path.join(oldFolder, 'photo.html');
+    fs.mkdirSync(oldFolder);
+    fs.writeFileSync(oldChild, doc({ n: 0 }));
+    const target = authority.bindTarget({ rootId: 'root-a', logicalPath: 'moved-uploads/photo.html', canonicalPath: oldChild });
+    const room = rooms.open(oldChild, doc({ n: 0 }), { nodeId: target.identity });
+
+    expect(await instance.restoreLockedFolder('moved-uploads')).toBe(true);
+
+    const newChild = path.join(dir, 'uploads', 'photo.html');
+    expect(fs.readFileSync(newChild, 'utf8')).toBe(doc({ n: 0 }));
+    expect(rooms.get(newChild)).toBe(room);
+    expect(authority.isRetired({ rootId: 'root-a', logicalPath: 'moved-uploads/photo.html', canonicalPath: oldChild })).toBe(true);
+  });
+
+  test('locked folder restoration reports an occupied destination even when the source vanished', async () => {
+    const { instance } = setup();
+    fs.mkdirSync(path.join(dir, 'uploads'));
+
+    expect(await instance.restoreLockedFolder('missing-uploads')).toBe('occupied');
+    expect(fs.existsSync(path.join(dir, 'uploads'))).toBe(true);
+  });
+});
 
 let dir;
 let engine;

@@ -3,6 +3,8 @@ const { randomUUID } = require('crypto');
 const upath = require('upath');
 const { assertWriteContext, assertStructureContext } = require('./utils/write-queue');
 const { documentEtag } = require('./spec-wire');
+const { publishRecoveredCopy } = require('./utils/backup');
+const { compatibleContinuation, renderRecovered } = require('./external-recovery');
 
 const EVENT_NAMES = new Set(['data', 'data-state', 'data-writer']);
 const RATE_LIMIT = Object.freeze({ rate: 25, burst: 40, idleMs: 60 * 1000 });
@@ -23,7 +25,7 @@ class LocalAuthorityError extends Error {
  * Pure in memory: the caller owns the disk boundary (withDocument), time and
  * the room sweep timer.
  */
-function createLocalAuthority({ rooms, withDocument, readSaved, now = Date.now, newId = randomUUID } = {}) {
+function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered = publishRecoveredCopy, now = Date.now, newId = randomUUID } = {}) {
   if (typeof withDocument !== 'function') throw new Error('createLocalAuthority requires withDocument');
 
   // Required here, never at module load: the server package stays Optional for
@@ -185,6 +187,7 @@ function createLocalAuthority({ rooms, withDocument, readSaved, now = Date.now, 
     const at = normCanonical(canonicalPath);
     const logicalAt = normLogical(logicalPath);
     assertWriteContext(token, canonicalPath);
+    if (registry.get(at)?.recovering) throw new LocalAuthorityError('moved', `recovery is pending for ${at}`);
     const currentIdentity = identityOf(at);
     const identityChanged = claim && claim.identity !== currentIdentity &&
       !(allowInitialBind && claim.identity === null && currentIdentity !== null);
@@ -723,6 +726,7 @@ function createLocalAuthority({ rooms, withDocument, readSaved, now = Date.now, 
     if (!bound || bound.canonicalPath !== target.canonicalPath || bound.identity !== target.identity) return false;
     const record = registry.get(target.canonicalPath);
     if (!record || record.identity !== target.identity) return false;
+    if (record.recovering) return false;
     if (isRetired({ rootId: target.rootId, logicalPath: target.logicalPath, canonicalPath: target.canonicalPath })) return false;
     const now = captureAdmission(target);
     return now.rootId === claim.rootId &&
@@ -940,6 +944,7 @@ function createLocalAuthority({ rooms, withDocument, readSaved, now = Date.now, 
       if (html === null || html === undefined) throw new LocalAuthorityError('not-found', `no saved file for ${key}`);
 
       if (nodeId == null) nodeId = recordFor(currentPath).identity;
+      recordFor(currentPath).baseline = html;
 
       const held = rooms.get(currentPath);
       if (held) return rooms.reset(currentPath, html, { nodeId });
@@ -1029,6 +1034,7 @@ function createLocalAuthority({ rooms, withDocument, readSaved, now = Date.now, 
       throw new LocalAuthorityError('moved', `document identity changed for ${canonicalPath}`);
     }
     const record = recordFor(canonicalPath, staged ? target.identity : undefined);
+    if (record.recovering) throw new LocalAuthorityError('moved', `recovery is pending for ${canonicalPath}`);
     if (staged) {
       bindLogical(target);
       if (staged.explicitCreate) {
@@ -1046,6 +1052,7 @@ function createLocalAuthority({ rooms, withDocument, readSaved, now = Date.now, 
       mtimeNs: stat.mtimeNs,
     };
     record.confirmed = stamp;
+    if (HTML_PATH.test(canonicalPath)) record.baseline = typeof bytes === 'string' ? bytes : bytes.toString('utf8');
 
     // A binary asset has no live tags to reconcile and no HTML to hand editors.
     if (!HTML_PATH.test(canonicalPath)) return stamp;
@@ -1072,6 +1079,137 @@ function createLocalAuthority({ rooms, withDocument, readSaved, now = Date.now, 
    */
   function confirmedStamp(canonicalPath) {
     return registry.get(canonicalPath)?.confirmed ?? null;
+  }
+
+  function detachLogical(binding) {
+    const record = registry.get(binding.canonicalPath);
+    if (record) {
+      for (const member of [...record.members]) {
+        if (member.target.rootId === binding.rootId && member.target.logicalPath === binding.logicalPath) member.close();
+      }
+      for (const snapshot of [...record.snapshots]) {
+        if (snapshot.target.rootId === binding.rootId && snapshot.target.logicalPath === binding.logicalPath) snapshot.dispose();
+      }
+    }
+    for (const [key, current] of [...logical]) {
+      if (current.rootId === binding.rootId && current.logicalPath === binding.logicalPath) logical.delete(key);
+    }
+  }
+
+  async function observeExternal(target, html, token, { removed = false } = {}) {
+    const key = target.canonicalPath;
+    assertWriteContext(token, key);
+    const record = registry.get(key);
+    const room = rooms.get(key);
+    if (removed && !record) {
+      for (const binding of [...logical.values()]) {
+        if (binding.rootId === target.rootId && binding.logicalPath === target.logicalPath &&
+            binding.canonicalPath !== key) detachLogical(binding);
+      }
+    }
+    if (!removed && record && !record.recovering && compatibleContinuation(record.baseline, html, room)) {
+      await confirmKnownWrite(target, html, token, { sender: 'file-watcher', publish: false });
+      return { kind: 'continuation' };
+    }
+
+    const routes = new Map();
+    const include = (binding) => {
+      const root = roots.get(binding.rootId);
+      const rel = normLogical(binding.logicalPath);
+      if (root && rel) routes.set(`${root.id}\n${rel}`, { root, rel });
+    };
+    for (const binding of logical.values()) if (binding.canonicalPath === key) include(binding);
+    include(target);
+    for (const root of roots.values()) {
+      if (within(key, root.canonicalPath) && key !== root.canonicalPath) {
+        const rel = normLogical(upath.relative(root.canonicalPath, key));
+        routes.set(`${root.id}\n${rel}`, { root, rel });
+      }
+    }
+
+    const dirty = room && [...room.stores.values()].some((store) =>
+      !store.ephemeral && (store.landed === -1 || store.landed !== store.last));
+    if (dirty || record?.recovering) {
+      if (!record) throw new Error(`Missing recovery record for ${key}`);
+      if (!record.recovery) {
+        const hold = rooms.holdPersistent(key, { nodeId: room.nodeId });
+        record.recovering = true;
+        record.recovery = { hold, html: null, published: new Map(), byDirectory: new Map() };
+      }
+      if (!record.recovery.html) record.recovery.html = renderRecovered(record.baseline, room);
+      if (!routes.size) throw new Error(`No recovered-copy destination for ${key}`);
+      for (const [routeKey, { root, rel }] of routes) {
+        if (record.recovery.published.has(routeKey)) continue;
+        const directory = upath.join(root.canonicalPath, '.hyperclay/recovered', rel.replace(/\.(html|htmlclay)$/i, ''));
+        let version = record.recovery.byDirectory.get(directory);
+        if (!version) {
+          const published = await publishRecovered(root.path, rel, record.recovery.html);
+          version = `recovered-${published.filename}`;
+          record.recovery.byDirectory.set(directory, version);
+        }
+        record.recovery.published.set(routeKey, version);
+      }
+    }
+
+    const recovered = record?.recovery?.published.get(`${target.rootId}\n${normLogical(target.logicalPath)}`) ??
+      record?.recovery?.published.values().next().value ?? null;
+    const oldBindings = record ? bindingsFor(key, target) : [];
+    if (record) {
+      for (const member of [...record.members]) member.close();
+      for (const snapshot of [...record.snapshots]) snapshot.dispose();
+      rooms.drop(key);
+      if (record.recovery) rooms.releasePersistent(record.recovery.hold);
+      registry.delete(key);
+      for (const [bindingKey, binding] of [...logical]) if (binding.canonicalPath === key) logical.delete(bindingKey);
+    }
+    setAdmission(token, { rootId: target.rootId, logicalPath: target.logicalPath, canonicalPath: key, active: false });
+    if (!removed) {
+      setAdmission(token, { rootId: target.rootId, logicalPath: target.logicalPath, canonicalPath: key, active: true });
+      const replacement = bindTarget(target);
+      await confirmKnownWrite(replacement, html, token, { sender: 'file-watcher', publish: false });
+    }
+    for (const binding of oldBindings) {
+      if (target.live && binding.rootId === target.rootId && binding.logicalPath === target.logicalPath) continue;
+      const live = binding.live;
+      if (!live || typeof live.notify !== 'function') continue;
+      const version = record?.recovery?.published.get(`${binding.rootId}\n${normLogical(binding.logicalPath)}`) ?? recovered;
+      try {
+        live.notify(binding.logicalPath, {
+          msgType: 'warning', msg: `${upath.basename(binding.logicalPath)} changed on disk outside this tab`,
+          action: 'reload',
+          data: { kind: 'external-change', sender: 'file-system', reason: 'external-replacement',
+            ...(version && { recovered: version }) },
+        });
+      } catch (error) {
+        console.error('[local-authority] replacement notification failed:', error && error.message ? error.message : error);
+      }
+    }
+    if (removed) return { kind: 'removal', recovered };
+    return { kind: 'replacement', recovered };
+  }
+
+  async function observeRemovedPrefix(rootId, logicalPath, canonicalPath, token) {
+    assertStructureContext(token);
+    setAdmission(token, { rootId, logicalPath, canonicalPath, active: false, prefix: true });
+    const targets = new Map();
+    for (const binding of logical.values()) {
+      if (binding.rootId === rootId && within(normLogical(binding.logicalPath), normLogical(logicalPath))) {
+        if (!within(binding.canonicalPath, canonicalPath)) {
+          detachLogical(binding);
+          continue;
+        }
+        targets.set(binding.canonicalPath, binding);
+      }
+    }
+    const root = roots.get(rootId);
+    for (const key of registry.keys()) {
+      if (!within(key, canonicalPath) || targets.has(key)) continue;
+      targets.set(key, {
+        rootId, logicalPath: root ? upath.relative(root.canonicalPath, key) : logicalPath,
+        canonicalPath: key,
+      });
+    }
+    for (const target of targets.values()) await observeExternal({ ...target, live: null }, null, token, { removed: true });
   }
 
   function registerRoot(root = {}, { owner = 'server' } = {}) {
@@ -1138,6 +1276,8 @@ function createLocalAuthority({ rooms, withDocument, readSaved, now = Date.now, 
     closeRoot,
     confirmKnownWrite,
     confirmedStamp,
+    observeExternal,
+    observeRemovedPrefix,
     setAdmission,
     isRetired,
     captureAdmission,

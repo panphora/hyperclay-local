@@ -127,10 +127,12 @@ async function moveFile(source, destination) {
 
   try {
     await fs.rename(source, destination);
+    return { copied: false };
   } catch (error) {
     if (error.code === 'EXDEV') {
       await fs.copyFile(source, destination);
       await fs.unlink(source);
+      return { copied: true };
     } else {
       throw error;
     }

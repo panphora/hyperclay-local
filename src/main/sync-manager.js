@@ -664,7 +664,7 @@ class SyncManager extends EventEmitter {
     const entry = this.sessions.get(sessionId);
     if (!entry) return { ok: false, error: 'unknown' };
     const { resolveConflict: resolve } = require('../sync-engine/reconcile/execute');
-    const result = await resolve(entry.engine, { path, choice });
+    const result = await entry.engine.serial(() => resolve(entry.engine, { path, choice }));
     await this._refreshConflicts(entry);
     return result;
   }

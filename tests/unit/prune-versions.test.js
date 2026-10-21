@@ -261,6 +261,27 @@ describe('pruneSiteVersions', () => {
     return name;
   }
 
+  test('prunes old ordinary versions while every recovered copy survives both prune entry points', async () => {
+    const ordinary = path.join(dir, '.hyperclay', 'versions', 'board');
+    const recovered = path.join(dir, '.hyperclay', 'recovered', 'board');
+    await fs.mkdir(ordinary, { recursive: true });
+    await fs.mkdir(recovered, { recursive: true });
+    for (let i = 0; i < 25; i++) {
+      const name = `2020-01-01-00-00-${String(i).padStart(2, '0')}-000Z.html`;
+      await fs.writeFile(path.join(ordinary, name), 'ordinary');
+      await fs.writeFile(path.join(recovered, name), 'recovered');
+    }
+
+    const ordinaryResult = await pruneSiteVersions(dir, ordinary, now);
+    const recoveredResult = await pruneSiteVersions(dir, recovered, now);
+    await pruneAllVersions(dir, now);
+
+    expect(ordinaryResult.deleted).toHaveLength(5);
+    expect(recoveredResult.deleted).toEqual([]);
+    expect(await fs.readdir(ordinary)).toHaveLength(20);
+    expect(await fs.readdir(recovered)).toHaveLength(25);
+  });
+
   test('keeps everything inside the 60-day window', async () => {
     for (let i = 0; i < 5; i++) await writeVersion(now - i * DAY);
 

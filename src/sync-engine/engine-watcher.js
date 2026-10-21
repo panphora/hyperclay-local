@@ -144,9 +144,15 @@ module.exports = {
    */
   async restoreLockedFolder(fromRel) {
     const target = path.join(this.syncFolder, LOCKED_FOLDER);
-    if (fileExists(target)) return 'occupied';
+    if (!this.localAuthority && fileExists(target)) return 'occupied';
     try {
-      await fs.rename(path.join(this.syncFolder, fromRel), target);
+      if (this.localAuthority) {
+        const outcome = await this._authorityRelocate(fromRel, LOCKED_FOLDER, { isDir: true, refuseOccupied: true });
+        if (outcome.occupied) return 'occupied';
+        if (!outcome.moved && !outcome.unchanged) return false;
+      } else {
+        await fs.rename(path.join(this.syncFolder, fromRel), target);
+      }
       console.log(`[SYNC] ${fromRel} renamed back to ${LOCKED_FOLDER}`);
       if (this.logger) {
         this.logger.warn('WATCHER', 'Root uploads folder renamed back', { from: fromRel, to: LOCKED_FOLDER });

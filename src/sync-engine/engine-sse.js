@@ -32,7 +32,8 @@ const { decide, A } = require('./reconcile/decide');
 const { SYNC_CONFIG } = require('./constants');
 const nodeMap = require('./node-map');
 const { getConsentRegistry, resolveWritePath } = require('../main/utils/path-resolver');
-const { withLocalDocumentWrite, withLocalDirectoryChange, claimLocalDocumentTarget } = require('./local-boundary');
+const { withStructureChange } = require('../main/utils/write-queue');
+const { withLocalDocumentWrite, withLocalDirectoryChange, withLocalStructureDelete, claimLocalDocumentTarget, structureEntryFor } = require('./local-boundary');
 
 /**
  * The machine fields of a refused connect: the HTTP status, plus the `code` its
@@ -428,19 +429,21 @@ module.exports = {
     const localPath = path.join(this.syncFolder, localFilename);
     const trashPath = path.join(this.syncFolder, '.trash', localFilename);
 
-    const exists = await fileExists(localPath);
-    if (!exists) {
+    const authorityResult = this.localAuthority ? await withLocalStructureDelete(this, localFilename, async (source) => {
+      await ensureDirectory(path.dirname(trashPath));
+      await this._applyRemoteFsChange([localFilename], () => moveFile(source, trashPath));
+    }) : null;
+    if (authorityResult?.stale) return;
+    if (authorityResult?.missing || (!this.localAuthority && !(await fileExists(localPath)))) {
       console.log(`[SYNC] SSE node-deleted: ${localFilename} not found locally`);
       await this.repo.delete(nodeId);
       return;
     }
 
-    await ensureDirectory(path.dirname(trashPath));
-
-    // cascade.mark via _applyRemoteFsChange is the sole suppression mechanism
-    // for SSE-driven FS changes — it runs before the watcher's wasBrowserSave
-    // check. No markBrowserSave needed here.
-    await this._applyRemoteFsChange([localFilename], () => moveFile(localPath, trashPath));
+    if (!this.localAuthority) {
+      await ensureDirectory(path.dirname(trashPath));
+      await this._applyRemoteFsChange([localFilename], () => moveFile(localPath, trashPath));
+    }
 
     await this.repo.delete(nodeId);
 
@@ -461,8 +464,23 @@ module.exports = {
       localFolderPath,
       ...descendants.map(({ entry: e }) => e.path)
     ];
-    const exists = await fileExists(localPath);
-    if (!exists) {
+    const moveToTrash = async (source) => {
+      await ensureDirectory(path.dirname(trashPath));
+      await this._applyRemoteFsChange(oldSidePaths, async () => {
+        try {
+          await moveFile(source, trashPath);
+        } catch (error) {
+          const timestampedTrashPath = `${trashPath}.${Date.now()}`;
+          console.warn(`[SYNC] SSE node-deleted: trash collision, using ${timestampedTrashPath}`);
+          await moveFile(source, timestampedTrashPath);
+        }
+      });
+    };
+    const authorityResult = this.localAuthority
+      ? await withLocalStructureDelete(this, localFolderPath, moveToTrash, { isDir: true })
+      : null;
+    if (authorityResult?.stale) return;
+    if (authorityResult?.missing || (!this.localAuthority && !(await fileExists(localPath)))) {
       console.log(`[SYNC] SSE node-deleted: folder ${localFolderPath} not found locally, cleaning nodeMap only`);
       await this.repo.apply(async (map) => {
         for (const { nodeId: descId } of descendants) {
@@ -473,17 +491,7 @@ module.exports = {
       return;
     }
 
-    await ensureDirectory(path.dirname(trashPath));
-
-    await this._applyRemoteFsChange(oldSidePaths, async () => {
-      try {
-        await moveFile(localPath, trashPath);
-      } catch (error) {
-        const timestampedTrashPath = `${trashPath}.${Date.now()}`;
-        console.warn(`[SYNC] SSE node-deleted: trash collision, using ${timestampedTrashPath}`);
-        await moveFile(localPath, timestampedTrashPath);
-      }
-    });
+    if (!this.localAuthority) await moveToTrash(localPath);
 
     await this.repo.apply(async (map) => {
       for (const { nodeId: descId } of descendants) {
@@ -529,12 +537,105 @@ module.exports = {
     return aside;
   },
 
+  async _authorityRelocate(fromRel, toRel, { isDir = false, refuseOccupied = false } = {}) {
+    const generation = this.generation;
+    const authority = this.localAuthority;
+    const result = await withStructureChange(async (token) => {
+      if (generation !== this.generation) return { stale: true };
+      const destination = await structureEntryFor(this, toRel);
+      if (refuseOccupied && destination.exists) return { occupied: true };
+      const source = await structureEntryFor(this, fromRel);
+      if (!source.exists) {
+        authority.setAdmission(token, {
+          rootId: this.rootId, logicalPath: fromRel, canonicalPath: source.canonical,
+          active: false, prefix: isDir,
+        });
+        return { missing: true };
+      }
+      if (fromRel === toRel) return { unchanged: true };
+      const sameEntry = destination.exists && await this._isSameEntry(fromRel, toRel);
+      let asideRel = null;
+      let aside = null;
+      if (destination.exists && !sameEntry) {
+        const ext = path.extname(toRel);
+        const stem = toRel.slice(0, toRel.length - ext.length);
+        for (let n = 1; n <= 100; n++) {
+          const candidate = `${stem} (conflicted copy${n === 1 ? '' : ` ${n}`})${ext}`;
+          const candidateEntry = await structureEntryFor(this, candidate);
+          if (!candidateEntry.exists) {
+            asideRel = candidate;
+            aside = candidateEntry;
+            break;
+          }
+        }
+        if (!aside) throw new Error(`No conflicted-copy path available for ${toRel}`);
+      }
+      const steps = [];
+      if (aside) steps.push({
+        from: destination,
+        to: { location: aside.location, canonical: aside.canonical },
+        fromRel: toRel,
+        toRel: asideRel,
+      });
+      steps.push({
+        from: source,
+        to: { location: destination.location, canonical: destination.location },
+        fromRel,
+        toRel,
+      });
+      const plan = authority.prepareStructure(token, { rootId: this.rootId, steps });
+      let completed = 0;
+      const copiedSteps = [];
+      let error = null;
+      try {
+        if (aside) {
+          this.cascade.mark([toRel, asideRel]);
+          const moved = await moveFile(destination.location, aside.location);
+          if (moved?.copied) copiedSteps.push(0);
+          completed = 1;
+        }
+        this.cascade.mark([fromRel, toRel]);
+        const moved = await moveFile(source.location, destination.location);
+        if (moved?.copied) copiedSteps.push(steps.length - 1);
+        completed = steps.length;
+      } catch (caught) {
+        error = caught;
+      } finally {
+        try {
+          if (completed) authority.commitStructure(plan, completed, token, { copiedSteps });
+        } finally {
+          authority.releaseStructure(plan, token);
+        }
+      }
+      return { moved: completed === steps.length, aside: completed && asideRel, error };
+    });
+    if (result.aside) {
+      console.warn(`[SYNC] ${toRel} was occupied; moved the occupant to ${result.aside}`);
+      this.emit('file-synced', { file: result.aside, action: 'conflict-copy', source: 'relocate' });
+    }
+    if (result.error) throw result.error;
+    return result;
+  },
+
   async _applyFileRelocate(nodeId, oldPath, newPath, nodeType) {
     this.resolveContainedPath(newPath);
     const entry = this.repo.get(nodeId);
     const currentPath = entry?.path || oldPath;
     const localPath = path.join(this.syncFolder, currentPath);
     const newLocalPath = path.join(this.syncFolder, newPath);
+
+    if (this.localAuthority) {
+      const outcome = await this._authorityRelocate(currentPath, newPath);
+      if (outcome.stale) return;
+      if (currentPath !== newPath) await this.repo.addTombstone(currentPath);
+      const inode = await nodeMap.getInode(newLocalPath);
+      const alreadyMoved = outcome.moved || await fileExists(newLocalPath);
+      await this.repo.set(nodeId, {
+        ...(entry || { checksum: null }), type: nodeType, path: newPath, inode,
+        syncedAt: alreadyMoved ? Date.now() : entry?.syncedAt,
+      });
+      return;
+    }
 
     // Tombstone the old path so a stale tab still holding the pre-move URL gets a 409 on /save instead of creating a ghost node.
     if (currentPath && currentPath !== newPath) {
@@ -605,6 +706,20 @@ module.exports = {
       ...descendants.map(({ entry: e }) => e.path),
       ...Array.from(oldToNew.values()).map(v => v.newPath)
     ];
+    if (this.localAuthority) {
+      const outcome = await this._authorityRelocate(oldPath, newPath, { isDir: true });
+      if (outcome.stale) return;
+      if (oldPath !== newPath) {
+        await this.repo.addTombstones([oldPath, ...descendants.map(({ entry: e }) => e.path)]);
+      }
+      await this.repo.apply(async (map) => {
+        this._applyFolderRelocateNodeMapUpdates(map, nodeId, newPath, oldToNew);
+      });
+      if (outcome.moved) {
+        this.emit('file-synced', { file: newPath, action: 'relocate', source: 'sse', type: 'folder' });
+      }
+      return;
+    }
     this.cascade.mark(allSuppressedPaths);
 
     // Tombstone the folder and every descendant's old path — a stale tab on any

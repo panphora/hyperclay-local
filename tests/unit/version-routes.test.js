@@ -13,7 +13,7 @@ const os = require('os');
 const request = require('supertest');
 
 const { createApp } = require('../../src/main/server.js');
-const { createBackup } = require('../../src/main/utils/backup.js');
+const { createBackup, publishRecoveredCopy } = require('../../src/main/utils/backup.js');
 const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 const { withoutInjectedDocumentEtag } = require('../helpers/served-metadata');
 
@@ -139,6 +139,27 @@ describe('version history routes', () => {
     expect(older.seq).toBe(0);
     expect(newest.name).toBe(`2031-01-01-00-00-00-000+0000-001.html`);
     expect(older.name).toBe(FUTURE_STAMP);
+  });
+
+  test('a recovered copy has a distinct version ID and restores with a safety backup', async () => {
+    await fs.writeFile(docPath('board.html'), PAGE('disk'));
+    const published = await publishRecoveredCopy(dir, 'board.html', PAGE('recovered'));
+    expect(published.filename).toMatch(/\.html$/);
+    expect(await fs.readFile(published.full, 'utf8')).toBe(PAGE('recovered'));
+
+    const listed = await list();
+    expect(listed.status).toBe(200);
+    expect(listed.body.versions).toEqual([expect.objectContaining({
+      name: `recovered-${published.filename}`, kind: 'recovered', size: Buffer.byteLength(PAGE('recovered')),
+    })]);
+    const read = await readVersion('board.html', `recovered-${published.filename}`);
+    expect(read.status).toBe(200);
+    expect(read.text).toBe(PAGE('recovered'));
+
+    const restored = await restore('board.html', `recovered-${published.filename}`);
+    expect(restored.status).toBe(200);
+    expect(await fs.readFile(docPath('board.html'), 'utf8')).toBe(PAGE('recovered'));
+    expect((await fs.readdir(versionsDir('board'))).length).toBeGreaterThan(0);
   });
 
   test('without the marker the route is not there, and the folder serves normally', async () => {
