@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 if (process.argv.slice(2).includes('--status-json')) {
   const args = process.argv.slice(2);
@@ -281,6 +282,15 @@ async function newBuildGates({ kind }) {
   verifyUiPass();
 }
 
+function writeChangelogSection(version) {
+  const tag = `v${version}`;
+  const tagged = spawnSync('git', ['rev-parse', '-q', '--verify', `refs/tags/${tag}`], { cwd: ROOT_DIR }).status === 0;
+  const result = spawnSync('changelog-section', [
+    '--repo', ROOT_DIR, '--release', version, '--name', 'hyperclay-local', '--to', tagged ? tag : 'HEAD'
+  ], { cwd: ROOT_DIR, stdio: ['ignore', 'inherit', 'inherit'] });
+  if (result.status !== 0) logWarn(`changelog-section could not draft the ${tag} section; the changelog scan will read its commits instead`);
+}
+
 async function main() {
   process.chdir(ROOT_DIR);
   initLog();
@@ -305,6 +315,7 @@ async function main() {
       logSection('Release complete');
       logSuccess(`v${outcome.state.version}: publication, sizes, site and both documentation targets are verified`);
       logInfo('https://hyperclaylocal.com');
+      writeChangelogSection(outcome.state.version);
     } else if (outcome.outcome === 'dry-run-complete') {
       logSection('Dry run complete');
       logSuccess(`v${outcome.state.version} built, signed and notarized. No installers were published.`);
