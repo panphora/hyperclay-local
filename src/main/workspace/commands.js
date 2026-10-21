@@ -2,7 +2,8 @@ const fsModule = require('fs');
 const fs = fsModule.promises;
 const path = require('upath');
 const { getConsentRegistry, resolveReadPath, resolveWritePath, validateSegments } = require('../utils/path-resolver');
-const { withStructureChange } = require('../utils/write-queue');
+const { withDocumentWrite, withStructureChange, atomicWriteFile } = require('../utils/write-queue');
+const templateManifest = require('../document-templates/manifest.json');
 
 function refusal(reason, message, status = 400) {
   return Object.assign(new Error(message), { reason, status });
@@ -57,7 +58,33 @@ function restoredName(original, index) {
 
 async function executeCommand({ root, authority, engine, request, tree, moved, changed }) {
   if (!request || typeof request !== 'object') throw refusal('forbidden', 'Invalid command');
-  if (request.command === 'create') throw refusal('unsupported', 'Document creation is not available yet', 501);
+  if (request.command === 'create') {
+    const template = templateManifest.find(item => item.id === request.template);
+    if (!template) throw refusal('unsupported', 'Unknown document template', 501);
+    const parent = request.parent == null || request.parent === '' ? '' : safePath(request.parent);
+    const name = safeName(request.name);
+    const rel = parent ? `${parent}/${name}` : name;
+    const registry = getConsentRegistry(root.path);
+    const bytes = await fs.readFile(path.join(__dirname, '../document-templates', template.file));
+    const runCreate = () => withDocumentWrite(async () => {
+      const destination = await resolveWritePath(registry, rel);
+      return { canonicalPath: destination };
+    }, async ({ canonicalPath }, token) => {
+      const parentPath = parent ? await resolveReadPath(registry, parent) : await fs.realpath(root.path);
+      if (!(await fs.stat(parentPath)).isDirectory()) throw refusal('forbidden', 'Parent is not a folder', 403);
+      if (await exists(canonicalPath)) throw refusal('conflict', 'Destination exists', 409);
+      const claim = authority?.captureAdmission({ rootId: root.id, logicalPath: rel, canonicalPath });
+      const target = authority?.admitWriteTarget(claim, {
+        rootId: root.id, logicalPath: rel, canonicalPath, origin: null, live: null,
+      }, token, { explicitCreate: true });
+      await atomicWriteFile(canonicalPath, bytes, null);
+      if (target) await authority.confirmKnownWrite(target, bytes, token);
+      await tree.scan(rel);
+      changed(root.id, [rel]);
+      return { path: rel };
+    });
+    return engine?.serial ? engine.serial(runCreate) : runCreate();
+  }
   const run = async () => withStructureChange(async token => {
     const registry = getConsentRegistry(root.path);
     const parentOf = value => value == null || value === '' ? '' : safePath(value);

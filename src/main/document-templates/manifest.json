@@ -1,0 +1,32 @@
+[
+  {
+    "id": "page",
+    "file": "page.html",
+    "bytes": 885,
+    "sha256": "a533cf85a48990c4789870972d973d1d9722eb6746385c13f6027510b8a4db6c"
+  },
+  {
+    "id": "blank",
+    "file": "blank.html",
+    "bytes": 491,
+    "sha256": "1591d01f06f9cdd97527abf4abf81c5eb24720d84575f56cf28e4896fb20569c"
+  },
+  {
+    "id": "devlog",
+    "file": "devlog.html",
+    "bytes": 94487,
+    "sha256": "1be01308f8874b0435740938a888e3a1cf4351fe705e36267787d9dfd71a4d75"
+  },
+  {
+    "id": "kanban",
+    "file": "kanban.html",
+    "bytes": 150492,
+    "sha256": "f1bc67d217ca8d47b4a47a12c973f75b9114b02d9c8a53f07c7e35c8e3624b5c"
+  },
+  {
+    "id": "landing",
+    "file": "landing.html",
+    "bytes": 187889,
+    "sha256": "b1b94d6eb579f98f473378065758396cf20db2e688e36030f3462cdcf486df52"
+  }
+]

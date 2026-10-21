@@ -6,6 +6,7 @@ const { createShellServer } = require('../../src/main/workspace/shell-server');
 
 async function fixture(options = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-shell-'));
+  const appDataPath = options.appDataPath || await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-app-data-'));
   const root = { id: 'root-a', kind: options.kind || 'personal', path: dir, port: 4321 };
   const observer = new EventEmitter();
   observer.subscribe = listener => { observer.on('raw', listener); return () => observer.off('raw', listener); };
@@ -16,6 +17,7 @@ async function fixture(options = {}) {
   let servedRoot = null;
   const shell = createShellServer({
     authority: options.authority || null, rootPool, observerFor: () => observer,
+    checkpoint: options.checkpoint || null, appDataPath,
     syncManager: () => options.syncManager || null,
     settings: () => settings, appVersion: '1.31.1',
     connection: () => ({ online: true, account: { signedIn: false, username: null } }),
@@ -25,6 +27,7 @@ async function fixture(options = {}) {
     await shell.stop();
     if (servedRoot) await servedRoot.stop();
     await fs.rm(dir, { recursive: true, force: true });
+    if (!options.appDataPath) await fs.rm(appDataPath, { recursive: true, force: true });
   };
   const startRoot = async () => {
     root.port = 0;

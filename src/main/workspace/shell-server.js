@@ -5,6 +5,8 @@ const path = require('upath');
 const { getConsentRegistry, resolveReadPath } = require('../utils/path-resolver');
 const { RootTree, entryFor } = require('./tree');
 const { executeCommand, safePath, refusal } = require('./commands');
+const { createAutoNamer } = require('./auto-name');
+const { SearchIndex } = require('./search-index');
 const { handleWorkspaceRoute } = require('./routes');
 
 const MIME = { '.js': 'text/javascript', '.css': 'text/css', '.woff': 'font/woff', '.woff2': 'font/woff2' };
@@ -26,14 +28,24 @@ async function readBody(req) {
 }
 
 function createShellServer({ authority, rootPool, observerFor, settings, appVersion, connection = () => ({}),
-  syncManager = () => null, rootTitleFor = root => path.basename(root.path) }) {
+  syncManager = () => null, rootTitleFor = root => path.basename(root.path), appDataPath = null, checkpoint = null }) {
   const token = crypto.randomBytes(32).toString('base64url');
   const bootstrapSecret = crypto.randomBytes(32).toString('base64url');
   const epoch = crypto.randomBytes(16).toString('base64url');
   const trees = new Map();
+  const indexes = new Map();
   const wires = new Map();
   const subscribers = new Set();
   const changedPaths = new Map();
+  const autoNamer = appDataPath ? createAutoNamer({
+    appDataPath, authority, checkpoint,
+    rootFor: id => (settings().roots || []).find(root => root.id === id && rootPool.get(id)?.state === 'running'),
+    rename: async (root, from, name) => executeCommand({
+      root, authority, engine: rootPool.get(root.id)?.deps?.syncEngineFor?.(),
+      request: { command: 'rename', path: from, name }, tree: await treeFor(root), moved, changed,
+    }),
+  }) : null;
+  checkpoint?.setAutoNamer(autoNamer);
   let nextWireId = 1;
   let seq = 0;
   let server = null;
@@ -66,7 +78,10 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
   function changed(rootId, paths) {
     let held = changedPaths.get(rootId);
     if (!held) { held = new Set(); changedPaths.set(rootId, held); }
-    for (const rel of paths) held.add(rel);
+    for (const rel of Array.isArray(paths) ? paths : [paths]) {
+      held.add(rel);
+      indexes.get(rootId)?.update(rel);
+    }
     if (changedTimer) return;
     changedTimer = setTimeout(() => {
       changedTimer = null;
@@ -77,6 +92,8 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
   }
 
   function moved(rootId, from, to) {
+    indexes.get(rootId)?.update(from);
+    if (to) indexes.get(rootId)?.update(to);
     const held = changedPaths.get(rootId);
     held?.delete(from);
     held?.delete(to);
@@ -94,6 +111,10 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
     if (!tree) {
       const observer = observerFor(root.id);
       tree = new RootTree(root, observer, changed);
+      if (autoNamer && observer) tree.unsubscribeAutoName = observer.subscribe(({ event, rel }) => {
+        autoNamer.observe(root, event, rel).catch(error => console.error(`[auto-name] observer: ${error.message}`));
+      });
+      if (observer) tree.unsubscribeSearch = observer.subscribe(({ rel }) => indexes.get(root.id)?.update(rel));
       trees.set(root.id, tree);
     }
     await tree.start();
@@ -145,6 +166,8 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
         const tree = await treeFor(root);
         const result = await executeCommand({ root, authority, engine: rootPool.get(id)?.deps?.syncEngineFor?.(),
           request, tree, moved, changed });
+        if (request.command === 'create') await autoNamer?.record(root, result.path, request.template);
+        else await autoNamer?.command(root, request, result.path);
         return sendJson(res, 200, result);
       }
       if (req.method !== 'GET') throw refusal('unsupported', 'Method is not available', 405);
@@ -167,8 +190,20 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
       }
       if (route === 'search') {
         const q = fold((url.searchParams.get('q') || '').trim());
-        const items = tree.all().filter(item => fold(item.name).includes(q))
+        const names = tree.all().filter(item => fold(item.name).includes(q))
           .sort((a, b) => collator.compare(a.name, b.name) || collator.compare(a.path, b.path));
+        let items = names;
+        if (q && appDataPath) {
+          let index = indexes.get(id);
+          if (!index) { index = new SearchIndex(root, appDataPath); indexes.set(id, index); }
+          const found = await index.query(q);
+          const byPath = new Map(tree.all().filter(item => item.kind === 'document').map(item => [item.path, item]));
+          const named = new Set(names.map(item => item.path));
+          const content = found.filter(hit => byPath.has(hit.path) && !named.has(hit.path))
+            .map(hit => ({ ...byPath.get(hit.path), snippet: hit.snippet }))
+            .sort((a, b) => collator.compare(a.name, b.name) || collator.compare(a.path, b.path));
+          items = [...names, ...content];
+        }
         return sendJson(res, 200, tree.page(items, url.searchParams.get('cursor'), `search:${q}`));
       }
       if (route === 'document') {
@@ -203,6 +238,7 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
 
   return {
     token, bootstrapSecret,
+    autoNamer,
     get origin() { return origin; },
     frame(rootId, rel, wireId) {
       return origin && wires.get(`${rootId}:${rel}`) === wireId ? { wireId, shellOrigin: origin } : null;
@@ -210,7 +246,11 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
     rootsChanged() {
       const current = new Map((settings().roots || []).map(root => [root.id, root.path]));
       for (const [id, tree] of trees) {
-        if (current.get(id) !== tree.root.path) { tree.close(); trees.delete(id); }
+        if (current.get(id) !== tree.root.path) {
+          tree.unsubscribeAutoName?.(); tree.unsubscribeSearch?.(); tree.close(); trees.delete(id);
+          indexes.get(id)?.close().catch(() => {}); indexes.delete(id);
+          if (!current.has(id)) autoNamer?.removeRoot(id).catch(error => console.error(`[auto-name] root: ${error.message}`));
+        }
       }
       for (const key of wires.keys()) if (!current.has(key.split(':')[0])) wires.delete(key);
       emit({ type: 'roots' });
@@ -245,8 +285,11 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
     async stop() {
       if (changedTimer) clearTimeout(changedTimer);
       changedPaths.clear();
-      for (const tree of trees.values()) tree.close();
+      for (const tree of trees.values()) { tree.unsubscribeAutoName?.(); tree.unsubscribeSearch?.(); tree.close(); }
       trees.clear();
+      await Promise.all([...indexes.values()].map(index => index.close()));
+      indexes.clear();
+      autoNamer?.close();
       for (const res of subscribers) res.end();
       subscribers.clear();
       if (server) await new Promise(resolve => server.close(resolve));

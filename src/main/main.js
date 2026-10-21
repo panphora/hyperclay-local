@@ -128,6 +128,8 @@ const pool = new RootServerPool({
 
 const shellServer = createShellServer({
   authority: localAuthority,
+  checkpoint: localCheckpoint,
+  appDataPath: app.getPath('userData'),
   rootPool: pool,
   syncManager: () => manager,
   observerFor,

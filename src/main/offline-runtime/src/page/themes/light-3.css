@@ -1,0 +1,128 @@
+/* Light 3: sage-grey paper with a Georgia title, quiet green-grey chrome and soft wash highlights, from the Codex bake-off seat. */
+
+.page-shell {
+  --chart-1: #3c5039;
+  --chart-2: #303931;
+  --chart-3: #727c70;
+  --chart-4: #495048;
+  --chart-5: #8c9187;
+  --chart-6: #c9cdbe;
+  --chart-text: #495048;
+  --page-bg: #f8f7f3;
+  --page-ink: #495048;
+  --page-ink-strong: #303931;
+  --page-ink-soft: #727c70;
+  --page-ink-faint: #8c9187;
+  --page-rule: #e3e5dc;
+  --page-accent: #3c5039;
+  --page-caret: #303931;
+  --page-selection: #e0e7d8;
+
+  --page-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --page-font-display: Georgia, "Times New Roman", serif;
+  --page-font-heading: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --page-font-size: 16px;
+  --page-line-height: 1.72;
+  --page-measure: 650px;
+  --page-pad-top: 115px;
+  --page-h1-size: 38px;
+  --page-h1-weight: 400;
+  --page-h1-tracking: -0.034em;
+  --page-h1-line: 1.18;
+  --page-h2-size: 14px;
+  --page-h2-weight: 600;
+  --page-h3-size: 13px;
+  --page-h3-weight: 600;
+  --page-block-gap: 1.3em;
+  --page-indent: 1.375em;
+
+  --page-marker: #727c70;
+  --page-check-size: 15px;
+  --page-check-radius: 3px;
+  --page-check-border: #8c9187;
+  --page-check-fill: #eef0e8;
+  --page-check-ink: #727c70;
+  --page-done-ink: #8c9187;
+  --page-toggle-ink: #727c70;
+  --page-callout-bg: #eef0e8;
+  --page-callout-line: transparent;
+  --page-code-bg: rgba(48, 57, 49, 0.05);
+  --page-code-ink: #303931;
+
+  --page-chrome-ink-rest: rgba(114, 124, 112, 0.40);
+  --page-chrome-ink-moved: rgba(114, 124, 112, 0.59);
+  --page-chrome-bg-rest: rgba(252, 251, 248, 0.40);
+  --page-chrome-bg-moved: rgba(252, 251, 248, 0.59);
+  --page-chrome-line-rest: rgba(201, 205, 190, 0.40);
+  --page-chrome-line-moved: rgba(201, 205, 190, 0.59);
+  --page-chrome-shadow-rest: none;
+  --page-chrome-shadow-moved: none;
+  --page-chrome-radius: 9px;
+  --page-plus-size: 27px;
+  --page-fade: 220ms;
+
+  --page-pop-bg: #fcfbf8;
+  --page-pop-ink: #495048;
+  --page-pop-muted: #8c9187;
+  --page-pop-line: #e3e5dc;
+  --page-pop-shadow: 0 5px 20px rgba(36, 44, 32, 0.06), 0 1px 3px rgba(36, 44, 32, 0.03);
+  --page-pop-hover: #eef0e8;
+  --page-pop-radius: 12px;
+  --page-bar-bg: #fcfbf8;
+  --page-bar-ink: #727c70;
+  --page-scrim: rgba(36, 44, 32, 0.12);
+}
+
+article[data-page] figure[data-type="chart"] { --chart-1: #3c5039; --chart-2: #303931; --chart-3: #727c70; --chart-4: #495048; --chart-5: #8c9187; --chart-6: #c9cdbe; --chart-text: #495048; max-width: 100%; }
+article[data-page] figure[data-type="chart"] > svg { display: block; width: 100%; height: auto; color: var(--chart-text); font: 12px system-ui, sans-serif; }
+
+.page-shell .page-editor { letter-spacing: 0.002em; }
+.page-shell .page-editor h1 { margin-block: 0 0.74em; }
+.page-shell .page-editor h2 { margin-block: 1.9em 0.78em; line-height: 1.6; letter-spacing: 0.003em; }
+.page-shell .page-editor h3 { margin-block: 1.6em 0.6em; line-height: 1.6; }
+
+.page-shell .page-editor .page-li { margin-block: 0.15em; }
+.page-shell .page-editor .page-li[data-kind="bullet"][data-indent="1"]::before,
+.page-shell .page-editor .page-li[data-kind="bullet"][data-indent="3"]::before,
+.page-shell .page-editor .page-li[data-kind="bullet"][data-indent="5"]::before,
+.page-shell .page-editor .page-li[data-kind="bullet"][data-indent="7"]::before { background: none; border: 1.5px solid currentColor; }
+.page-shell .page-editor .page-li[data-kind="check"] { margin-block: 0.25em; }
+.page-shell .page-editor .page-li[data-kind="check"][data-checked="true"] { text-decoration-color: #e3e5dc; }
+
+.page-shell .page-dock { gap: 2px; padding: 3px 5px; }
+.page-shell .page-tool { min-width: 28px; height: 28px; border-radius: 5px; }
+.page-shell .page-tool svg { width: 16px; height: 16px; }
+.page-shell .page-tool-turn { padding: 0 8px; font-size: 12px; }
+.page-shell .page-tool-sep { height: 14px; margin: 0 4px; }
+
+.page-shell .page-plus { border-radius: 7px; }
+.page-shell .page-plus svg { width: 16px; height: 16px; }
+
+.page-shell .page-bubble { gap: 2px; padding: 5px; border-radius: 9px; color: #727c70; }
+.page-shell .page-bubble .page-tool { width: 30px; height: 29px; }
+
+.page-shell .page-menu { width: 264px; padding: 13px 7px 7px; }
+.page-shell .page-menu-title { padding: 0 9px 10px; font-size: 11px; line-height: 1.5; color: #8c9187; }
+.page-shell .page-menu-item { gap: 12px; min-height: 39px; padding: 7px 10px; border-radius: 6px; font-size: 13px; }
+.page-shell .page-menu-icon { color: #727c70; }
+.page-shell .page-menu-hint { font-size: 11px; color: #8c9187; }
+.page-shell .page-menu-item[aria-selected="true"],
+.page-shell .page-menu-item[aria-selected="true"] .page-menu-icon { color: #3c5039; }
+
+@media (max-width: 560px) {
+  .page-shell {
+    --page-font-size: 15px;
+    --page-line-height: 1.7;
+    --page-pad-top: 63px;
+    --page-h1-size: 32px;
+    --page-h1-tracking: -0.028em;
+  }
+  .page-shell .page-plus { width: 44px; height: 44px; border-radius: 10px; }
+  .page-shell .page-plus svg { width: 18px; height: 18px; }
+  .page-shell .page-bubble { min-height: 44px; padding: 5px 4px; border-radius: 10px; box-shadow: 0 2px 10px rgba(36, 44, 32, 0.04); }
+  .page-shell .page-bubble .page-tool { min-width: 24px; width: auto; height: 32px; padding: 0 5px; }
+  .page-shell .page-menu { width: 100%; padding: 10px 12px 16px; border-radius: 17px 17px 0 0; box-shadow: 0 -6px 24px rgba(20, 30, 20, 0.05); }
+  .page-shell .page-menu::before { content: ""; display: block; width: 30px; height: 3px; margin: 0 auto 15px; border-radius: 3px; background: #e3e5dc; }
+  .page-shell .page-menu-title { padding: 0 10px 11px; font-size: 12px; }
+  .page-shell .page-menu-item { gap: 14px; min-height: 46px; padding: 10px 12px; font-size: 14px; }
+}

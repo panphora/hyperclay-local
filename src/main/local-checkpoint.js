@@ -12,6 +12,7 @@ function createLocalCheckpoint({
   const running = new Map();
   const scheduled = new Map();
   const retries = new Map();
+  let autoNamer = null;
   let sweepTimer = null;
   const identityOf = (room) => String(room.nodeId ?? room.key);
   const dirty = (room) => Boolean(room) && authority.roomIsDirty(room);
@@ -25,7 +26,8 @@ function createLocalCheckpoint({
   function clearPending(identity) {
     const waiting = scheduled.get(identity);
     if (waiting) {
-      cancelImmediate(waiting);
+      cancelImmediate(waiting.handle);
+      waiting.resolve({ kind: 'cancelled' });
       scheduled.delete(identity);
     }
     const retry = retries.get(identity);
@@ -131,7 +133,12 @@ function createLocalCheckpoint({
     if (running.has(identity)) return running.get(identity);
     clearPending(identity);
     const work = Promise.resolve().then(() => perform(key, room));
-    const settled = work.finally(() => { if (running.get(identity) === settled) running.delete(identity); });
+    const settled = work.finally(() => {
+      if (running.get(identity) === settled) running.delete(identity);
+      if (autoNamer && !dirty(room) && room.emptySince !== null && !authority.hasParticipatingEditors(room.key)) {
+        autoNamer.departed(room);
+      }
+    });
     running.set(identity, settled);
     return settled;
   }
@@ -139,26 +146,41 @@ function createLocalCheckpoint({
   const service = {
     registerWriter(rootId, write) { writers.set(rootId, write); },
     unregisterWriter(rootId) { writers.delete(rootId); },
+    setAutoNamer(service) { autoNamer = service; },
     dirty,
     attempt,
+    pending(key) {
+      const room = authority.rooms.get(key);
+      if (!room) return null;
+      const identity = identityOf(room);
+      return running.get(identity) || scheduled.get(identity)?.promise || null;
+    },
     departed(room) {
-      if (!dirty(room)) return false;
+      if (!dirty(room)) {
+        autoNamer?.departed(room);
+        return false;
+      }
       const identity = identityOf(room);
       if (scheduled.has(identity) || running.has(identity)) return false;
-      const handle = immediate(() => {
+      let resolve;
+      const promise = new Promise(done => { resolve = done; });
+      const handle = immediate(async () => {
         scheduled.delete(identity);
-        attempt(room.key, room).catch(() => {});
+        try { resolve(await attempt(room.key, room)); }
+        catch (error) { resolve({ kind: 'transient', reason: 'operation-failed', error }); }
       });
-      scheduled.set(identity, handle);
+      scheduled.set(identity, { handle, promise, resolve });
+      autoNamer?.departed(room);
       return true;
     },
     arrived(key) {
       const room = authority.rooms.get(key);
       if (!room) return false;
       const identity = identityOf(room);
-      const handle = scheduled.get(identity);
-      if (!handle) return false;
-      cancelImmediate(handle);
+      const waiting = scheduled.get(identity);
+      if (!waiting) return false;
+      cancelImmediate(waiting.handle);
+      waiting.resolve({ kind: 'cancelled' });
       scheduled.delete(identity);
       return true;
     },

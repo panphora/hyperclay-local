@@ -1,0 +1,209 @@
+/* Light 2: margin ink, a warm paper page set in Newsreader with deep green ink accents and a dark selection bar, from the Opus bake-off seat. */
+@import url("https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap");
+
+.page-shell {
+  --chart-1: #2f5d50;
+  --chart-2: #18473b;
+  --chart-3: #57534c;
+  --chart-4: #23211e;
+  --chart-5: #8f8a81;
+  --chart-6: #2a2825;
+  --chart-text: #23211e;
+  --page-bg: #faf8f4;
+  --page-ink: #23211e;
+  --page-ink-strong: #23211e;
+  --page-ink-soft: #57534c;
+  --page-ink-faint: #8f8a81;
+  --page-rule: #e7e3db;
+  --page-accent: #2f5d50;
+  --page-link: #18473b;
+  --page-caret: #2f5d50;
+  --page-selection: #e3ddcd;
+
+  --page-font: "Newsreader", "Iowan Old Style", "Charter", Georgia, serif;
+  --page-font-display: "Newsreader", "Iowan Old Style", "Charter", Georgia, serif;
+  --page-font-heading: "Newsreader", "Iowan Old Style", "Charter", Georgia, serif;
+  --page-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --page-font-size: 18.5px;
+  --page-line-height: 1.68;
+  --page-measure: 39rem;
+  --page-pad-top: 118px;
+  --page-h1-size: 2.15em;
+  --page-h1-weight: 500;
+  --page-h1-tracking: -0.012em;
+  --page-h1-line: 1.15;
+  --page-h2-size: 1.12em;
+  --page-h2-weight: 600;
+  --page-h3-size: 1em;
+  --page-h3-weight: 600;
+  --page-block-gap: 0.85em;
+  --page-indent: 1.5em;
+
+  --page-marker: #8f8a81;
+  --page-check-size: 17px;
+  --page-check-radius: 4px;
+  --page-check-border: #8f8a81;
+  --page-check-fill: #2f5d50;
+  --page-check-ink: #f4f1ea;
+  --page-done-ink: #8f8a81;
+  --page-toggle-ink: #57534c;
+  --page-callout-bg: #f3f0e9;
+  --page-callout-line: #e7e3db;
+  --page-code-bg: #f1eee7;
+  --page-code-ink: #23211e;
+
+  --page-chrome-ink-rest: #cbc6bc;
+  --page-chrome-ink-moved: #aea89d;
+  --page-chrome-bg-rest: rgba(250, 248, 244, .88);
+  --page-chrome-bg-moved: rgba(250, 248, 244, .92);
+  --page-chrome-line-rest: #ebe7df;
+  --page-chrome-line-moved: #ddd8ce;
+  --page-chrome-shadow-rest: none;
+  --page-chrome-shadow-moved: none;
+  --page-chrome-radius: 7px;
+  --page-plus-size: 26px;
+  --page-fade: 400ms;
+
+  --page-pop-bg: #fdfcf9;
+  --page-pop-ink: #23211e;
+  --page-pop-muted: #8f8a81;
+  --page-pop-line: #e2ddd3;
+  --page-pop-shadow: 0 1px 2px rgba(40, 34, 24, .05), 0 8px 24px -8px rgba(40, 34, 24, .14);
+  --page-pop-hover: #f1eee7;
+  --page-pop-radius: 11px;
+  --page-bar-bg: #2a2825;
+  --page-bar-ink: #ece8e0;
+  --page-scrim: rgba(40, 34, 24, .10);
+
+  -webkit-font-smoothing: antialiased;
+}
+
+article[data-page] figure[data-type="chart"] { --chart-1: #2f5d50; --chart-2: #18473b; --chart-3: #57534c; --chart-4: #23211e; --chart-5: #8f8a81; --chart-6: #2a2825; --chart-text: #23211e; max-width: 100%; }
+article[data-page] figure[data-type="chart"] > svg { display: block; width: 100%; height: auto; color: var(--chart-text); font: 12px Newsreader, serif; }
+
+.page-shell .page-editor h1 { margin: 0 0 .7em; }
+.page-shell .page-editor h2 { line-height: 1.3; margin: 1.9em 0 .45em; }
+.page-shell .page-editor h3 { line-height: 1.35; margin: 1.5em 0 .35em; }
+.page-shell .page-editor > .page-li + .page-li { margin-top: .15em; }
+.page-shell .page-editor > .page-li[data-kind="check"]::before { border-width: 1.5px; }
+.page-shell .page-editor > .page-li[data-checked="true"] {
+  text-decoration: line-through;
+  text-decoration-color: #8f8a81;
+  text-decoration-thickness: 1px;
+}
+.page-shell .page-editor hr { border: 0; border-top: 1px solid #e7e3db; }
+.page-shell .page-editor figcaption { color: #8f8a81; font-size: .85em; }
+
+.page-shell .page-dock {
+  gap: 2px;
+  padding: 4px;
+  border-radius: 9px;
+  font: 500 12.5px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+.page-shell .page-dock .page-tool {
+  height: 26px;
+  min-width: 26px;
+  padding: 0 6px;
+  gap: 4px;
+  border-radius: 6px;
+}
+.page-shell .page-dock .page-tool-sep { width: 1px; height: 14px; margin: 0 4px; }
+
+.page-shell .page-plus { border-radius: 7px; }
+
+.page-shell .page-bubble {
+  gap: 1px;
+  padding: 4px;
+  background: #2a2825;
+  color: #ece8e0;
+  border: 0;
+  border-radius: 9px;
+  box-shadow: 0 6px 18px -6px rgba(30, 26, 20, .35);
+  font: 500 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+.page-shell .page-bubble .page-tool {
+  height: 28px;
+  min-width: 28px;
+  padding: 0 7px;
+  border-radius: 6px;
+  color: #ece8e0;
+  background: transparent;
+}
+.page-shell .page-bubble .page-tool:hover { background: rgba(236, 232, 224, .14); }
+.page-shell .page-bubble .page-tool-sep { background: rgba(236, 232, 224, .20); height: 16px; margin: 0 4px; }
+
+.page-shell .page-menu {
+  width: 268px;
+  padding: 6px;
+  font: 14px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+.page-shell .page-menu-title {
+  padding: 7px 8px 9px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid #e7e3db;
+  color: #8f8a81;
+  font-size: 13px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.page-shell .page-menu-item {
+  gap: 11px;
+  height: 34px;
+  padding: 0 8px;
+  border-radius: 7px;
+}
+.page-shell .page-menu-icon {
+  width: 24px;
+  height: 24px;
+  border: 1px solid #e7e3db;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  color: #57534c;
+  font: 600 11px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+.page-shell .page-menu-label { flex: 1; }
+.page-shell .page-menu-hint { color: #8f8a81; font: 11.5px/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.page-shell .page-menu-item[aria-selected="true"] .page-menu-icon {
+  border-color: #e2ddd3;
+  background: #fdfcf9;
+  color: #23211e;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-shell { --page-fade: 0ms; }
+}
+
+@media (max-width: 560px) {
+  .page-shell {
+    --page-font-size: 17.5px;
+    --page-line-height: 1.62;
+    --page-pad-top: 76px;
+    --page-h1-size: 1.85em;
+  }
+  .page-shell .page-plus {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: #faf8f4;
+  }
+  .page-shell .page-bubble {
+    height: 50px;
+    padding: 0 6px;
+    border-radius: 13px;
+    gap: 0;
+    justify-content: space-between;
+  }
+  .page-shell .page-bubble .page-tool { min-width: 38px; height: 38px; padding: 0 6px; }
+  .page-shell .page-bubble .page-tool-sep { display: none; }
+  .page-shell .page-menu {
+    width: auto;
+    padding: 6px 12px 22px;
+    border-radius: 16px 16px 0 0;
+    border-width: 1px 0 0;
+    font-size: 16px;
+  }
+  .page-shell .page-menu-title { padding: 6px 8px 12px; font-size: 14px; }
+  .page-shell .page-menu-item { height: 48px; padding: 0 10px; gap: 14px; border-radius: 10px; }
+  .page-shell .page-menu-icon { width: 30px; height: 30px; border-radius: 8px; }
+}

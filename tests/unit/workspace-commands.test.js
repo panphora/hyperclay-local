@@ -58,7 +58,7 @@ test('folder, rename, move, duplicate, Trash, restore, and empty Trash change on
   expect(await fs.readFile(path.join(other, '.trash/keep.html'), 'utf8')).toBe('keep');
 });
 
-test('occupied destinations, cross-root paths, unsafe paths, and create are refused', async () => {
+test('occupied destinations, cross-root paths, unsafe paths, and unknown templates are refused', async () => {
   h = await fixture();
   await fs.writeFile(path.join(h.dir, 'A.html'), '<html>A</html>');
   await fs.writeFile(path.join(h.dir, 'B.html'), '<html>B</html>');
@@ -66,7 +66,7 @@ test('occupied destinations, cross-root paths, unsafe paths, and create are refu
   expect(await command(request, { command: 'rename', path: 'A.html', name: 'B.html' })).toMatchObject({ status: 409, body: { reason: 'conflict' } });
   expect(await command(request, { command: 'move', path: 'A.html', parent: '../other' })).toMatchObject({ status: 403, body: { reason: 'forbidden' } });
   expect(await command(request, { command: 'trash', path: '.hyperclay/private.html' })).toMatchObject({ status: 403, body: { reason: 'forbidden' } });
-  expect(await command(request, { command: 'create', parent: null, name: 'C.html', template: 'blank' })).toMatchObject({ status: 501, body: { reason: 'unsupported' } });
+  expect(await command(request, { command: 'create', parent: null, name: 'C.html', template: 'unknown' })).toMatchObject({ status: 501, body: { reason: 'unsupported' } });
   expect(await fs.readFile(path.join(h.dir, 'A.html'), 'utf8')).toBe('<html>A</html>');
 });
 
@@ -104,6 +104,20 @@ test('renaming a document keeps the authority identity and emits one moved event
   expect(authority.identityAt(path.join(canonicalRoot, 'B.html'))).toBe(identity);
   expect(authority.identityAt(oldPath)).toBeNull();
   await reader.cancel();
+});
+
+test('create admits and confirms a new document through the authority writer', async () => {
+  const authority = createLocalAuthority({ withDocument: withDocumentWrite });
+  h = await fixture({ authority });
+  const canonicalRoot = await fs.realpath(h.dir);
+  await withStructureChange(() => authority.registerRoot({ ...h.root, canonicalPath: canonicalRoot }));
+  const request = await h.start();
+  expect(await command(request, { command: 'create', parent: null, name: 'New.html', template: 'blank' }))
+    .toEqual({ status: 200, body: { path: 'New.html' } });
+  const file = path.join(canonicalRoot, 'New.html');
+  expect(authority.identityAt(file)).not.toBeNull();
+  expect(authority.confirmedStamp(file)).not.toBeNull();
+  expect(await fs.stat(path.join(h.dir, '.hyperclay')).catch(() => null)).toBeNull();
 });
 
 test('the existing sync engine sees a workspace command as one rename by inode', async () => {

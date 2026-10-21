@@ -1,0 +1,1349 @@
+{
+  "clayjsVersion": "1.13.1",
+  "files": [
+    {
+      "url": "https://clayjs.com/v1/all.js",
+      "path": "all.js",
+      "sha256": "7ba756ca72227f67f73e0666206e5f5d94a53b66fdfb7e339b9c87cd7a20f39d",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/clay-dom.js",
+      "path": "clay-dom.js",
+      "sha256": "69a0cfa2bd2cec805ffb3b4a757904761195ca1f154f79df37ac45abbe98a706",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/clay-events.js",
+      "path": "clay-events.js",
+      "sha256": "564ae6e327e180bc169539ebfd40ccc8a367dfc83745cca7487a4b34976a7f20",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/clay-options.js",
+      "path": "clay-options.js",
+      "sha256": "8f142da4bde0069712791a2ace9aab221608e1994df54c47e965af7dd4d2f774",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/clay-router.js",
+      "path": "clay-router.js",
+      "sha256": "6eebffd52a5d3744795a41d48952543873392eb1dbe339f89585cb595cfa7122",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/clay-ui.js",
+      "path": "clay-ui.js",
+      "sha256": "fdff03c44eb3685685c4828c9876ab49b368c61315188e575b7d98eeff024ed5",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/clay.js?plugins=page",
+      "path": "clay.js",
+      "sha256": "d00ff58cc74e4f6eb37c43c53c9a0a3cee88b45a8bbbb7f7e5896a589e26dae6",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/clay.js?plugins=sortable,people,upload,sync,ai-edit",
+      "path": "clay.js",
+      "sha256": "d00ff58cc74e4f6eb37c43c53c9a0a3cee88b45a8bbbb7f7e5896a589e26dae6",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/clay.js?plugins=sortable,sync,ai-edit&exclude=richclay",
+      "path": "clay.js",
+      "sha256": "d00ff58cc74e4f6eb37c43c53c9a0a3cee88b45a8bbbb7f7e5896a589e26dae6",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/clay.js?plugins=sync,ai-edit&exclude=richclay",
+      "path": "clay.js",
+      "sha256": "d00ff58cc74e4f6eb37c43c53c9a0a3cee88b45a8bbbb7f7e5896a589e26dae6",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/clay.js?plugins=sync,indicator,ai-edit&exclude=richclay",
+      "path": "clay.js",
+      "sha256": "d00ff58cc74e4f6eb37c43c53c9a0a3cee88b45a8bbbb7f7e5896a589e26dae6",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/sap.js",
+      "path": "sap.js",
+      "sha256": "0bd6bc064a15769c6194c7af8e06311b1f232104d8c200715f25765836ef2d54",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/attrs/add-from.js",
+      "path": "src/attrs/add-from.js",
+      "sha256": "9abe92582aae61ca9cd6dc80e48ae7f816a1d082462efb689dac1b7540a4f05c",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/attrs/onaftersave.js",
+      "path": "src/attrs/onaftersave.js",
+      "sha256": "7243271aca0d85397adb5d31bcd2d85937480b91edc3497be3e48512f7da2eec",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/attrs/refetch-on-save.js",
+      "path": "src/attrs/refetch-on-save.js",
+      "sha256": "18390dde83e38cc430eba5196305de0fe58b5071310c760c50d118e0aa430cf0",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/attrs/save-freeze.js",
+      "path": "src/attrs/save-freeze.js",
+      "sha256": "aa01c35f0c0394738a980742d07544fa1fa8c45583a63dd6d2cbd8df79f7dc5a",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/admin-attrs.js",
+      "path": "src/core/admin-attrs.js",
+      "sha256": "f813efdcb633e95d1c98964cdced676c542af9f747622ebac0c7d5492fa05dfb",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/admin-contenteditable.js",
+      "path": "src/core/admin-contenteditable.js",
+      "sha256": "787344044bed3af658f24cdaf53217e634233caab8820c2971dc3ee87b171dff",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/admin-inputs.js",
+      "path": "src/core/admin-inputs.js",
+      "sha256": "43e27ec4d90efa8d70ccfc044a3bf3f635f38f5cc3ccb1f92be50d86f1008e4d",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/admin-onclick.js",
+      "path": "src/core/admin-onclick.js",
+      "sha256": "64ebdb405a713f15c1bdc8694ae0ed3eb759cf6769e7ac5a393c252f21b41629",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/admin-resources.js",
+      "path": "src/core/admin-resources.js",
+      "sha256": "e93856846d2c8c49cc00a3ce7611aebaef5b6dab00050de94dd21baa466a671a",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/autosave.js",
+      "path": "src/core/autosave.js",
+      "sha256": "6ff6a95e37a86978178ccf293acba389360449f3597a2bae729bfdd39741dcfd",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/conflict-download.js",
+      "path": "src/core/conflict-download.js",
+      "sha256": "f049375784fb99ac26f551b2d4e7cd42102b3b46ee8607c5f09af0fc0e114be8",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/conflict-notice.js",
+      "path": "src/core/conflict-notice.js",
+      "sha256": "a36136e840c01a4b63b294ec32373f08345be93a2dca849e62c46c9c7f230a75",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/conflict-presentation.js",
+      "path": "src/core/conflict-presentation.js",
+      "sha256": "a94e3e31aa5c9c98ecd5525d73748e1cd09036e8b59b42081f641fd5d11acc03",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/draft-mode.js",
+      "path": "src/core/draft-mode.js",
+      "sha256": "10d7bb6a6577306eb2c3d9acb8802b2d7c5597242e5b64c349f8395374f1929f",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/edit-mode.js",
+      "path": "src/core/edit-mode.js",
+      "sha256": "5cc8402099d739f492b4d7f09ccbba4cfbf7e8c0681a09a9e5d68579fd1349bb",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/etag.js",
+      "path": "src/core/etag.js",
+      "sha256": "a33c305b2cd4be2ff49e5832e7ff66a5799afeb8bde32ad51ddc0dfabf3ed3d7",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/host-attrs.js",
+      "path": "src/core/host-attrs.js",
+      "sha256": "e7a34830c278362a4cc5c0fcc9dfc322c280e8704c64e95a260483249f0f763e",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/host-meta.js",
+      "path": "src/core/host-meta.js",
+      "sha256": "a4e2a092e42bc7a822746ad8532a88516f116c85e846925b2754d62b3c8e20fa",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/is-edit-mode.js",
+      "path": "src/core/is-edit-mode.js",
+      "sha256": "7835136c89530d86592e6545fa422b08f538724278252597068c4d735ddaaa17",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/page-data.js",
+      "path": "src/core/page-data.js",
+      "sha256": "54b78ccd49c4e5fc6a1f6f60ca0cfb4885cec543a6a1955c28d7fc25bbde93f5",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/persist.js",
+      "path": "src/core/persist.js",
+      "sha256": "ea80a8bb85bc2c29a4e5551961bbd049e2c1d5917e1243cdfd653e6f0bf5bfd2",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/save-core.js",
+      "path": "src/core/save-core.js",
+      "sha256": "275c30b920762d32d998c1fc6c8314988c8a0c1c6446b9a13209aca39951c6d7",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/save-feedback.js",
+      "path": "src/core/save-feedback.js",
+      "sha256": "ded311e68e19d8204921f288986fe1809664cecc649bf13afca23edffdf8ecd8",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/save.js",
+      "path": "src/core/save.js",
+      "sha256": "948b86d30f3cad6710f898514733443b51e6380fbffa3aa60c66945fcffa1e9f",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/snapshot.js",
+      "path": "src/core/snapshot.js",
+      "sha256": "b07b9bd04e274b09aadc3641e602300ed067d18524829ca69f95086fac17f611",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/source-map.js",
+      "path": "src/core/source-map.js",
+      "sha256": "31c481b4622c85bb808a58f6d96f3809e962808302c3c385ad2a64646863003b",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/stale-host-notice.js",
+      "path": "src/core/stale-host-notice.js",
+      "sha256": "34c1aff53f74d1f2b69696793d9aafa05729e918bdac233587b4c9fc2635cee2",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/style-comparisons.js",
+      "path": "src/core/style-comparisons.js",
+      "sha256": "a1ded2bd21ec4c682ecc8703ddbd21f5e10976b78ddd7ba75db0ee45ceed60d2",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/core/unsaved-warning.js",
+      "path": "src/core/unsaved-warning.js",
+      "sha256": "0b57e755305acdde6385150f9c42ef22e8b6c507427487836695a69428399739",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/dom/all.js",
+      "path": "src/dom/all.js",
+      "sha256": "72cf3488e3cc30f57cca3d29af4d1f1474177d9e03af8ca34b954c8a8aa37ac9",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/dom/dom-helpers.js",
+      "path": "src/dom/dom-helpers.js",
+      "sha256": "885d5a546919fb813b2361bbc8907adea598111e15f5619c71a7e0245b5f0d51",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/dom/insert-style-tag.js",
+      "path": "src/dom/insert-style-tag.js",
+      "sha256": "f354c943920ac54317960d113e484512b78c6d5e8c57e0f0a6f5414ea55bf5eb",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/dom/nearest.js",
+      "path": "src/dom/nearest.js",
+      "sha256": "a7e7ff3f5044e893ba514553c915cd5a631b549041dc358e3d27cc8f63583083",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/dom/pipe.js",
+      "path": "src/dom/pipe.js",
+      "sha256": "77b80b9c7ab4f501de9bedbc0bb02149eee954d381675183e3c0398170bb574f",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/events/index.js",
+      "path": "src/events/index.js",
+      "sha256": "e699284dea475784c1cd3d363cfc1255cb1338a0c32e8daf442404b00e9f51d5",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/events/onclickaway.js",
+      "path": "src/events/onclickaway.js",
+      "sha256": "74507186c60d3435815c59cada3610661df45299b7dcc75356b59d2cac4686bf",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/events/onclickchildren.js",
+      "path": "src/events/onclickchildren.js",
+      "sha256": "bd4fd9f6b6a7294547372cb5c4498edb1a5bbfa734abd54af40b15edbc4d9cf2",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/events/onclone.js",
+      "path": "src/events/onclone.js",
+      "sha256": "d3fee9295a37a0bf03a23ab9422756b70c1d86b0a0a38a9f83c8460f3a52ad83",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/events/onmutation.js",
+      "path": "src/events/onmutation.js",
+      "sha256": "75248a3dbd1a6f7af8362ec674a4033adeff82009289e4e0551fed63b6f5c5fd",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/events/onpagemutation.js",
+      "path": "src/events/onpagemutation.js",
+      "sha256": "7f172025593555ab59f0ef1e81aa38fa69ace2545ad0c7dff8fe5228f59cfbbd",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/events/onrender.js",
+      "path": "src/events/onrender.js",
+      "sha256": "58f55d1706e9b53ca2350de6546df33451b8457c66c9717cd329bfda5134859b",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/attr-aliases.js",
+      "path": "src/lib/attr-aliases.js",
+      "sha256": "562f906dc7e162a0fce15585b7182181fb8739a81e5318ee4f110fe7805088fd",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/authored-url.js",
+      "path": "src/lib/authored-url.js",
+      "sha256": "cb5d4237c4df8d47aefdeb7a1b698f13e7f6a3ebdd926f472ca0b41af050a51e",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/autosave-debug.js",
+      "path": "src/lib/autosave-debug.js",
+      "sha256": "53f7fea740124b49e4fc94871d8bc26f972f359b00a70d937eb87aac96e76200",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/autosave-state.js",
+      "path": "src/lib/autosave-state.js",
+      "sha256": "f91410a64be902f38287a1f25d09d6487de72c8eab574a3a857239d3102148d6",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/cache-bust.js",
+      "path": "src/lib/cache-bust.js",
+      "sha256": "76c5ccc306299a0a9d09e22ca72b18ed4b430d49e04da0ddf767135b1384efe6",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/content-dom.js",
+      "path": "src/lib/content-dom.js",
+      "sha256": "3654a0576ebd135cd1644418ad922066274a33692fdc55bb088ccc801e825595",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/cookie.js",
+      "path": "src/lib/cookie.js",
+      "sha256": "c75dc1a20cde03a8fb23c9b090a6edb1286087eed8f2f2b7c16cde284f33e644",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/dirty-gate.js",
+      "path": "src/lib/dirty-gate.js",
+      "sha256": "372f0eb0235eeb32c1f5dcd5ff31de42e3127369dd63c35902914c63e4d90d83",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/dom-ready.js",
+      "path": "src/lib/dom-ready.js",
+      "sha256": "33d2ff4a84fd7981321fd5d5b1aec0c468911ee0bbfabafe9e6c6db0dbbec4e2",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/effect.js",
+      "path": "src/lib/effect.js",
+      "sha256": "35838a68eb6be21c11791a098503e91276509a5afaa58ef23849525746d62641",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/ephemeral.js",
+      "path": "src/lib/ephemeral.js",
+      "sha256": "fc2063be63104f3766726e2d880b7d3e0efcb0c42b658af712f9e90107385db6",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/extension-noise.js",
+      "path": "src/lib/extension-noise.js",
+      "sha256": "929597320be7489cbf3169a44fd3768e34f9ca1a9b9a781734d375b367affd2e",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/hostile-css.js",
+      "path": "src/lib/hostile-css.js",
+      "sha256": "6dded84b3d311d3b327a99f0ea4c451537c5b89d230ce0ef96fa89f97c0c3b0c",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/mutation.js",
+      "path": "src/lib/mutation.js",
+      "sha256": "f5703b37fc252bc33e2d1ca2c0126c307fddeb758b38aff41276cb9d58217bf8",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/on-load.js",
+      "path": "src/lib/on-load.js",
+      "sha256": "a30073b105a2981ff8c0b743f51d499c8e9d0dba6ddf3c36226c8f27627d3d7c",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/person-face.js",
+      "path": "src/lib/person-face.js",
+      "sha256": "7acccf67699d5f28e9b08870beac6b9a5a57bd058e6a3705f77a44eedf67c93a",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/query.js",
+      "path": "src/lib/query.js",
+      "sha256": "e5f9062e64cc335070a616fb0228d9e2c0162672ff235c8552f981ed84602e23",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/region-capabilities.js",
+      "path": "src/lib/region-capabilities.js",
+      "sha256": "c43861842c51d3fc4f7c6fcf78289cc32c6afc68af2c8b7fac4e0e872c12ffda",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/region-policy.js",
+      "path": "src/lib/region-policy.js",
+      "sha256": "b82ddea9789980f55fb33692571ee7e53f8c094c30dac80ca70d4b535e2a859b",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/root-attrs.js",
+      "path": "src/lib/root-attrs.js",
+      "sha256": "4c684b6647484497a805792406f9eabd9e26034e4e213262eb65b26ac14395b4",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/style-adoption.js",
+      "path": "src/lib/style-adoption.js",
+      "sha256": "3584bdbd0d5e1e3903d27b8e07f25329ae907200d448884b52417bc908e29942",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/style.js",
+      "path": "src/lib/style.js",
+      "sha256": "fa08969adc551b8d17bedaa7f8f2483b2cd4aef1d6b6611c41a41ff01420f7c8",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/throttle.js",
+      "path": "src/lib/throttle.js",
+      "sha256": "ed1ba1d9a4928c2ec7d2a27356a633938a8eb9809df0e1fdcc0526f400a45c02",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/unsaved-state.js",
+      "path": "src/lib/unsaved-state.js",
+      "sha256": "9f753da7d79ca18c430c1ecfbe2a4bbbc136c6b3ec577965c45ec3c67f6568af",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/lib/user-gesture.js",
+      "path": "src/lib/user-gesture.js",
+      "sha256": "6ce599bc248fd6769ba49004fea8df9bbf82a3acd477195f58cd87b3d7127cdb",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/live/checkpoint.js",
+      "path": "src/live/checkpoint.js",
+      "sha256": "67d5178b75893b9612a090523a26f710d451469250205ff7041d470d0367e61b",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/live/fast-lane.js",
+      "path": "src/live/fast-lane.js",
+      "sha256": "539891784c50f131fab3feb42ce3ab7e9c86c9b6a739ae3bc3abb16ab4109cd1",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/live/local-lane.js",
+      "path": "src/live/local-lane.js",
+      "sha256": "5fc8c88077121e4e6f6b8ca41ea4bde61050b78cd87ab8b65fed75b2739b472b",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/live/moves.js",
+      "path": "src/live/moves.js",
+      "sha256": "c2242e7e4a4d35f652a925c14dc57c07df63fdb03613ae438fa1b7a4dadf2afe",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/live/ops.js",
+      "path": "src/live/ops.js",
+      "sha256": "28c59584eaab6e5bca399c6bf9697ffe5e1abbcb24c5637cf6d734aac67dfed0",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/live/provenance.js",
+      "path": "src/live/provenance.js",
+      "sha256": "12d9e0e52eb81858456f21c0887a128ad15237d7e13b2c97fbd302e333d2b776",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/live/save-history.js",
+      "path": "src/live/save-history.js",
+      "sha256": "4400a079de9771fef6439dc041a5c2ab52e534e600d633292aea121c55c94e68",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/live/server-lane.js",
+      "path": "src/live/server-lane.js",
+      "sha256": "4cc1a5c338ce1cbc5109204c72358a09ccc9b255b8127d4316932254cba28f39",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/live/store.js",
+      "path": "src/live/store.js",
+      "sha256": "d997c667d45e237155f06637e54dd1f9043de467c10f000fbae194f3734ebc68",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/live/stream-bridge.js",
+      "path": "src/live/stream-bridge.js",
+      "sha256": "9bfbe1a9e8f570c83527e058b2e3800220eb8ebc730734ca1b354855c29921d3",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/loader-logic.js",
+      "path": "src/loader-logic.js",
+      "sha256": "f339cc7ddcce1db7deada0fcf8a4c24003b737e15216d60408370833099c1f23",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/loader.js",
+      "path": "src/loader.js",
+      "sha256": "2808abcd89e2a9778a6802011d562baa28f3031b390d40afaa325e83ddc28b7d",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/options/options.js",
+      "path": "src/options/options.js",
+      "sha256": "5eda9c6db8b62b0a6d19c573e3bc2727bd17fb3a4aa761f245253ae5a118d219",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/address.js",
+      "path": "src/page/address.js",
+      "sha256": "204807e26f468228a2ecd4948ca33773f606d038f518e6ee5122ffbaf02df67c",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/adopt-boot.js",
+      "path": "src/page/adopt-boot.js",
+      "sha256": "e653935150c2a5f48d67e3e65bf54aaa0cd1afb284cd01d68e8da52843d2acea",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/adopt.js",
+      "path": "src/page/adopt.js",
+      "sha256": "535b0d9104f6d64c4a5c99518306381694f12f461fc093ac267e724c796d4c75",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ai-tool.js",
+      "path": "src/page/ai-tool.js",
+      "sha256": "76c00641bbd6ff1649991d66f6fc8985fa986331d96acd9ef989b575c7e7b6f7",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/announce.js",
+      "path": "src/page/announce.js",
+      "sha256": "852300ee4e9a3875ce987eb007cae01f954800b11ade997eac9098abe89b947f",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/blocks.js",
+      "path": "src/page/blocks.js",
+      "sha256": "a76cf2fd65e278ec8fe5b16e201507b12a9c485231ec8b1e303c20a7fb30243a",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/blocksel.js",
+      "path": "src/page/blocksel.js",
+      "sha256": "d9261b45e028dfd3f831ce48d8d2c84056a1c5d924ec4a7c748be06c2046d8fa",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/chart.js",
+      "path": "src/page/chart.js",
+      "sha256": "755d065f7f74d9ed086ed45a372adca278ee54e1d268d70a7b54cbc62d03d153",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/checklist.js",
+      "path": "src/page/checklist.js",
+      "sha256": "7a7fd9b5e640ae19d8931254fe6949636376aa0e66293e23b8352b4cb0d8d2b6",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/chrome.js",
+      "path": "src/page/chrome.js",
+      "sha256": "43de50bcb26263ac9fc1329fe84803f08a8f26bf7645c854aa835666a428c8d9",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/csv-import.js",
+      "path": "src/page/csv-import.js",
+      "sha256": "85ad24d764246bc159c50d1253079d1e25b8d8e11ea64960f47f12bb9c45460d",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/drag.js",
+      "path": "src/page/drag.js",
+      "sha256": "6907ab5a1db252e4bb074383ebd1196d45e2411d3e45eca8abb400b2e17a9c55",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/drop.js",
+      "path": "src/page/drop.js",
+      "sha256": "03f752cd45df3c8698cfe96bf5e4676667c1d002d8d874d0a12ded3d8a7b13ad",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/editor.js",
+      "path": "src/page/editor.js",
+      "sha256": "d642891701c5e95a40918ac1112dbb035efcc6bef60547413b2c6271c075486c",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/highlight.js",
+      "path": "src/page/highlight.js",
+      "sha256": "2d709f9f418e2d31a175c71e63d8d3f963ff7ea900e1a573b9420d9b536c2e4d",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/inline.js",
+      "path": "src/page/inline.js",
+      "sha256": "b721b41c40dad07227a636933ea32abc09906567a8b65841db6396789e7c8fb6",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/items.js",
+      "path": "src/page/items.js",
+      "sha256": "93d64e6626a1eb4aa1c22a961f14f0f58c4a969f67e94211a7ed146f315dc5da",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/link.js",
+      "path": "src/page/link.js",
+      "sha256": "d0153e7f0dfb213bd77ee58d6b5551fb42c7095910dcb1e044bbd89aa813c6a4",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/markdown.js",
+      "path": "src/page/markdown.js",
+      "sha256": "03f6aff8e5fbbed0da2b6c5154bc9e85fbd1badc90c6ac14b69adea85abac907",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/media.js",
+      "path": "src/page/media.js",
+      "sha256": "7d5fed5abe20e4033bf35f11e40fd9d6fc707f7193d7a001aca34e4554852e69",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/model.js",
+      "path": "src/page/model.js",
+      "sha256": "46735e5945ef5f5e915f57c80071e01883f4f38ff60dc425416b64b662220aab",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/projection.js",
+      "path": "src/page/projection.js",
+      "sha256": "f71683cb1901882b94f883b9027e327056904f10a608e7100b2b2ca82cfc17e8",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/rich/chart.js",
+      "path": "src/page/rich/chart.js",
+      "sha256": "0ca340492e86a997fcd2c873b90ca7352fb9ddee1d39278e313d858a23598890",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/rich/csv.js",
+      "path": "src/page/rich/csv.js",
+      "sha256": "ba998455fd965b201922d51338ba6676ed814b1cdeb364c979e8b9d1fae8e4e5",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/rich/page-tool.js",
+      "path": "src/page/rich/page-tool.js",
+      "sha256": "0e25caf76fa8f56fcf5bb5bb33e8060d7c75aa842c7a5ddc49a0bf1bd0ce6557",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/rich/tool-runtime.js",
+      "path": "src/page/rich/tool-runtime.js",
+      "sha256": "91e342f26851a61736749b86290ccfb33854d4a89bfce72d1d6fde3d4b997870",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/save-projection.js",
+      "path": "src/page/save-projection.js",
+      "sha256": "088e4c5b269086c6f861e7be9bc8f6d01ce8354049d494482e866f5892bd8279",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/save-states.js",
+      "path": "src/page/save-states.js",
+      "sha256": "43d957caac21c38b5cd7dae08cd3e16197c5c06562652e3c474892e2e3efea56",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/schema.js",
+      "path": "src/page/schema.js",
+      "sha256": "c25867892cacf830d6e9402eda77467c3d5702e777e25ec76ce3294d38ec6715",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/table.js",
+      "path": "src/page/table.js",
+      "sha256": "49242f8f233594dbe7b29dcd9e0934b4d068ecbc2dbac61d7ef21809ce3d314e",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/themes/light-1.css",
+      "path": "src/page/themes/light-1.css",
+      "sha256": "08cd5eb594c13ea5378a6b1cff2aefd2778905cc59c0a6c6f9e38b286d020ac6",
+      "contentType": "text/css; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/themes/light-2.css",
+      "path": "src/page/themes/light-2.css",
+      "sha256": "b929f15f68a4b59230fd92174190ca0a47f3d4a828113d0918c7ffaaa87edd0c",
+      "contentType": "text/css; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/themes/light-3.css",
+      "path": "src/page/themes/light-3.css",
+      "sha256": "605d46b7b635e6d4a4220ec28bd3ded4cbb6e8931aa6a1b2ca27ddd7e83fe280",
+      "contentType": "text/css; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/themes/light-4.css",
+      "path": "src/page/themes/light-4.css",
+      "sha256": "3b13f195527833f42260cda3c8f4c2656c1d803827306a4919bc10f247cff010",
+      "contentType": "text/css; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/tool-data.js",
+      "path": "src/page/tool-data.js",
+      "sha256": "37657f795a2c2f8dc40c8ac183b70c8b47b2505c3636cca22ea5d64f26fb1ee3",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/tool-view.js",
+      "path": "src/page/tool-view.js",
+      "sha256": "c357239b1449b8a6cc6e8e0036d926b2118a642f2501059dc7cce0a032d16fc7",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/tools.js",
+      "path": "src/page/tools.js",
+      "sha256": "2baf6b53ddd9f4d1698d0c4fdbff5736659c72b879e00f18506ba6c7ae4d06d1",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ybind/binding.js",
+      "path": "src/page/ybind/binding.js",
+      "sha256": "1df77170dbf76e63cbf16b119317f9390eb9047303d24e10b84059f4f51a1fc1",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ybind/board.js",
+      "path": "src/page/ybind/board.js",
+      "sha256": "bf816105349043d6d04823c7d1a3e10c27d758c534f6825d4b44716f66a098b0",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ybind/bridge.js",
+      "path": "src/page/ybind/bridge.js",
+      "sha256": "d311379d991149e9d6e47e6c9996e4730b5b93bec1700b4e6ebc96336cea6cf2",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ybind/conversion.js",
+      "path": "src/page/ybind/conversion.js",
+      "sha256": "8931b0cf86828aa529445b6c30bd5c7afaaa3bcbb2324a7612dbf699ea6bc4eb",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ybind/core.js",
+      "path": "src/page/ybind/core.js",
+      "sha256": "42293ba61d06ad7bcb732f69d3ceef4f88c812c098b441a7c0e7a034af8f484b",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ybind/decode.js",
+      "path": "src/page/ybind/decode.js",
+      "sha256": "78c67eacdd25ac7b5e972d75e77b4f3da620b76c482b9682c74e1b2b873ab336",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ybind/doc.js",
+      "path": "src/page/ybind/doc.js",
+      "sha256": "0affad7bbafe8e09256d8b839218a7461e4ccdef1443541e31dccba26a12f4a8",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ybind/group.js",
+      "path": "src/page/ybind/group.js",
+      "sha256": "e5a23a00173f3f417c60a73923af18b953deaba77875bf023ca2b0456e934e6d",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ybind/layout.js",
+      "path": "src/page/ybind/layout.js",
+      "sha256": "5a7b9c4ba98e18845331f87656962a87239a8610bbaf4047566089b43aa77b42",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ybind/marks.js",
+      "path": "src/page/ybind/marks.js",
+      "sha256": "a18da2dc2d88f209eb829eeb2403868f57438ddd767509fdfe8f848353669af9",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ybind/migrate.js",
+      "path": "src/page/ybind/migrate.js",
+      "sha256": "9f177a4164d501f1207ec236eb705c9fb9f2306a545e25ead024bd13c97886c6",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ybind/parts.js",
+      "path": "src/page/ybind/parts.js",
+      "sha256": "93e1edcf22e821c697082f34571334860dd43e46526b66b67be28f5e879f1403",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ybind/provider.js",
+      "path": "src/page/ybind/provider.js",
+      "sha256": "d2489ea75a34418705d8decf4990686e1c7afce3e65b0e793fe0d629941c4d80",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ybind/tokens.js",
+      "path": "src/page/ybind/tokens.js",
+      "sha256": "62e0173d14681252c59cc9154bda9271ec66377507c0fc79a459ce2108060823",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ybind/walk.js",
+      "path": "src/page/ybind/walk.js",
+      "sha256": "4f12b5a70d47ddd643244c3a0352088ec4d73c19415ee1459991111dceeb638f",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/page/ybind/writer.js",
+      "path": "src/page/ybind/writer.js",
+      "sha256": "245d518382ccaccb43a7ce6b5a47c8a64930affe3071499fbeea64c1caebeeaf",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/plugins/ai-edit.js",
+      "path": "src/plugins/ai-edit.js",
+      "sha256": "e003cb8175ddc7c05d152ec606a010d5f6006ae053e47c3dd1a6e17276ace661",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/plugins/indicator.js",
+      "path": "src/plugins/indicator.js",
+      "sha256": "fd3878f83b2c388075e0679192e90eac1482b11701269745e8e78a732096f159",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/plugins/live.js",
+      "path": "src/plugins/live.js",
+      "sha256": "8f81c71b3349b0304969ec6826e0fdbf75fd126a95174fe0ab105201bc541e2e",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/plugins/page.js",
+      "path": "src/plugins/page.js",
+      "sha256": "01bed7a96d03fecd3748c8715282455b3366db348b98085a860f27c1e7dada82",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/plugins/people.js",
+      "path": "src/plugins/people.js",
+      "sha256": "42e7ebcb412c063ff92fb5cf9fdaae1cf77f13576c9358491e7040e6458e60f2",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/plugins/richclay.js",
+      "path": "src/plugins/richclay.js",
+      "sha256": "961f55a536fee381c2a1ed084d5c643b03bfd8c41ebf638487fd6db1bbd2a027",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/plugins/sortable.js",
+      "path": "src/plugins/sortable.js",
+      "sha256": "77c49d9f56e4aaddbe91ce0563ff459863fa1424024109abe919216bfc76ac08",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/plugins/source.js",
+      "path": "src/plugins/source.js",
+      "sha256": "c4f75735b3d29712dcea1ac1553f4f6a2e5354baa444cb8f2c5caaae01cdabe6",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/plugins/upload.js",
+      "path": "src/plugins/upload.js",
+      "sha256": "881e92313640bcfdbe7a0c3f22591ae353c749638e199fa47215de3e79814a8c",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/plugins/wire.js",
+      "path": "src/plugins/wire.js",
+      "sha256": "daa7cb5d3d101d2e2d778477efdc32d1ed225274181217e6e3b12844a96098a9",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/route/route.js",
+      "path": "src/route/route.js",
+      "sha256": "6b56badb2186833b480143554924e68789a1030841fa33fb62d50cbe2f446ca1",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/sync/conflict-footprints.js",
+      "path": "src/sync/conflict-footprints.js",
+      "sha256": "25d49323b3a8d1e281dd4b059f10330021383524a121b9f8ae46332098199a52",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/sync/conflict-revert.js",
+      "path": "src/sync/conflict-revert.js",
+      "sha256": "a14e28315998866ee70d8941b7a75c7fccb7471c434341c1d24d19dc71f72515",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/sync/conflicts.js",
+      "path": "src/sync/conflicts.js",
+      "sha256": "96c1d767d731f3c2c4c55996acfd29e502d6a0fe21977966dbd2118b19cae069",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/sync/editing-marker.js",
+      "path": "src/sync/editing-marker.js",
+      "sha256": "6ab2a93b5cdabb61e32c07ee54c088f7d7251531a51adcbcd8bd65911b090f3f",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/sync/editing-path.js",
+      "path": "src/sync/editing-path.js",
+      "sha256": "41e5aa0a96a4a65decc47d17ecd0fac0c4820303cc576517e3783d283daa5696",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/sync/editing-sender.js",
+      "path": "src/sync/editing-sender.js",
+      "sha256": "426e65c3cae2163693b1ce35816faabc0c85188c5ec182ad7bdb53aefdfc666d",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/sync/live-sync.js",
+      "path": "src/sync/live-sync.js",
+      "sha256": "3a789e7f744cbeddab4c2333ebf76a3aa792205ddfd7b13afd8e915753c078c1",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/sync/merge-tags.js",
+      "path": "src/sync/merge-tags.js",
+      "sha256": "7ac645a17da4638ad7c758092c17b9b61ae35e2706fe21a07cbcd93010bb8fae",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/sync/presence.js",
+      "path": "src/sync/presence.js",
+      "sha256": "053d69156b5433440c4595254b6507ed20ea93134a4102fe843528ef5b22f847",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/sync/stream.js",
+      "path": "src/sync/stream.js",
+      "sha256": "7d79bba3277d02366aeba486b06d0f7ad7ac067e0974fb575983af5aadd20504",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/ui/bevel-controls.js",
+      "path": "src/ui/bevel-controls.js",
+      "sha256": "9925abeebcb28ea252c3992ae0919734f0ed02b64be2e49002bb9686727c3f7e",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/ui/bevel-dialog.js",
+      "path": "src/ui/bevel-dialog.js",
+      "sha256": "cbeacadd68f07d327f40fcdecace545af71e7f30ae911ff322ca9bd65180f9f3",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/ui/bevel.js",
+      "path": "src/ui/bevel.js",
+      "sha256": "f703cf01c4fd721d44b8cf911a09580c476b65e37b33006db2ade03395b22612",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/ui/dialogs.js",
+      "path": "src/ui/dialogs.js",
+      "sha256": "0799d5818fa5761a3abc62436cb32408f30133cdec51deb0c33dc69f4c87da24",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/ui/index.js",
+      "path": "src/ui/index.js",
+      "sha256": "c17d015c04fe4a24bd3c94b162d6d42c20006d98cd93ad687262bb07da1e29bd",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/ui/modal.js",
+      "path": "src/ui/modal.js",
+      "sha256": "76ed9dd4c21960fff16668b701392b07fa0fd32a783604285212523f2650cea6",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/ui/skins/richclay.js",
+      "path": "src/ui/skins/richclay.js",
+      "sha256": "dd19ec4ffbce43aa8f5ef63fb9ff8d7819fbbf0c7d66282fcff747260d7b4d80",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/ui/theme-parts.js",
+      "path": "src/ui/theme-parts.js",
+      "sha256": "c60c020ab87534e6f991850af2dfc5a81b516234457da322756f1e668a773588",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/ui/theme.js",
+      "path": "src/ui/theme.js",
+      "sha256": "bc890fd7668aa2f252b61ec1105de5bceea4b19b1212b2dc2b701a014902806a",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/ui/toast.js",
+      "path": "src/ui/toast.js",
+      "sha256": "12e9f7db4a532ee8cefe65fa11ee67429986ec7ec9948109f0d1f76eeb098581",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/ui/vendor-skin.js",
+      "path": "src/ui/vendor-skin.js",
+      "sha256": "062168a52eb034904f0ff0c705abb0455ee008a3179acb723c8ddca5f06b4575",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/utils/copy-to-clipboard.js",
+      "path": "src/utils/copy-to-clipboard.js",
+      "sha256": "23c4ffc10f3ad05983379c3327c7500c86652e7515c7ee9c83bc6be59364aa83",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/control-serialize.vendor.js",
+      "path": "src/vendor/control-serialize.vendor.js",
+      "sha256": "e3a97309844fa7c89d4af21f5b581c950350f7d7bf57074350df1e09d74385ac",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/hyper-morph.vendor.js",
+      "path": "src/vendor/hyper-morph.vendor.js",
+      "sha256": "0b76169978c2892ec6b23e625b189bf45e40898efb6024b785e90b1c4444a1e2",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/parse5.vendor.js",
+      "path": "src/vendor/parse5.vendor.js",
+      "sha256": "5c130e5d6059733c2788472e6a33dc38731a9189e565276d2e649e9d20d47414",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/prosemirror.vendor.js",
+      "path": "src/vendor/prosemirror.vendor.js",
+      "sha256": "e4d01c13d3fc8ef561062e92f23f9f4a38e0f93e54586d8abddf2c6b41a825c2",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/richclay.vendor.js",
+      "path": "src/vendor/richclay.vendor.js",
+      "sha256": "6d5acda587d11f230f91060d3ee8f93931f6a25137bc9b894d02c1884ac0baad",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/c-2DUTRISG.js",
+      "path": "src/vendor/shiki/c-2DUTRISG.js",
+      "sha256": "8da186b7544d7312657a9beca83c6d3328056939a1963c82f058a69b1c86960b",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/chunk-3OBR2AH3.js",
+      "path": "src/vendor/shiki/chunk-3OBR2AH3.js",
+      "sha256": "0546fa7f48d9dcfff191a7c1f81b06d0bedcef148396de469db23832dfae936e",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/chunk-3WALUAM6.js",
+      "path": "src/vendor/shiki/chunk-3WALUAM6.js",
+      "sha256": "99cbf9a807c02f76f6105396e0dc6c1957ac56a59093e32f8eeb807795077c4b",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/chunk-7AS67VF3.js",
+      "path": "src/vendor/shiki/chunk-7AS67VF3.js",
+      "sha256": "76005c5453ff195f86d967bc6bb314a66c14c89f108e45c8e7c4e035ef1cbb6c",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/chunk-A7YPPIVG.js",
+      "path": "src/vendor/shiki/chunk-A7YPPIVG.js",
+      "sha256": "a39993133b33da8cf86fe9a62bf5a06eb2b9f76ffe1fb0afc78c2b50a61a2d55",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/chunk-BJ7F7RMX.js",
+      "path": "src/vendor/shiki/chunk-BJ7F7RMX.js",
+      "sha256": "8c4b27d773981f0513fb988059dda88e7f061d540188b601d2c611fc4c6dc16b",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/chunk-CAS2N3RS.js",
+      "path": "src/vendor/shiki/chunk-CAS2N3RS.js",
+      "sha256": "6bf2a6a5b932eafff833ee46b955836f8124d552f81987ba4325b085fff59469",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/chunk-EPQNJCMT.js",
+      "path": "src/vendor/shiki/chunk-EPQNJCMT.js",
+      "sha256": "ee34846e9d697f36d2a32561752a55ca44f0cfa6c8414ba4aede4f8df8f944de",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/chunk-IEIPI44D.js",
+      "path": "src/vendor/shiki/chunk-IEIPI44D.js",
+      "sha256": "10fddaad96ff34e62e05f531b0bbb39e3f0f79ba073350a6aeda810b8c306596",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/chunk-MONKXKG3.js",
+      "path": "src/vendor/shiki/chunk-MONKXKG3.js",
+      "sha256": "0062b270630334905a62dae1b66a02aaea5277bed6052d20c06427de88e20935",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/chunk-MZ6WCVRJ.js",
+      "path": "src/vendor/shiki/chunk-MZ6WCVRJ.js",
+      "sha256": "6da0e8b4b8e98f291e965fc1a123fe35b3decc1c867ee6f7d32b0675c4fba469",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/chunk-SGGKIBQG.js",
+      "path": "src/vendor/shiki/chunk-SGGKIBQG.js",
+      "sha256": "aae1bab8a941884654644b0807669b7fc7f8d3a8ab754e2965529482181de0a3",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/chunk-V6TROWGN.js",
+      "path": "src/vendor/shiki/chunk-V6TROWGN.js",
+      "sha256": "00f85bf2d40dbd593573203e0ca522b84a24fffc44e3dadfe8e70dd893f35c14",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/chunk-VGW2NJ74.js",
+      "path": "src/vendor/shiki/chunk-VGW2NJ74.js",
+      "sha256": "9fd9e469859cc04336443cbbbaee7f9621cff43649c2dd483143b0cf860d52a9",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/chunk-WPZEL7ZI.js",
+      "path": "src/vendor/shiki/chunk-WPZEL7ZI.js",
+      "sha256": "49abff030ddb3022e918fc4f125f9c6cc618e4e03eff41cab24db99892d6bd4a",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/chunk-XGHWNNXR.js",
+      "path": "src/vendor/shiki/chunk-XGHWNNXR.js",
+      "sha256": "62a5418455d64afb6a665caeba80cb682db3e65d336a88aa4d8cd82088b141fa",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/cpp-SN7OQ4PK.js",
+      "path": "src/vendor/shiki/cpp-SN7OQ4PK.js",
+      "sha256": "6076cef6abb8209890cd01f7eff4db84f0ffb48286585751c37ae95a29a3eb82",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/csharp-DZ3I2MY5.js",
+      "path": "src/vendor/shiki/csharp-DZ3I2MY5.js",
+      "sha256": "c3b53f444fcaa31c94cb9e27cff4572d8401eef2d7118d760cfcc2067677a6e4",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/css-DA27EPYG.js",
+      "path": "src/vendor/shiki/css-DA27EPYG.js",
+      "sha256": "c68f0c7649cfe18831ad40ece75586cf82049180177cdf56cb9f921bd83fd6b6",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/diff-SQRXJRHS.js",
+      "path": "src/vendor/shiki/diff-SQRXJRHS.js",
+      "sha256": "7d37f3dd4c1806cdcafca07787a62db84c62e2c86b21dc5d5bbe9c97b37cd6c9",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/go-HXVJCPAY.js",
+      "path": "src/vendor/shiki/go-HXVJCPAY.js",
+      "sha256": "812c41e671533f2b3cfa6ca6669fc4bee7a44a7bb5c3d0eb22dcd11143fa0b2e",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/html-WACI4NIZ.js",
+      "path": "src/vendor/shiki/html-WACI4NIZ.js",
+      "sha256": "9d9da34f4bbdefbf484c5898a89f37d1c6484facb58910e32e1becb12399abcc",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/java-5VDCMF7S.js",
+      "path": "src/vendor/shiki/java-5VDCMF7S.js",
+      "sha256": "6ff396ef3595c327768e0db26fbf9949a2a1f9c19c130c6fd85618f46bd4b9f7",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/javascript-ELW6P545.js",
+      "path": "src/vendor/shiki/javascript-ELW6P545.js",
+      "sha256": "71ff4f976e6a0eff70fd3534c3f27a8c17ea4fd6a04ef19f18ff49c9b72f8687",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/json-6SN2WHYJ.js",
+      "path": "src/vendor/shiki/json-6SN2WHYJ.js",
+      "sha256": "4c740d80be055a412adea3d28f3ae8f79781500027353bbe2f8bd6c4d1747f26",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/jsx-LUFJL6ZQ.js",
+      "path": "src/vendor/shiki/jsx-LUFJL6ZQ.js",
+      "sha256": "b40c9d89e8ec855d53bc4bc60e0a944b648c8aa04b9b25efb25ce0d7e4c0ab24",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/kotlin-LDOJVGW3.js",
+      "path": "src/vendor/shiki/kotlin-LDOJVGW3.js",
+      "sha256": "e033bf43f6a0c329b16b2471b7351809cb78eb90d42fcdec09f94d3b6e3a9837",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/markdown-XPNMEGUS.js",
+      "path": "src/vendor/shiki/markdown-XPNMEGUS.js",
+      "sha256": "e84716fd63626cc12537852f61f15d8e4c95c96efebef57ced1576368892f18c",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/php-VWO6PQ2C.js",
+      "path": "src/vendor/shiki/php-VWO6PQ2C.js",
+      "sha256": "b3a76626ce92ed6e7b693f8a62580bd19d3993fe2b0f3bc821b0e0f88b256c88",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/python-L27EBRED.js",
+      "path": "src/vendor/shiki/python-L27EBRED.js",
+      "sha256": "fb6f287fdbe49a25004ebde0e766f9da34cc0bfde9d9359a1e414f23a869646e",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/ruby-6KRV724K.js",
+      "path": "src/vendor/shiki/ruby-6KRV724K.js",
+      "sha256": "9064f6ba21f8c2d9cfbcc45d2bcd4e1ababa173f59ad983263f007767f47e993",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/rust-2QRZR6T5.js",
+      "path": "src/vendor/shiki/rust-2QRZR6T5.js",
+      "sha256": "75a6619397ec3ebf98d551f981e4c7e28a306adc6b73e12c45b6b7bd1c97ae16",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/shellscript-HXWP7HKA.js",
+      "path": "src/vendor/shiki/shellscript-HXWP7HKA.js",
+      "sha256": "6dcb8e78cb03097036ffbe3a7bbaaf60e437cd063303591200d725f5a5625404",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/shiki.vendor.js",
+      "path": "src/vendor/shiki/shiki.vendor.js",
+      "sha256": "73bd1fa75f36318dd42e617a3208f1aa988a79b2e826cf18ea5d400fecca6e1f",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/sql-LZ6OG5E6.js",
+      "path": "src/vendor/shiki/sql-LZ6OG5E6.js",
+      "sha256": "c2c1680f479ab0dff03ec1953819b7ad029307a7b34649e4a687eb2e6f21d503",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/swift-LBJNMH5W.js",
+      "path": "src/vendor/shiki/swift-LBJNMH5W.js",
+      "sha256": "63ac50d52e422ce78fc34167abe66dafb5a43a1b196acb6999def689fefbfce4",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/tsx-KCH3ZECK.js",
+      "path": "src/vendor/shiki/tsx-KCH3ZECK.js",
+      "sha256": "7a4cda2d5b856b1aa7fa5cbaeb483f24e79dda01c7aeac80723ee8569ac1ab61",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/typescript-BHVQDPEU.js",
+      "path": "src/vendor/shiki/typescript-BHVQDPEU.js",
+      "sha256": "fd268b101825b93a38c9fb872be144b7df66c8e5eba3987c4c3dfae091b2bca2",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/xml-EMR7A2XE.js",
+      "path": "src/vendor/shiki/xml-EMR7A2XE.js",
+      "sha256": "afaaccf2288ce69fd9b4537480cf59274c0d48f90e9a0c82ad25f7a6788c74eb",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/shiki/yaml-LI7KOTFR.js",
+      "path": "src/vendor/shiki/yaml-LI7KOTFR.js",
+      "sha256": "840cd7df99f0f12aa7a652b9643ed333a01ee4e471372ab89d4a3e936c193631",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/Sortable.vendor.js",
+      "path": "src/vendor/Sortable.vendor.js",
+      "sha256": "6d0a831fc19b4bae851797ad3393157e861afb7862459c11226359b27e2c4337",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/yjs.vendor.js",
+      "path": "src/vendor/yjs.vendor.js",
+      "sha256": "1657b86a18b2db8937eea93d0c5a529681e67909df56235cb2759b2658270d44",
+      "contentType": "text/javascript; charset=utf-8"
+    }
+  ]
+}
