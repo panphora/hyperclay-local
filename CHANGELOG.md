@@ -2,16 +2,146 @@
 
 ## [Unreleased]
 
+## [1.31.1] - 2026-10-17
+
+### Changed
+- No user-facing changes.
+
+## [1.31.0] - 2026-10-15
+
+### Added
+- A writable macOS install updates in place. The new version downloads in the background and the popover offers Restart to update once it is ready, and the click waits for sync to go idle and shuts down cleanly first.
+- A Windows install updates in place too. A per-user install downloads the update and restarts into it, and a machine-wide install keeps the download link.
+- A Linux AppImage updates itself from a signed feed. The new image is checked against its sha512 and its signature, kept beside the running one, swapped in once the old process exits, and the old image is put back and the version remembered if the new one does not come up within 30 seconds.
+- An install that cannot update in place takes its download link from the published release instead of from the package registry.
+
+### Changed
+- An update is refused while sync still has unsent work, with a message instead of discarding it. Any failure after the app has shut down for the update brings the current version back.
+- A released version can no longer be published again with different bytes. Identical uploads are skipped, different ones ask for a new version number, and download links carry the sha512 so a cache never serves stale bytes.
+- The app refuses an update feed older than one it has already seen.
+
+## [1.30.3] - 2026-10-14
+
+### Fixed
+- A Windows installer's signature carries a timestamp, so Windows keeps trusting the download after the signing certificate expires.
+
+## [1.30.2] - 2026-10-14
+
+### Changed
+- No user-facing changes.
+
+## [1.30.1] - 2026-10-12
+
+### Changed
+- No user-facing changes.
+
+## [1.30.0] - 2026-10-09
+
+### Changed
+- Renames, moves, new files and deletes are read from one comparison of the folder against its record, half a second after the changes stop, instead of from the order the watcher saw them. A rename stays a rename, and two folders moved at once keep their own identity.
+- Under `uploads/`, a delete waits 3 seconds before it is sent, a move out is sent as a move, a mass delete waits for your choice in the popover, and a file that comes back within 7 days returns to where it was. Nothing else under `uploads/` can be deleted, moved or renamed.
+
+### Fixed
+- An upload name drops the characters Windows cannot store (`< > : " | ? *` and control characters), so a file gets one name on the web, the Mac and Windows instead of failing to upload on Windows.
+
+## [1.29.0] - 2026-10-08
+
+### Added
+- Export a File as Zip in a folder's menu writes a document and the files it links through `/_/uploads/` as one zip, with the files linked relatively so the copy opens anywhere with its attachments.
+- Use my profile in files, under Options, puts one person in every file: the Hyperclay account's public person when signed in, cached so it works offline, or a display name kept on this computer when signed out. Every folder answers it as `document.people.me` on `/_/meta`, and only to its own origin.
+- A folder with attachments that cannot sync says how many instead of reading synced, and Notices lists each one with its size, the plan's limit and a Show File button. The rows clear when the file syncs, shrinks or is deleted.
+
+### Changed
+- Attachments live in `uploads/assets-<name>/` inside the folder and are linked as `/_/uploads/` paths, the same layout hyperclay.com uses, so a synced folder is byte-identical on both sides and moving a document never strands its files.
+- An attachment over the plan's file-size cap stays on this computer instead of being sent, and is recorded so it is asked about again when the cap rises. A file that shrinks, or a cap that grows, clears it on its own.
+- An AI edit falls back to Codex when Claude Code is not installed, instead of failing.
+
+### Fixed
+- Uploads refuse web-page types and every served file carries `nosniff`, so an attachment can no longer run script on the app's origin. A page type inside an uploads folder is served as a download, and an upload name is read the way it is stored.
+- `/_/uploads/` serves only files inside the real uploads folder, and every byte of a name outside the unreserved set is escaped, so a name like `image (1).png` reads whole and a symlink out of the folder reaches nothing.
+- Sync never deletes, renames or moves the `uploads/` folder itself. A Finder rename or move is renamed back, a delete is restored from the server, and the files inside stay fully syncable.
+- A zip export survives a failed read. An error rejects instead of hanging, each export writes and removes its own temporary file, an existing zip is replaced only once the new one is complete, and a symlinked attachments folder is left out.
+
+## [1.28.1] - 2026-10-04
+
+### Added
+- A served document carries `documentetag` on its root element, the stamp of the bytes being served, so a page can tell whether the version it holds is still the one on disk. The file on disk is untouched, and the stamp never reaches a save or another tab.
+
+## [1.28.0] - 2026-10-03
+
+### Added
+- The JSON data API takes its rules from the request: a `data` parameter of `{title:h1}` shape, on `/_/api/<file>` or on the file's own address, for reads and writes, with no tag in the page. Supplied rules replace the page's `api` tag for that request and are never saved into the file.
+
+### Changed
+- Each complete source filename keeps its own data API cache, so `soup.html` and `soup.htmlclay` answer independently, and a request with its own rules skips the cache.
+
+## [1.27.0] - 2026-10-01
+
 ### Changed
 - AI editing is on by default. A settings file written before the switch existed reads as on, and turning it off in the tray still sticks.
 - Every built-in agent runs with no tools. Claude Code runs with `--strict-mcp-config` in an empty scratch folder, so the MCP servers in your own Claude config no longer load for an AI edit. Codex runs with its shell and other tool features disabled and receives the prompt on standard input. `@agy` is refused as unsupported, because agy can read files without asking and has no switch to stop that.
 - The agent is told to keep every attribute of the element it rewrites, and that a reply adding code is refused.
 - A missing agent CLI names the agent and says how to pick another one.
+- The prompt tells the agent where your selection sits in the page, so an edit can be asked about the part you picked.
 
 ### Fixed
 - A page's `Document-URL` can no longer name a file outside the served folder. The browser lane now applies the same segment rules as the process lane and the static route.
 - `@file` context follows symlinks only within the served folder, and is limited to 8 files, 256 KB each and 1 MB in total.
 - One AI edit runs per document at a time, and a request that reuses a running request's id is refused.
+- `@file` context refuses hidden files and folders, by name and after symlinks.
+- Stopping an AI edit ends the agent's whole process, on macOS and Linux too, so nothing keeps running behind the popover.
+- A leading `@notes.md` in a prompt is read as a file, not as an agent named `@note`.
+
+## [1.26.0] - 2026-09-28
+
+### Added
+- The JSON data API takes writes: a `POST` of a JSON body to `/_/api/<file>` applies the body through the page's `api` rules and saves it through the same path as a save, content only, and a bare `/_/api` writes `index.html`. `GET` answers an `ETag`, and a `POST` sent with `If-Match` is refused with 412 when the document changed underneath it.
+- A write through the data API reaches open edit tabs as an external change, with the same protection for a region someone is typing in.
+
+### Fixed
+- The data API refuses a document that is not UTF-8 rather than corrupting the bytes outside the edit, answers a JSON error for a body over its limit, and reads a file once so its `ETag` and its data describe the same bytes.
+- A folder whose contents were replaced since it was set up pauses and says the folder changed, and sends no delete. Putting the original folder back resumes it.
+
+## [1.25.0] - 2026-09-24
+
+### Added
+- A folder's menu shows the folder's path and has Copy Address.
+
+### Changed
+- The popover leads with the address, with labelled Serve and Sync switches above the footer and one line per folder. A folder gains a second line only when it needs attention, and activity sits in a tab beside Notices.
+
+## [1.24.2] - 2026-09-24
+
+### Fixed
+- Sync falls back to hyperclay.com when no server address is stored, so a copy upgraded from an earlier version can discover and sync again.
+
+## [1.24.1] - 2026-09-24
+
+### Changed
+- No user-facing changes.
+
+## [1.24.0] - 2026-09-24
+
+### Added
+- Each synced account gets its own folder and its own local port. Settings from the single-folder version migrate on first start, and the folder that version synced stays where it is.
+- The popover shows one card per folder with its status, the changes waiting, any conflict, when it last synced and the last error, and one activity feed covers every folder.
+- The popover has one switch for the server and one for sync, and each applies to every folder.
+- The tray menu lists each folder with its own menu. A folder can be opened in the browser, revealed, retried, given another port, disconnected or removed from there.
+- A team you are added to arrives as a single notification.
+- Team setup checks that the folder is empty and that there is room on disk, and picks up where it left off after a quit.
+- A conflict is recorded and shown with a choice, instead of one side overwriting the other.
+- Opening a document with Hyperclay Local from Finder serves it from the folder it is in. A document outside every folder says so and offers to open it in HTML Clay or show the personal folder.
+- A `served-roots.json` file in the app's data folder lists every served folder and its port, for scripts and the command line.
+
+### Changed
+- Sync decides by checksum and the server's etag, never by clocks, and the calibrated clock offset is gone.
+- A teammate's rename or move is applied here as a rename or move rather than read as a delete, and a destination that is already taken is moved aside.
+- An edit made while a session is paused or offline is picked up when it resumes, and a launch with no network starts offline instead of failing.
+
+### Fixed
+- An expired or revoked key pauses every session and says so, and adding a new key resumes them.
+- A missing folder, or records belonging to another account, pauses the session and sends no delete. A download never overwrites an edit made while it was fetching.
+- Stopping a session cancels its first bind, even while it waits for a slot.
 
 ## [1.23.0] - 2026-08-29
 
