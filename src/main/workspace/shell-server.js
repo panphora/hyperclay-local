@@ -5,6 +5,7 @@ const path = require('upath');
 const { getConsentRegistry, resolveReadPath } = require('../utils/path-resolver');
 const { RootTree, entryFor } = require('./tree');
 const { executeCommand, safePath, refusal } = require('./commands');
+const { handleWorkspaceRoute } = require('./routes');
 
 const MIME = { '.js': 'text/javascript', '.css': 'text/css', '.woff': 'font/woff', '.woff2': 'font/woff2' };
 const collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
@@ -24,7 +25,8 @@ async function readBody(req) {
   try { return JSON.parse(text); } catch { throw refusal('forbidden', 'Invalid JSON', 400); }
 }
 
-function createShellServer({ authority, rootPool, observerFor, settings, appVersion, connection = () => ({}), rootTitleFor = root => path.basename(root.path) }) {
+function createShellServer({ authority, rootPool, observerFor, settings, appVersion, connection = () => ({}),
+  syncManager = () => null, rootTitleFor = root => path.basename(root.path) }) {
   const token = crypto.randomBytes(32).toString('base64url');
   const bootstrapSecret = crypto.randomBytes(32).toString('base64url');
   const epoch = crypto.randomBytes(16).toString('base64url');
@@ -128,13 +130,16 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
         req.on('close', () => { clearInterval(heartbeat); subscribers.delete(res); });
         return;
       }
-      const match = /^\/api\/roots\/([^/]+)\/(tree|list|search|document|commands)$/.exec(url.pathname);
+      const match = /^\/api\/roots\/([^/]+)\/(tree|list|search|document|commands|source|versions|version|restore|upload|download|consents|conflicts\/resolve)$/.exec(url.pathname);
       if (!match) throw refusal('unsupported', 'Route is not available yet', 501);
       let id;
       try { id = decodeURIComponent(match[1]); } catch { throw refusal('forbidden', 'Invalid root', 403); }
       const root = (settings().roots || []).find(item => item.id === id);
       if (!root || rootPool.get(id)?.state !== 'running') throw refusal('missing', 'Root is not running', 404);
       const route = match[2];
+      if (!['tree', 'list', 'search', 'document', 'commands'].includes(route)) {
+        return handleWorkspaceRoute({ req, res, url, root, route, settings, syncManager });
+      }
       if (route === 'commands' && req.method === 'POST') {
         const request = await readBody(req);
         const tree = await treeFor(root);

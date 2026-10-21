@@ -129,6 +129,7 @@ const pool = new RootServerPool({
 const shellServer = createShellServer({
   authority: localAuthority,
   rootPool: pool,
+  syncManager: () => manager,
   observerFor,
   settings: () => settings,
   appVersion: app.getVersion(),

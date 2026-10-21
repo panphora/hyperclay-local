@@ -2335,7 +2335,8 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           // The echo that makes a timed-out save recoverable. A client whose request
           // never returned asks the host later and compares this id with its own; a
           // client whose request DID return has it confirmed in the same breath.
-          ...(saveId ? { saveId } : {})
+          ...(saveId ? { saveId } : {}),
+          ...(req.headers.prefer === 'return=representation' ? { html: content } : {})
         });
         console.log(`Saved: ${name}`);
       } catch (error) {
@@ -2907,6 +2908,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // The whole read-decide-write region holds the same canonical-path queue
       // slot a concurrent /save would need (A1).
       let refusal = null;
+      let restoredEtag = null;
       try {
         await runDocumentWrite(req, rel, filePath, async (target, token) => {
         const canonicalPath = target.canonicalPath;
@@ -2923,6 +2925,11 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
             refusal = { status: 500, message: 'current file cannot be read, so no safety backup is possible' };
             return;
           }
+        }
+
+        if (req.headers['if-match'] !== undefined && !ifMatchSatisfied(req.headers['if-match'], current)) {
+          refusal = { status: 412, message: 'document changed since it was loaded', etag: documentEtag(current) };
+          return;
         }
 
         let data = null;
@@ -2963,6 +2970,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         const published = await publishHostWrite({
           name: rel, filePath: canonicalPath, html, target, token,
         });
+        restoredEtag = documentEtag(published);
         // publishHostWrite morphs view-mode tabs on the saved lane (once per alias
         // already, when an authority published it), but an edit-mode tab is not
         // listening there, so the restore is announced the way any other host-side
@@ -2987,10 +2995,15 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         return versionError(res, 500, 'write error');
       }
 
-      if (refusal) return versionError(res, refusal.status, refusal.message);
+      if (refusal) {
+        if (refusal.etag) return res.status(refusal.status).json({ ok: false, error: refusal.message,
+          msg: refusal.message, msgType: 'error', code: 'conflict', etag: refusal.etag });
+        return versionError(res, refusal.status, refusal.message);
+      }
       console.log(`Restored ${rel} from version ${versionName}`);
       res.set('Cache-Control', 'no-store');
-      return res.json({ ok: true, msg: `Restored ${versionName}`, msgType: 'success' });
+      return res.json({ ok: true, msg: `Restored ${versionName}`, msgType: 'success',
+        ...(req.headers['if-match'] !== undefined ? { etag: restoredEtag } : {}) });
     });
 
     // Tailwind CSS — serve from disk or auto-generate on first request.
