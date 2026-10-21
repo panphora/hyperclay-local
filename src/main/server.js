@@ -41,6 +41,7 @@ const dataGuard = require('./data-loss-guard');
 const { documentEtag, ifMatchSatisfied } = require('./spec-wire');
 const { MAX_EXTERNAL_HTML } = require('./root-observer');
 const { buildEnvelope } = require('../sync-engine/control-lane-core.cjs');
+const { createLocalLiveData } = require('./local-live-data.js');
 
 // Initialize Eta
 const eta = new Eta({
@@ -672,6 +673,372 @@ async function handleSharedSyncStream(ctx, paths, req, res, raw) {
   });
 }
 
+// ------------------------------------------------- shared stream v2 (spec §10, live-data)
+
+// The v2 list form adds one member per live editor to the same one-connection
+// shape: `m=clientId:document-url`. Split on the first colon only, so a document
+// URL carrying a colon (a port, most often) survives here exactly as it does in
+// `s`. The client id is the same one the data lane mints a proof for.
+const MAX_SHARED_MEMBERS = 256;
+
+function parseSharedMember(raw) {
+  if (typeof raw !== 'string') return null;
+  const at = raw.indexOf(':');
+  if (at < 0) return null;
+  const clientId = raw.slice(0, at);
+  if (!LIVE_CLIENT_ID.test(clientId)) return null;
+  const href = raw.slice(at + 1);
+  if (!href) return null;
+  return { clientId, href };
+}
+
+// The logical resource an entry names on THIS request's own origin, or null when
+// the href is unusable, names another host, or names nothing at all. Pairing is
+// decided with this and nothing else, so it happens before any filesystem read:
+// a member pairs with a live entry for the same normalized root/path, never
+// merely with another spelling of the same canonical file.
+function sharedEntryResource(req, href) {
+  let url;
+  try {
+    url = new URL(String(href));
+  } catch {
+    return null;
+  }
+  if (url.origin !== `http://${req.headers.host}`) return null;
+  return resolveResourceFromHref(String(href)) || null;
+}
+
+// A v2 subscription's cursor. `v:2` is what tells a v2 client this host speaks
+// the new wire; a cursor without it means the host rolled back, and the client
+// falls back to the direct stream instead of waiting for members that will never
+// arrive. No id: one id for many subscriptions would name a position for none.
+function sharedCursorFrameV2(i, seq, resync) {
+  const data = resync ? { v: 2, sub: i, seq, resync: true } : { v: 2, sub: i, seq };
+  return `event: cursor\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+// One entry the host will not serve is answered inside the stream that goes on
+// serving the others, and it carries `v:2` too: a v2 client must be able to tell
+// "this document is gone" from "this host never spoke v2".
+function notFoundCursorFrameV2(i) {
+  return `event: cursor\ndata: ${JSON.stringify({ v: 2, sub: i, error: 'not-found' })}\n\n`;
+}
+
+// One member's readiness. It names the member's index and carries no proof: a
+// conn belongs to the data lane's state read and is never put on a stream, so
+// nothing here can be replayed into somebody else's connection.
+function memberCursorFrame(j, notFound) {
+  const data = notFound ? { v: 2, member: j, error: 'not-found' } : { v: 2, member: j };
+  return `event: cursor\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+// The v2 shared stream. It keeps the v1 shape -- one connection per origin, one
+// snapshot subscription per `s` entry, frames named `s<i>` -- and adds one member
+// per live editor, whose named room events are wrapped per recipient as `m<j>`.
+// One writer, one backlog counter and one teardown cover the whole response, so a
+// connection that stops reading is dropped once, not once per member.
+async function handleSharedSyncStreamV2(ctx, req, res, { resolveTarget, s, m, v }) {
+  const refuse = () => res.status(400).type('text/plain').send('Bad Request');
+  if (!sameOriginStream(req)) return res.status(403).type('text/plain').send('Forbidden');
+  if (v !== '2') return refuse();
+  if (s.length === 0 || s.length > MAX_SHARED_SUBS || m.length > MAX_SHARED_MEMBERS) return refuse();
+
+  const entries = s.map(parseSharedEntry);
+  if (entries.some((entry) => entry === null)) return refuse();
+  const members = m.map(parseSharedMember);
+  if (members.some((member) => member === null)) return refuse();
+
+  // Two members for one client on one document would be two proofs for one port.
+  const seen = new Set();
+  for (const member of members) {
+    const key = `${member.clientId}\n${sharedEntryResource(req, member.href) || member.href}`;
+    if (seen.has(key)) return refuse();
+    seen.add(key);
+  }
+
+  // Pairing is logical and origin-exact, and it is settled before any read: a
+  // member must name the live entry of the same normalized resource.
+  const entryResources = entries.map((entry) => sharedEntryResource(req, entry.href));
+  const memberResources = members.map((member) => sharedEntryResource(req, member.href));
+  const liveResources = new Set();
+  for (const [i, entry] of entries.entries()) {
+    if (entry.lane !== 'live') continue;
+    const name = entryResources[i];
+    if (name) liveResources.add(name);
+  }
+  for (const name of memberResources) {
+    if (!name || !liveResources.has(name)) return refuse();
+  }
+
+  // Close tracking is installed before the first awaited resolution and checked
+  // after the last one: a connection that left while its documents were being
+  // resolved must register nothing at all.
+  let closed = false;
+  const noteClosed = () => { closed = true; };
+  req.on('close', noteClosed);
+  res.on('close', noteClosed);
+
+  // A resolver that refuses before it reaches the disk throws synchronously, and
+  // one that refuses later rejects. Both are this entry's own not-found cursor
+  // and neither is allowed to take the rest of the connection down with it.
+  const resolveOne = (href) => {
+    let pending;
+    try {
+      pending = resolveTarget(req, { fresh: true, href });
+    } catch {
+      return Promise.resolve(null);
+    }
+    return Promise.resolve(pending).then((target) => target, () => null);
+  };
+  const resolvedEntries = await Promise.all(entries.map((entry) => resolveOne(entry.href)));
+  const resolvedMembers = await Promise.all(members.map((member) => resolveOne(member.href)));
+  if (closed) return;
+
+  const matchedLiveEntries = new Set();
+  const admittedMembers = resolvedMembers.map((target, j) => {
+    if (!target) return null;
+    let matched = false;
+    for (const [i, entry] of entries.entries()) {
+      const snapshot = resolvedEntries[i];
+      if (entry.lane !== 'live' || entryResources[i] !== memberResources[j] || !snapshot) continue;
+      if (snapshot.rootId !== target.rootId || snapshot.logicalPath !== target.logicalPath ||
+        snapshot.origin !== target.origin || snapshot.canonicalPath !== target.canonicalPath ||
+        snapshot.identity !== target.identity) continue;
+      matchedLiveEntries.add(i);
+      matched = true;
+    }
+    return matched ? target : null;
+  });
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  let torn = false;
+  let keepAlive = null;
+  const disposers = [];
+  const memberRefs = [];
+  const writer = boundedWriter(res, () => teardown());
+
+  // One teardown for the whole connection: every snapshot, every member, the
+  // keepalive and the response itself. A refused write, a closed socket and an
+  // early return below all land here, and here only once.
+  function teardown() {
+    if (torn) return;
+    torn = true;
+    writer.stop();
+    if (keepAlive) clearInterval(keepAlive);
+    for (const member of memberRefs) member.close();
+    for (const dispose of disposers) dispose();
+    for (const plan of plans) if (plan) ctx.live.unsubscribe(plan.file, plan.sink);
+    res.removeListener('close', teardown);
+    req.removeListener('close', teardown);
+    res.removeListener('close', noteClosed);
+    req.removeListener('close', noteClosed);
+    try {
+      res.destroy();
+    } catch {}
+  }
+
+  // Resume before subscribing, then register every surviving snapshot and member
+  // in one synchronous section: Node runs it to completion, so no frame can fall
+  // between a replay and its subscription, and no named event can reach a member
+  // this connection has not admitted yet.
+  const plans = entries.map((entry, i) => {
+    const target = resolvedEntries[i];
+    if (!target) return null;
+    return {
+      target,
+      lane: entry.lane,
+      file: target.logicalPath,
+      sink: taggedSink(writer, i),
+      resume: replayStore.resume(ctx.live.key(target.logicalPath), entry.lane, entry.since),
+      // A live entry no member asked for is an editor that has not joined server
+      // data. A saved viewer never joins, so it never raises that barrier.
+      legacy: entry.lane === 'live' && !matchedLiveEntries.has(i),
+    };
+  });
+  for (const plan of plans) {
+    if (!plan) continue;
+    ctx.live.subscribe(plan.file, plan.sink, { lane: plan.lane });
+    disposers.push(ctx.localAuthority.registerSnapshot(plan.target, { lane: plan.lane, legacy: plan.legacy }));
+  }
+  members.forEach((member, j) => {
+    const target = admittedMembers[j];
+    if (!target) return;
+    memberRefs.push(ctx.localAuthority.registerEditor(target, {
+      clientId: member.clientId,
+      send: (name, payload) => writer.write(`event: m${j}\ndata: ${JSON.stringify({ event: name, data: payload })}\n\n`),
+    }));
+  });
+
+  keepAlive = setInterval(() => writer.write(': keepalive\n\n'), SSE_KEEPALIVE_MS);
+  res.on('close', teardown);
+  req.on('close', teardown);
+
+  // Readiness first: a port opens once it has both this connection's snapshot
+  // cursor and its own member cursor, and a member that appears after this point
+  // is already registered, so it cannot miss the frame that wakes it.
+  for (let j = 0; j < members.length; j += 1) {
+    if (writer.dropped) return;
+    writer.write(memberCursorFrame(j, !admittedMembers[j]));
+  }
+  // Then each entry's cursor and replay, in query order. A named room event never
+  // reaches a sink here, so nothing on this stream can move a replay position.
+  for (let i = 0; i < plans.length; i += 1) {
+    if (writer.dropped) return;
+    const plan = plans[i];
+    if (!plan) {
+      writer.write(notFoundCursorFrameV2(i));
+      continue;
+    }
+    writer.write(sharedCursorFrameV2(i, plan.resume.baseline, plan.resume.resync));
+    for (const message of plan.resume.replay) {
+      if (writer.dropped) return;
+      plan.sink.write(message);
+    }
+  }
+}
+
+// One physical SSE response gets one write budget, shared by every sink that
+// writes to it: the replay, the cursor, the named room events and the snapshot
+// subscription. A connection that refuses this many frames in a row, or that has
+// this much already buffered, is not reading, and the stream is torn down rather
+// than buffered without bound. One drain listener resets the count; both go
+// away with the stream.
+const SSE_FALSE_WRITE_LIMIT = 32;
+const SSE_WRITE_BUFFER_LIMIT = 8 * 1024 * 1024;
+
+function boundedWriter(res, onDrop) {
+  let refused = 0;
+  let dropped = false;
+  const onDrain = () => { refused = 0; };
+  res.on('drain', onDrain);
+  const stop = () => {
+    if (dropped) return;
+    dropped = true;
+    res.removeListener('drain', onDrain);
+    if (typeof onDrop === 'function') onDrop();
+  };
+  return {
+    get dropped() {
+      return dropped;
+    },
+    stop,
+    write(message) {
+      if (dropped) return false;
+      let ok;
+      try {
+        ok = res.write(message);
+      } catch {
+        stop();
+        return false;
+      }
+      if (ok === false) {
+        refused += 1;
+      }
+      if (refused > SSE_FALSE_WRITE_LIMIT || res.writableLength > SSE_WRITE_BUFFER_LIMIT) stop();
+      return ok;
+    },
+  };
+}
+
+// The live lane serves documents. A resource that is not an HTML document has no
+// room to open, and a live subscription's proof is the same client id the data
+// lane uses.
+const LIVE_DOCUMENT_PATH = /\.(?:html|htmlclay)$/i;
+const LIVE_CLIENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+// The direct stream once a Local room registry exists. The bytes a consumer
+// already reads are unchanged -- the same resume, cursor and snapshot frames --
+// and a live subscription with a client id additionally carries the room's
+// unwrapped named events. The canonical document is resolved before any header
+// is written, and a stream that left during that read registers nothing.
+async function handleAuthorityLiveStream(ctx, req, res, { file, lane, resolveTarget }) {
+  const authority = ctx.localAuthority;
+  const clientId = req.query['client-id'];
+  if (clientId !== undefined && (typeof clientId !== 'string' || !LIVE_CLIENT_ID.test(clientId))) {
+    return res.status(400).type('text/plain').send('invalid client-id');
+  }
+
+  let closed = false;
+  req.on('close', () => { closed = true; });
+
+  let target;
+  try {
+    target = await resolveTarget(req, { fresh: true });
+  } catch (err) {
+    if (res.headersSent) return;
+    const status = Number(err && err.status);
+    if (status === 403) return res.status(403).type('text/plain').send('Forbidden');
+    if (status === 400) return res.status(400).type('text/plain').send('Bad Request');
+    return res.status(404).type('text/plain').send('File not found');
+  }
+  if (closed) return;
+
+  // SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  let torn = false;
+  let keepAlive = null;
+  let member = null;
+  let disposeSnapshot = () => {};
+  const writer = boundedWriter(res, () => teardown());
+  const sink = { write: (message) => writer.write(message) };
+
+  // Resume before subscribing. Node runs the rest of this handler to
+  // completion, so no frame can fall between the replay and the subscription.
+  const { baseline, replay, resync } = replayStore.resume(ctx.live.key(file), lane, parseLastEventId(req));
+  writer.write(cursorFrame(baseline, resync));
+  for (const message of replay) {
+    if (writer.dropped) return;
+    writer.write(message);
+  }
+  if (writer.dropped) return;
+
+  // One snapshot per subscription: live and saved alike keep their own root
+  // channel, and an anonymous live subscriber is what the legacy barrier counts.
+  ctx.live.subscribe(file, sink, { lane });
+  disposeSnapshot = authority.registerSnapshot(target, { lane, legacy: lane === 'live' && clientId === undefined });
+  // Membership is live-only and needs a proof. A saved viewer never joins a room.
+  member = lane === 'live' && clientId !== undefined
+    ? authority.registerEditor(target, {
+      clientId,
+      send: (name, payload) => writer.write(`event: ${name}\ndata: ${JSON.stringify(payload)}\n\n`),
+    })
+    : null;
+
+  keepAlive = setInterval(() => writer.write(': ping\n\n'), 30000);
+
+  // One teardown, whichever way the response ends: membership, snapshot,
+  // subscription, keepalive, callbacks, then the response itself.
+  function teardown() {
+    if (torn) return;
+    torn = true;
+    writer.stop();
+    if (keepAlive) clearInterval(keepAlive);
+    if (member) member.close();
+    disposeSnapshot();
+    ctx.live.unsubscribe(file, sink);
+    res.removeListener('close', teardown);
+    req.removeListener('close', teardown);
+    try {
+      res.destroy();
+    } catch {}
+  }
+  res.on('close', teardown);
+  req.on('close', teardown);
+
+  // Connection established
+  writer.write(': connected\n\n');
+}
+
 // The observer is shared with the session and createApp has no stop hook to
 // unhook from, so the listeners are registered once per observer rather than once
 // per app: a second app on the same observer cannot double-reset, and a stopped
@@ -748,6 +1115,47 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       return await resolveWritePath(paths, `${TAILWIND_DIR}/${name}.css`);
     };
 
+    // The live lane's admitted document: the exact same-origin Document-URL
+    // (Page-URL when the spec spelling is absent), its normalized logical
+    // resource, the contained canonical file that exists, and the registry's
+    // stable identity for that file. `{ fresh: false }` answers an already-bound
+    // logical target without touching the disk, so a warm frame reaches its held
+    // room immediately; `{ fresh: true }` always resolves and checks again.
+    const resolveLiveTarget = (req, { fresh = false, href: named = undefined } = {}) => {
+      const origin = `http://${req.headers.host}`;
+      const dataRequest = req.originalUrl.split('?')[0] === '/_/sync/data';
+      // A v2 shared entry names its own document; every other caller names the
+      // request's Document-URL (Page-URL is the pre-spec fallback), and the data
+      // lane requires the header rather than accepting the query spelling alone.
+      const href = named !== undefined
+        ? named
+        : (documentUrlHeader(req) ||
+          (!dataRequest && req.query && (req.query['document-url'] || req.query['page-url'])) || null);
+      if (!href) throw new PathError(400, 'Document-URL is required');
+      let url;
+      try {
+        url = new URL(String(href));
+      } catch {
+        throw new PathError(400, 'Document-URL is not a URL');
+      }
+      if (url.origin !== origin) throw new PathError(403, 'Access denied');
+      const name = resolveResourceFromHref(String(href));
+      if (!name || !LIVE_DOCUMENT_PATH.test(name)) throw new PathError(404, 'File not found');
+
+      const logical = { rootId: ctx.root.id, logicalPath: name, origin };
+      if (!fresh) {
+        const bound = ctx.localAuthority.findBoundTarget(logical);
+        if (bound) return bound;
+      }
+      return (async () => {
+        validateSegments(name);
+        const real = await resolveReadPath(paths, name);
+        const stats = await fs.stat(real).catch(() => null);
+        if (!stats || !stats.isFile()) throw new PathError(404, 'File not found');
+        return ctx.localAuthority.bindTarget({ ...logical, canonicalPath: real, live: ctx.live });
+      })();
+    };
+
     // DNS-rebinding hardening for the WHOLE origin. Binding to
     // localhost does not help: a rebound hostname resolves to 127.0.0.1 and the
     // request arrives here carrying the attacker's Host header. A loopback Host
@@ -791,7 +1199,11 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     app.use((req, res, next) => {
       if (!UNSAFE_METHODS.has(req.method)) return next();
 
-      const refuse = () => res.status(403).json({ msg: 'Cross-origin requests are not allowed.', msgType: 'error' });
+      const refuse = () => res.status(403).json({
+        msg: 'Cross-origin requests are not allowed.',
+        msgType: 'error',
+        ...(ctx.localAuthority && req.originalUrl.split('?')[0] === '/_/sync/data' && { code: 'forbidden' }),
+      });
 
       const site = req.headers['sec-fetch-site'];
       if (site !== undefined && site !== 'same-origin' && site !== 'none') return refuse();
@@ -880,6 +1292,30 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       }
     });
 
+    // clay.live's Local data lane, installed only when a room registry exists and
+    // only on the marked `/_/sync/data` address. Its own 64 KB body cap is
+    // registered here, ahead of the 10 MB live-sync parser below, so a frame that
+    // is too large for this lane can never be parsed under the legacy lane's
+    // limit. The marker stripper above has already rewritten the URL to
+    // `/sync/data`, so the route is registered bare and gated on the marker.
+    if (ctx.localAuthority) {
+      const liveData = createLocalLiveData({
+        authority: ctx.localAuthority,
+        resolveTarget: resolveLiveTarget,
+      });
+      const liveDataBody = express.json({ limit: '64kb' });
+      const parseLiveDataBody = (req, res, next) => liveDataBody(req, res, (err) => {
+        if (!err) return next();
+        if (err.type === 'entity.too.large') {
+          return res.status(413).json({ msg: 'Live update refused: too-large.', msgType: 'error', code: 'too-large' });
+        }
+        return res.status(400).json({ msg: 'Bad request.', msgType: 'error', code: 'invalid-request' });
+      });
+      const markedOnly = (req, res, next) => (req.fromSystemRoute ? next() : next('route'));
+      app.post('/sync/data', markedOnly, parseLiveDataBody, (req, res) => liveData.post(req, res));
+      app.get('/sync/data', markedOnly, (req, res) => liveData.state(req, res));
+    }
+
     const apiWriteBody = (req, res, next) => express.text({ type: () => true, limit: API_WRITE_MAX_BYTES })(req, res, (err) => {
       if (!err) return next();
       if (err.type === 'entity.too.large') {
@@ -930,7 +1366,21 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // form and is told apart by `s`. The marker prefix is part of the address:
       // a bare `/sync?s=` is not the list form, so a user document named `sync`
       // keeps this route to itself.
-      if (req.query.s !== undefined && req.originalUrl.startsWith('/_/sync')) {
+      const markedSync = req.originalUrl.startsWith('/_/sync');
+      // A marked stream carrying a version or a member list is the v2 wire, and a
+      // version that is not v2 is refused here rather than read as the direct
+      // form below. It needs a room registry to have members at all: an app
+      // without one answers a v2-shaped request exactly as an older Local does,
+      // which is the rollback a v2 client already knows how to detect.
+      if (markedSync && ctx.localAuthority && (req.query.v !== undefined || req.query.m !== undefined)) {
+        return handleSharedSyncStreamV2(ctx, req, res, {
+          resolveTarget: resolveLiveTarget,
+          s: req.query.s === undefined ? [] : [].concat(req.query.s),
+          m: req.query.m === undefined ? [] : [].concat(req.query.m),
+          v: req.query.v,
+        });
+      }
+      if (req.query.s !== undefined && markedSync) {
         return handleSharedSyncStream(ctx, paths, req, res, [].concat(req.query.s));
       }
       // `document-url` is the spec spelling and wins; `page-url` is the pre-spec one.
@@ -948,6 +1398,13 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // post-strip on-disk HTML broadcast from the save paths. No auth —
       // this server is single-user/localhost.
       const lane = req.query.lane === 'saved' ? 'saved' : 'live';
+
+      // With a room registry this stream is also the membership record: a live
+      // subscription with a client id carries the room's named events. Without
+      // one the stream below stays exactly what it was.
+      if (ctx.localAuthority) {
+        return handleAuthorityLiveStream(ctx, req, res, { file, lane, resolveTarget: resolveLiveTarget });
+      }
 
       // SSE headers
       res.setHeader('Content-Type', 'text/event-stream');
@@ -2582,6 +3039,8 @@ module.exports = {
   sweepExpiredSnapshots,
   // Exported for testing
   createApp,
+  boundedWriter,
+  handleSharedSyncStreamV2,
   resolveResourceFromHref,
   validateAndResolvePath,
   stripSystemRouteMarker,

@@ -15,9 +15,9 @@ async function isDirectory(dir) {
 }
 
 class RootServer {
-  constructor(root, { devHooks, isKnownPath, observer = null, helpers = null, syncEngineFor = null, person = null }) {
+  constructor(root, { devHooks, isKnownPath, observer = null, helpers = null, syncEngineFor = null, person = null, localAuthority = null }) {
     this.root = root;
-    this.deps = { devHooks, isKnownPath, observer, helpers, syncEngineFor, person };
+    this.deps = { devHooks, isKnownPath, observer, helpers, syncEngineFor, person, localAuthority };
     this.app = null;
     this.server = null;
     this.sockets = new Set();
@@ -41,6 +41,7 @@ class RootServer {
       helpers: this.deps.helpers,
       syncEngineFor: this.deps.syncEngineFor,
       person: this.deps.person,
+      localAuthority: this.deps.localAuthority,
     };
     const app = createApp(ctx);
     this.app = app;
@@ -81,6 +82,10 @@ class RootServer {
     for (const s of this.sockets) s.destroy();
     this.sockets.clear();
     await new Promise((resolve) => server.close(() => resolve()));
+    // Last, once the sockets and their streams are gone: this root's rooms are
+    // released and its registrations dropped. Other roots stay connected, and a
+    // repeat stop (no server) is harmless because closeRoot is idempotent.
+    this.deps.localAuthority?.closeRoot(this.root.id);
     this.state = 'stopped';
   }
 }

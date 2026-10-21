@@ -209,6 +209,7 @@
     "webpack-cli": "^6.0.1"
   },
   "dependencies": {
+    "@panphora/clayjs": "^1.13.1",
     "busboy": "^1.6.0",
     "cheerio": "1.2.0",
     "chokidar": "^3.6.0",
