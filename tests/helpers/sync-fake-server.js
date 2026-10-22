@@ -38,6 +38,7 @@ class FakeServer {
   constructor(nodes = [], { delay } = {}) {
     this.nodes = new Map();
     this.trash = new Map();
+    this.pageStates = new Map();
     this.calls = [];
     this.onCall = null;
     this.delay = delay || (async () => {});
@@ -310,6 +311,22 @@ class FakeServer {
     node.version++;
     this.maybeLose('putNodeContent');
     return { nodeId: node.id, checksum: checksumOf(node.content), size: node.content.length };
+  }
+
+  async getPageState(conn, id) {
+    await this.record('getPageState', [id], id);
+    const node = this.get(id);
+    if (!node) throw httpError(404, `Node ${id} not found`);
+    return this.pageStates.get(Number(id)) || null;
+  }
+
+  async putPageState(conn, id, record) {
+    await this.record('putPageState', [id, record], id);
+    const node = this.get(id);
+    if (!node) throw httpError(404, `Node ${id} not found`);
+    if (record === null || record === undefined) this.pageStates.delete(Number(id));
+    else this.pageStates.set(Number(id), record);
+    return true;
   }
 
   _parentOf(parentId) {

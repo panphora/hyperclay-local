@@ -255,6 +255,75 @@ async function putNodeContent(conn, nodeId, content, options = {}) {
   }, { errorPrefix: `Write node ${nodeId} failed` });
 }
 
+// The page state rides beside the content, so it never holds the content sync
+// open: a record call is abandoned after this long.
+const PAGE_STATE_TIMEOUT_MS = 4000;
+
+async function pageStateFetch(url, init, errorPrefix) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), PAGE_STATE_TIMEOUT_MS);
+  try {
+    return await apiFetch(url, { ...init, signal: ctrl.signal }, { errorPrefix });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Read the page editor's merge state for a node: `{ v, rev, tag }` or null.
+ *
+ * A platform without the route answers 404 and a network failure answers
+ * nothing at all; both mean "no record", never a failed content sync.
+ *
+ * @param {Object} conn
+ * @param {number} nodeId
+ * @returns {Promise<{v:number, rev:string, tag:string}|null>}
+ */
+async function getPageState(conn, nodeId) {
+  const url = syncUrl(conn, `/nodes/${nodeId}/page-state`);
+  console.log(`[API] Reading page state for node ${nodeId}`);
+
+  let data;
+  try {
+    data = await pageStateFetch(url, {
+      headers: authHeaders(conn)
+    }, `Read page state for node ${nodeId} failed`);
+  } catch (error) {
+    if (error.statusCode === 404 || error.statusCode === undefined) return null;
+    throw error;
+  }
+
+  const record = data && data.record;
+  return record && typeof record === 'object' ? record : null;
+}
+
+/**
+ * Write (or, with a null record, drop) a node's page editor merge state.
+ * Best-effort like getPageState: 404 and a network failure resolve to false.
+ *
+ * @param {Object} conn
+ * @param {number} nodeId
+ * @param {{v:number, rev:string, tag:string}|null} record
+ * @returns {Promise<boolean>}
+ */
+async function putPageState(conn, nodeId, record) {
+  const url = syncUrl(conn, `/nodes/${nodeId}/page-state`);
+  console.log(`[API] Writing page state for node ${nodeId}`);
+
+  try {
+    await pageStateFetch(url, {
+      method: 'PUT',
+      headers: authHeaders(conn, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ record: record || null })
+    }, `Write page state for node ${nodeId} failed`);
+  } catch (error) {
+    if (error.statusCode === 404 || error.statusCode === undefined) return false;
+    throw error;
+  }
+
+  return true;
+}
+
 /**
  * Rename a Node.
  * @param {Object} conn
@@ -398,6 +467,8 @@ module.exports = {
   createNode,
   getNodeContent,
   putNodeContent,
+  getPageState,
+  putPageState,
   renameNode,
   moveNode,
   deleteNode,

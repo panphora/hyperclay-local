@@ -34,6 +34,9 @@ const nodeMap = require('./node-map');
 const { getConsentRegistry, resolveWritePath } = require('../main/utils/path-resolver');
 const { withStructureChange } = require('../main/utils/write-queue');
 const { withLocalDocumentWrite, withLocalDirectoryChange, withLocalStructureDelete, claimLocalDocumentTarget, structureEntryFor } = require('./local-boundary');
+const {
+  readPageRecord, applyPageRecord, storedPageFile, moveDocumentPageState, moveFolderPageState
+} = require('./page-state');
 
 /**
  * The machine fields of a refused connect: the HTTP status, plus the `code` its
@@ -115,6 +118,7 @@ module.exports = {
 
     const tracked = this.repo.get(data.nodeId);
     const remoteAtThisPath = !tracked || tracked.path === localFilename;
+    const record = await readPageRecord(this, data.nodeId, localFilename);
 
     // A1: read, checksum-compare, back up and write are ONE critical section.
     // Reading the local body outside it would let a concurrent /save land in
@@ -122,6 +126,7 @@ module.exports = {
     // stale by the time the write happens.
     const applied = await withLocalDocumentWrite(this, localFilename, async (target, token) => {
       const localPath = target.canonicalPath;
+      await applyPageRecord(this, localFilename, record);
       let preApplyContent = null;
       try {
         const localContent = await readFile(localPath);
@@ -152,7 +157,7 @@ module.exports = {
       // liveSync channel key = full path with extension (Rule 1 / Rule 2).
       this.live.markBrowserSave(localFilename);
 
-      await writeFile(localPath, data.content, new Date(data.modifiedAt));
+      await writeFile(localPath, await storedPageFile(this, localFilename, data.content), new Date(data.modifiedAt));
 
       if (token) {
         await this.localAuthority.confirmKnownWrite(target, data.content, token, {
@@ -630,6 +635,7 @@ module.exports = {
       if (currentPath !== newPath) await this.repo.addTombstone(currentPath);
       const inode = await nodeMap.getInode(newLocalPath);
       const alreadyMoved = outcome.moved || await fileExists(newLocalPath);
+      await moveDocumentPageState(this, currentPath, newPath);
       await this.repo.set(nodeId, {
         ...(entry || { checksum: null }), type: nodeType, path: newPath, inode,
         syncedAt: alreadyMoved ? Date.now() : entry?.syncedAt,
@@ -651,6 +657,7 @@ module.exports = {
         console.log(`[SYNC] SSE node-relocated: ${currentPath} not found locally`);
       }
       const inode = await nodeMap.getInode(newLocalPath);
+      await moveDocumentPageState(this, currentPath, newPath);
       await this.repo.set(nodeId, {
         ...(entry || { checksum: null }),
         type: nodeType,
@@ -671,6 +678,7 @@ module.exports = {
     await moveFile(localPath, newLocalPath);
 
     const inode = await nodeMap.getInode(newLocalPath);
+    await moveDocumentPageState(this, currentPath, newPath);
     await this.repo.set(nodeId, {
       ...(entry || { checksum: null }),
       type: nodeType,
@@ -712,6 +720,7 @@ module.exports = {
       if (oldPath !== newPath) {
         await this.repo.addTombstones([oldPath, ...descendants.map(({ entry: e }) => e.path)]);
       }
+      await moveFolderPageState(this, oldPath, newPath);
       await this.repo.apply(async (map) => {
         this._applyFolderRelocateNodeMapUpdates(map, nodeId, newPath, oldToNew);
       });
@@ -732,6 +741,7 @@ module.exports = {
     const exists = await fileExists(localOldPath);
     if (!exists) {
       console.log(`[SYNC] SSE node-relocated: folder ${oldPath} not found locally, updating nodeMap only`);
+      await moveFolderPageState(this, oldPath, newPath);
       await this.repo.apply(async (map) => {
         this._applyFolderRelocateNodeMapUpdates(map, nodeId, newPath, oldToNew);
       });
@@ -743,6 +753,8 @@ module.exports = {
     await ensureDirectory(path.dirname(localNewPath));
 
     await moveFile(localOldPath, localNewPath);
+
+    await moveFolderPageState(this, oldPath, newPath);
 
     await this.repo.apply(async (map) => {
       this._applyFolderRelocateNodeMapUpdates(map, nodeId, newPath, oldToNew);

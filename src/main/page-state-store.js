@@ -6,6 +6,15 @@ const { splitPage, composePage } = require('@panphora/clayjs/server/rooms');
 const { PAGE_STATE_DIR } = require('./utils/artifact-paths');
 const { atomicWriteFile } = require('./utils/write-queue');
 
+async function exists(target) {
+  try {
+    await fs.access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function pageStatePath(baseDir, name) {
   const base = name.replace(/\.(html|htmlclay)$/i, '');
   const abs = path.resolve(path.join(baseDir, PAGE_STATE_DIR, base + '.json'));
@@ -43,6 +52,27 @@ async function dropPageState(baseDir, name) {
 async function movePageState(baseDir, fromName, toName) {
   const from = pageStatePath(baseDir, fromName);
   const to = pageStatePath(baseDir, toName);
+  if (!(await exists(from))) return;
+  await fs.mkdir(path.dirname(to), { recursive: true });
+  try {
+    await fs.rename(from, to);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+}
+
+function pageStateDirPath(baseDir, name) {
+  const abs = path.resolve(path.join(baseDir, PAGE_STATE_DIR, name));
+  const root = path.resolve(baseDir, PAGE_STATE_DIR);
+  if (abs !== root && !abs.startsWith(root + path.sep)) throw new Error('Page state path escapes base directory');
+  return abs;
+}
+
+// A folder's page state is a mirror of the folder, so the whole directory moves with it.
+async function movePageStateDir(baseDir, fromName, toName) {
+  const from = pageStateDirPath(baseDir, fromName);
+  const to = pageStateDirPath(baseDir, toName);
+  if (!(await exists(from))) return;
   await fs.mkdir(path.dirname(to), { recursive: true });
   try {
     await fs.rename(from, to);
@@ -76,6 +106,6 @@ async function storePageState(baseDir, name, html) {
 }
 
 module.exports = {
-  pageStatePath, readPageState, writePageState, dropPageState, movePageState,
+  pageStatePath, readPageState, writePageState, dropPageState, movePageState, movePageStateDir,
   logicalDocument, logicalBytes, storePageState
 };

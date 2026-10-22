@@ -30,7 +30,7 @@ const nodeMap = require('./node-map');
 const dataGuard = require('../main/data-loss-guard');
 const { withLocalDocumentWrite, claimLocalDocumentTarget } = require('./local-boundary');
 const { refreshDerivedArtifacts } = require('../main/utils/derived-artifacts');
-const { storePageState } = require('../main/page-state-store');
+const { readPageRecord, applyPageRecord, storedPageFile, sendPageState } = require('./page-state');
 
 module.exports = {
   /**
@@ -55,6 +55,7 @@ module.exports = {
       this.resolveContainedPath(relativePath);
 
       const isHtmlSite = /\.(html|htmlclay)$/i.test(relativePath);
+      const record = isHtmlSite ? await readPageRecord(this, nodeId, relativePath) : null;
 
       // A1: the whole read-modify-write region is serialized. Reading the
       // pre-download body outside the lock would let a concurrent /save land
@@ -85,11 +86,11 @@ module.exports = {
         this.live.markBrowserSave(relativePath);
 
         // Write file with server modification time (ensures directories exist).
-        // A page copy still carrying its merge state stores the clean file and keeps
-        // that state in the sidecar, the same way every other write of a page does.
-        const stored = isHtmlSite && typeof content === 'string'
-          ? await storePageState(this.syncFolder, relativePath, content)
-          : content;
+        // The server's merge state lands in the sidecar first, then a page copy
+        // still carrying its own state stores the clean file and keeps that state
+        // in the sidecar, the same way every other write of a page does.
+        await applyPageRecord(this, relativePath, record);
+        const stored = await storedPageFile(this, relativePath, content);
         await writeFile(localPath, stored, modifiedAt);
 
         if (token) {
@@ -268,6 +269,7 @@ module.exports = {
       let result;
       if (existingNodeId) {
         this.outbox.markInFlight('save', existingNodeId);
+        await sendPageState(this, existingNodeId, filename);
         result = await putNodeContent(
           this.conn,
           existingNodeId,
@@ -296,6 +298,7 @@ module.exports = {
         });
         if (gen !== this.generation) return;
         this.outbox.markInFlight('save', createdNode.id);
+        await sendPageState(this, createdNode.id, filename);
         result = { nodeId: createdNode.id };
       }
 

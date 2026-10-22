@@ -77,6 +77,23 @@ test('renaming a page moves its merge state beside it and it composes at the new
   expect(await logicalDocument(h.dir, 'B.html', stored)).toContain('merge="page"');
 });
 
+test('renaming a folder takes its documents\u2019 merge state with it', async () => {
+  h = await fixture();
+  const template = await fs.readFile(path.join(__dirname, '../../src/main/document-templates/page.html'), 'utf8');
+  const { state } = splitPage(template);
+  await fs.mkdir(path.join(h.dir, 'Notes'), { recursive: true });
+  await fs.writeFile(path.join(h.dir, 'Notes/A.html'), await storePageState(h.dir, 'Notes/A.html', template));
+  const request = await h.start();
+
+  expect(await command(request, { command: 'rename', path: 'Notes', name: 'Archive' }))
+    .toEqual({ status: 200, body: { path: 'Archive' } });
+
+  expect(await readPageState(h.dir, 'Notes/A.html')).toBeNull();
+  expect(await readPageState(h.dir, 'Archive/A.html')).toEqual(state);
+  const stored = await fs.readFile(path.join(h.dir, 'Archive/A.html'), 'utf8');
+  expect(stored).not.toContain('merge="page"');
+});
+
 test('occupied destinations, cross-root paths, unsafe paths, and unknown templates are refused', async () => {
   h = await fixture();
   await fs.writeFile(path.join(h.dir, 'A.html'), '<html>A</html>');

@@ -46,6 +46,7 @@ const nodeMap = require('../node-map');
 const store = require('./conflicts');
 const { A } = require('./decide');
 const { isUnderLockedFolder, lockedFolderError } = require('../locked-folder');
+const { sendPageState, readPageRecord, applyPageRecord, storedPageFile } = require('../page-state');
 
 const SITE_PATTERN = /\.(html|htmlclay)$/i;
 
@@ -119,7 +120,7 @@ const CHANGED = 'changed';
  * write: a generation that ended, or local bytes that changed since the caller read them
  * (`null` = the file was absent), refuse the write. Returns `{ localPath, refused }`.
  */
-async function writeLocal(engine, rel, content, { modifiedAt = null, gen, expectLocal, claim = null, explicitCreate = false } = {}) {
+async function writeLocal(engine, rel, content, { modifiedAt = null, gen, expectLocal, claim = null, explicitCreate = false, pageRecord = null } = {}) {
   const isSite = SITE_PATTERN.test(rel);
   const generation = gen !== undefined ? gen : engine.generation;
 
@@ -163,7 +164,8 @@ async function writeLocal(engine, rel, content, { modifiedAt = null, gen, expect
     await ensureDirectory(path.dirname(localPath));
 
     if (isSite) {
-      await writeFile(localPath, content, modifiedAt);
+      await applyPageRecord(engine, rel, pageRecord);
+      await writeFile(localPath, await storedPageFile(engine, rel, content), modifiedAt);
     } else {
       await writeFileBuffer(localPath, content, modifiedAt);
     }
@@ -300,6 +302,7 @@ async function upload(engine, nodeId, entry, context, gen) {
 
   let response;
   engine.outbox.markInFlight('save', idOf(nodeId));
+  await sendPageState(engine, idOf(nodeId), rel);
   try {
     response = await putNodeContent(engine.conn, idOf(nodeId), content, options);
   } catch (error) {
@@ -404,7 +407,10 @@ async function download(engine, nodeId, entry, context, gen) {
   const response = await getNodeContent(engine.conn, idOf(nodeId));
   if (gen !== engine.generation) return { action: A.DOWNLOAD, stale: true };
 
-  const written = await writeLocal(engine, rel, response.content, { modifiedAt: response.modifiedAt, gen, expectLocal, claim, explicitCreate: !entry || entry.path === rel });
+  const pageRecord = await readPageRecord(engine, idOf(nodeId), rel);
+  if (gen !== engine.generation) return { action: A.DOWNLOAD, stale: true };
+
+  const written = await writeLocal(engine, rel, response.content, { modifiedAt: response.modifiedAt, gen, expectLocal, claim, explicitCreate: !entry || entry.path === rel, pageRecord });
   if (written.refused === STALE) return { action: A.DOWNLOAD, stale: true };
   if (written.refused === CHANGED) {
     return conflicted(engine, nodeId, entry, context, {
@@ -551,6 +557,7 @@ async function createRemote(engine, nodeId, entry, context, gen) {
   if (gen !== engine.generation) return { action: A.CREATE_REMOTE, stale: true };
 
   engine.outbox.markInFlight('save', created.id);
+  await sendPageState(engine, created.id, rel);
   const etag = created.etag || created.checksum || localChecksum;
   await saveEntry(engine, created.id, null, {
     remoteEtag: etag,
