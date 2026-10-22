@@ -209,8 +209,9 @@
     "webpack-cli": "^6.0.1"
   },
   "dependencies": {
-    "@panphora/clayjs": "^1.13.1",
+    "@panphora/clayjs": "^1.14.0",
     "@panphora/hyperclay-workspace": "^0.3.0",
+    "@tanstack/react-query": "^5.104.5",
     "busboy": "^1.6.0",
     "cheerio": "1.2.0",
     "chokidar": "^3.6.0",
