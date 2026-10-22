@@ -21,6 +21,18 @@ describe('page state sidecar store', () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
+  test('a file write that never lands leaves the file on disk with its own state', async () => {
+    const { storePageState, logicalDocument } = require('../../src/main/page-state-store');
+    const page = (rev, text) => `<script type="application/json" merge="page" clay="live">{"v":1,"g":0,"y":{"seed":"${text}"}}</script><article data-page="1" data-rev="${rev}"><p>${text}</p></article>`;
+    const oldFile = await storePageState(dir, 'note.html', page('rev-old', 'old'));
+    await storePageState(dir, 'note.html', page('rev-new', 'new'));
+    await expect(readPageState(dir, 'note.html')).resolves.toMatchObject({ rev: 'rev-new' });
+    await expect(readPageState(dir, 'note.html', { rev: 'rev-old' })).resolves.toEqual({ v: 1, rev: 'rev-old', tag: expect.stringContaining('"seed":"old"') });
+    expect(await logicalDocument(dir, 'note.html', oldFile)).toContain('"seed":"old"');
+    await storePageState(dir, 'note.html', page('rev-third', 'third'));
+    await expect(readPageState(dir, 'note.html', { rev: 'rev-old' })).resolves.toMatchObject({ rev: 'rev-third' });
+  });
+
   test('reading a missing record returns null', async () => {
     await expect(readPageState(dir, 'notes.html')).resolves.toBeNull();
   });

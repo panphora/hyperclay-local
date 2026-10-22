@@ -4,6 +4,8 @@ import { blockJson, keyBetween, newId, orderedIds } from "./model.js";
 import { chartModel, renderChartSvg } from "./rich/chart.js";
 import { openPageMenu } from "./chrome.js";
 import { project } from "./projection.js";
+import { columnKinds } from "./table-kinds.js";
+import { cellText } from "./rich/cell.js";
 
 const views = new WeakMap();
 
@@ -18,29 +20,75 @@ function tableData(node) {
   return project({ [node.attrs.id]: blockJson(node) })[0];
 }
 
-export function insertChartAfterTable(view, tablePos) {
-  const doc = view.state.doc;
-  const table = doc.nodeAt(tablePos);
-  if (table?.type !== schema.nodes.table) return false;
+function chartAttrs(table, pos, parent) {
   const colIds = orderedIds(table.attrs.cols);
-  if (!colIds.length) return false;
-  const after = tablePos + table.nodeSize;
-  const next = doc.maybeChild(doc.resolve(after).index(0));
-  const series = colIds.filter((id) => id !== colIds[0] && table.attrs.cols[id].kind === "number");
-  const attrs = {
+  if (!colIds.length) return null;
+  const kinds = columnKinds(table);
+  const series = colIds.filter((id) => id !== colIds[0] && kinds[id] === "number");
+  return {
     id: newId(),
-    pos: keyBetween(table.attrs.pos, next?.attrs.pos ?? null),
-    parent: table.attrs.parent,
+    pos,
+    parent,
     source: table.attrs.id,
-    kind: "line",
+    kind: "bar",
     x: colIds[0],
     series: series.length ? series : colIds[1] ? [colIds[1]] : [],
     title: "",
     highlight: null,
   };
-  const chart = schema.nodes.chart.create(attrs);
-  view.dispatch(view.state.tr.insert(after, chart));
+}
+
+export function insertChartAfterTable(view, tablePos) {
+  const doc = view.state.doc;
+  const table = doc.nodeAt(tablePos);
+  if (table?.type !== schema.nodes.table) return false;
+  const after = tablePos + table.nodeSize;
+  const next = doc.maybeChild(doc.resolve(after).index(0));
+  const attrs = chartAttrs(table, keyBetween(table.attrs.pos, next?.attrs.pos ?? null), table.attrs.parent);
+  if (!attrs) return false;
+  view.dispatch(view.state.tr.insert(after, schema.nodes.chart.create(attrs)));
   return true;
+}
+
+export function chartTables(doc) {
+  const tables = [];
+  doc.forEach((node) => { if (node.type === schema.nodes.table && orderedIds(node.attrs.cols).length) tables.push(node); });
+  return tables;
+}
+
+// /chart: an empty line becomes the chart, otherwise it goes below the line.
+// One table is charted at once; several open a picker named by their columns.
+function placeChart(view, index, table, remove) {
+  let tr = view.state.tr;
+  if (remove) tr.delete(remove.from, remove.to);
+  if (!sourceTable(tr.doc, table.attrs.id) || index >= tr.doc.childCount) return false;
+  let at = 0;
+  for (let i = 0; i < index; i++) at += tr.doc.child(i).nodeSize;
+  const node = tr.doc.child(index);
+  const replace = node.isTextblock && node.content.size === 0;
+  const next = tr.doc.maybeChild(index + 1);
+  const pos = replace ? node.attrs.pos : keyBetween(node.attrs.pos, next?.attrs.pos ?? null);
+  const attrs = chartAttrs(table, pos, node.attrs.parent ?? null);
+  if (!attrs) return false;
+  const chart = schema.nodes.chart.create(attrs);
+  tr = replace ? tr.replaceWith(at, at + node.nodeSize, chart) : tr.insert(at + node.nodeSize, chart);
+  view.dispatch(tr.scrollIntoView());
+  return true;
+}
+
+export const tableLabel = (table) => orderedIds(table.attrs.cols).map((id) => table.attrs.cols[id].name || "Untitled").join(", ");
+
+export function chartFromSlash(view, index, remove = null) {
+  const tables = chartTables(view.state.doc);
+  if (!tables.length) return false;
+  if (tables.length === 1) return placeChart(view, index, tables[0], remove);
+  const anchor = view.nodeDOM(view.state.doc.resolve(view.state.selection.head).before(1)) ?? view.dom;
+  return openPageMenu(view, anchor, tables.map((table, i) => ({
+    label: `Table ${i + 1}`,
+    description: tableLabel(table),
+    icon: "▦",
+    run: () => placeChart(view, index, table, remove),
+  })));
 }
 
 export class ChartView {
@@ -114,7 +162,7 @@ export class ChartView {
       { label: "Bar", icon: attrs.kind === "bar" ? "✓" : "", run: () => this.setAttrs({ kind: "bar" }) },
       { label: "X column ▸", focus: false, run: () => this.submenu(cols.map((col) => ({ label: col.name || col.id, icon: attrs.x === col.id ? "✓" : "", run: () => this.setAttrs({ x: col.id, series: attrs.series.filter((id) => id !== col.id) }) }))) },
       { label: "Series ▸", focus: false, run: () => this.submenu(cols.filter((col) => col.id !== attrs.x).map((col) => ({ label: col.name || col.id, icon: attrs.series.includes(col.id) ? "✓" : "", checked: attrs.series.includes(col.id), run: () => this.setAttrs({ series: attrs.series.includes(col.id) ? attrs.series.filter((id) => id !== col.id) : [...attrs.series, col.id] }) }))) },
-      { label: "Highlight row ▸", focus: false, run: () => this.submenu([{ label: "None", icon: !attrs.highlight ? "✓" : "", run: () => this.setAttrs({ highlight: null }) }, ...rows.map((row) => ({ label: String(row.cells[attrs.x] ?? "") || row.id, icon: attrs.highlight === row.id ? "✓" : "", run: () => this.setAttrs({ highlight: row.id }) }))]) },
+      { label: "Highlight row ▸", focus: false, run: () => this.submenu([{ label: "None", icon: !attrs.highlight ? "✓" : "", run: () => this.setAttrs({ highlight: null }) }, ...rows.map((row) => ({ label: cellText(row.cells[attrs.x]) || row.id, icon: attrs.highlight === row.id ? "✓" : "", run: () => this.setAttrs({ highlight: row.id }) }))]) },
       { label: "Edit title", focus: false, run: () => this.editTitle() },
     ]);
   }

@@ -6,6 +6,7 @@ const { documentEtag } = require('./spec-wire');
 const { publishRecoveredCopy } = require('./utils/backup');
 const { compatibleContinuation, renderRecovered } = require('./external-recovery');
 const { logicalDocument } = require('./page-state-store');
+const { needsAdoption } = require('./page-rebase.js');
 
 const EVENT_NAMES = new Set(['data', 'data-state', 'data-writer']);
 const RATE_LIMIT = Object.freeze({ rate: 25, burst: 40, idleMs: 60 * 1000 });
@@ -1010,9 +1011,13 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     return core.roomIsDirty(room);
   }
 
-  function logicalHtml(target, html) {
+  // The document a checkpoint renders over: the bytes on disk with the page state
+  // put back. No rebase is needed here: the observation that lands an older copy
+  // writes the merged page to disk before the room is reconciled.
+  async function logicalHtml(target, html) {
     const root = target.rootId == null ? null : roots.get(target.rootId);
-    return root && target.logicalPath ? logicalDocument(root.path, target.logicalPath, html) : html;
+    if (!root || !target.logicalPath) return html;
+    return logicalDocument(root.path, target.logicalPath, html);
   }
 
   async function reconcileDisk(target, html, token) {
@@ -1105,7 +1110,15 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
       try { await checkpointService?.confirmedWrite?.(canonicalPath, stamp); }
       catch (error) { console.error('[auto-name] failed to confirm write:', error); }
     }
-    if (HTML_PATH.test(canonicalPath)) record.baseline = typeof bytes === 'string' ? bytes : bytes.toString('utf8');
+    if (HTML_PATH.test(canonicalPath)) {
+      const next = typeof bytes === 'string' ? bytes : bytes.toString('utf8');
+      // An outside article the room has not merged is no base to render the
+      // room over: recovered copies keep the last one it was built on until a
+      // write no longer needs merging.
+      const unmerged = rooms.get(canonicalPath) && next.includes('data-page') && needsAdoption(next);
+      record.recoveryBase = unmerged ? (record.recoveryBase ?? record.baseline) : null;
+      record.baseline = next;
+    }
 
     // A binary asset has no live tags to reconcile and no HTML to hand editors.
     if (!HTML_PATH.test(canonicalPath)) return stamp;
@@ -1137,6 +1150,11 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     return registry.get(canonicalPath)?.confirmed ?? null;
   }
 
+  // The document the authority last confirmed for one canonical file, or null. Read-only, as above.
+  function confirmedDocument(canonicalPath) {
+    return registry.get(canonicalPath)?.baseline ?? null;
+  }
+
   function detachLogical(binding) {
     const record = registry.get(binding.canonicalPath);
     if (record) {
@@ -1152,6 +1170,60 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     }
   }
 
+  // Every history that can see this document: the document's path in each root's
+  // own folder, so a recovered copy lands where its person can open it.
+  function recoveryRoutes(key, target = null) {
+    const routes = new Map();
+    const include = (binding) => {
+      const root = roots.get(binding.rootId);
+      const rel = normLogical(binding.logicalPath);
+      if (root && rel) routes.set(`${root.id}\n${rel}`, { root, rel });
+    };
+    for (const binding of logical.values()) if (binding.canonicalPath === key) include(binding);
+    if (target) include(target);
+    for (const root of roots.values()) {
+      if (within(key, root.canonicalPath) && key !== root.canonicalPath) {
+        const rel = normLogical(upath.relative(root.canonicalPath, key));
+        routes.set(`${root.id}\n${rel}`, { root, rel });
+      }
+    }
+    return routes;
+  }
+
+  async function publishRecoveredVersions(recovery, routes) {
+    for (const [routeKey, { root, rel }] of routes) {
+      if (recovery.published.has(routeKey)) continue;
+      const directory = upath.join(root.canonicalPath, '.hyperclay/recovered', rel.replace(/\.(html|htmlclay)$/i, ''));
+      let version = recovery.byDirectory.get(directory);
+      if (!version) {
+        const published = await publishRecovered(root.path, rel, recovery.html);
+        version = `recovered-${published.filename}`;
+        recovery.byDirectory.set(directory, version);
+      }
+      recovery.published.set(routeKey, version);
+    }
+  }
+
+  // The unsaved edits of a room a write leaves open live only in memory. They are
+  // written to a recovered copy too, the way a replacement writes them, so an edit
+  // no tab ever adopts is still a file the person can open. A failed rendering is
+  // logged and never stops the write.
+  async function publishRecoveredEdits(key, target, record, room, baseline = record?.recoveryBase ?? record?.baseline) {
+    if (!record || !roomIsDirty(room)) return;
+    try {
+      // One rendering per room state: the first caller renders over the document
+      // the room was built on, and a later one reuses it rather than publishing a
+      // second copy of the same edits.
+      const state = `${room.epoch}:${room.seq}`;
+      if (!record.recoveredEdits || record.recoveredEdits.state !== state) {
+        record.recoveredEdits = { state, html: renderRecovered(baseline, room), published: new Map(), byDirectory: new Map() };
+      }
+      await publishRecoveredVersions(record.recoveredEdits, recoveryRoutes(key, target));
+    } catch (error) {
+      console.error('[local-authority] recovered copy failed:', error && error.message ? error.message : error);
+    }
+  }
+
   async function observeExternal(target, html, token, { removed = false } = {}) {
     const key = target.canonicalPath;
     assertWriteContext(token, key);
@@ -1164,25 +1236,17 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
       }
     }
     if (!removed && record && !record.recovering && compatibleContinuation(record.baseline, html, room)) {
+      // The room continues, so the write never replaced its unsaved edits: a
+      // recovered copy holds them even if no tab adopts this document. It is
+      // rendered over the document the room was built on, which the confirmation
+      // has just replaced as the baseline.
+      const before = record.baseline;
       await confirmKnownWrite(target, html, token, { sender: 'file-watcher', publish: false });
+      await publishRecoveredEdits(key, target, record, room, record.recoveryBase ?? before);
       return { kind: 'continuation' };
     }
 
-    const routes = new Map();
-    const include = (binding) => {
-      const root = roots.get(binding.rootId);
-      const rel = normLogical(binding.logicalPath);
-      if (root && rel) routes.set(`${root.id}\n${rel}`, { root, rel });
-    };
-    for (const binding of logical.values()) if (binding.canonicalPath === key) include(binding);
-    include(target);
-    for (const root of roots.values()) {
-      if (within(key, root.canonicalPath) && key !== root.canonicalPath) {
-        const rel = normLogical(upath.relative(root.canonicalPath, key));
-        routes.set(`${root.id}\n${rel}`, { root, rel });
-      }
-    }
-
+    const routes = recoveryRoutes(key, target);
     const dirty = room && [...room.stores.values()].some((store) =>
       !store.ephemeral && (store.landed === -1 || store.landed !== store.last));
     if (dirty || record?.recovering) {
@@ -1194,17 +1258,7 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
       }
       if (!record.recovery.html) record.recovery.html = renderRecovered(record.baseline, room);
       if (!routes.size) throw new Error(`No recovered-copy destination for ${key}`);
-      for (const [routeKey, { root, rel }] of routes) {
-        if (record.recovery.published.has(routeKey)) continue;
-        const directory = upath.join(root.canonicalPath, '.hyperclay/recovered', rel.replace(/\.(html|htmlclay)$/i, ''));
-        let version = record.recovery.byDirectory.get(directory);
-        if (!version) {
-          const published = await publishRecovered(root.path, rel, record.recovery.html);
-          version = `recovered-${published.filename}`;
-          record.recovery.byDirectory.set(directory, version);
-        }
-        record.recovery.published.set(routeKey, version);
-      }
+      await publishRecoveredVersions(record.recovery, routes);
     }
 
     const recovered = record?.recovery?.published.get(`${target.rootId}\n${normLogical(target.logicalPath)}`) ??
@@ -1214,7 +1268,7 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
       for (const member of [...record.members]) member.close();
       for (const snapshot of [...record.snapshots]) snapshot.dispose();
       rooms.drop(key);
-      if (record.recovery) rooms.releasePersistent(record.recovery.hold);
+      if (record.recovery?.hold) rooms.releasePersistent(record.recovery.hold);
       registry.delete(key);
       for (const [bindingKey, binding] of [...logical]) if (binding.canonicalPath === key) logical.delete(bindingKey);
     }
@@ -1339,7 +1393,12 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     closeRoot,
     confirmKnownWrite,
     confirmedStamp,
+    confirmedDocument,
     observeExternal,
+    recoverUnsavedEdits(target, token) {
+      assertWriteContext(token, target.canonicalPath);
+      return publishRecoveredEdits(target.canonicalPath, target, registry.get(target.canonicalPath), rooms.get(target.canonicalPath));
+    },
     observeRemovedPrefix,
     setAdmission,
     isRetired,

@@ -1,6 +1,7 @@
 import * as Y from "../../vendor/yjs.vendor.js";
 import { toBase64, fromBase64 } from "../../vendor/yjs.vendor.js";
 import { NET } from "./layout.js";
+import { ORIGINS_ORIGIN } from "./origins.js";
 import { PART_KEY, BASE64, entriesOf, captureYValue } from "./parts.js";
 
 export { entriesOf } from "./parts.js";
@@ -77,9 +78,18 @@ export function docFromValue(value, { strict = false } = {}) {
 const sameDeletes = (a, b) => Y.equalDeleteSets(Y.createDeleteSetFromStructStore(a.store), Y.createDeleteSetFromStructStore(b.store));
 const svEqual = (a, b) => { if (a.size !== b.size) return false; for (const [c, n] of a) if (b.get(c) !== n) return false; return true; };
 
-export function createYProvider({ store, ydoc, compact: limits = {}, setTimer = setTimeout, clearTimer = clearTimeout, stats = { applied: 0, offered: 0, compactions: 0 } }) {
+export function createYProvider({ store, ydoc, compact: limits = {}, setTimer = setTimeout, clearTimer = clearTimeout, onStopped = () => {}, stats = { applied: 0, offered: 0, compactions: 0 } }) {
   const initial = entriesOf(store.value.y);
   const known = new Set();
+  // Set when this tab's page can no longer reach the room: "lineage" when the room holds
+  // another page's history, "too-large" when the room refused an update for its size.
+  // Nothing more is offered either way, and the tab keeps its own document.
+  let stopped = null;
+  const stop = (reason) => {
+    if (stopped) return;
+    stopped = reason;
+    onStopped(reason);
+  };
   let canCompact = !initial.some(([k]) => k[0] === "m");
   let counter = 0;
   const me = ydoc.clientID.toString(36);
@@ -101,13 +111,13 @@ export function createYProvider({ store, ydoc, compact: limits = {}, setTimer = 
   for (const [k] of initial) known.add(k);
 
   const onUpdate = (u, origin) => {
-    if (origin === NET) return;
+    if (stopped || origin === NET || origin === ORIGINS_ORIGIN) return;
     put(nextKey("u"), u);
   };
   ydoc.on("updateV2", onUpdate);
 
   const applyKey = (k, v) => {
-    if (known.has(k)) return;
+    if (stopped || known.has(k)) return;
     canCompact = true;
     known.add(k);
     stats.applied++;
@@ -131,6 +141,7 @@ export function createYProvider({ store, ydoc, compact: limits = {}, setTimer = 
   const settle = () => { reconcile(); maybeCompact(); };
 
   function reconcile() {
+    if (stopped) return false;
     const y = store.value.y;
     const scratch = new Y.Doc();
     for (const [, v] of entriesOf(y)) Y.applyUpdateV2(scratch, dec(v), NET);
@@ -147,7 +158,9 @@ export function createYProvider({ store, ydoc, compact: limits = {}, setTimer = 
     return true;
   }
 
-  const compact = { keys: 32, room: 768 * 1024, ...limits };
+  // A fold briefly holds the old entries and the merged snapshot together, so it
+  // needs room for both under the host's 4 MB store cap, less 256 KB for frames in flight.
+  const compact = { keys: 32, room: 3840 * 1024, ...limits };
   let fold = null;
   let quietUntil = 0;
   const coverCache = new Map();
@@ -220,9 +233,32 @@ export function createYProvider({ store, ydoc, compact: limits = {}, setTimer = 
 
 
 
+  // Every page descends from a seed whose Yjs client is derived from its article, and
+  // compaction keeps every client in the merged state. A room state that shares no client
+  // with this tab's document is a page rebuilt from another article while the tab was away.
+  const clientsOf = (y) => {
+    const clients = new Set();
+    for (const [, v] of entriesOf(y ?? {})) for (const c of Y.decodeStateVector(Y.encodeStateVectorFromUpdateV2(dec(v))).keys()) clients.add(c);
+    return clients;
+  };
+  // A page whose article has no blocks seeds with no client at all; it still shares its
+  // lineage with a room that holds the very update this tab started from.
+  const started = new Map(initial);
+  const sharesLineage = (y) => {
+    const theirs = clientsOf(y);
+    const mine = [...Y.decodeStateVector(Y.encodeStateVector(ydoc)).keys()];
+    if (!theirs.size || !mine.length || mine.some((c) => theirs.has(c))) return true;
+    return entriesOf(y ?? {}).some(([k, v]) => started.get(k) === v);
+  };
+
   const off = store.onRebase((ev) => {
+    if (stopped) return;
     const ops = ev.source === "remote" && ev.frame ? ev.frame.ops : null;
     const plain = ops && ops.every((op) => op.path[0] === "y" && op.path.length === 2 && !PART_KEY.test(op.path[1]));
+    if (!plain && ev.cause !== "refused" && !sharesLineage(ev.next.y)) {
+      stop("lineage");
+      return;
+    }
     if (plain) {
       for (const op of ops) if (op.op === "set") applyKey(op.path[1], op.value);
     } else {
@@ -231,5 +267,19 @@ export function createYProvider({ store, ydoc, compact: limits = {}, setTimer = 
     schedule(ev.source !== "remote" || !ops, ev.source !== "remote");
   });
 
-  return { known, stats, settle, reconcile, get reconcilePending() { return reconcilePending; }, compact: maybeCompact, dispose() { off(); ydoc.off("updateV2", onUpdate); if (timer) clearTimer(timer); } };
+  // A page update the room refused as too large is never offered again: the difference would
+  // be refused on every offer. Every update of this tab's the room has not confirmed builds on
+  // the refused one, so they are all taken back, with the parts of updates the room does not
+  // hold whole, and the room's page stays one a checkpoint can render.
+  const offDelivery = store.onDelivery((event) => {
+    if (event.phase !== "refused" || event.code !== "too-large" || stopped) return;
+    stop("too-large");
+    const auth = store.authoritative.y ?? {};
+    const whole = captureYValue({ v: 1, y: auth }).y;
+    const unconfirmed = Object.keys(store.value.y ?? {}).filter((k) => !(k in auth));
+    const partial = Object.keys(auth).filter((k) => PART_KEY.test(k) && !(k in whole) && baseOf(k).slice(1).startsWith(`${me}-`));
+    if (unconfirmed.length || partial.length) drop([...unconfirmed, ...partial]);
+  });
+
+  return { known, stats, settle, reconcile, get reconcilePending() { return reconcilePending; }, get stopped() { return stopped; }, compact: maybeCompact, dispose() { off(); offDelivery(); ydoc.off("updateV2", onUpdate); if (timer) clearTimer(timer); } };
 }

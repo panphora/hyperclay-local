@@ -11,7 +11,8 @@
 const fs = require('fs').promises;
 const path = require('upath');
 const {
-  readPageState, writePageState, storePageState, dropPageState, dropPageStateDir, movePageState, movePageStateDir
+  readPageState, writePageState, storePageState, dropPageState, dropPageStateDir, movePageState, movePageStateDir,
+  logicalDocument
 } = require('../main/page-state-store');
 const { getPageState, putPageState } = require('./api-client');
 
@@ -23,10 +24,11 @@ const reasonOf = (error) => (error && error.message ? error.message : error);
 async function sendPageState(engine, nodeId, rel) {
   if (!PAGE_PATTERN.test(rel)) return false;
   try {
-    const record = await readPageState(engine.syncFolder, rel);
-    if (!record) return false;
+    // The record for the file on disk, which need not be the newest one the sidecar holds.
     const fileText = await fs.readFile(path.join(engine.syncFolder, rel), 'utf8');
-    if (record.rev !== require('@panphora/clayjs/server/rooms').pageRev(fileText)) return false;
+    const rev = require('@panphora/clayjs/server/rooms').pageRev(fileText);
+    const record = await readPageState(engine.syncFolder, rel, { rev, exact: true });
+    if (!record) return false;
     return await putPageState(engine.conn, nodeId, record);
   } catch (error) {
     console.warn(`[SYNC] Could not send the page state for ${rel}:`, reasonOf(error));
@@ -100,7 +102,20 @@ async function dropFolderPageState(engine, rel) {
   }
 }
 
+// A downloaded page is confirmed with its state put back, never the clean transport body, so
+// the room's baseline stays one it can render over. Over a room with unsaved edits it is a
+// replacement like any other outside write: disk wins, and those edits go to a recovered copy.
+async function confirmDownload(engine, target, token, rel, stored, options) {
+  const authority = engine.localAuthority;
+  if (!PAGE_PATTERN.test(rel) || typeof stored !== 'string') return authority.confirmKnownWrite(target, stored, token, options);
+  const html = await logicalDocument(engine.syncFolder, rel, stored);
+  const room = authority.rooms.get(target.canonicalPath);
+  if (room && authority.roomIsDirty(room)) return authority.observeExternal(target, html, token);
+  return authority.confirmKnownWrite(target, html, token, options);
+}
+
 module.exports = {
+  confirmDownload,
   sendPageState, readPageRecord, applyPageRecord, storedPageFile,
   moveDocumentPageState, moveFolderPageState, dropDocumentPageState, dropFolderPageState
 };

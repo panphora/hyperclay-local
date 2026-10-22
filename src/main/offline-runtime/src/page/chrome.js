@@ -10,7 +10,10 @@ import { currentSpan, selectBlocks, duplicateBlocks, deleteBlocks, asStep, typeI
 import { openAltEditor, setImageAttrs } from "./media.js";
 import { BlockDrag } from "./drag.js";
 import { openLinkEditor } from "./link.js";
-import { BLOCK_TYPES, MENU_ITEMS, blockTypeOf, turnInto, insertAfter, rankItems, runItem, retype } from "./items.js";
+import { BLOCK_TYPES, MENU_ITEMS, blockTypeOf, turnInto, insertAfter, rankItems, runItem, retype, insertItemsFor } from "./items.js";
+import toast from "../ui/toast.js";
+import { insertChartAfterTable } from "./chart.js";
+import { pickCsv } from "./csv-import.js";
 
 export { BLOCK_TYPES, blockTypeOf, turnInto, insertAfter } from "./items.js";
 
@@ -27,6 +30,20 @@ const selectedRoots = (st) => {
 };
 
 const imageId = (view, index) => view.state.doc.child(index).attrs.id;
+const blockStart = (doc, index) => { let at = 0; for (let i = 0; i < index; i++) at += doc.child(i).nodeSize; return at; };
+
+export function blockLink(id, loc = globalThis.location) {
+  return `${loc.origin}${loc.pathname}${loc.search}#${encodeURIComponent(id)}`;
+}
+
+function copyBlockLink(id) {
+  if (!id) return;
+  const done = () => toast("Link copied");
+  const failed = () => toast("Could not copy the link.", "error");
+  const write = globalThis.navigator?.clipboard?.writeText;
+  if (!write) { failed(); return; }
+  globalThis.navigator.clipboard.writeText(blockLink(id)).then(done, failed);
+}
 
 export const ACTION_ITEMS = [
   { key: "up", label: "Move up", icon: "↑", hint: `${MOD}⇧↑`, run: (view) => moveBlock(-1)(view.state, view.dispatch) },
@@ -36,10 +53,13 @@ export const ACTION_ITEMS = [
   { key: "duplicate", label: "Duplicate", icon: "⧉", hint: `${MOD}D`, run: (view) => duplicateBlocks(view.state, view.dispatch) },
   { key: "delete", label: "Delete", icon: "×", hint: "Del", run: (view) => deleteBlocks(view.state, view.dispatch) },
   { key: "turn", label: "Turn into", icon: "↻", hint: "›", only: "text", run: (view, chrome) => chrome.openMenu("turn", chrome.plus) },
+  { key: "link", label: "Copy link", icon: "🔗", run: (view, chrome, index) => copyBlockLink(view.state.doc.child(index).attrs.id) },
   { key: "alt", label: "Alt text…", icon: "Aa", only: "image", focus: false, run: (view, chrome, index) => openAltEditor(view, imageId(view, index)) },
   { key: "small", label: "Small", icon: "▫", only: "image", run: (view, chrome, index) => setImageAttrs(view, imageId(view, index), { width: 240 }) },
   { key: "medium", label: "Medium", icon: "◻", only: "image", run: (view, chrome, index) => setImageAttrs(view, imageId(view, index), { width: 480 }) },
   { key: "full", label: "Full width", icon: "⬜", only: "image", run: (view, chrome, index) => setImageAttrs(view, imageId(view, index), { width: null }) },
+  { key: "chart", label: "Chart this table", icon: "📊", only: "table", run: (view, chrome, index) => insertChartAfterTable(view, blockStart(view.state.doc, index)) },
+  { key: "csv", label: "Import CSV…", icon: "⇧", only: "table", focus: false, run: (view, chrome, index) => pickCsv(view, null, view.state.doc.child(index).attrs.id) },
 ];
 
 const actionsFor = (st) => {
@@ -47,7 +67,8 @@ const actionsFor = (st) => {
   const roots = selectedRoots(st);
   const text = roots.every((e) => e.node.isTextblock);
   const image = roots.length === 1 && roots[0].node.type === N.image;
-  return ACTION_ITEMS.filter((a) => (a.only === "text" ? text : a.only === "image" ? image : true));
+  const table = roots.length === 1 && roots[0].node.type === N.table;
+  return ACTION_ITEMS.filter((a) => (a.only === "text" ? text : a.only === "image" ? image : a.only === "table" ? table : true));
 };
 
 const svg = (body) => `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
@@ -331,9 +352,9 @@ class Chrome {
   menuItems(m) {
     if (m.mode === "external") return m.externalItems || [];
     if (m.mode === "actions") return actionsFor(this.view.state);
-    const items = m.mode === "turn" ? BLOCK_TYPES : this.onAiTool
+    const items = m.mode === "turn" ? BLOCK_TYPES : insertItemsFor(this.view.state, this.onAiTool
       ? [...MENU_ITEMS, { key: "ai", label: "Make a tool with AI…", icon: "✦", aliases: ["tool", "generate"], insert: "ai" }]
-      : MENU_ITEMS;
+      : MENU_ITEMS);
     return rankItems(items, m.query);
   }
 
@@ -369,7 +390,13 @@ class Chrome {
       icon.textContent = b.icon || "";
       const label = el("span", "page-menu-label");
       label.textContent = b.label;
-      row.append(icon, label);
+      if (b.description) {
+        const text = el("span", "page-menu-text");
+        const description = el("span", "page-menu-desc");
+        description.textContent = b.description;
+        text.append(label, description);
+        row.append(icon, text);
+      } else row.append(icon, label);
       if (b.hint) {
         const hint = el("span", "page-menu-hint");
         hint.textContent = b.hint;

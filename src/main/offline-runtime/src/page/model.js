@@ -5,14 +5,15 @@
 // text and `m` its mark keys, one per UTF-16 unit, left out when there are none
 // (inline.js). Attributes equal to their schema default are left out, so
 // a block's JSON is as small as the block. A table keeps its rows as an object
-// keyed by row id ({ pos, cells: { <col id>: text } }), never a list, because a
+// keyed by row id ({ pos, cells: { <col id>: cell } }), never a list, because a
 // list in a live store is written whole and two tabs adding rows keep one.
 //
 // Order is (pos, id): pos strings compare as plain strings, and the id breaks
 // the tie two tabs inserting at the same spot leave behind. Ids and positions
 // are only ever assigned by a local edit (identityPlugin), never on open.
 import { model, state, transform } from "../vendor/prosemirror.vendor.js";
-import { flatten, unflatten, unitsOf } from "./inline.js";
+import { flatten, unflatten, unitsOf, runsOf } from "./inline.js";
+import { cellText } from "./rich/cell.js";
 
 export const REMOTE = "clay-page-remote";
 
@@ -85,13 +86,29 @@ function attrsJson(node) {
   return out;
 }
 
+// A table cell as the record keeps it: its text when it has no marks and no
+// line breaks, otherwise { c, m } in the text blocks' inline encoding.
+export function cellValue(cell) {
+  const { c, m } = flatten(cell.content);
+  return m.some(Boolean) ? { c, m: runsOf(m) } : c;
+}
+
+export function cellContent(schema, value) {
+  if (value !== null && typeof value === "object" && typeof value.c === "string") {
+    const units = unitsOf(value.m, value.c.length);
+    if (units) return unflatten(schema, value.c, units, schema.nodes.table_cell);
+  }
+  const text = cellText(value);
+  return text ? schema.text(text) : null;
+}
+
 export function blockJson(node) {
   const out = { t: node.type.name, pos: node.attrs.pos, ...attrsJson(node) };
   if (node.type.name === "table") {
     const rows = {};
     node.forEach((row) => {
       const cells = {};
-      row.forEach((cell) => { cells[cell.attrs.col] = cell.textContent; });
+      row.forEach((cell) => { cells[cell.attrs.col] = cellValue(cell); });
       rows[row.attrs.id] = { pos: row.attrs.pos, cells };
     });
     out.rows = rows;
@@ -116,10 +133,7 @@ export function nodeFromBlock(schema, id, blockValue) {
     const { table_row: rowType, table_cell: cellType } = schema.nodes;
     const children = orderedIds(rows || {}).map((rid) => rowType.createChecked(
       { id: rid, pos: rows[rid].pos },
-      cols.map((col) => {
-        const text = rows[rid].cells?.[col];
-        return cellType.createChecked({ col }, text ? schema.text(String(text)) : null);
-      }),
+      cols.map((col) => cellType.createChecked({ col }, cellContent(schema, rows[rid].cells?.[col]))),
     ));
     return schema.nodes.table.createChecked({ ...attrs, id, pos }, children);
   }

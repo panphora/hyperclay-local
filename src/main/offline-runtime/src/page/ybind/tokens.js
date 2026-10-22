@@ -1,8 +1,9 @@
 import { attrKeys, sameJson } from "./layout.js";
 import { blockJson } from "../model.js";
 import { marksKey, marksAttrs } from "./marks.js";
+import { createProjectionMap } from "./projection-map.js";
 
-const implicitFlags = (doc, visible) => {
+export const implicitFlags = (doc, visible) => {
   const byId = new Map(), out = [];
   for (const segment of visible ?? []) {
     const flags = byId.get(segment.id) ?? [];
@@ -88,3 +89,5 @@ export const sameTok = (a, b) => a.k === b.k && (a.k === "b" ? a.id === b.id && 
 
 export const yAfter = (holes, k) => { let n = k; for (const h of holes) if (h.at <= k) n += h.len; return n; };
 export const yBefore = (holes, k) => { let n = k; for (const h of holes) if (h.at < k) n += h.len; return n; };
+
+export const projectionOf = (tokens, holes, physicalLength) => createProjectionMap({ tokens, holes }, physicalLength);

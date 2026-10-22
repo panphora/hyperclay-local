@@ -6,7 +6,7 @@
 import { state, history, view as pmView, keymap } from "../vendor/prosemirror.vendor.js";
 import { schema } from "./schema.js";
 import { outline, siblingSpan, touchedBlocks, BlockSelection, STEP } from "./blocks.js";
-import { newId, REMOTE } from "./model.js";
+import { keysBetween, newId, orderedIds, REMOTE } from "./model.js";
 import { announce } from "./announce.js";
 
 const { Selection, TextSelection, NodeSelection, Plugin, PluginKey } = state;
@@ -92,6 +92,19 @@ export function deleteBlocks(st, dispatch) {
   return true;
 }
 
+function freshBoard({ columns = {}, cards = {} }) {
+  const order = orderedIds(columns);
+  const ids = new Map(order.map((id) => [id, newId("c")]));
+  const columnKeys = keysBetween(null, null, order.length);
+  const nextCards = {};
+  for (const col of new Set([...order, ...Object.values(cards).map((card) => card.col)])) {
+    const inColumn = orderedIds(Object.fromEntries(Object.entries(cards).filter(([, card]) => card.col === col)));
+    const keys = keysBetween(null, null, inColumn.length);
+    inColumn.forEach((id, i) => { nextCards[newId("k")] = { ...cards[id], col: ids.get(col) ?? col, pos: keys[i] }; });
+  }
+  return { columns: Object.fromEntries(order.map((id, i) => [ids.get(id), { ...columns[id], pos: columnKeys[i] }])), cards: nextCards };
+}
+
 export function duplicateBlocks(st, dispatch) {
   const ents = outline(st.doc);
   if (!ents.length) return false;
@@ -102,7 +115,7 @@ export function duplicateBlocks(st, dispatch) {
     const nodes = [];
     for (let k = lo; k <= hi; k++) {
       const n = ents[k].node, p = n.attrs.parent ?? null;
-      nodes.push(n.type.create({ ...n.attrs, id: ids.get(n.attrs.id) ?? null, pos: null, parent: ids.get(p) ?? p }, n.content, n.marks));
+      nodes.push(n.type.create({ ...n.attrs, ...(n.type === N.board ? freshBoard(n.attrs) : {}), id: ids.get(n.attrs.id) ?? null, pos: null, parent: ids.get(p) ?? p }, n.content, n.marks));
     }
     const at = ents[hi].end, size = at - ents[lo].at;
     const tr = st.tr.insert(at, nodes);

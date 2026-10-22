@@ -30,7 +30,7 @@ const nodeMap = require('./node-map');
 const dataGuard = require('../main/data-loss-guard');
 const { withLocalDocumentWrite, claimLocalDocumentTarget } = require('./local-boundary');
 const { refreshDerivedArtifacts } = require('../main/utils/derived-artifacts');
-const { readPageRecord, applyPageRecord, storedPageFile, sendPageState } = require('./page-state');
+const { readPageRecord, applyPageRecord, storedPageFile, sendPageState, confirmDownload } = require('./page-state');
 
 module.exports = {
   /**
@@ -94,7 +94,7 @@ module.exports = {
         await writeFile(localPath, stored, modifiedAt);
 
         if (token) {
-          await this.localAuthority.confirmKnownWrite(target, content, token, {
+          await confirmDownload(this, target, token, relativePath, stored, {
             sender: 'sync-engine',
           });
         }

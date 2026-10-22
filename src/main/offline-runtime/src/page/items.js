@@ -10,32 +10,39 @@ import { asStep } from "./blocksel.js";
 import { pickFiles, hostPlace } from "./media.js";
 import { makeTable, insertTableNode } from "./table.js";
 import { pickCsv } from "./csv-import.js";
+import { makeBoard, insertBoardNode } from "./board.js";
+import { chartFromSlash, chartTables } from "./chart.js";
 
 const { TextSelection } = state;
 const N = schema.nodes;
 
 export const BLOCK_TYPES = [
-  { key: "text", label: "Text", icon: "T", type: "paragraph", aliases: ["p", "paragraph", "plain"] },
-  { key: "h1", label: "Heading 1", icon: "H1", type: "heading", attrs: { level: 1 }, hint: "#", aliases: ["h1", "title"] },
-  { key: "h2", label: "Heading 2", icon: "H2", type: "heading", attrs: { level: 2 }, hint: "##", aliases: ["h2", "subtitle"] },
-  { key: "h3", label: "Heading 3", icon: "H3", type: "heading", attrs: { level: 3 }, hint: "###", aliases: ["h3"] },
-  { key: "bullet", label: "Bulleted list", icon: "•", type: "list_item", attrs: { kind: "bullet" }, hint: "-", aliases: ["ul", "bullet", "list", "unordered"] },
-  { key: "ordered", label: "Numbered list", icon: "1.", type: "list_item", attrs: { kind: "ordered" }, hint: "1.", aliases: ["ol", "num", "numbered", "ordered"] },
-  { key: "check", label: "Checklist", icon: "☐", type: "list_item", attrs: { kind: "check" }, hint: "[]", aliases: ["todo", "to-do", "task", "check", "checkbox"] },
-  { key: "toggle", label: "Toggle", icon: "▸", type: "toggle", attrs: { open: true }, hint: ">", aliases: ["collapse", "details", "fold"] },
-  { key: "callout", label: "Callout", icon: "!", type: "callout", aliases: ["note", "aside", "info"] },
-  { key: "code", label: "Code", icon: "</>", type: "code_block", hint: "```", aliases: ["pre", "snippet"] },
+  { key: "text", label: "Text", description: "Plain writing", icon: "T", type: "paragraph", aliases: ["p", "paragraph", "plain"] },
+  { key: "h1", label: "Heading 1", description: "Big section heading", icon: "H1", type: "heading", attrs: { level: 1 }, hint: "#", aliases: ["h1", "title"] },
+  { key: "h2", label: "Heading 2", description: "Medium section heading", icon: "H2", type: "heading", attrs: { level: 2 }, hint: "##", aliases: ["h2", "subtitle"] },
+  { key: "h3", label: "Heading 3", description: "Small section heading", icon: "H3", type: "heading", attrs: { level: 3 }, hint: "###", aliases: ["h3"] },
+  { key: "bullet", label: "Bulleted list", description: "A simple list", icon: "•", type: "list_item", attrs: { kind: "bullet" }, hint: "-", aliases: ["ul", "bullet", "list", "unordered"] },
+  { key: "ordered", label: "Numbered list", description: "A list with numbers", icon: "1.", type: "list_item", attrs: { kind: "ordered" }, hint: "1.", aliases: ["ol", "num", "numbered", "ordered"] },
+  { key: "check", label: "Checklist", description: "Tasks to tick off", icon: "☐", type: "list_item", attrs: { kind: "check" }, hint: "[]", aliases: ["todo", "to-do", "task", "check", "checkbox"] },
+  { key: "toggle", label: "Toggle", description: "Hide details under a line", icon: "▸", type: "toggle", attrs: { open: true }, hint: ">", aliases: ["collapse", "details", "fold"] },
+  { key: "callout", label: "Callout", description: "Make a note stand out", icon: "!", type: "callout", aliases: ["note", "aside", "info"] },
+  { key: "code", label: "Code", description: "Code with highlighting", icon: "</>", type: "code_block", hint: "```", aliases: ["pre", "snippet"] },
 ];
 
 export const INSERT_ITEMS = [
-  { key: "divider", label: "Divider", icon: "—", hint: "---", aliases: ["hr", "line", "separator", "rule"], insert: "divider" },
-  { key: "image", label: "Image", icon: "▣", aliases: ["img", "picture", "photo"], insert: "image" },
-  { key: "file", label: "File", icon: "⎘", aliases: ["upload", "attachment", "pdf"], insert: "file" },
-  { key: "table", label: "Table", icon: "▦", aliases: ["grid", "spreadsheet"], insert: "table" },
-  { key: "csv", label: "Import CSV…", icon: "⇧", aliases: ["comma separated", "import"], insert: "csv" },
+  { key: "divider", label: "Divider", description: "A line between sections", icon: "—", hint: "---", aliases: ["hr", "line", "separator", "rule"], insert: "divider" },
+  { key: "image", label: "Image", description: "Upload or paste a picture", icon: "▣", aliases: ["img", "picture", "photo"], insert: "image" },
+  { key: "file", label: "File", description: "Attach any file", icon: "⎘", aliases: ["upload", "attachment", "pdf"], insert: "file" },
+  { key: "table", label: "Table", description: "Rows and columns, paste from a spreadsheet", icon: "▦", aliases: ["grid", "spreadsheet"], insert: "table" },
+  { key: "csv", label: "Import CSV…", description: "Turn a CSV file into a table", icon: "⇧", aliases: ["comma separated", "import"], insert: "csv" },
+  { key: "board", label: "Board", description: "Cards in columns, like a kanban", icon: "▥", aliases: ["kanban", "cards", "columns", "status"], insert: "board" },
 ];
 
+export const CHART_ITEM = { key: "chart", label: "Chart", description: "A bar or line chart from a table", icon: "📊", aliases: ["graph", "plot", "bar", "line"], insert: "chart" };
+
 export const MENU_ITEMS = [...BLOCK_TYPES, ...INSERT_ITEMS];
+
+export const insertItemsFor = (st, items = MENU_ITEMS) => (chartTables(st.doc).length ? [...items, CHART_ITEM] : items);
 
 // Which entry of BLOCK_TYPES a block is, for the toolbar's "Text ▾" label.
 export function blockTypeOf(node) {
@@ -121,6 +128,7 @@ export function rankItems(items, query) {
     if (label.startsWith(q)) return 1;
     if ([...label.split(/\s+/), ...names].some((s) => s.startsWith(q))) return 2;
     if ([label, ...names].some((s) => s.includes(q))) return 3;
+    if (q.length >= 3 && it.description && it.description.toLowerCase().split(/[^a-z0-9]+/).some((w) => w.startsWith(q))) return 4;
     return Infinity;
   };
   return items.map((it, order) => ({ it, order, rank: rank(it) })).filter((x) => x.rank !== Infinity).sort((a, b) => a.rank - b.rank || a.order - b.order).map((x) => x.it);
@@ -134,6 +142,8 @@ export function runItem(view, item, index, remove = null) {
   if (item.insert === "image" || item.insert === "file") return pickFiles(view, item.insert === "image" ? "image/*" : "", hostPlace(st, index), remove);
   if (item.insert === "csv") return pickCsv(view, remove);
   if (item.insert === "table") return insertTableNode(st, view.dispatch, makeTable(), remove);
+  if (item.insert === "board") return insertBoardNode(st, view.dispatch, makeBoard(), remove);
+  if (item.insert === "chart") return chartFromSlash(view, index, remove);
   let tr = st.tr;
   if (remove) tr.delete(remove.from, remove.to);
   const node = tr.doc.child(index);

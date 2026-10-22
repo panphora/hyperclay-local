@@ -104,8 +104,7 @@ export const schema = new model.Schema({
       toDOM: (n) => ["tr", ref(n), 0],
     },
     table_cell: {
-      content: "text*",
-      marks: "",
+      content: "inline*",
       isolating: true,
       attrs: { col: { default: null } },
       toDOM: (n) => ["td", { "data-col": n.attrs.col }, 0],

@@ -1,6 +1,7 @@
 import { schema } from "./schema.js";
 import { blockJson } from "./model.js";
 import { project } from "./projection.js";
+import { cellText } from "./rich/cell.js";
 
 export function tablesFromDoc(doc) {
   const tables = [];
@@ -9,7 +10,8 @@ export function tablesFromDoc(doc) {
     if (node.type === schema.nodes.heading) name = node.textContent;
     if (node.type !== schema.nodes.table) return;
     const table = project({ [node.attrs.id]: blockJson(node) })[0];
-    tables.push({ id: table.id, name: name || `Table ${tables.length + 1}`, cols: table.cols, rows: table.rows });
+    const rows = table.rows.map((row) => ({ ...row, cells: Object.fromEntries(Object.entries(row.cells).map(([col, cell]) => [col, cellText(cell)])) }));
+    tables.push({ id: table.id, name: name || `Table ${tables.length + 1}`, cols: table.cols, rows });
   });
   return tables;
 }

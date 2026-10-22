@@ -4,6 +4,7 @@ import { nodeFromBlock, newId, keyBetween } from "./model.js";
 import { parseCsv, tableFromCsv, CsvError } from "./rich/csv.js";
 import { TABLE_IMPORT_LIMIT, insertTableNode } from "./table.js";
 import { safeFileHref } from "./address.js";
+import { asStep } from "./blocksel.js";
 
 const { Plugin } = state;
 const inputs = new WeakMap();
@@ -51,7 +52,47 @@ async function confirmTruncation({ kept, total }) {
   try { await promise; return true; } catch { return false; }
 }
 
-export async function importCsv(view, file, { upload, remove = null } = {}) {
+const tableIndex = (doc, id) => {
+  let found = -1;
+  doc.forEach((node, _offset, index) => { if (found < 0 && node.type === schema.nodes.table && node.attrs.id === id) found = index; });
+  return found;
+};
+
+const emptyTable = (table) => {
+  let empty = true;
+  table.descendants((node) => { if (node.isText) empty = false; return empty; });
+  return empty;
+};
+
+// From a table's menu: an empty table is filled in place (it keeps its id,
+// order and parent), a table with content gets the imported one below it.
+function placeImported(view, node, tableId, attachment) {
+  const st = view.state;
+  const index = tableIndex(st.doc, tableId);
+  if (index < 0) return insertTableNode(st, view.dispatch, node, null, attachment);
+  let at = 0;
+  for (let i = 0; i < index; i++) at += st.doc.child(i).nodeSize;
+  const table = st.doc.child(index);
+  if (!emptyTable(table) || attachment) {
+    const next = st.doc.maybeChild(index + 1);
+    const parent = table.attrs.parent ?? null;
+    const pos = keyBetween(table.attrs.pos, next?.attrs.pos ?? null);
+    const placed = node.type.create({ ...node.attrs, pos, parent }, node.content);
+    const end = at + table.nodeSize;
+    const tr = st.tr.insert(end, placed);
+    if (attachment) tr.insert(end + placed.nodeSize, attachment.type.create({ ...attachment.attrs, pos: keyBetween(pos, next?.attrs.pos ?? null), parent }, attachment.content));
+    tr.setSelection(state.TextSelection.create(tr.doc, end + 3));
+    view.dispatch(asStep(tr).scrollIntoView());
+    return true;
+  }
+  const filled = node.type.create({ ...node.attrs, id: table.attrs.id, pos: table.attrs.pos, parent: table.attrs.parent }, node.content);
+  const tr = st.tr.replaceWith(at, at + table.nodeSize, filled);
+  tr.setSelection(state.TextSelection.create(tr.doc, at + 3));
+  view.dispatch(asStep(tr).scrollIntoView());
+  return true;
+}
+
+export async function importCsv(view, file, { upload, remove = null, table = null } = {}) {
   try {
     view.dom.parentElement.querySelector(".page-csv-error")?.remove();
     const parsed = parseCsv(await readText(file));
@@ -66,6 +107,7 @@ export async function importCsv(view, file, { upload, remove = null } = {}) {
       attachment = schema.nodes.file.create({ id: newId(), src, name: file.name, size: file.size ?? null, mime: file.type || "text/csv" });
     }
     if (view.isDestroyed) return false;
+    if (table) return placeImported(view, result.node, table, attachment);
     const inserted = insertTableNode(view.state, view.dispatch, result.node, remove, attachment);
     return inserted;
   } catch (cause) {
@@ -75,10 +117,11 @@ export async function importCsv(view, file, { upload, remove = null } = {}) {
   }
 }
 
-export function pickCsv(view, remove = null) {
+export function pickCsv(view, remove = null, table = null) {
   const input = inputs.get(view);
   if (!input) return false;
   input._remove = remove;
+  input._table = table;
   input.click();
   return true;
 }
@@ -97,8 +140,9 @@ export function csvImportPlugin({ upload }) {
       inputs.set(view, input);
       input.addEventListener("change", () => {
         const file = input.files?.[0];
-        if (file) importCsv(view, file, { upload, remove: input._remove });
+        if (file) importCsv(view, file, { upload, remove: input._remove, table: input._table });
         input._remove = null;
+        input._table = null;
         input.value = "";
       });
       return { destroy() { inputs.delete(view); input.remove(); } };

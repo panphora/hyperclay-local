@@ -19,6 +19,7 @@ const parentOf = (n) => n.attrs.parent ?? null;
 // the history group before it, and carries STEP so the editor closes the group
 // after it too (createPageEditor).
 export const STEP = "page-step";
+export const MOVE = "page-move";
 const asStep = (dispatch) => dispatch && ((tr) => dispatch(history.closeHistory(tr).setMeta(STEP, true)));
 
 // ---- the outline ------------------------------------------------------------
@@ -249,6 +250,23 @@ const prevSibling = (ents, i) => {
 // current doc, outside the span). Moved nodes get pos null: identityPlugin
 // then gives exactly those blocks new keys between their new neighbours and
 // leaves every other key alone. `attrs(ent)` returns attr changes per block.
+export function moveIntent(ents, lo, hi, target, attrs = () => null) {
+  const root = attrs(ents[lo]) || {};
+  const parent = "parent" in root ? root.parent : parentOf(ents[lo].node);
+  let afterId = null;
+  for (let k = 0; k < ents.length && ents[k].end <= target; k++) {
+    if (k >= lo && k <= hi) continue;
+    if (parentOf(ents[k].node) === parent) afterId = ents[k].node.attrs.id;
+  }
+  const ids = [], changes = {};
+  for (let k = lo; k <= hi; k++) {
+    const n = ents[k].node, c = attrs(ents[k]);
+    ids.push(n.attrs.id);
+    if (c && "indent" in c && c.indent !== n.attrs.indent) changes[n.attrs.id] = { indent: c.indent };
+  }
+  return { ids, afterId, parent, attrs: changes };
+}
+
 export function moveSpanTr(st, ents, lo, hi, target, attrs = () => null, sel = st.selection) {
   const from = ents[lo].at, to = ents[hi].end, size = to - from;
   const nodes = [];
@@ -263,7 +281,7 @@ export function moveSpanTr(st, ents, lo, hi, target, attrs = () => null, sel = s
   if (sel instanceof BlockSelection) tr.setSelection(new BlockSelection(tr.doc.resolve(sel.anchor + shift), tr.doc.resolve(sel.head + shift)));
   else if (sel instanceof NodeSelection) tr.setSelection(NodeSelection.create(tr.doc, sel.from + shift));
   else tr.setSelection(TextSelection.create(tr.doc, sel.anchor + shift, sel.head + shift));
-  return tr;
+  return tr.setMeta(MOVE, moveIntent(ents, lo, hi, target, attrs));
 }
 
 // Attr changes that carry a span out of its outline parent P to P's level.

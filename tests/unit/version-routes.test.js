@@ -18,7 +18,7 @@ const { createBackup, publishRecoveredCopy } = require('../../src/main/utils/bac
 const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 const { withoutInjectedDocumentEtag } = require('../helpers/served-metadata');
 const { documentEtag } = require('../../src/main/spec-wire.js');
-const { logicalDocument } = require('../../src/main/page-state-store.js');
+const { logicalDocument, readPageState, pageStatePath } = require('../../src/main/page-state-store.js');
 
 const PAGE = (n) => `<!DOCTYPE html><html lang="en"><body><p>${n}</p></body></html>`;
 
@@ -306,6 +306,31 @@ describe('version history routes', () => {
     // straight back as If-Match on the next restore.
     expect(res.body.etag).toBe(documentEtag(await logicalDocument(dir, 'board.html', disk)));
     expect((await restore('board.html', target.name, { 'If-Match': res.body.etag })).status).toBe(200);
+  });
+
+  // The record's rev is the one the open editors hold, so a restored version is
+  // stamped with it: the page is written as an ordinary page document the tabs
+  // merge, not as a replacement that discards their unsaved edits.
+  test('a restored page version carries the record\'s rev and keeps the record', async () => {
+    expect((await save(Y_PAGE)).status).toBe(200);
+    const later = Y_PAGE
+      .replace(/data-rev="[^"]*"/, 'data-rev="later-rev"')
+      .replace('<p data-id="p1"></p>', '<p data-id="p1">later</p>');
+    expect((await save(later)).status).toBe(200);
+    expect((await readPageState(dir, 'board.html')).rev).toBe('later-rev');
+
+    const target = (await list()).body.versions[1];
+    const version = await versionBytes('board', target.name);
+    expect(version).not.toContain('merge="page"');
+
+    const res = await restore('board.html', target.name);
+    expect(res.status).toBe(200);
+
+    const disk = await fs.readFile(docPath('board.html'), 'utf8');
+    expect(disk).not.toContain('merge="page"');
+    expect(disk).toBe(version.replace(/data-rev="[^"]*"/, 'data-rev="later-rev"'));
+    expect((await readPageState(dir, 'board.html')).rev).toBe('later-rev');
+    await expect(fs.access(pageStatePath(dir, 'board.html'))).resolves.toBeUndefined();
   });
 
   test('a restore reaches edit-mode tabs through the observer', async () => {

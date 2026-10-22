@@ -56,3 +56,14 @@ test('restoring a live document with no page needs no rendered safety backup', (
   });
   expect(output).toContain('restore non-page proof passed');
 });
+
+// The record's rev is the one the open editors hold, so restoring a page version
+// stamps it with that rev: the page is written as an ordinary page document the
+// tabs merge, and the room with its unsaved edits is kept.
+test('restoring a page version keeps the room and publishes the composed page', () => {
+  const output = execFileSync(process.execPath, [path.join(__dirname, '../helpers/local-restore-page-room-probe.cjs')], {
+    cwd: process.cwd(), encoding: 'utf8', timeout: 60000,
+  });
+  expect(output).toContain('restore of a page version kept the room');
+  expect(output).toContain('restore page room proof passed');
+});

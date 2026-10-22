@@ -338,6 +338,19 @@ export function captureSaveClone({ flushUndo = true, authored = true } = {}) {
   return prepareCloneForSave(captureSnapshot({ flushUndo, authored }), { authored });
 }
 
+// Attributes that render exactly like their absence. A scroll lock or a browser
+// extension that resets an inline style leaves `style=""` behind, and the dirty
+// check must not read that as an edit the person would lose on close.
+const EMPTY_INERT_ATTRS = ['style', 'class'];
+
+function serializeForCompare(clone) {
+  for (const name of EMPTY_INERT_ATTRS) {
+    if (clone.getAttribute(name) === '') clone.removeAttribute(name);
+    for (const el of clone.querySelectorAll(`[${name}=""]`)) el.removeAttribute(name);
+  }
+  return "<!DOCTYPE html>" + clone.outerHTML;
+}
+
 /**
  * Capture snapshot prepared for dirty/change comparison.
  *
@@ -366,7 +379,7 @@ export function captureForComparison({ flushUndo = true } = {}) {
 
   stripSnapshotRegions(clone);
 
-  return "<!DOCTYPE html>" + clone.outerHTML;
+  return serializeForCompare(clone);
 }
 
 /**
@@ -399,7 +412,7 @@ export function captureForDirtyCheck({ flushUndo = true } = {}) {
 
   stripSnapshotRegions(clone);
 
-  return "<!DOCTYPE html>" + clone.outerHTML;
+  return serializeForCompare(clone);
 }
 
 /**
@@ -430,7 +443,7 @@ export function captureForComparisonAndDirty({ flushUndo = true } = {}) {
     hook(clone);
   }
   stripSnapshotRegions(clone);
-  const forComparison = "<!DOCTYPE html>" + clone.outerHTML;
+  const forComparison = serializeForCompare(clone);
 
   let forDirty = forComparison;
   if (dirtyClone) {
@@ -442,7 +455,7 @@ export function captureForComparisonAndDirty({ flushUndo = true } = {}) {
       hook(dirtyClone);
     }
     stripSnapshotRegions(dirtyClone);
-    forDirty = "<!DOCTYPE html>" + dirtyClone.outerHTML;
+    forDirty = serializeForCompare(dirtyClone);
   }
 
   return { forComparison, forDirty };
@@ -512,7 +525,7 @@ export function captureForSaveAndComparison({ emitForSync = true, flushUndo = tr
     hook(compareClone);
   }
   stripSnapshotRegions(compareClone);
-  const forComparison = "<!DOCTYPE html>" + compareClone.outerHTML;
+  const forComparison = serializeForCompare(compareClone);
 
   // Dirty clone: same shape as the compare clone, one selector weaker.
   let forDirty = forComparison;
@@ -525,7 +538,7 @@ export function captureForSaveAndComparison({ emitForSync = true, flushUndo = tr
       hook(dirtyClone);
     }
     stripSnapshotRegions(dirtyClone);
-    forDirty = "<!DOCTYPE html>" + dirtyClone.outerHTML;
+    forDirty = serializeForCompare(dirtyClone);
   }
 
   return { forSave, forComparison, forDirty, captureId };

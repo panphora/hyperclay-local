@@ -3,12 +3,12 @@ import { NET, createPageDoc, walk, docOf } from "./core.js";
 import { createBridge, keepViewPos } from "./bridge.js";
 import { createYProvider, entriesOf, dec } from "./provider.js";
 
-export function createYPageBinding({ store, ydoc = new Y.Doc(), onNotice = () => {}, setTimer = setTimeout, clearTimer = clearTimeout, compact, captureTimeout = 500, checkpointWithin = () => {}, requestCheckpoint = null, registerUnsavedState = null }) {
+export function createYPageBinding({ store, ydoc = new Y.Doc(), onNotice = () => {}, ownedTokens = [], authorToken = null, setTimer = setTimeout, clearTimer = clearTimeout, compact, captureTimeout = 500, checkpointWithin = () => {}, requestCheckpoint = null, registerUnsavedState = null, onStopped = () => {} }) {
   for (const [, v] of entriesOf(store.value.y)) Y.applyUpdateV2(ydoc, dec(v), NET);
   const pd = createPageDoc(ydoc);
-  const provider = createYProvider({ store, ydoc, setTimer, clearTimer, compact });
+  const provider = createYProvider({ store, ydoc, setTimer, clearTimer, compact, onStopped });
   const stats = { groups: 0, mismatch: 0, renders: 0, first: null };
-  const bridge = createBridge({ pd, onNotice, stats, captureTimeout });
+  const bridge = createBridge({ pd, onNotice, ownedTokens, authorToken, stats, captureTimeout });
   const waiters = new Set();
   let disposed = false;
   let checksQueued = false;
@@ -68,10 +68,15 @@ export function createYPageBinding({ store, ydoc = new Y.Doc(), onNotice = () =>
     doc: () => keepViewPos(docOf(pd, walk(pd))),
     attach: (view) => bridge.attach(view),
     dispatch: (tr) => bridge.dispatch(tr),
+    moveBlocks: (args) => bridge.moveBlocks(args),
+    board: bridge.board,
     undo: () => bridge.undo(),
     redo: () => bridge.redo(),
-    restore: (key) => bridge.restore(key),
+    restore: (sourceKey, revision) => bridge.restore(sourceKey, revision),
+    get recoverable() { return bridge.recoverable; },
     get notices() { return bridge.notices; },
+    subscribeRecovery: (listener) => bridge.subscribeRecovery(listener),
+    dismiss: (sourceKey, revision) => bridge.dismiss(sourceKey, revision),
     dispose() {
       if (disposed) return;
       disposed = true;

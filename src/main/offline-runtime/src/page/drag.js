@@ -7,7 +7,7 @@ const SLOP = 4;
 const EDGE = 56;
 const MAX_SPEED = 18;
 
-function scrollParent(el) {
+export function scrollParent(el) {
   for (let n = el.parentElement; n; n = n.parentElement) {
     const o = getComputedStyle(n).overflowY;
     if ((o === "auto" || o === "scroll") && n.scrollHeight > n.clientHeight) return n;

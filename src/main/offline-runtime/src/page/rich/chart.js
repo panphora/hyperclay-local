@@ -1,4 +1,5 @@
 import { parseDecimal } from "./csv.js";
+import { cellText } from "./cell.js";
 
 const esc = (value) => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 const fmt = (value) => Number(value.toFixed(2)).toString();
@@ -25,7 +26,7 @@ export function chartModel(chart, table) {
     const col = cols.find((item) => item.id === id);
     const points = rows.map((row, rowIndex) => ({
       id: `${chart.id}:${row.id}:${id}`, rowId: row.id, colId: id, rowIndex,
-      xLabel: String(row.cells?.[chart.x] ?? ""), value: parseDecimal(row.cells?.[id]),
+      xLabel: cellText(row.cells?.[chart.x]), value: parseDecimal(cellText(row.cells?.[id])),
       highlight: row.id === chart.highlight,
     }));
     return { id, name: col.name, color: `var(--chart-${index % 6 + 1})`, points };
@@ -39,7 +40,7 @@ export function chartModel(chart, table) {
   if (min === max) max = min + 1;
   return {
     state: "ok", type: chart.type, title: chart.title ?? "", series, points,
-    xLabels: rows.map((row) => String(row.cells?.[chart.x] ?? "")),
+    xLabels: rows.map((row) => cellText(row.cells?.[chart.x])),
     yTicks: ticks(min, max, 6), narrowTicks: ticks(min, max, 3), domain: [min, max],
   };
 }

@@ -1,6 +1,6 @@
 // Syntax colours for code blocks. A code block with a language gets inline
-// decorations from Shiki, loaded on first use (src/vendor/shiki/). Only blocks
-// on screen are highlighted, and only after typing pauses. Colours are
+// decorations from Pierre's highlighter, loaded on first use (src/vendor/pierre/).
+// Only blocks on screen are highlighted, and only after typing pauses. Colours are
 // --page-code-token-* variables, so each page theme sets them.
 import { state, view as pmView } from "../vendor/prosemirror.vendor.js";
 import { schema } from "./schema.js";
@@ -9,7 +9,6 @@ import { asStep } from "./blocksel.js";
 const { Plugin, PluginKey } = state;
 const { Decoration, DecorationSet } = pmView;
 
-// Keep in step with LANGS in scripts/build-shiki-vendor.mjs.
 export const LANGS = [
   ["", "Plain text"],
   ["javascript", "JavaScript"],
@@ -46,14 +45,58 @@ export const langOf = (lang) => {
   return IDS.has(id) ? id : "";
 };
 
-let shiki = null;
+// Pierre's scopes, onto the page themes' token colours. A scope it does not list
+// falls back to its parent (keyword.control to keyword), then to the foreground.
+const color = (name) => ({ color: name });
+const THEME = {
+  name: "page",
+  appearance: "light",
+  cssVariables: { prefix: "--page-code-token-" },
+  style: {
+    syntax: {
+      comment: color("comment"),
+      keyword: color("keyword"),
+      operator: color("keyword"),
+      preproc: color("keyword"),
+      "punctuation.special": color("keyword"),
+      string: color("string-expression"),
+      "string.escape": color("constant"),
+      "string.regex": color("constant"),
+      "string.special": color("constant"),
+      number: color("constant"),
+      boolean: color("constant"),
+      constant: color("constant"),
+      type: color("constant"),
+      property: color("constant"),
+      enum: color("constant"),
+      variant: color("constant"),
+      namespace: color("constant"),
+      label: color("constant"),
+      function: color("function"),
+      constructor: color("function"),
+      selector: color("function"),
+      attribute: color("function"),
+      "variable.parameter": color("parameter"),
+      tag: color("string-expression"),
+      link_uri: color("link"),
+      link_text: color("link"),
+      "diff.plus": color("string-expression"),
+      "diff.minus": color("keyword"),
+      title: { font_weight: 700 },
+      emphasis: { font_style: "italic" },
+      "emphasis.strong": { font_weight: 700 },
+    },
+  },
+};
+
+let pierre = null;
 export async function tokenize(code, lang) {
-  shiki ??= import("../vendor/shiki/shiki.vendor.js");
-  const { codeToTokensBase } = await shiki;
-  return codeToTokensBase(code, { lang, theme: "page" });
+  pierre ??= import("../vendor/pierre/pierre.vendor.js");
+  const { codeToTokens } = await pierre;
+  return codeToTokens(code, { lang, theme: THEME }).tokens;
 }
 
-const FOREGROUND = "var(--page-code-foreground)";
+const FOREGROUND = "var(--page-code-token-foreground)";
 const styleOf = (t) => {
   const s = [];
   if (t.color && t.color !== FOREGROUND) s.push(`color: ${t.color}`);

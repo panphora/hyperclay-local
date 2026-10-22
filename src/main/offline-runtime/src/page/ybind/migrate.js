@@ -2,7 +2,8 @@ import * as Y from "../../vendor/yjs.vendor.js";
 import { schema } from "../schema.js";
 import { nodeFromBlock } from "../model.js";
 import { flatten, marksOf } from "../inline.js";
-import { ATOM, BREAK, DEFAULTS, blocksOfValues, orderedIds, unitsOf, runsOf, canon } from "../projection.js";
+import { ATOM, BREAK, DEFAULTS, blocksOfValues, orderedIds, unitsOf, runsOf, canon, hash64, parseModel } from "../projection.js";
+import { blockFromItem } from "../adopt.js";
 import { createPageDoc, attrKeys, defaultOf, SEED } from "./layout.js";
 import { blocksFromYValue } from "./decode.js";
 import { PART, enc } from "./provider.js";
@@ -72,14 +73,14 @@ function normalizeBlock(id, block, index) {
   return out;
 }
 
-export function migrateHybridValues(values) {
+export function buildPageValue(values, clientID) {
   let doc;
   try {
     const source = sourceBlocks(values);
     const ids = orderedIds(source);
     const blocks = Object.fromEntries(ids.map((id, index) => [id, normalizeBlock(id, source[id], index)]));
     doc = new Y.Doc();
-    doc.clientID = 1;
+    doc.clientID = clientID;
     const pd = createPageDoc(doc);
     let op = 0;
     doc.transact(() => {
@@ -106,7 +107,7 @@ export function migrateHybridValues(values) {
           if (key === BREAK) {
             for (let i = 0; i < length; i++) pd.flow.insertEmbed(pd.flow.length, { br: 1 }, {});
           } else {
-            const attrs = Object.fromEntries(marksOf(schema, key).map((mark) => [`${mark.type.name}~1-m${(op++).toString(36)}`, Object.keys(mark.attrs).length ? copy(mark.attrs) : true]));
+            const attrs = Object.fromEntries(marksOf(schema, key).map((mark) => [`${mark.type.name}~${clientID}-m${(op++).toString(36)}`, Object.keys(mark.attrs).length ? copy(mark.attrs) : true]));
             pd.flow.insert(pd.flow.length, c.slice(offset, offset + length), attrs);
           }
           offset += length;
@@ -125,4 +126,27 @@ export function migrateHybridValues(values) {
   } finally {
     doc?.destroy();
   }
+}
+
+export function migrateHybridValues(values) {
+  return buildPageValue(values, 1);
+}
+
+// A page's merge state rebuilt from its article alone. The client id comes from the content,
+// so every rebuild of the same article is byte-identical (two tabs converge) and rebuilds of
+// different articles never share Yjs item ids.
+export function seedClientId(blocks) {
+  const id = parseInt(hash64(`page-seed:v1:${canon(blocks)}`).slice(0, 8), 16) >>> 0;
+  return id < 2 ? id + 2 : id;
+}
+
+export function seedPageFromArticle(article) {
+  const items = parseModel(article, { seed: article.getAttribute("data-rev") ?? "" });
+  const blocks = {};
+  items.forEach((item, i) => {
+    const block = blockFromItem(item, null);
+    block.pos = String(i + 1).padStart(8, "0");
+    blocks[item.id] = block;
+  });
+  return buildPageValue([{ blocks }], seedClientId(blocks));
 }

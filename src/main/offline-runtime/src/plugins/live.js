@@ -289,7 +289,7 @@ function startHistoryRecovery(plan, { result, attempts, startedAt }) {
     (supported) => {
       if (recoveries.get(captureId) !== record) return;
       plan.html = null;
-      if (!supported) return failHistory(captureId, "unavailable");
+      if (!supported) return fallBackToRoom(captureId);
       record.run = history.start({
         captureId,
         html,
@@ -302,7 +302,7 @@ function startHistoryRecovery(plan, { result, attempts, startedAt }) {
     },
     () => {
       plan.html = null;
-      failHistory(captureId, "unavailable");
+      fallBackToRoom(captureId);
     },
   );
 }
@@ -333,9 +333,30 @@ function applyHistory(captureId, saveId, requestHash) {
   }
 }
 
-// No usable answer (the capability is missing, the window expired, the body could
-// not be hashed): the unresolved operations take the existing uncertainty path
-// once, and are never replayed.
+// The host never advertised save-history: there is nothing to ask, so the
+// operations wait for this room to prove them, as any unanswered save does.
+function fallBackToRoom(captureId) {
+  const record = recoveries.get(captureId);
+  if (!record) return;
+  recoveries.delete(captureId);
+  for (const target of record.targets) {
+    const entry = entries.get(target.name);
+    if (!entry || entry.recovery !== record) continue;
+    entry.recovery = null;
+    if (!fast?.roomBound(entry.store.name)) {
+      giveUp(entry, { read: false });
+      continue;
+    }
+    entry.withheld = true;
+    entry.reading = true;
+    arm(entry);
+    fast.release(entry.store.name, { read: true });
+  }
+}
+
+// No usable answer (the window expired, the body could not be hashed, the host
+// answered nothing): the unresolved operations take the existing uncertainty
+// path once, and are never replayed.
 function failHistory(captureId, reason) {
   const record = recoveries.get(captureId);
   if (!record) return;
@@ -721,6 +742,14 @@ export function live(name) {
   store.onDelivery((event) => {
     if (event.code === "receipt-expired") document.dispatchEvent(new CustomEvent("clay:live-notice", {
       detail: { name, code: event.code, ops: event.ops, message: "The room retired an update receipt. Check the saved value before restoring this update." },
+    }));
+    if (event.phase === "refused" && event.code === "too-large" && !/^page(\.[0-9]+)?$/.test(name)) document.dispatchEvent(new CustomEvent("clay:live-notice", {
+      detail: { name, code: "op-too-large", message: "That change was too large to share, so it was undone." },
+    }));
+    // The room was opened from a document with no store of this name, so the
+    // page it holds is not the one this tab is editing.
+    if (event.phase === "left" && event.code === "no-store" && /^page(\.[0-9]+)?$/.test(name)) document.dispatchEvent(new CustomEvent("clay:live-notice", {
+      detail: { name, code: "unknown-store", message: `The room has no "${name}" store, so the page it holds is not the one this tab is editing.` },
     }));
   });
   store.onRebase((event) => {

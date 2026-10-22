@@ -9,7 +9,7 @@
 // Cmd+Z takes the whole adoption back.
 import { model as pmModel, history } from "../vendor/prosemirror.vendor.js";
 import { blockMap, nodeFromBlock, repairSiblings } from "./model.js";
-import { project, canon, UNPROJECTED, revOf, parseModel, renderModel, fragmentCleaner } from "./projection.js";
+import { project, canon, revOf, parseModel, renderModel, fragmentCleaner } from "./projection.js";
 import { blocksFromPageValues } from "./ybind/decode.js";
 
 export const ADOPT = "page-adopt";
@@ -55,7 +55,6 @@ function keyed(list, current, prefix, extra = (x) => x) {
 export function blockFromItem(item, cur) {
   const { id, t, ...fields } = item;
   const out = { t, pos: cur?.pos ?? null };
-  if (cur && cur.t === t) for (const k of UNPROJECTED[t] || []) if (k in cur) out[k] = cur[k];
   Object.assign(out, fields);
   if (t === "table" && !fields.rows.length) fields.rows = [{ id: `r-${id}`, cells: {} }];
   if (t === "table") {
@@ -194,6 +193,17 @@ export function adoptionTransaction(state, plan) {
   return history.closeHistory(tr).setMeta(ADOPT, { displaced });
 }
 
+// Blocks as their article shows them, read back through render and parse, so
+// both sides of a comparison carry the same markup losses.
+export function readBack(blocks, doc, seed = "") {
+  const model = project(blocks);
+  const known = new Map(model.map((i) => [i.id, i]));
+  const fallbackOf = (id) => (typeof blocks[id]?.artifact?.fallbackHtml === "string" ? blocks[id].artifact.fallbackHtml : "");
+  const rendered = doc.createElement("article");
+  rendered.innerHTML = renderModel(model, { fallbackOf, clean: fragmentCleaner(doc) });
+  return parseModel(rendered, { seed, known });
+}
+
 // ---- which file states are adopted ------------------------------------------
 //
 // data-rev ties one save's article to the tags written in the same save:
@@ -225,10 +235,6 @@ export function classifyFile(article, tagValues) {
     const shown = new Set(parsed.map((i) => i.id));
     if (!model.every((i) => shown.has(i.id))) return { kind: "unbased", A, R, T };
   }
-  const doc = article.ownerDocument;
-  const rendered = doc.createElement("article");
-  const fallbackOf = (id) => (typeof base[id]?.artifact?.fallbackHtml === "string" ? base[id].artifact.fallbackHtml : "");
-  rendered.innerHTML = renderModel(model, { fallbackOf, clean: fragmentCleaner(doc) });
-  const baseItems = parseModel(rendered, { seed, known });
-  return { kind: "adopt", base, parsed, baseItems };
+  const baseItems = readBack(base, article.ownerDocument, seed);
+  return { kind: "adopt", base, parsed, baseItems, A };
 }

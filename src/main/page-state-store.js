@@ -32,13 +32,25 @@ function legacyPageStatePath(baseDir, name) {
   return abs;
 }
 
+const validRecord = (state) => !!state && state.v === 1 && typeof state.rev === 'string' && typeof state.tag === 'string';
+
 function parseState(text) {
   try {
     const state = JSON.parse(text);
-    return state && state.v === 1 && typeof state.rev === 'string' && typeof state.tag === 'string' ? state : null;
+    if (!validRecord(state)) return null;
+    const prev = state.prev && validRecord({ v: 1, ...state.prev }) ? { rev: state.prev.rev, tag: state.prev.tag } : null;
+    return { v: 1, rev: state.rev, tag: state.tag, ...(prev && { prev }) };
   } catch {
     return null;
   }
+}
+
+// The sidecar is written before the file lands, so it also keeps the record of the article
+// it replaced: a write that never lands leaves the file on disk with its own state.
+function pick(state, rev) {
+  if (!state) return null;
+  if (rev && state.rev !== rev && state.prev?.rev === rev) return { v: 1, rev: state.prev.rev, tag: state.prev.tag };
+  return { v: 1, rev: state.rev, tag: state.tag };
 }
 
 // An old-format sidecar is adopted once, and only when the other extension's document
@@ -67,7 +79,7 @@ async function adoptLegacyPageState(baseDir, name) {
   return state;
 }
 
-async function readPageState(baseDir, name) {
+async function readStored(baseDir, name) {
   let text;
   try {
     text = await fs.readFile(pageStatePath(baseDir, name), 'utf8');
@@ -78,10 +90,40 @@ async function readPageState(baseDir, name) {
   return parseState(text);
 }
 
+// The record that belongs to one article revision, or null when the sidecar keeps none for it.
+function recordFor(state, rev) {
+  if (!state || !rev) return null;
+  if (state.rev === rev) return { v: 1, rev, tag: state.tag };
+  if (state.prev?.rev === rev) return { v: 1, rev, tag: state.prev.tag };
+  return null;
+}
+
+// rev: the article revision of the file the caller holds, when it has one. exact: only
+// that revision's record, never the newest one in its place.
+async function readPageState(baseDir, name, { rev, exact = false } = {}) {
+  const stored = await readStored(baseDir, name);
+  return exact ? recordFor(stored, rev) : pick(stored, rev);
+}
+
+async function diskRev(baseDir, name) {
+  try {
+    return rooms().pageRev(await fs.readFile(path.join(baseDir, name), 'utf8')) || null;
+  } catch {
+    return null;
+  }
+}
+
 async function writePageState(baseDir, name, state) {
   const file = pageStatePath(baseDir, name);
   await fs.mkdir(path.dirname(file), { recursive: true });
-  await atomicWriteFile(file, JSON.stringify({ v: 1, rev: state.rev, tag: state.tag }));
+  const existing = await readStored(baseDir, name).catch(() => null);
+  // The record kept beside the new one is the one for the file on disk: the newest record
+  // may be for a write that never landed, and the file still needs its own.
+  const onDisk = await diskRev(baseDir, name);
+  const kept = onDisk && onDisk !== state.rev ? recordFor(existing, onDisk) : null;
+  const prev = kept ? { rev: kept.rev, tag: kept.tag }
+    : existing && existing.rev !== state.rev ? { rev: existing.rev, tag: existing.tag } : existing?.prev;
+  await atomicWriteFile(file, JSON.stringify({ v: 1, rev: state.rev, tag: state.tag, ...(prev && { prev }) }));
 }
 
 async function dropPageState(baseDir, name) {
@@ -128,7 +170,7 @@ async function dropPageStateDir(baseDir, name) {
 async function logicalDocument(baseDir, name, stored) {
   if (typeof stored !== 'string') return stored;
   if (!baseDir || !name) return stored;
-  return rooms().composePage(stored, await readPageState(baseDir, name));
+  return rooms().composePage(stored, await readPageState(baseDir, name, { rev: rooms().pageRev(stored) }));
 }
 
 // The same composition for a caller holding the file's BYTES: a document with no
@@ -136,9 +178,10 @@ async function logicalDocument(baseDir, name, stored) {
 // every file that is not valid UTF-8.
 async function logicalBytes(baseDir, name, stored) {
   if (!baseDir || !name) return stored;
-  const state = await readPageState(baseDir, name);
+  const state = await readStored(baseDir, name);
   if (!state) return stored;
-  return Buffer.from(rooms().composePage(stored.toString('utf8'), state), 'utf8');
+  const html = stored.toString('utf8');
+  return Buffer.from(rooms().composePage(html, pick(state, rooms().pageRev(html))), 'utf8');
 }
 
 // Writes the sidecar (before the caller writes the file) and returns the file to store.

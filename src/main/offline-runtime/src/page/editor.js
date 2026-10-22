@@ -14,15 +14,21 @@ import { chromePlugin } from "./chrome.js";
 import { announcementPlugin } from "./announce.js";
 import { linkPlugin } from "./link.js";
 import { blockSelectionPlugin } from "./blocksel.js";
-import { markdownPlugin, backspaceToParagraph } from "./markdown.js";
+import { markdownPlugin, markdownKeys, backspaceToParagraph } from "./markdown.js";
+import { placeholderPlugin } from "./placeholder.js";
 import { mediaPlugin, ImageView, FileView } from "./media.js";
 import { highlightPlugin, CodeBlockView } from "./highlight.js";
 import { tableKeys, tablePlugin, TableView, TableCellView } from "./table.js";
+import { tableSelectPlugin } from "./table-select.js";
 import { chartPlugin, ChartView } from "./chart.js";
+import { BoardView } from "./board-view.js";
+import { boardPlugin, cardPanel } from "./board-panel.js";
 import { ToolView } from "./tool-view.js";
 import { createToolHost } from "./tools.js";
 import { checklistPlugin, checklistKeys } from "./checklist.js";
 import { csvImportPlugin } from "./csv-import.js";
+import { TABLE_CSS } from "./table-style.js";
+import { BOARD_CSS } from "./board-style.js";
 import { styleWithLegacyId } from "../lib/style.js";
 
 const STYLE_ID = "page-editor-style";
@@ -113,6 +119,8 @@ ${INDENTS.map((n) => `:where(article[data-page], .page-editor) .page-li[data-ind
 .page-dock, .page-plus { color: var(--page-chrome-ink-rest); background: var(--page-chrome-bg-rest); border: 1px solid var(--page-chrome-line-rest); box-shadow: var(--page-chrome-shadow-rest); border-radius: var(--page-chrome-radius); transition: color var(--page-fade), background-color var(--page-fade), border-color var(--page-fade), box-shadow var(--page-fade); }
 .page-shell.is-moved .page-dock, .page-shell.is-moved .page-plus { color: var(--page-chrome-ink-moved); background: var(--page-chrome-bg-moved); border-color: var(--page-chrome-line-moved); box-shadow: var(--page-chrome-shadow-moved); }
 .page-dock { position: sticky; top: 12px; z-index: 3; display: flex; align-items: center; gap: 2px; width: max-content; margin: 12px auto 0; padding: 3px; }
+/* One formatting bar at a time: the selection bar covers what the fixed bar offers. Hidden, not removed, so the page does not shift under the selection. */
+.page-shell:has(.page-bubble:not([hidden])) .page-dock { visibility: hidden; }
 .page-dock, .page-shell.is-moved .page-dock { background: var(--page-pop-bg); }
 .page-dock + .page-editor { padding-top: max(16px, calc(var(--page-pad-top) - 48px)); }
 .page-tool { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; height: 28px; padding: 0 6px; border: 0; border-radius: 5px; background: none; color: inherit; font: 500 13px/1 var(--page-font); cursor: pointer; }
@@ -131,6 +139,8 @@ ${INDENTS.map((n) => `:where(article[data-page], .page-editor) .page-li[data-ind
 .page-menu-item[aria-selected="true"], .page-menu-item.is-active, .page-menu-item:hover { background: var(--page-pop-hover); }
 .page-menu-icon { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--page-pop-line); border-radius: 6px; color: var(--page-pop-muted); font-size: 12px; flex: none; }
 .page-menu-hint { margin-inline-start: auto; color: var(--page-pop-muted); font-size: 12px; }
+.page-menu-text { display: flex; flex-direction: column; min-width: 0; }
+.page-menu-desc { color: var(--page-pop-muted); font-size: 12px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .page-menu-empty { padding: 8px 10px; color: var(--page-pop-muted); font-size: 13px; }
 .page-shell.is-dragging, .page-shell.is-dragging .page-grip { cursor: grabbing; }
 .page-shell[data-drop="none"] { cursor: no-drop; }
@@ -166,6 +176,7 @@ ${INDENTS.map((n) => `:where(article[data-page], .page-editor) .page-li[data-ind
 .page-image.is-selected .page-image-frame img { outline: 2px solid var(--page-selection); outline-offset: 2px; }
 .page-image-caption { margin-top: 6px; color: var(--page-ink-soft); font-size: 0.88em; text-align: center; outline: none; }
 .page-image-caption[data-empty]::before { content: attr(data-placeholder); color: var(--page-ink-faint); }
+.ProseMirror-focused .page-placeholder::before { content: attr(data-placeholder); float: left; height: 0; color: var(--page-ink-faint); pointer-events: none; }
 .page-image:not(.is-selected) .page-image-caption[data-empty]:not(:focus) { display: none; }
 .page-file-link { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--page-rule); border-radius: 8px; color: var(--page-ink); text-decoration: none; }
 .page-file-icon { color: var(--page-link, var(--page-accent)); }
@@ -211,9 +222,11 @@ ${INDENTS.map((n) => `:where(article[data-page], .page-editor) .page-li[data-ind
 .page-li:hover .page-check-controls, .page-li:focus-within .page-check-controls { opacity: 1; }
 .page-check-popup { display: inline-flex; gap: 4px; padding: 4px; background: var(--page-pop-bg); color: var(--page-pop-ink); border: 1px solid var(--page-pop-line); border-radius: var(--page-pop-radius); box-shadow: var(--page-pop-shadow); }
 .page-check-popup input { font: inherit; color: inherit; background: var(--page-pop-bg); border: 1px solid var(--page-pop-line); }
+.page-check-popup.page-check-owner { display: inline-block; width: min(280px, 80vw); padding: 8px 0; vertical-align: top; }
 .page-scrim { display: none; }
 .page-shell [hidden] { display: none !important; }
-
+${TABLE_CSS}
+${BOARD_CSS}
 @media (max-width: 560px) {
   .page-dock { display: none; }
   .page-plus { position: fixed; top: auto; left: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); width: 44px; height: 44px; border-radius: 22px; }
@@ -269,8 +282,11 @@ export function pagePlugins({ upload = defaultUpload, highlight, history: useHis
       },
     }),
     linkPlugin(),
+    tableSelectPlugin(),
     blockSelectionPlugin(),
     markdownPlugin(),
+    markdownKeys(),
+    placeholderPlugin(),
     keymap.keymap(markKeys),
     tableKeys,
     checklistKeys,
@@ -281,6 +297,7 @@ export function pagePlugins({ upload = defaultUpload, highlight, history: useHis
     identityPlugin(),
     tablePlugin(),
     chartPlugin(),
+    boardPlugin(),
     checklistPlugin(),
     csvImportPlugin({ upload }),
     collapsePlugin(),
@@ -318,7 +335,7 @@ function checkboxClick(view, event) {
 // Mounts the editor in `mount`, inside a .page-shell wrapper (the surface a
 // theme styles). `onChange(record)` gets the block record (blockMap) after
 // every transaction that changed the document.
-export function createPageEditor(mount, { blocks = null, onChange = null, upload, highlight, doc: initialDoc, dispatch, history: useHistory = true, undo, redo, editable = true, toolHost: providedToolHost = null, onAiTool = null, reviseTool = null } = {}) {
+export function createPageEditor(mount, { blocks = null, onChange = null, upload, highlight, doc: initialDoc, dispatch, history: useHistory = true, undo, redo, editable = true, toolHost: providedToolHost = null, onAiTool = null, reviseTool = null, board = null } = {}) {
   const doc = mount.ownerDocument;
   const toolHost = providedToolHost ?? createToolHost({ mode: "edit" });
   styleWithLegacyId(STYLE_ID, PAGE_EDITOR_CSS, STYLE_ID);
@@ -340,6 +357,7 @@ export function createPageEditor(mount, { blocks = null, onChange = null, upload
       chart: (node, v, getPos) => new ChartView(node, v, getPos),
       tool: (node, v, getPos) => new ToolView(node, v, getPos, { host: toolHost, revise: reviseTool }),
       table_cell: (node, v, getPos) => new TableCellView(node, v, getPos),
+      ...(board ? { board: (node, v, getPos) => new BoardView(node, v, getPos, { commands: board, undo, redo, panel: cardPanel(v) }) } : {}),
     },
     handleDOMEvents: {
       mousedown: checkboxClick,

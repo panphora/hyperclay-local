@@ -136,7 +136,9 @@ const PLUGIN_ORDER = ["visitor-drafts", "richclay", "indicator", "sortable", "un
 // that asks for it has to have the wire. The wire loads first in the order above.
 // It does not bring undo: hyper-undo takes Cmd+Z for the whole window, text fields
 // included, which a page that never asked for it should not get by default.
-const IMPLIES = { cms: ["quickcrop", "upload"], "ai-edit": ["wire"], page: ["live"] };
+// A page's peers reach it through live sync's stream (live/stream-bridge.js), so
+// a Document without sync saves whole files and never sees another tab type.
+const IMPLIES = { cms: ["quickcrop", "upload"], "ai-edit": ["wire"], page: ["live", "sync"] };
 
 function parseCsv(params, key, enabled, apply) {
   const raw = params.get(key);

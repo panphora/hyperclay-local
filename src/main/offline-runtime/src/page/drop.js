@@ -1,4 +1,4 @@
-import { outline, structureFixes, moveSpanTr, BlockSelection, MAX_INDENT } from "./blocks.js";
+import { outline, structureFixes, moveSpanTr, BlockSelection, MAX_INDENT, MOVE } from "./blocks.js";
 import { schema } from "./schema.js";
 
 const N = schema.nodes;
@@ -56,11 +56,16 @@ export function moveSpanTo(st, ents, lo, hi, target, sel = null) {
   } else {
     tr = moveSpanTr(st, ents, lo, hi, target.at, attrs, pick);
   }
-  if (target.open) openToggle(tr, target.open);
+  if (target.open) {
+    openToggle(tr, target.open);
+    const move = tr.getMeta(MOVE);
+    if (move) tr.setMeta(MOVE, { ...move, attrs: { ...move.attrs, [target.open]: { open: true } } });
+  }
   return tr;
 }
 
 function legal(st, ents, lo, hi, target) {
+  if (target.parent != null && ents.slice(lo, hi + 1).some((e) => e.node.attrs.id === target.parent)) return false;
   const size = ents[hi].end - ents[lo].at;
   const attrs = spanAttrs(ents, lo, hi, target);
   for (let k = lo; k <= hi; k++) if (isList(ents[k].node) && (attrs(ents[k])?.indent ?? ents[k].node.attrs.indent) > MAX_INDENT) return false;

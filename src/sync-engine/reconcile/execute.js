@@ -46,7 +46,7 @@ const nodeMap = require('../node-map');
 const store = require('./conflicts');
 const { A } = require('./decide');
 const { isUnderLockedFolder, lockedFolderError } = require('../locked-folder');
-const { sendPageState, readPageRecord, applyPageRecord, storedPageFile } = require('../page-state');
+const { sendPageState, readPageRecord, applyPageRecord, storedPageFile, confirmDownload } = require('../page-state');
 
 const SITE_PATTERN = /\.(html|htmlclay)$/i;
 
@@ -163,15 +163,17 @@ async function writeLocal(engine, rel, content, { modifiedAt = null, gen, expect
     engine.live.markBrowserSave(rel);
     await ensureDirectory(path.dirname(localPath));
 
+    let confirmed = content;
     if (isSite) {
       await applyPageRecord(engine, rel, pageRecord);
-      await writeFile(localPath, await storedPageFile(engine, rel, content), modifiedAt);
+      confirmed = await storedPageFile(engine, rel, content);
+      await writeFile(localPath, confirmed, modifiedAt);
     } else {
       await writeFileBuffer(localPath, content, modifiedAt);
     }
 
     if (token) {
-      await engine.localAuthority.confirmKnownWrite(target, content, token, {
+      await confirmDownload(engine, target, token, rel, confirmed, {
         sender: 'sync-engine',
       });
     }

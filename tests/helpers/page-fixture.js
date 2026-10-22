@@ -1,12 +1,13 @@
 const { execFileSync } = require('child_process');
 
-function pageFixture(text = 'abc') {
+function pageFixture(text = 'abc', blocks = null) {
+  const items = JSON.stringify(blocks ?? [{ id: 'p', t: 'paragraph', text }]);
   const script = `
     import * as Y from '@panphora/clayjs/src/vendor/yjs.vendor.js';
     import { seedValue } from '@panphora/clayjs/src/page/ybind/seed.js';
     import { docFromValue, enc } from '@panphora/clayjs/src/page/ybind/provider.js';
     import { readYValue, projection } from '@panphora/clayjs/page/yjs';
-    const value = seedValue([{ id: 'p', t: 'paragraph', text: process.argv[1] }]);
+    const value = seedValue(${items});
     const page = await readYValue(value);
     const rendered = projection.renderBlocks(page.blocks);
     const html = '<!doctype html><html><head><script type="application/json" merge="page" clay="live">' +
@@ -20,7 +21,7 @@ function pageFixture(text = 'abc') {
     doc.destroy();
     console.log(JSON.stringify({ html, revision: page.revision, update }));
   `;
-  return JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script, text], {
+  return JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script], {
     cwd: process.cwd(), encoding: 'utf8',
   }));
 }

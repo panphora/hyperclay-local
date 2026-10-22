@@ -87,6 +87,12 @@ export function inferKinds(header, rows) {
   });
 }
 
+export const COLUMN_KINDS = Object.freeze(["text", "number", "date"]);
+
+export function effectiveKind(stored, values) {
+  return COLUMN_KINDS.includes(stored) ? stored : inferKinds([""], values.map((value) => [value]))[0];
+}
+
 export function tableFromCsv({ header, rows: inputRows }, { maxBytes = Infinity, newId } = {}) {
   if (typeof newId !== "function") throw new TypeError("tableFromCsv needs newId");
   const kinds = inferKinds(header, inputRows);

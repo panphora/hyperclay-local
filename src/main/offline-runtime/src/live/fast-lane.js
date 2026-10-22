@@ -24,6 +24,7 @@ export const FRAME_BYTES = 63 * 1024;
 // What a host still on the old 16 KB body cap takes: a multi-op frame it
 // answers 413 is packed again at this size for the rest of the session.
 export const OLD_FRAME_BYTES = 15 * 1024;
+const PAGE_STORE = /^page(\.[0-9]+)?$/;
 const BUFFER_MAX = 512;
 const RETRY_MAX_MS = 8000;
 const REVOKED = new Set([401, 403]);
@@ -78,6 +79,7 @@ export function createFastLane({
   let synced = false;
   let epoch = null;
   let receiptGeneration = null;
+  let pageGeneration = null;
   let provenanceVersion = 0;
   let seq = 0;
   let writer = null;
@@ -113,6 +115,7 @@ export function createFastLane({
   // back (each { n, ops, through, seq, sent, refused, uncertain }), and the
   // newest op id ever put in a frame.
   const lanes = new Map();
+  const abandoned = new Set();
 
   const tell = (name, event) => entries.get(name)?.store.deliver?.({ code: null, n: null, seq: null, through: null, retryAfter: null, client: clientId, ...event });
 
@@ -123,6 +126,13 @@ export function createFastLane({
   }
 
   // The store's ops still to frame: pending, past what was framed.
+  // The first frame that reaches an adoption's last op carries its marker.
+  function markAdopted(lane, frame) {
+    if (!lane.adopted || frame.through < lane.adopted.through) return;
+    frame.adopted = lane.adopted.rev;
+    lane.adopted = null;
+  }
+
   function unframed(name, lane) {
     const store = entries.get(name)?.store;
     if (!store) return [];
@@ -181,27 +191,19 @@ export function createFastLane({
     }
     for (const [name, lane] of lanes) {
       if (!lane.unsent.length || !roomNames.has(name) || held(name)) continue;
-      // Packed by bytes as well as count: the host refuses a body over 64 KB.
+      // Packed by bytes as well as count, so a host still on a 64 KB body cap
+      // takes every frame; one op larger than a frame goes in a frame of its own.
       let size = byteSize({ name, n: lane.n + 1, ops: [], epoch });
       let count = 0;
       while (count < lane.unsent.length && count < MAX_OPS) {
         const more = byteSize(lane.unsent[count].op) + 1;
-        if (size + more > frameBytes) break;
+        if (count && size + more > frameBytes) break;
         size += more;
         count++;
       }
-      // One op larger than a frame: only that op is undone, and the ops queued
-      // after it go on (nextFrame starts over).
-      if (count === 0) {
-        const [entry] = lane.unsent.splice(0, 1);
-        console.warn(`clay.live("${name}"): one update was larger than ${frameBytes} bytes, so it was undone`);
-        const store = entries.get(name)?.store;
-        tell(name, { phase: "undone", code: "op-too-large", from: entry.id, through: entry.id });
-        store?.rebase(store.authoritative, { source: "state", drop: [entry.id, entry.id], cause: "undone" });
-        return nextFrame();
-      }
       const take = lane.unsent.splice(0, count);
-      const frame = { n: ++lane.n, ops: take.map((entry) => entry.op), entries: take, first: take[0].id, through: take[take.length - 1].id, seq: null, sent: false, receiptGeneration };
+      const frame = { n: ++lane.n, ops: take.map((entry) => entry.op), entries: take, first: take[0].id, through: take[take.length - 1].id, seq: null, sent: false, receiptGeneration, pageGeneration };
+      markAdopted(lane, frame);
       lane.framed = Math.max(lane.framed, frame.through);
       lane.awaiting.push(frame);
       return { name, lane, frame };
@@ -229,7 +231,7 @@ export function createFastLane({
     lastSentAt = now();
     let result;
     try {
-      result = await transport.send(clientId, { name, n: frame.n, ops: frame.ops, epoch: sentEpoch, ...(conn !== undefined && { conn }), ...(frame.receiptGeneration !== null && { receiptGeneration: frame.receiptGeneration }) });
+      result = await transport.send(clientId, { name, n: frame.n, ops: frame.ops, epoch: sentEpoch, ...(conn !== undefined && { conn }), ...(frame.receiptGeneration !== null && { receiptGeneration: frame.receiptGeneration }), ...(frame.pageGeneration !== null && PAGE_STORE.test(name) && { pageGeneration: frame.pageGeneration }), ...(frame.adopted && { adopted: frame.adopted }) });
     } catch {
       result = null;
     }
@@ -253,6 +255,7 @@ export function createFastLane({
       frame.sent = false;
       frame.seq = null;
       if (frame.epoch !== epoch) frame.receiptGeneration = receiptGeneration;
+      if (frame.epoch !== epoch) frame.pageGeneration = pageGeneration;
       return;
     }
     // Its store left the room meanwhile: its ops stay pending for the save,
@@ -368,12 +371,14 @@ export function createFastLane({
       frameBytes = OLD_FRAME_BYTES;
       console.warn(`clay.live("${name}"): the host takes smaller updates, so they go in frames of ${frameBytes} bytes`);
       lane.unsent.unshift(...frame.entries);
+      if (frame.adopted) lane.adopted = { rev: frame.adopted, through: frame.through };
       // Unframed again: a new room's state frames them afresh (unframed()).
       lane.framed = frame.first - 1;
       return;
     }
     const store = entries.get(name)?.store;
-    tell(name, { phase: "refused", code: body?.code ?? "refused", n: frame.n, from: frame.first, through: frame.through, ...(body?.code === "receipt-expired" && { ops: frame.ops }) });
+    const code = body?.code ?? (status === 413 && frame.entries?.length === 1 ? "too-large" : "refused");
+    tell(name, { phase: "refused", code, n: frame.n, from: frame.first, through: frame.through, ...(body?.code === "receipt-expired" && { ops: frame.ops }) });
     console.warn(`clay.live("${name}"): the host refused an update, so it was undone (${reason})`);
     store?.rebase(store.authoritative, { source: "state", drop: frame.first === undefined ? undefined : [frame.first, frame.through], through: frame.first === undefined ? frame.through : undefined, cause: "refused" });
     if (body?.code === "receipt-expired") resync();
@@ -382,7 +387,7 @@ export function createFastLane({
   function apply(frame) {
     seq = frame.seq;
     const store = entries.get(frame.name)?.store;
-    if (!store) return;
+    if (!store || abandoned.has(frame.name)) return;
     if (!roomNames.has(frame.name)) {
       missed = true;
       return;
@@ -483,6 +488,9 @@ export function createFastLane({
     const fresh = state.epoch !== epoch;
     provenanceVersion = Number.isInteger(state.provenanceVersion) ? state.provenanceVersion : 0;
     receiptGeneration = Number.isSafeInteger(state.receiptGeneration) ? state.receiptGeneration : null;
+    const priorGeneration = pageGeneration;
+    pageGeneration = typeof state.pageTransition?.id === "string" ? state.pageTransition.id : null;
+    const replaced = pageGeneration !== priorGeneration;
     let joined = false;
     // Every store is read whole here.
     missed = false;
@@ -492,18 +500,27 @@ export function createFastLane({
     if ("conn" in state) conn = state.conn;
     const stores = state.stores || {};
     roomNames = new Set(Object.keys(stores));
+    for (const name of abandoned) roomNames.delete(name);
     let skipped = false;
     let readDue = false;
     for (const [name, entry] of entries) {
+      if (abandoned.has(name)) continue;
       const room = stores[name];
       const lane = laneOf(name);
       prune(name, lane);
+      const held = lane.room;
       lane.room = !!room;
       if (!room) {
         // Not in the room (too large, too many stores, or opened after it):
         // there are no frames of it to miss. Already out: its value still
-        // descends from where it left.
-        if (!lane.out) leaveRoom(name, lane, false);
+        // descends from where it left. A store the room held and has now
+        // dropped was replaced by a document without it, which a 404 to this
+        // tab's next frame would also say. A replacement always installs a new page
+        // transition; a store dropped for size leaves it, and leaves quietly.
+        if (!lane.out) {
+          if (held && replaced) tell(name, { phase: "left", code: "no-store" });
+          leaveRoom(name, lane, false);
+        }
         // A read the barrier waited for says no room holds this store: the file is its authority.
         if (lane.after !== undefined && read >= lane.after) {
           lane.after = undefined;
@@ -549,6 +566,7 @@ export function createFastLane({
           frame.sent = false;
           frame.seq = null;
           frame.receiptGeneration = receiptGeneration;
+          frame.pageGeneration = pageGeneration;
         }
         lane.awaiting = resend;
         entry.store.rebase(room.value, { source: "state", dropIds, room: { seq, fresh: true, moves: state.moves?.[name] ?? null, floor: Number.isInteger(room.floor) ? room.floor : null } });
@@ -754,6 +772,28 @@ export function createFastLane({
       ops.forEach((op, i) => lane.unsent.push({ id: first + i, op }));
       schedule();
     },
+    // The store's ops through `through` merged the file article with revision
+    // rev into the page: the frame that carries them tells the room, so its
+    // checkpoint knows the room holds that edit. A frame already sent leaves it
+    // to the next one.
+    // The store's history is not the room's (its page was rebuilt while this tab was
+    // away): nothing of it is sent again, and the room's frames for it are ignored.
+    abandon(name) {
+      if (abandoned.has(name)) return;
+      abandoned.add(name);
+      roomNames.delete(name);
+      const lane = laneOf(name);
+      lane.awaiting = lane.awaiting.filter((frame) => frame === flying);
+      lane.unsent = [];
+      lane.adopted = null;
+    },
+    adopted(name, rev, through) {
+      if (stopped || !roomNames.has(name)) return;
+      const lane = laneOf(name);
+      const waiting = lane.awaiting.find((frame) => !frame.sent && frame.through >= through);
+      if (waiting) waiting.adopted = rev;
+      else lane.adopted = { rev, through };
+    },
     // The save that held this store ended: frame whatever is still pending past
     // what was framed (an accepted save's ops have left pending). A state it
     // kept from the store, or a value the caller kept (read), is replaced by a
@@ -795,7 +835,8 @@ export function createFastLane({
           const take = pending.splice(0, count);
           const frame = { n: ++lane.n, ops: take.map((e) => e.op), entries: take,
             first: take[0].id, through: take[take.length - 1].id, seq: null,
-            sent: false, refused: true, epoch, client: clientId, receiptGeneration };
+            sent: false, refused: true, epoch, client: clientId, receiptGeneration, pageGeneration };
+          markAdopted(lane, frame);
           lane.awaiting.push(frame);
           lane.framed = frame.through;
         }

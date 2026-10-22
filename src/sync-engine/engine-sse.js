@@ -36,7 +36,7 @@ const { withStructureChange } = require('../main/utils/write-queue');
 const { withLocalDocumentWrite, withLocalDirectoryChange, withLocalStructureDelete, claimLocalDocumentTarget, structureEntryFor } = require('./local-boundary');
 const {
   readPageRecord, applyPageRecord, storedPageFile, moveDocumentPageState, moveFolderPageState,
-  dropDocumentPageState, dropFolderPageState
+  dropDocumentPageState, dropFolderPageState, confirmDownload
 } = require('./page-state');
 
 /**
@@ -158,10 +158,11 @@ module.exports = {
       // liveSync channel key = full path with extension (Rule 1 / Rule 2).
       this.live.markBrowserSave(localFilename);
 
-      await writeFile(localPath, await storedPageFile(this, localFilename, data.content), new Date(data.modifiedAt));
+      const stored = await storedPageFile(this, localFilename, data.content);
+      await writeFile(localPath, stored, new Date(data.modifiedAt));
 
       if (token) {
-        await this.localAuthority.confirmKnownWrite(target, data.content, token, {
+        await confirmDownload(this, target, token, localFilename, stored, {
           sender: 'sync-engine',
         });
       }

@@ -25,7 +25,8 @@ const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 const { documentEtag } = require('../../src/main/spec-wire.js');
 const formatHtml = require('../../src/main/format-html');
 const { scopeTailwindLink } = require('../../src/main/utils/tailwind-scoping.js');
-const { readPageState, pageStatePath } = require('../../src/main/page-state-store');
+const { readPageState, writePageState, pageStatePath } = require('../../src/main/page-state-store');
+const { rebaseStaleSave, newestVersionFiles } = require('../../src/main/page-rebase.js');
 const { servedDocumentEtag, withoutInjectedDocumentEtag } = require('../helpers/served-metadata');
 
 const FIXTURE = fsSync.readFileSync(path.join(__dirname, '../fixtures/ypage-template.html'), 'utf8');
@@ -177,6 +178,59 @@ describe('a page document is stored clean and read composed', () => {
     expect(served.body.toString('utf8')).toContain('merge="page"');
   });
 
+  // A save from the code view is based on the version it was sent, which the page
+  // has since moved past. The article it carries is the older one, so the save is
+  // merged onto the stored file instead of replacing it, and both edits survive.
+  test('a save of an older page article is rebased onto the stored page', async () => {
+    expect((await save(FIXTURE)).status).toBe(200);
+    const newer = FIXTURE
+      .replace('data-rev="093360993130d818"', 'data-rev="newer-rev"')
+      .replace('<h1 data-id="title"></h1>', '<h1 data-id="title">newer</h1>');
+    expect((await save(newer)).status).toBe(200);
+    expect((await readPageState(dir, NAME)).rev).toBe('newer-rev');
+
+    const stale = SPLIT.file.replace('<p data-id="p1"></p>', '<p data-id="p1">from the old version</p>');
+    expect(stale).not.toContain('merge="page"');
+    const res = await save(stale);
+
+    expect(res.status).toBe(200);
+    const disk = await onDisk();
+    expect(disk).toContain('>newer<');
+    expect(disk).toContain('from the old version');
+    expect(disk).toContain('data-rev="newer-rev"');
+    expect(disk).not.toContain('merge="page"');
+    expect((await readPageState(dir, NAME)).rev).toBe('newer-rev');
+    await expect(fs.access(pageStatePath(dir, NAME))).resolves.toBeUndefined();
+  });
+
+  // A tab cannot merge the clean file, so a save whose article was edited outside
+  // the editor is published as the composed document, the way an external disk
+  // change is.
+  test('a save that edits the page article outside the editor publishes the composed document', async () => {
+    await save(FIXTURE);
+    const publish = jest.spyOn(observer, 'publishExternal');
+
+    const edited = (await onDisk()).replace('<p data-id="p1"></p>', '<p data-id="p1">typed in the code view</p>');
+    const res = await save(edited);
+
+    expect(res.status).toBe(200);
+    expect(publish).toHaveBeenCalledTimes(1);
+    const [rel, bytes, msg, opts] = publish.mock.calls[0];
+    expect(rel).toBe(NAME);
+    expect(bytes.toString('utf8')).toContain('merge="page"');
+    expect(bytes.toString('utf8')).toContain('typed in the code view');
+    expect(msg).toBe('page.html was changed outside the editor');
+    expect(opts).toEqual({ saved: false, continues: true });
+  });
+
+  test('a save that carries the page tag it was given publishes nothing external', async () => {
+    const publish = jest.spyOn(observer, 'publishExternal');
+
+    expect((await save(FIXTURE)).status).toBe(200);
+
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   test('no version file carries the merge state', async () => {
     await save(FIXTURE);
 
@@ -301,5 +355,87 @@ describe('a page document is stored clean and read composed', () => {
     const served = await getRaw('plain.html');
     expect(withoutInjectedDocumentEtag(served.body).toString('utf8')).toBe(PLAIN);
     expect(servedDocumentEtag(served.body)).toBe(documentEtag(PLAIN));
+  });
+
+  // A rebase is a merge input. A version nobody can parse, or a history that cannot
+  // be listed, leaves the save writing exactly what it was asked to write.
+  test('a corrupt version file does not stop a stale save', async () => {
+    expect((await save(FIXTURE)).status).toBe(200);
+    const newer = FIXTURE
+      .replace('data-rev="093360993130d818"', 'data-rev="newer-rev"')
+      .replace('<h1 data-id="title"></h1>', '<h1 data-id="title">newer</h1>');
+    expect((await save(newer)).status).toBe(200);
+    await fs.writeFile(path.join(dir, '.hyperclay', 'versions', 'page', '2026-01-01-00-00-00-000+0000.html'), 'not a document');
+
+    const stale = SPLIT.file.replace('<p data-id="p1"></p>', '<p data-id="p1">from the old version</p>');
+    const res = await save(stale);
+
+    expect(res.status).toBe(200);
+    const disk = await onDisk();
+    expect(disk).toContain('>newer<');
+    expect(disk).toContain('from the old version');
+    expect(disk).toContain('data-rev="newer-rev"');
+  });
+});
+
+describe('a rebase reads its history from inside the folder only', () => {
+  let dir;
+  let outside;
+
+  // The stored page on disk, the record, and one older version that carries the rev
+  // of the copy somebody wrote over the page.
+  const version = (rev, { text = '', title = '' } = {}) => SPLIT.file
+    .replace('data-rev="093360993130d818"', `data-rev="${rev}"`)
+    .replace('<p data-id="p1"></p>', `<p data-id="p1">${text}</p>`)
+    .replace('<h1 data-id="title"></h1>', `<h1 data-id="title">${title}</h1>`);
+  // The copy written over the page edited the paragraph; the stored page edited the
+  // title, so a merge that read the base keeps both.
+  const incoming = () => version('old-rev', { text: 'from the old version' });
+
+  const write = async (dirPath) => {
+    await fs.writeFile(path.join(dirPath, NAME), version('stored-rev', { title: 'stored' }));
+    await writePageState(dirPath, NAME, { rev: 'stored-rev', tag: SPLIT.state.tag });
+    await fs.mkdir(path.join(dirPath, '.hyperclay', 'versions'), { recursive: true });
+  };
+
+  beforeEach(async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'page-rebase-symlink-')));
+    outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'page-rebase-outside-')));
+    await write(dir);
+    await fs.writeFile(path.join(outside, '2026-01-01-00-00-00-000+0000.html'), version('old-rev', { text: 'base' }));
+  });
+
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
+    jest.restoreAllMocks();
+  });
+
+  test('a symlinked history is never read', async () => {
+    await fs.symlink(outside, path.join(dir, '.hyperclay', 'versions', 'page'));
+
+    expect(await rebaseStaleSave(dir, NAME, incoming(), newestVersionFiles)).toBeNull();
+  });
+
+  test('the same version in a real directory is the merge base', async () => {
+    await fs.mkdir(path.join(dir, '.hyperclay', 'versions', 'page'));
+    await fs.copyFile(
+      path.join(outside, '2026-01-01-00-00-00-000+0000.html'),
+      path.join(dir, '.hyperclay', 'versions', 'page', '2026-01-01-00-00-00-000+0000.html')
+    );
+
+    const rebased = await rebaseStaleSave(dir, NAME, incoming(), newestVersionFiles);
+
+    expect(rebased.html).toContain('<h1 data-id="title">stored</h1>');
+    expect(rebased.html).toContain('from the old version');
+    expect(rebased.html).toContain('data-rev="stored-rev"');
+  });
+
+  test('a history that cannot be listed writes as before', async () => {
+    const lister = () => { throw new Error('unreadable history'); };
+
+    expect(await rebaseStaleSave(dir, NAME, incoming(), lister)).toBeNull();
+    expect(console.error).toHaveBeenCalledWith('[page-rebase] rebase failed, writing as before', 'unreadable history');
   });
 });

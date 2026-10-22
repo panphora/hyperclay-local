@@ -1,11 +1,13 @@
 // Markdown shortcuts typed at the start of a block: "# " to "### ", "- ", "1. ",
-// "[] ", "> ", three backticks and "---". Each retypes the block in place, keeping
+// "[] ", "> ", three backticks and "---", and a "| a | b |" row ended by Enter. Each retypes the block in place, keeping
 // its id, pos and parent, so the change reads as a retype and not a delete and an
 // insert. Backspace right after a shortcut puts the typed text back.
-import { inputrules, state } from "../vendor/prosemirror.vendor.js";
+import { inputrules, keymap } from "../vendor/prosemirror.vendor.js";
 import { schema } from "./schema.js";
 import { retype, replaceWithDivider } from "./items.js";
 import { asStep } from "./blocksel.js";
+import { insertTableNode } from "./table.js";
+import { tableFromGrid } from "./table-paste.js";
 
 const { InputRule } = inputrules;
 const N = schema.nodes;
@@ -40,6 +42,24 @@ export const MARKDOWN_RULES = [
 ];
 
 export const markdownPlugin = () => inputrules.inputRules({ rules: MARKDOWN_RULES });
+
+// "| Name | Owner |" then Enter at the end of a paragraph: the paragraph becomes
+// a table with those column names and one empty row, the caret in its first cell.
+const TABLE_ROW = /^\s*\|(.*)\|\s*$/;
+
+export function tableFromMarkdownRow(st, dispatch) {
+  const { $from, empty } = st.selection;
+  if (!empty || $from.depth !== 1 || $from.parent.type !== N.paragraph || $from.parentOffset !== $from.parent.content.size) return false;
+  if (inlineCode(st, $from.start(), $from.end())) return false;
+  const match = TABLE_ROW.exec($from.parent.textContent);
+  if (!match) return false;
+  const names = match[1].split("|").map((name) => name.trim());
+  if (!names.some(Boolean)) return false;
+  const table = tableFromGrid([names, names.map(() => "")], { header: true });
+  return insertTableNode(st, dispatch, table, { from: $from.start(), to: $from.end() });
+}
+
+export const markdownKeys = () => keymap.keymap({ Enter: tableFromMarkdownRow });
 
 export function backspaceToParagraph(st, dispatch) {
   const { $from, empty } = st.selection;

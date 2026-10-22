@@ -6,7 +6,7 @@ export const NET = "page-net";
 export const SEED = "page-seed";
 export const REMOTE_META = REMOTE;
 export const HISTORY_META = Symbol("page-history");
-export const PAGE_ROOTS = Object.freeze(["flow", "attrs", "gone", "boardFields"]);
+export const PAGE_ROOTS = Object.freeze(["flow", "attrs", "gone", "boardFields", "tableFields", "origins"]);
 
 const SKIP = new Set(["id", "pos"]);
 export const attrKeys = (type) => [...Object.keys(type.spec.attrs || {}).filter((k) => !SKIP.has(k)), ...(type.name === "table" ? ["rows"] : [])];
@@ -23,5 +23,5 @@ let idCounter = 0;
 export const mintId = (pd) => `b${pd.ydoc.clientID.toString(36)}${(idCounter++).toString(36)}`;
 
 export function createPageDoc(ydoc = new Y.Doc()) {
-  return { ydoc, flow: ydoc.getText("flow"), attrs: ydoc.getMap("attrs"), gone: ydoc.getMap("gone"), boardFields: ydoc.getMap("boardFields") };
+  return { ydoc, flow: ydoc.getText("flow"), attrs: ydoc.getMap("attrs"), gone: ydoc.getMap("gone"), boardFields: ydoc.getMap("boardFields"), tableFields: ydoc.getMap("tableFields"), origins: ydoc.getMap("origins") };
 }

@@ -3,12 +3,15 @@ const { compatibleContinuation, renderRecovered } = require('../../src/main/exte
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createRooms } = require('@panphora/clayjs/server/rooms');
+const { createRooms, splitPage } = require('@panphora/clayjs/server/rooms');
 const { createLocalAuthority } = require('../../src/main/local-authority');
 const { RootObserver } = require('../../src/main/root-observer');
 const { withDocumentWrite } = require('../../src/main/utils/write-queue');
-const { publishRecoveredCopy } = require('../../src/main/utils/backup');
+const { createBackup, publishRecoveredCopy } = require('../../src/main/utils/backup');
+const { execFileSync } = require('child_process');
 const { createApp } = require('../../src/main/server');
+const { createLocalCheckpoint } = require('../../src/main/local-checkpoint');
+const { storePageState } = require('../../src/main/page-state-store');
 const { pageFixture } = require('../helpers/page-fixture');
 const request = require('supertest');
 
@@ -169,7 +172,10 @@ describe('external replacement of a dirty room', () => {
     expect(rooms.get(file)).toBe(opened);
     expect(rooms.get(file).stores.get('count').value).toEqual({ n: 7 });
     expect(notifications[0][1].data.reason).toBeUndefined();
-    expect(fs.existsSync(path.join(dir, '.hyperclay', 'recovered'))).toBe(false);
+    const copies = fs.readdirSync(path.join(dir, '.hyperclay', 'recovered', 'page'));
+    expect(copies).toHaveLength(1);
+    const recovered = fs.readFileSync(path.join(dir, '.hyperclay', 'recovered', 'page', copies[0]), 'utf8');
+    expect(liveTags(recovered)[0].text).toBe('{"n":7}');
   });
 
   test('a disk write stamped with the accepted room value continues the same generation', async () => {
@@ -347,5 +353,148 @@ describe('external replacement of a dirty room', () => {
     expect(backed.body.extensions).toEqual(expect.arrayContaining(['live-data', 'live-provenance']));
     expect(legacy.body.extensions).not.toContain('live-data');
     expect(legacy.body.extensions).not.toContain('live-provenance');
+  });
+});
+
+// A page written to disk from an older version — a checkout, an editor saving an
+// older buffer — still belongs to the room its rev came from. Rebased onto the
+// stored page it continues that room, so the tabs merge it and their unsaved
+// edits stay where they are.
+describe('a stale page copy written over a dirty room', () => {
+  const blocks = (first) => [
+    { id: 'a', t: 'paragraph', text: first },
+    { id: 'b', t: 'paragraph', text: 'two' },
+    { id: 'c', t: 'paragraph', text: 'three' },
+  ];
+  const older = pageFixture('', blocks('one'));
+  const stored = pageFixture('', blocks('one!'));
+  const article = (html) => /<article[^>]*>([\s\S]*)<\/article>/.exec(html)[1].trim();
+
+  let dir;
+  let file;
+  let rooms;
+  let authority;
+  let checkpoint;
+  let room;
+  let notices;
+  let observed;
+
+  beforeEach(async () => {
+    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'local-stale-page-')));
+    file = path.join(dir, 'article.html');
+    // Two versions of the page, block a changed between them.
+    fs.writeFileSync(file, await storePageState(dir, 'article.html', older.html));
+    await createBackup(dir, 'article', splitPage(older.html).file);
+    fs.writeFileSync(file, await storePageState(dir, 'article.html', stored.html));
+    await createBackup(dir, 'article', splitPage(stored.html).file);
+
+    rooms = createRooms({});
+    authority = createLocalAuthority({ rooms, withDocument: withDocumentWrite });
+    checkpoint = createLocalCheckpoint({ authority, withDocument: withDocumentWrite, logError: () => {} });
+    authority.setCheckpointService(checkpoint);
+    checkpoint.registerWriter('root-a', async (write) => {
+      fs.writeFileSync(write.filePath, await storePageState(dir, 'article.html', write.content));
+      await authority.confirmKnownWrite(write.target, write.content, write.token);
+      return write.content;
+    });
+    authority.registerRoot({ id: 'root-a', path: dir, canonicalPath: dir }, { owner: 'server' });
+    const target = authority.bindTarget({ rootId: 'root-a', logicalPath: 'article.html', canonicalPath: file });
+    room = await authority.roomFor(target, async () => ({
+      rootId: 'root-a', logicalPath: 'article.html', canonicalPath: file, identity: target.identity,
+    }));
+    const edited = rooms.apply(room, 'client', {
+      name: 'page', n: 1, epoch: room.epoch, pageGeneration: room.pageTransition?.id ?? null,
+      ops: [{ op: 'set', path: ['y', 'edit-1'], value: stored.update }],
+    }, { connected: ['client'] });
+    expect(edited.error).toBeUndefined();
+    expect(authority.roomIsDirty(room)).toBe(true);
+
+    notices = [];
+    observed = [];
+    const observe = authority.observeExternal.bind(authority);
+    authority.observeExternal = async (...args) => {
+      const result = await observe(...args);
+      observed.push(result);
+      return result;
+    };
+  });
+
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const observeDisk = async () => {
+    const observer = new RootObserver({ id: 'root-a', path: dir }, {
+      localAuthority: authority,
+      live: { notify: (...args) => notices.push(args), broadcast: jest.fn() },
+    });
+    observer._runDataGuard = jest.fn();
+    await observer._raw('change', 'article.html');
+  };
+
+  const recoveredCopies = () => {
+    const copies = path.join(dir, '.hyperclay', 'recovered', 'article');
+    if (!fs.existsSync(copies)) return [];
+    return fs.readdirSync(copies).map((name) => fs.readFileSync(path.join(copies, name), 'utf8'));
+  };
+
+  test('the room is kept and the merged page is published', async () => {
+    fs.writeFileSync(file, splitPage(older.html).file.replace('<p data-id="b">two</p>', '<p data-id="b">two!</p>'));
+
+    await observeDisk();
+
+    expect(observed).toEqual([{ kind: 'continuation' }]);
+    expect(rooms.get(file)).toBe(room);
+    const recovered = recoveredCopies();
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toContain('<p data-id="a">oe!</p>');
+    expect(recovered[0]).not.toContain('>one!<');
+    const html = notices[0][1].data.html;
+    expect(html).toContain('merge="page"');
+    expect(html).toContain('<p data-id="a">one!</p>');
+    expect(html).toContain('<p data-id="b">two!</p>');
+  });
+
+  // The disk keeps the merged page, not the older copy that landed on it: every
+  // later reader, and the tab's next If-Match, describe the merged document.
+  test('the merged page is written back and its next event is our own', async () => {
+    fs.writeFileSync(file, splitPage(older.html).file.replace('<p data-id="b">two</p>', '<p data-id="b">two!</p>'));
+
+    await observeDisk();
+
+    const disk = fs.readFileSync(file, 'utf8');
+    expect(disk).toContain('<p data-id="a">one!</p>');
+    expect(disk).toContain('<p data-id="b">two!</p>');
+    expect(disk).toContain(`data-rev="${splitPage(stored.html).state.rev}"`);
+    expect(disk).not.toContain('merge="page"');
+
+    await observeDisk();
+
+    expect(notices).toHaveLength(1);
+    expect(observed).toEqual([{ kind: 'continuation' }]);
+  });
+
+  test('an untouched older copy changes nothing', async () => {
+    fs.writeFileSync(file, splitPage(older.html).file);
+
+    await observeDisk();
+
+    expect(observed).toEqual([{ kind: 'continuation' }]);
+    expect(rooms.get(file)).toBe(room);
+    const recovered = recoveredCopies();
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toContain('<p data-id="a">oe!</p>');
+    const html = notices[0][1].data.html;
+    expect(article(html)).toBe(article(splitPage(stored.html).file));
+    expect(html).toContain(`data-rev="${splitPage(stored.html).state.rev}"`);
+  });
+
+  // The checkpoint loads the shared checkpoint package, which jest cannot import,
+  // so the write-back runs in a child process like the other checkpoint proofs.
+  test('the next checkpoint writes the merged page back to disk', () => {
+    const output = execFileSync(process.execPath, [path.join(__dirname, '../helpers/stale-page-checkpoint-probe.cjs')], {
+      cwd: process.cwd(), encoding: 'utf8', timeout: 60000,
+    });
+
+    expect(output).toContain('untouched older copy checkpoint ok');
+    expect(output).toContain('stale page checkpoint proof passed');
   });
 });

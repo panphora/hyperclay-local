@@ -2,7 +2,7 @@ const express = require('express');
 const fs = require('fs').promises;
 const path = require('upath');
 const { Eta } = require('eta');
-const { createBackup } = require('./utils/backup.js');
+const { createBackup, publishRecoveredCopy } = require('./utils/backup.js');
 const {
   PathError,
   RESERVED_ROOT_SEGMENTS,
@@ -43,7 +43,8 @@ const { MAX_EXTERNAL_HTML } = require('./root-observer');
 const { buildEnvelope } = require('../sync-engine/control-lane-core.cjs');
 const { createLocalLiveData } = require('./local-live-data.js');
 const { hasPageStore, loadPageModules, authoritativePageHtml } = require('./utils/page-api');
-const { logicalDocument, logicalBytes, storePageState } = require('./page-state-store.js');
+const { logicalDocument, logicalBytes, storePageState, readPageState } = require('./page-state-store.js');
+const { rebaseStaleSave, needsAdoption, newestVersionFiles } = require('./page-rebase.js');
 const roomsPackage = () => require('@panphora/clayjs/server/rooms');
 const cheerio = require('cheerio');
 
@@ -1151,7 +1152,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
   // tests), and it has no events to hook.
   if (ctx.observer && typeof ctx.observer.on === 'function' && !replayResetHooked.has(ctx.observer)) {
     replayResetHooked.add(ctx.observer);
-    ctx.observer.on('change', (e) => e.kind === 'external' && replayStore.reset(ctx.live.key(e.rel)));
+    ctx.observer.on('change', (e) => e.kind === 'external' && !e.continues && replayStore.reset(ctx.live.key(e.rel)));
     ctx.observer.on('remove', (e) => replayStore.reset(ctx.live.key(e.rel)));
   }
 
@@ -1948,6 +1949,10 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // file — saves the document without it. It is still the same document, so
       // the state its sidecar holds is put back here too. A page conversion is the
       // one save where the absence is the point, so that one is never put back.
+      if (!pageConversion) {
+        const rebased = await rebaseStaleSave(baseDir, name, content, newestVersionFiles);
+        if (rebased) content = rebased.html;
+      }
       const write = await splitWrite(baseDir, name, content, { keepState: !pageConversion });
       const fileContent = write.file;
       content = write.logical;
@@ -2015,6 +2020,13 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
             });
           }
           if (persistentToken) rooms.checkPersistent(persistentToken, { html: content });
+          // An outside edit the room keeps (same revision or merged onto an older
+          // one) waits for a tab to adopt it, and until then the room's unsaved
+          // edits live only in memory: they get a recovered copy, rendered over
+          // the document this write replaces.
+          if (room && origin !== 'checkpoint' && !pageToken && content.includes('data-page') && needsAdoption(content)) {
+            await authority.recoverUnsavedEdits(target, token);
+          }
         }
 
         // Check if this is the first save (no versions exist yet)
@@ -2123,7 +2135,16 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         // With an authority the saved lane is already published, once per alias, by
         // the confirmation above; this route is still its own publisher for a
         // no-authority caller, which is every legacy createApp(dir).
-        if (origin === 'api') {
+        const adopt = origin !== 'checkpoint' && content.includes('data-page') && needsAdoption(content);
+        if (adopt) {
+          ctx.observer?.publishExternal(
+            name,
+            Buffer.from(content, 'utf8'),
+            `${path.basename(name)} was changed outside the editor`,
+            { saved: false, continues: true }
+          );
+        }
+        if (origin === 'api' && !adopt) {
           live.notify(name, {
             msgType: 'warning',
             msg: `${path.basename(name)} was updated through the data API`,
@@ -2517,7 +2538,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     // the derived artifacts, for the same reason the save route is: the document is
     // already written, backed up and broadcast by that point.
     // Returns the composed document, which is what the stamp describes.
-    const publishHostWrite = async ({ name, filePath, html, target = null, token = null, beforeWrite = null }) => {
+    const publishHostWrite = async ({ name, filePath, html, target = null, token = null, beforeWrite = null, edit = false }) => {
       // Response-scoped root metadata (a save token, this host's own documentetag)
       // comes back from clients and from a stored version, and none of it belongs in
       // the bytes this writes: stripped here, once, so the data-loss writeBack and the
@@ -2538,10 +2559,12 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       }
       let pageToken = null;
       try {
-        if (authorityWrite) {
+        if (authorityWrite && !edit) {
           // Explicit replacement admission, before the first backup, and held across
           // the backup and the atomic write: no frame can change the room while the
-          // disk result is pending.
+          // disk result is pending. An edit of the page (a restore stamped with the
+          // record's rev) continues the room instead of replacing it, so it reserves
+          // nothing and the open tabs merge the result.
           pageToken = authority.rooms.reservePageReplacement(filePath, {
             nodeId: target.identity,
             html: content,
@@ -3100,7 +3123,11 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         }
         // Stripped rather than trusted: a restore must never write a save token to
         // disk, wherever the version's bytes came from.
-        const html = stripSaveToken(data.toString('utf8'));
+        let html = stripSaveToken(data.toString('utf8'));
+        const state = await readPageState(baseDir, rel);
+        const stamped = state && !roomsPackage().splitPage(html).state ? roomsPackage().stampPageRev(html, state.rev) : null;
+        const edit = Boolean(stamped);
+        if (stamped) html = stamped;
         if (!hasHtmlRoot(html)) {
           console.error(`Refusing to restore ${versionName} of ${rel}: not a complete HTML document`);
           refusal = { status: 422, message: 'version is not a complete HTML document' };
@@ -3109,15 +3136,18 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
 
         const authorityWrite = Boolean(ctx.localAuthority && target && token);
         const published = await publishHostWrite({
-          name: rel, filePath: canonicalPath, html, target, token,
+          name: rel, filePath: canonicalPath, html, target, token, edit,
           beforeWrite: async () => {
             if (current === null) return true;
             const backupName = rel.replace(/\.(html|htmlclay)$/i, '');
             let safetyHtml;
             try {
-              safetyHtml = ctx.localCheckpoint
-                ? await ctx.localCheckpoint.safetyBackup(canonicalPath, current.toString('utf8'))
-                : current.toString('utf8');
+              // An edit of the page keeps the room: its unsaved edits stay in it and
+              // merge the restored article, so the backup is the plain document and
+              // the room's own edits are rendered into a recovered copy below.
+              safetyHtml = edit || !ctx.localCheckpoint
+                ? current.toString('utf8')
+                : await ctx.localCheckpoint.safetyBackup(canonicalPath, current.toString('utf8'));
             } catch (error) {
               console.error(`Refusing to restore ${rel}: live room cannot be backed up`, error);
               refusal = { status: 500, message: 'live room cannot be backed up' };
@@ -3128,6 +3158,17 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
               console.error(`Refusing to restore ${rel}: safety backup failed`);
               refusal = { status: 500, message: 'could not create a safety backup' };
               return false;
+            }
+            // The room keeps its unsaved edits through an edit-restore, so they are
+            // written to a recovered copy too: they survive even if no tab adopts
+            // the restored article. A rendering failure never stops the restore.
+            if (edit && ctx.localCheckpoint && ctx.localCheckpoint.dirty(ctx.localAuthority?.rooms.get(canonicalPath))) {
+              try {
+                const unsaved = await ctx.localCheckpoint.safetyBackup(canonicalPath, current.toString('utf8'));
+                await publishRecoveredCopy(baseDir, rel, unsaved);
+              } catch (error) {
+                console.error(`Recovered copy of ${rel} failed (non-fatal):`, error && error.message ? error.message : error);
+              }
             }
             return true;
           },

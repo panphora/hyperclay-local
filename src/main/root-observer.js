@@ -18,9 +18,11 @@ const path = require('upath');
 const { SYNC_CONFIG } = require('../sync-engine/constants');
 const { documentEtag } = require('./spec-wire');
 const dataGuard = require('./data-loss-guard');
-const { withDocumentWrite, withStructureChange } = require('./utils/write-queue');
+const { withDocumentWrite, withStructureChange, atomicWriteFile } = require('./utils/write-queue');
 const { getConsentRegistry, resolveWritePath } = require('./utils/path-resolver');
-const { logicalBytes } = require('./page-state-store');
+const { logicalBytes, storePageState } = require('./page-state-store');
+const { createBackup } = require('./utils/backup');
+const { rebaseStaleSave, newestVersionFiles } = require('./page-rebase');
 
 const EMPTY_QUIET_MS = 3000;
 const MAX_EXTERNAL_HTML = 12 * 1024 * 1024;
@@ -95,8 +97,10 @@ class RootObserver extends EventEmitter {
   // F1's restore and any other host-side write that must reach edit-mode tabs as an external change.
   // `saved` names whether this publish still owes the saved lane: an authority write
   // already published it once per alias, and a second one here would be a duplicate.
-  publishExternal(rel, bytes, msg, { saved = true } = {}) {
-    this._notifyExternal(rel, bytes, msg, { saved });
+  // `continues` marks an edit the open room keeps (an adoption offer), so streams
+  // resuming on that room need no resync.
+  publishExternal(rel, bytes, msg, { saved = true, continues = false } = {}) {
+    this._notifyExternal(rel, bytes, msg, { saved, continues });
   }
 
   async _raw(event, rel, { settled = false, retried = false } = {}) {
@@ -223,12 +227,43 @@ class RootObserver extends EventEmitter {
       return { kind: 'self' };
     }
 
-    const changed = await this.localAuthority.observeExternal(target, logical.toString('utf8'), token);
-    this._notifyExternal(rel, logical, null, {
+    // An older copy of a page (a checkout, an editor saving an older buffer) still
+    // belongs to the room its rev came from: rebased onto the stored page it is a
+    // continuation of that room, so the tabs merge it instead of being replaced.
+    let observed = logical;
+    // Judged on the file as written: the sidecar keeps the older article's state too, and a
+    // copy composed with it would look like a page of its own rather than a stale one. The
+    // disk already holds the copy, so it rebases onto the page the authority last confirmed.
+    const rebased = await rebaseStaleSave(this.root.path, rel, bytes.toString('utf8'), newestVersionFiles,
+      { stored: this.localAuthority.confirmedDocument?.(canonicalPath) ?? null });
+    if (rebased) {
+      observed = await logicalBytes(this.root.path, rel, Buffer.from(rebased.html, 'utf8'));
+      await this._writeRebased(canonicalPath, rel, target, token, observed);
+    }
+
+    const changed = await this.localAuthority.observeExternal(target, observed.toString('utf8'), token);
+    this._notifyExternal(rel, observed, null, {
       reason: changed.kind === 'replacement' ? 'external-replacement' : undefined,
       recovered: changed.recovered,
+      continues: changed.kind === 'continuation',
     });
     return { kind: 'external', bytes };
+  }
+
+  // A rebased disk copy is written back the way a host write lands: a version of
+  // the merged file, then the merged document itself, then the stamp that makes
+  // the next event for those bytes our own. Without it the disk keeps the older
+  // copy while the authority records the merged one, so every later event is
+  // classified external again and every reader sees the stale document.
+  async _writeRebased(canonicalPath, rel, target, token, merged) {
+    const { splitPage } = require('@panphora/clayjs/server/rooms');
+    const html = merged.toString('utf8');
+    // The room's unsaved edits are published first, while the room's own baseline
+    // is still the document it was built on: the merged bytes do not carry them.
+    await this.localAuthority.recoverUnsavedEdits(target, token);
+    await createBackup(this.root.path, rel.replace(/\.(html|htmlclay)$/i, ''), splitPage(html).file);
+    await atomicWriteFile(canonicalPath, await storePageState(this.root.path, rel, html));
+    await this.localAuthority.confirmKnownWrite(target, merged, token, { sender: 'file-watcher', publish: false });
   }
 
   async _observeUnlink(rel) {
@@ -338,7 +373,7 @@ class RootObserver extends EventEmitter {
     }).catch((err) => console.error('[data-guard] observer guard error:', err && err.message ? err.message : err));
   }
 
-  _notifyExternal(rel, bytes, msg, { saved = true, reason, recovered } = {}) {
+  _notifyExternal(rel, bytes, msg, { saved = true, reason, recovered, continues = false } = {}) {
     const html = bytes.toString('utf8');
     const etag = documentEtag(bytes);
     this.live.notify(rel, {
@@ -350,7 +385,7 @@ class RootObserver extends EventEmitter {
         : { kind: 'external-change', sender: 'file-system', ...(reason && { reason }), ...(recovered && { recovered }) },
     });
     if (saved) this.live.broadcast(rel, { html, sender: 'file-watcher' }, { lane: 'saved' });
-    this.emit('change', { rel, kind: 'external', html, etag });
+    this.emit('change', { rel, kind: 'external', html, etag, ...(continues && { continues }) });
   }
 }
 

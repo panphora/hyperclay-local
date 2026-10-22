@@ -1,6 +1,7 @@
 import { state, view as pmView } from "../vendor/prosemirror.vendor.js";
 import { schema } from "./schema.js";
 import { asStep } from "./blocksel.js";
+import { el, cardFace } from "./board-view.js";
 
 const { Plugin } = state;
 const { Decoration, DecorationSet } = pmView;
@@ -27,48 +28,45 @@ function chip(doc, label, aria, attr) {
   return button;
 }
 
+// The same owner field a board card's panel shows: people as chips, "No owner",
+// then a name box for anyone not in the list.
 function ownerPicker(view, id, anchor) {
   const doc = anchor.ownerDocument;
+  const current = itemAt(view, id)?.node.attrs.owner || "";
   const popup = doc.createElement("span");
-  popup.className = "page-check-popup";
+  popup.className = "page-check-popup page-check-owner";
   popup.contentEditable = "false";
-  const input = doc.createElement("input");
-  input.type = "text";
-  input.setAttribute("aria-label", "Owner name");
-  input.value = itemAt(view, id)?.node.attrs.owner || "";
-  const choices = doc.createElement("span");
-  choices.setAttribute("role", "listbox");
+  const box = el(doc, "span", "page-board-owners");
+  const people = el(doc, "span", "page-board-people", { role: "group", "aria-label": "Owner" });
+  const input = el(doc, "input", "page-board-owner-input", { type: "text", "aria-label": "Owner name", placeholder: "Or type a name…" });
+  input.value = current;
   const choose = (name) => setItem(view, id, "owner", name);
-  const draw = (people) => {
-    choices.replaceChildren();
-    for (const person of people || []) {
-      if (input.value && !person.name.toLowerCase().includes(input.value.toLowerCase())) continue;
-      const option = chip(doc, person.name, `Owner: ${person.name}`, "owner-option");
-      option.setAttribute("role", "option");
-      option.addEventListener("click", () => choose(person.name));
-      choices.append(option);
-    }
-    if (input.value.trim()) {
-      const typed = chip(doc, `Use '${input.value.trim()}'`, `Use ${input.value.trim()}`, "owner-typed");
-      typed.addEventListener("click", () => choose(input.value.trim()));
-      choices.append(typed);
-    }
+  const person = (name, label, attr, pressed) => {
+    const button = el(doc, "button", `page-board-person${name ? "" : " is-none"}`, { type: "button", "aria-pressed": String(pressed), "data-check": attr });
+    if (name) button.append(cardFace(doc, name), el(doc, "span", null, {}, name));
+    else button.textContent = label;
+    button.addEventListener("click", () => choose(name));
+    return button;
+  };
+  const draw = (available) => {
+    const typed = input.value.trim().toLowerCase();
+    const shown = (available || []).filter((p) => !typed || typed === current.toLowerCase() || p.name.toLowerCase().includes(typed));
+    people.replaceChildren(...shown.map((p) => person(p.name, p.name, "owner-option", p.name === current)), person(null, "No owner", "clear-owner", !current));
   };
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); choose(input.value.trim()); }
     if (event.key === "Escape") { event.preventDefault(); popup.remove(); anchor.focus(); }
     event.stopPropagation();
   });
-  const clear = chip(doc, "Clear", "Clear owner", "clear-owner");
-  clear.addEventListener("click", () => choose(null));
-  popup.append(input, choices, clear);
+  box.append(people, input);
+  popup.append(box);
   anchor.after(popup);
   input.focus();
   let available = [];
   draw(available);
   input.addEventListener("input", () => draw(available));
   const source = globalThis.clay?.people?.available;
-  if (source) Promise.resolve().then(() => source()).then((people) => { if (popup.isConnected) { available = people || []; draw(available); } }).catch(() => {});
+  if (source) Promise.resolve().then(() => source()).then((list) => { if (popup.isConnected) { available = list || []; draw(available); } }).catch(() => {});
 }
 
 function datePicker(view, id, anchor) {
