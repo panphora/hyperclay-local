@@ -39,6 +39,8 @@ async function run() {
   console.log('edit', edited.error ?? 'ok');
   console.log('dirty', authority.roomIsDirty(room));
 
+  const blocked = process.argv.includes('--versions-blocked');
+  if (blocked) fs.writeFileSync(path.join(dir, '.hyperclay', 'versions'), '');
   const server = await listenLoopback(createApp({
     root, live, localAuthority: authority, localCheckpoint: checkpoint, devHooks: null, isKnownPath: null,
   }));
@@ -51,7 +53,7 @@ async function run() {
       .send(replacement);
     console.log('status', res.status, res.body.code ?? '');
     const versionsDir = path.join(dir, '.hyperclay', 'versions', 'article');
-    const versions = fs.readdirSync(versionsDir).sort()
+    const versions = blocked ? [] : fs.readdirSync(versionsDir).sort()
       .map((name) => fs.readFileSync(path.join(versionsDir, name), 'utf8'));
     console.log('kept unsaved edit',
       versions.some((text) => text.includes('<p data-id="p">ac</p>') && !text.includes('merge="page"')));

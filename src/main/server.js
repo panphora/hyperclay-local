@@ -2004,7 +2004,11 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
                 error.code = 'unsaved-edits';
                 throw error;
               }
-              await createBackup(baseDir, backupName, kept);
+              if (!(await createBackup(baseDir, backupName, kept))) {
+                const error = new Error('Unsaved edits could not be kept. Save them before replacing this page.');
+                error.code = 'unsaved-edits';
+                throw error;
+              }
             }
             pageToken = rooms.reservePageReplacement(filePath, {
               nodeId: target.identity, html: content,

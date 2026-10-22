@@ -278,6 +278,17 @@ describe('a page document is stored clean and read composed', () => {
     expect(output).toContain('disk replaced true');
   });
 
+  test('a save that replaces the page is refused when the unsaved edits cannot be written as a version', () => {
+    const output = execFileSync(process.execPath, [
+      path.join(__dirname, '../helpers/save-page-replacement-probe.cjs'), '--versions-blocked',
+    ], { cwd: process.cwd(), encoding: 'utf8', timeout: 60000 });
+
+    expect(output).toContain('dirty true');
+    expect(output).toMatch(/status 4\d\d unsaved-edits/);
+    expect(output).toContain('room page store true');
+    expect(output).toContain('disk replaced false');
+  });
+
   test('a document that is not a page saves byte for byte', async () => {
     await fs.writeFile(path.join(dir, 'plain.html'), PLAIN);
 
