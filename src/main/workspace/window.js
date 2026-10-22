@@ -61,9 +61,8 @@ function createWorkspaceWindow({ electron = require('electron'), shellServer, ro
       callback(grant);
     });
     session.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
-      const grant = contents === window?.webContents && !details.isMainFrame && isRoot(requestingOrigin) && GRANTED.has(permission);
-      if (!grant) refusePermission(originOf(requestingOrigin), permission);
-      return grant;
+      // Chromium runs checks on its own while a page loads, so only a refused request tells the window.
+      return contents === window?.webContents && !details.isMainFrame && isRoot(requestingOrigin) && GRANTED.has(permission);
     });
     session.setDevicePermissionHandler(() => false);
     for (const permission of ['hid', 'serial', 'usb']) {

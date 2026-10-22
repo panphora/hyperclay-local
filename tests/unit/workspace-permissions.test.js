@@ -18,7 +18,11 @@ test('handlers are installed before load and only grant two root frame permissio
   }
   expect(ask('fullscreen', 'http://localhost:9999/A.html')).toBe(false);
   expect(ask('fullscreen', h.shellServer.origin, true)).toBe(false);
+  win.webContents.send.mockClear();
   expect(h.session.checkPermission(win.webContents, 'media', 'http://localhost:4321', { isMainFrame: false })).toBe(false);
+  expect(h.session.checkPermission(win.webContents, 'geolocation', h.shellServer.origin, { isMainFrame: true })).toBe(false);
+  expect(win.webContents.send).not.toHaveBeenCalledWith('workspace-permission-refused', expect.anything());
+  ask('media', 'http://localhost:4321/A.html');
   expect(win.webContents.send).toHaveBeenCalledWith('workspace-permission-refused', { origin: 'http://localhost:4321', permission: 'media' });
   const event = { preventDefault: jest.fn() };
   const cancel = jest.fn();
