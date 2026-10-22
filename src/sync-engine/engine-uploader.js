@@ -30,6 +30,7 @@ const nodeMap = require('./node-map');
 const dataGuard = require('../main/data-loss-guard');
 const { withLocalDocumentWrite, claimLocalDocumentTarget } = require('./local-boundary');
 const { refreshDerivedArtifacts } = require('../main/utils/derived-artifacts');
+const { storePageState } = require('../main/page-state-store');
 
 module.exports = {
   /**
@@ -83,8 +84,13 @@ module.exports = {
         // liveSync channel key = full path with extension.
         this.live.markBrowserSave(relativePath);
 
-        // Write file with server modification time (ensures directories exist)
-        await writeFile(localPath, content, modifiedAt);
+        // Write file with server modification time (ensures directories exist).
+        // A page copy still carrying its merge state stores the clean file and keeps
+        // that state in the sidecar, the same way every other write of a page does.
+        const stored = isHtmlSite && typeof content === 'string'
+          ? await storePageState(this.syncFolder, relativePath, content)
+          : content;
+        await writeFile(localPath, stored, modifiedAt);
 
         if (token) {
           await this.localAuthority.confirmKnownWrite(target, content, token, {

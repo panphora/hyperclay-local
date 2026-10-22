@@ -6,6 +6,7 @@
 // WITHOUT the `/_/` marker would shadow a user's own `versions/` folder, so the
 // fall-through case is tested as deliberately as the routes themselves.
 
+const fsSync = require('fs');
 const fs = require('fs').promises;
 const http = require('http');
 const path = require('path');
@@ -16,8 +17,14 @@ const { createApp } = require('../../src/main/server.js');
 const { createBackup, publishRecoveredCopy } = require('../../src/main/utils/backup.js');
 const { listenLoopback, closeLoopback } = require('../helpers/loopback');
 const { withoutInjectedDocumentEtag } = require('../helpers/served-metadata');
+const { documentEtag } = require('../../src/main/spec-wire.js');
+const { logicalDocument } = require('../../src/main/page-state-store.js');
 
 const PAGE = (n) => `<!DOCTYPE html><html lang="en"><body><p>${n}</p></body></html>`;
+
+// A page document: one Yjs merge tag beside the article it renders. The file the
+// host stores is the same document with that tag kept in the sidecar.
+const Y_PAGE = fsSync.readFileSync(path.join(__dirname, '../fixtures/ypage-template.html'), 'utf8');
 
 // A version name whose instant is far in the future, so the publisher's
 // "reuse the newest committed instant" rule fires and the next backup lands in
@@ -276,6 +283,29 @@ describe('version history routes', () => {
       if ((await versionBytes('board', entry.name)) === PAGE('two')) safety.push(entry);
     }
     expect(safety).toHaveLength(1);
+  });
+
+  test('a page version restores to a clean file and a conditional restore accepts the composed stamp', async () => {
+    const first = await save(Y_PAGE);
+    expect(first.status).toBe(200);
+    const second = await save(Y_PAGE.replace('<p data-id="p1"></p>', '<p data-id="p1">later</p>'));
+    expect(second.status).toBe(200);
+    const target = (await list()).body.versions[1];
+
+    const stale = await restore('board.html', target.name, { 'If-Match': 'stale' });
+    expect(stale.status).toBe(412);
+    expect(stale.body.etag).toBe(second.body.etag);
+
+    const res = await restore('board.html', target.name, { 'If-Match': second.body.etag });
+    expect(res.status).toBe(200);
+    const disk = await fs.readFile(docPath('board.html'), 'utf8');
+    expect(disk).not.toContain('merge="page"');
+    expect(disk).toContain('data-page="1"');
+    expect(disk).toBe(await versionBytes('board', target.name));
+    // The stamp describes the document a reader composes, so the client can hand it
+    // straight back as If-Match on the next restore.
+    expect(res.body.etag).toBe(documentEtag(await logicalDocument(dir, 'board.html', disk)));
+    expect((await restore('board.html', target.name, { 'If-Match': res.body.etag })).status).toBe(200);
   });
 
   test('a restore reaches edit-mode tabs through the observer', async () => {

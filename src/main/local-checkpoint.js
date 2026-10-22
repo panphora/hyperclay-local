@@ -102,6 +102,7 @@ function createLocalCheckpoint({
           if (error.code === 'ENOENT') return { kind: 'refused', reason: 'invalid-identity' };
           throw error;
         }
+        if (authority.logicalHtml) currentHtml = await authority.logicalHtml(target, currentHtml);
         const observed = await authority.reconcileDisk(target, currentHtml, token);
         if (observed.kind === 'replacement' || authority.rooms.get(key) !== room ||
             (room.pageTransition?.id ?? null) !== generation) {
@@ -175,8 +176,9 @@ function createLocalCheckpoint({
     mayExpire(room) { return permanentRefusals.has(room); },
     dirty,
     async safetyBackup(key, currentHtml) {
+      const { splitPage } = require('@panphora/clayjs/server/rooms');
       const room = authority.rooms.get(key);
-      if (!dirty(room) || !/<article\b[^>]*\bdata-page(?:\s|=|>)/i.test(currentHtml)) return currentHtml;
+      if (!dirty(room) || !/<article\b[^>]*\bdata-page(?:\s|=|>)/i.test(currentHtml)) return splitPage(currentHtml).file;
       const core = await loadCore();
       const capture = core.captureCheckpoint(room, { nodeId: room.nodeId, roomKey: key });
       const { JSDOM } = require('jsdom');
@@ -186,7 +188,7 @@ function createLocalCheckpoint({
         }).window.document),
       });
       if (rendered.kind !== 'ok') throw new Error(`Cannot back up live room: ${rendered.reason}`);
-      return rendered.html;
+      return splitPage(rendered.html).file;
     },
     attempt,
     pending(key) {

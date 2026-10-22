@@ -1010,6 +1010,11 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     return core.roomIsDirty(room);
   }
 
+  function logicalHtml(target, html) {
+    const root = target.rootId == null ? null : roots.get(target.rootId);
+    return root && target.logicalPath ? logicalDocument(root.path, target.logicalPath, html) : html;
+  }
+
   async function reconcileDisk(target, html, token) {
     assertWriteContext(token, target.canonicalPath);
     const record = registry.get(target.canonicalPath);
@@ -1304,6 +1309,7 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     setCheckpointService(service) { checkpointService = service; },
     roomIsDirty,
     checkpointTargets,
+    logicalHtml,
     reconcileDisk,
     bindTarget,
     admitWriteTarget,

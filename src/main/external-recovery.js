@@ -34,11 +34,8 @@ function compatibleContinuation(baseline, html, room) {
   return true;
 }
 
-function renderRecovered(baseline, room) {
+function tagRewrite(baseline, room, stores) {
   const { serializeLive, stampOf } = require('@panphora/clayjs/server/rooms');
-  if (typeof baseline !== 'string' || !room) throw new Error('Missing recovery baseline');
-  const stores = [...room.stores].filter(([, store]) => !store.ephemeral);
-  if (!stores.length) throw new Error('No persistent state to recover');
   const locations = new Map();
   const visit = (node, inert = false) => {
     const hidden = inert || node.tagName === 'template' || node.tagName === 'noscript';
@@ -88,6 +85,22 @@ function renderRecovered(baseline, room) {
     }
   }
   return rendered;
+}
+
+function renderRecovered(baseline, room) {
+  if (typeof baseline !== 'string' || !room) throw new Error('Missing recovery baseline');
+  const stores = [...room.stores].filter(([, store]) => !store.ephemeral);
+  if (!stores.length) throw new Error('No persistent state to recover');
+  const { splitPage } = require('@panphora/clayjs/server/rooms');
+  const { captureCheckpoint, renderCheckpoint } = require('@panphora/clayjs/server/checkpoint');
+  const capture = captureCheckpoint(room, { nodeId: room.nodeId, roomKey: room.key });
+  const { JSDOM } = require('jsdom');
+  const rendered = renderCheckpoint(baseline, capture, {
+    createDocument: () => new JSDOM('<!doctype html><html><body></body></html>', {
+      runScripts: undefined, resources: undefined,
+    }).window.document,
+  });
+  return splitPage(rendered.kind === 'ok' ? rendered.html : tagRewrite(baseline, room, stores)).file;
 }
 
 module.exports = { compatibleContinuation, renderRecovered };

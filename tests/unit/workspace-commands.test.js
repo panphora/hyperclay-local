@@ -16,6 +16,8 @@ const path = require('path');
 const { createLocalAuthority } = require('../../src/main/local-authority');
 const { withDocumentWrite, withStructureChange } = require('../../src/main/utils/write-queue');
 const { fixture } = require('./workspace-fixture');
+const { splitPage } = require('@panphora/clayjs/server/rooms');
+const { storePageState, readPageState, logicalDocument } = require('../../src/main/page-state-store');
 const api = require('../../src/sync-engine/api-client');
 const fsScenario = require('../helpers/fs-scenario');
 const { FakeServer, install } = require('../helpers/sync-fake-server');
@@ -56,6 +58,23 @@ test('folder, rename, move, duplicate, Trash, restore, and empty Trash change on
   expect(await command(request, { command: 'empty-trash' })).toEqual({ status: 200, body: { path: null } });
   expect(await fs.readdir(path.join(h.dir, '.trash'))).toEqual([]);
   expect(await fs.readFile(path.join(other, '.trash/keep.html'), 'utf8')).toBe('keep');
+});
+
+test('renaming a page moves its merge state beside it and it composes at the new path', async () => {
+  h = await fixture();
+  const template = await fs.readFile(path.join(__dirname, '../../src/main/document-templates/page.html'), 'utf8');
+  const { state } = splitPage(template);
+  await fs.writeFile(path.join(h.dir, 'A.html'), await storePageState(h.dir, 'A.html', template));
+  const request = await h.start();
+
+  expect(await command(request, { command: 'rename', path: 'A.html', name: 'B.html' }))
+    .toEqual({ status: 200, body: { path: 'B.html' } });
+
+  expect(await readPageState(h.dir, 'A.html')).toBeNull();
+  expect(await readPageState(h.dir, 'B.html')).toEqual(state);
+  const stored = await fs.readFile(path.join(h.dir, 'B.html'), 'utf8');
+  expect(stored).not.toContain('merge="page"');
+  expect(await logicalDocument(h.dir, 'B.html', stored)).toContain('merge="page"');
 });
 
 test('occupied destinations, cross-root paths, unsafe paths, and unknown templates are refused', async () => {

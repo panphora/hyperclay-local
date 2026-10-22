@@ -53,18 +53,21 @@ async function run() {
     assert.equal(authority.roomIsDirty(room), false);
     const written = await fs.readFile(file, 'utf8');
     assert.match(written, /<p data-id="p">ac<\/p>/);
+    assert.ok(!written.includes('merge="page"'), 'the page state stays out of the file');
     const restart = `
       import { readFileSync } from 'node:fs';
-      import { liveTags } from '@panphora/clayjs/server/rooms';
+      import { liveTags, composePage } from '@panphora/clayjs/server/rooms';
       import { readYValue } from '@panphora/clayjs/page/yjs';
-      const html = readFileSync(process.argv[1], 'utf8');
+      const html = composePage(readFileSync(process.argv[1], 'utf8'),
+        JSON.parse(readFileSync(process.argv[2], 'utf8')));
       const tags = Object.fromEntries(liveTags(html).map(tag => [tag.name, JSON.parse(tag.text)]));
       const page = await readYValue(tags.page);
       console.log(JSON.stringify({ text: page.blocks.p.c, score: tags.game.score,
         article: html.match(/<article[^>]*>([\\s\\S]*?)<\\/article>/)[1] }));
     `;
     const decoded = JSON.parse(execFileSync(process.execPath,
-      ['--input-type=module', '-e', restart, file], { cwd: process.cwd(), encoding: 'utf8' }));
+      ['--input-type=module', '-e', restart, file, path.join(dir, '.hyperclay', 'page-state', 'doc.json')],
+      { cwd: process.cwd(), encoding: 'utf8' }));
     assert.deepEqual(decoded, { text: 'ac', score: 1, article: '<p data-id="p">ac</p>' });
     const versionDir = path.join(dir, '.hyperclay', 'versions', 'doc');
     const versionsBefore = await fs.readdir(versionDir);

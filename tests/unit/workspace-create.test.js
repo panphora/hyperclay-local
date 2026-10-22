@@ -3,6 +3,8 @@ const path = require('path');
 const crypto = require('crypto');
 const { fixture } = require('./workspace-fixture');
 const manifest = require('../../src/main/document-templates/manifest.json');
+const { splitPage } = require('@panphora/clayjs/server/rooms');
+const { readPageState } = require('../../src/main/page-state-store');
 
 let h;
 afterEach(async () => { if (h) await h.close(); h = null; });
@@ -33,11 +35,32 @@ test('each template creates its exact bytes in the selected folder without a bac
     const name = `${item.id}.html`;
     expect(await command(request, { command: 'create', parent: 'Notes', name, template: item.id }))
       .toEqual({ status: 200, body: { path: `Notes/${name}` } });
-    expect(await fs.readFile(path.join(h.dir, 'Notes', name))).toEqual(
-      await fs.readFile(path.join(__dirname, '../../src/main/document-templates', item.file)));
+    const template = await fs.readFile(path.join(__dirname, '../../src/main/document-templates', item.file));
+    // A page template's merge state goes to the sidecar, so the file it creates is
+    // the template without that tag. Every other template is byte for byte.
+    const { file, state } = splitPage(template.toString('utf8'));
+    expect(await fs.readFile(path.join(h.dir, 'Notes', name)))
+      .toEqual(state ? Buffer.from(file, 'utf8') : template);
+    expect(await readPageState(h.dir, `Notes/${name}`)).toEqual(state);
   }
   expect(await fs.readdir(path.join(h.dir, 'Notes'))).toHaveLength(5);
-  expect(await fs.stat(path.join(h.dir, '.hyperclay')).catch(() => null)).toBeNull();
+  expect(await fs.stat(path.join(h.dir, '.hyperclay', 'versions')).catch(() => null)).toBeNull();
+});
+
+test('create of a page body stores a clean file and keeps its merge state in the sidecar', async () => {
+  h = await fixture();
+  const request = await h.start();
+
+  expect(await command(request, { command: 'create', parent: '', name: 'page.html', template: 'page' }))
+    .toEqual({ status: 200, body: { path: 'page.html' } });
+
+  const stored = await fs.readFile(path.join(h.dir, 'page.html'), 'utf8');
+  expect(stored).not.toContain('merge="page"');
+  expect(stored).toContain('data-page="1"');
+  const template = await fs.readFile(path.join(__dirname, '../../src/main/document-templates/page.html'), 'utf8');
+  const { state } = splitPage(template);
+  expect(await readPageState(h.dir, 'page.html')).toEqual(state);
+  expect(state.tag).toContain('merge="page"');
 });
 
 test('create refuses occupied, unknown-template and unsafe names without changing files', async () => {

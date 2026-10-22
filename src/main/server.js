@@ -53,6 +53,13 @@ const eta = new Eta({
   cache: true
 });
 
+// The logical document a write stores and the clean file part that reaches disk.
+async function splitWrite(baseDir, name, html, { keepState = true } = {}) {
+  const { file, state } = splitPage(html);
+  if (state) return { file, logical: composePage(file, state) };
+  return { file, logical: keepState ? await logicalDocument(baseDir, name, file) : file };
+}
+
 // Spec §3: `/_/save` takes the document as text, so a JSON body is refused
 // rather than guessed at. Compares the media type only, ignoring parameters like
 // `; charset=utf-8`, and covers the `+json` structured suffix.
@@ -1941,12 +1948,9 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // file — saves the document without it. It is still the same document, so
       // the state its sidecar holds is put back here too. A page conversion is the
       // one save where the absence is the point, so that one is never put back.
-      const { file: fileContent, state: pageState } = splitPage(content);
-      if (pageState) {
-        content = composePage(fileContent, pageState);
-      } else if (!pageConversion) {
-        content = await logicalDocument(baseDir, name, fileContent);
-      }
+      const write = await splitWrite(baseDir, name, content, { keepState: !pageConversion });
+      const fileContent = write.file;
+      content = write.logical;
 
       const authority = ctx.localAuthority;
       const authorityWrite = Boolean(authority && target && token);
@@ -2468,7 +2472,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     // view-mode tabs, then refresh everything derived from the bytes. Non-fatal on
     // the derived artifacts, for the same reason the save route is: the document is
     // already written, backed up and broadcast by that point.
-    // Returns the bytes stored on disk.
+    // Returns the composed document, which is what the stamp describes.
     const publishHostWrite = async ({ name, filePath, html, target = null, token = null, beforeWrite = null }) => {
       // Response-scoped root metadata (a save token, this host's own documentetag)
       // comes back from clients and from a stored version, and none of it belongs in
@@ -2477,6 +2481,8 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       html = stripSaveToken(html);
       const backupName = name.replace(/\.(html|htmlclay)$/, '');
       const formatted = formatHtml(scopeTailwindLink(name, html));
+      const write = await splitWrite(baseDir, name, formatted);
+      const content = write.logical;
       // An already owned helper: a caller arrives inside runDocumentWrite's boundary,
       // so this claims nothing and locks nothing of its own. With an authority it
       // proves that boundary and writes the path that boundary admitted.
@@ -2494,12 +2500,12 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           // disk result is pending.
           pageToken = authority.rooms.reservePageReplacement(filePath, {
             nodeId: target.identity,
-            html: formatted,
+            html: content,
           });
         }
         if (beforeWrite && await beforeWrite() === false) return null;
-        await createBackup(baseDir, backupName, formatted);
-        await atomicWriteFile(filePath, formatted);
+        await createBackup(baseDir, backupName, write.file);
+        await atomicWriteFile(filePath, await storePageState(baseDir, name, content));
         // A write through this app, not an external editor. Marked so the file
         // watcher doesn't treat it as a fresh change and re-run the guard (which
         // would raise a spurious new event).
@@ -2510,24 +2516,24 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           // alias of this canonical file. That is why the old single-root broadcast
           // below is the no-authority path only.
           if (pageToken) authority.rooms.commitPage(pageToken);
-          await authority.confirmKnownWrite(target, formatted, token, { sender: 'server-save' });
+          await authority.confirmKnownWrite(target, content, token, { sender: 'server-save' });
         } else {
           // Morph view-mode tabs with the persisted on-disk HTML.
-          live.broadcast(name, { html: formatted, sender: 'server-save' }, { lane: 'saved' });
+          live.broadcast(name, { html: content, sender: 'server-save' }, { lane: 'saved' });
         }
       } finally {
         if (pageToken) authority.rooms.releasePage(pageToken);
       }
-      try { await writeApiSidecar(baseDir, name, formatted); } catch {}
-      const tailwindName = getTailwindCssName(formatted);
+      try { await writeApiSidecar(baseDir, name, content); } catch {}
+      const tailwindName = getTailwindCssName(content);
       if (tailwindName) {
         try {
-          const css = await compileTailwind(formatted);
+          const css = await compileTailwind(content);
           const cssPath = await resolveTailwindWrite(tailwindName);
           await atomicWriteFile(cssPath, css);
         } catch {}
       }
-      return formatted;
+      return content;
     };
 
     // GET /_/meta — discovery (spec §5). Both lanes require the `/_/` prefix, the
@@ -3021,7 +3027,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         // restore must never do. A file that is simply absent has nothing to lose.
         let current = null;
         try {
-          current = await fs.readFile(canonicalPath);
+          current = await logicalBytes(baseDir, rel, await fs.readFile(canonicalPath));
         } catch (error) {
           if (error.code !== 'ENOENT') {
             console.error(`Refusing to restore ${rel}: current file cannot be read`);

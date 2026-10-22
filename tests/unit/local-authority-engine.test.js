@@ -1,7 +1,8 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createRooms, serializeLive, stampOf } = require('@panphora/clayjs/server/rooms');
+const { createRooms, serializeLive, stampOf, splitPage } = require('@panphora/clayjs/server/rooms');
+const { readPageState } = require('../../src/main/page-state-store');
 const { createLocalAuthority } = require('../../src/main/local-authority');
 const { validateSegments } = require('../../src/main/utils/path-resolver');
 const { withDocumentWrite, withStructureChange } = require('../../src/main/utils/write-queue');
@@ -1083,6 +1084,25 @@ describe('D2c1: the engine claims a document before it queues', () => {
     expect(authority.findBoundTarget({ rootId: 'root-a', logicalPath: 'fresh.html', origin: null }))
       .toEqual(expect.objectContaining({ canonicalPath: filePath, identity: stamp.identity }));
     member.close();
+  });
+
+  test('a downloaded page body with a tag stores the clean file and its merge state beside it', async () => {
+    const filePath = path.join(dir, 'page.html');
+    const page = fs.readFileSync(path.join(__dirname, '../fixtures/ypage-template.html'), 'utf8');
+    const { authority } = createAuthority();
+    const engine = createEngine({ syncFolder: dir, rootId: 'root-a', live: broadcastsTo().live, authority });
+    apiClient.getNodeContent.mockResolvedValueOnce({
+      content: page,
+      modifiedAt: '2026-04-08T12:00:00Z',
+      checksum: 'cs-page',
+    });
+
+    await engine.downloadFile(7, 'page.html');
+
+    const stored = fs.readFileSync(filePath, 'utf8');
+    expect(stored).not.toContain('merge="page"');
+    expect(stored).toContain('data-page="1"');
+    expect(await readPageState(dir, 'page.html')).toEqual(splitPage(page).state);
   });
 
   test('a write the disk refuses before confirmation leaves no identity, binding or room', async () => {

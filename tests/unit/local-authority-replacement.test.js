@@ -9,15 +9,16 @@ const { RootObserver } = require('../../src/main/root-observer');
 const { withDocumentWrite } = require('../../src/main/utils/write-queue');
 const { publishRecoveredCopy } = require('../../src/main/utils/backup');
 const { createApp } = require('../../src/main/server');
+const { pageFixture } = require('../helpers/page-fixture');
 const request = require('supertest');
 
 const baseline = '<!doctype html><html><body><article>confirmed</article><script type="application/json" merge="count" clay="live">{"n":0}</script></body></html>';
 const room = (value) => ({
-  epoch: 'epoch1',
-  stores: new Map([['count', { name: 'count', value: { n: value }, last: 3, landed: 0, ephemeral: false }]]),
+  epoch: 'epoch1', seq: 3, key: 'page.html', nodeId: 'node-1',
+  stores: new Map([['count', { name: 'count', value: { n: value }, last: 3, landed: 0, ephemeral: false, log: [] }]]),
 });
 
-test('recovery renders accepted persistent state without changing the confirmed article', () => {
+test('recovery of a document the checkpoint cannot render rewrites its persistent tags', () => {
   const recovered = renderRecovered(baseline, room(7));
   const [tag] = liveTags(recovered);
 
@@ -86,6 +87,38 @@ describe('external replacement of a dirty room', () => {
     const stored = fs.readFileSync(path.join(dir, '.hyperclay', 'recovered', 'page', recovered.slice('recovered-'.length)), 'utf8');
     expect(liveTags(stored)[0].text).toBe('{"n":7}');
     expect(stored).toContain('<article>confirmed</article>');
+  });
+
+  test('a page replaced on disk keeps its unsaved edits in the recovered article, not a tag', async () => {
+    const fixture = pageFixture('abc');
+    const pagePath = path.join(dir, 'article.html');
+    fs.writeFileSync(pagePath, fixture.html);
+    const pageTarget = authority.bindTarget({ rootId: 'root-a', logicalPath: 'article.html', canonicalPath: pagePath });
+    const pageRoom = await authority.roomFor(pageTarget, async () => ({
+      rootId: 'root-a', logicalPath: 'article.html', canonicalPath: pagePath, identity: pageTarget.identity,
+    }));
+    const edited = rooms.apply(pageRoom, 'client', {
+      name: 'page', n: 1, epoch: pageRoom.epoch, pageGeneration: pageRoom.pageTransition?.id ?? null,
+      ops: [{ op: 'set', path: ['y', 'edit-1'], value: fixture.update }],
+    }, { connected: ['client'] });
+    expect(edited.error).toBeUndefined();
+    const notifications = [];
+    const observer = new RootObserver({ id: 'root-a', path: dir }, {
+      localAuthority: authority,
+      live: { notify: (...args) => notifications.push(args), broadcast: jest.fn() },
+    });
+    observer._runDataGuard = jest.fn();
+    fs.writeFileSync(pagePath, baseline.replace('confirmed', 'external'));
+
+    await observer._raw('change', 'article.html');
+
+    expect(notifications[0][1].data.reason).toBe('external-replacement');
+    const recovered = notifications[0][1].data.recovered;
+    expect(recovered).toMatch(/^recovered-.*\.html$/);
+    const stored = fs.readFileSync(path.join(dir, '.hyperclay', 'recovered', 'article', recovered.slice('recovered-'.length)), 'utf8');
+    expect(stored).not.toContain('merge="page"');
+    expect(stored).toContain('<p data-id="p">ac</p>');
+    expect(stored).not.toContain('>abc<');
   });
 
   test('every registered alias history receives one recovered copy and its own notice', async () => {
