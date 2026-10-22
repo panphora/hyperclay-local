@@ -8,7 +8,11 @@
  * way the content sync carries on.
  */
 
-const { readPageState, writePageState, storePageState, movePageState, movePageStateDir } = require('../main/page-state-store');
+const fs = require('fs').promises;
+const path = require('upath');
+const {
+  readPageState, writePageState, storePageState, dropPageState, dropPageStateDir, movePageState, movePageStateDir
+} = require('../main/page-state-store');
 const { getPageState, putPageState } = require('./api-client');
 
 const PAGE_PATTERN = /\.(html|htmlclay)$/i;
@@ -21,6 +25,8 @@ async function sendPageState(engine, nodeId, rel) {
   try {
     const record = await readPageState(engine.syncFolder, rel);
     if (!record) return false;
+    const fileText = await fs.readFile(path.join(engine.syncFolder, rel), 'utf8');
+    if (record.rev !== require('@panphora/clayjs/server/rooms').pageRev(fileText)) return false;
     return await putPageState(engine.conn, nodeId, record);
   } catch (error) {
     console.warn(`[SYNC] Could not send the page state for ${rel}:`, reasonOf(error));
@@ -73,7 +79,28 @@ async function moveFolderPageState(engine, fromRel, toRel) {
   await moveState(engine, fromRel, toRel, movePageStateDir);
 }
 
+// A deleted document's state goes with it: a copy restored from trash rebuilds its
+// page from the article it carries, which is a new lineage.
+async function dropDocumentPageState(engine, rel) {
+  if (!rel || !PAGE_PATTERN.test(rel)) return;
+  try {
+    await dropPageState(engine.syncFolder, rel);
+  } catch (error) {
+    console.warn(`[SYNC] Could not drop the page state for ${rel}:`, reasonOf(error));
+  }
+}
+
+/** A deleted folder takes its documents' merge state with it. */
+async function dropFolderPageState(engine, rel) {
+  if (!rel) return;
+  try {
+    await dropPageStateDir(engine.syncFolder, rel);
+  } catch (error) {
+    console.warn(`[SYNC] Could not drop the page state for ${rel}:`, reasonOf(error));
+  }
+}
+
 module.exports = {
   sendPageState, readPageRecord, applyPageRecord, storedPageFile,
-  moveDocumentPageState, moveFolderPageState
+  moveDocumentPageState, moveFolderPageState, dropDocumentPageState, dropFolderPageState
 };

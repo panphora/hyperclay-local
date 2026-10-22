@@ -15,12 +15,56 @@ async function exists(target) {
   }
 }
 
+const PAGE_EXTENSION = /\.(html|htmlclay)$/i;
+
 function pageStatePath(baseDir, name) {
-  const base = name.replace(/\.(html|htmlclay)$/i, '');
-  const abs = path.resolve(path.join(baseDir, PAGE_STATE_DIR, base + '.json'));
+  const abs = path.resolve(path.join(baseDir, PAGE_STATE_DIR, name + '.json'));
   const root = path.resolve(baseDir, PAGE_STATE_DIR);
   if (!abs.startsWith(root + path.sep)) throw new Error('Page state path escapes base directory');
   return abs;
+}
+
+// The name a sidecar carried before names kept their extension: notes.html shared notes.json.
+function legacyPageStatePath(baseDir, name) {
+  const abs = path.resolve(path.join(baseDir, PAGE_STATE_DIR, name.replace(PAGE_EXTENSION, '') + '.json'));
+  const root = path.resolve(baseDir, PAGE_STATE_DIR);
+  if (!abs.startsWith(root + path.sep)) throw new Error('Page state path escapes base directory');
+  return abs;
+}
+
+function parseState(text) {
+  try {
+    const state = JSON.parse(text);
+    return state && state.v === 1 && typeof state.rev === 'string' && typeof state.tag === 'string' ? state : null;
+  } catch {
+    return null;
+  }
+}
+
+// An old-format sidecar is adopted once, and only when the other extension's document
+// is not also beside it: two documents sharing one record would merge into each other.
+async function adoptLegacyPageState(baseDir, name) {
+  const extension = name.match(PAGE_EXTENSION);
+  if (!extension) return null;
+  const other = name.slice(0, -extension[0].length) + (extension[0].toLowerCase() === '.html' ? '.htmlclay' : '.html');
+  if (await exists(path.join(baseDir, other))) return null;
+  const legacy = legacyPageStatePath(baseDir, name);
+  let text;
+  try {
+    text = await fs.readFile(legacy, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+  const state = parseState(text);
+  if (!state) return null;
+  try {
+    await fs.mkdir(path.dirname(pageStatePath(baseDir, name)), { recursive: true });
+    await fs.rename(legacy, pageStatePath(baseDir, name));
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  return state;
 }
 
 async function readPageState(baseDir, name) {
@@ -28,15 +72,10 @@ async function readPageState(baseDir, name) {
   try {
     text = await fs.readFile(pageStatePath(baseDir, name), 'utf8');
   } catch (err) {
-    if (err.code === 'ENOENT') return null;
-    throw err;
+    if (err.code !== 'ENOENT') throw err;
+    return adoptLegacyPageState(baseDir, name);
   }
-  try {
-    const state = JSON.parse(text);
-    return state && state.v === 1 && typeof state.rev === 'string' && typeof state.tag === 'string' ? state : null;
-  } catch {
-    return null;
-  }
+  return parseState(text);
 }
 
 async function writePageState(baseDir, name, state) {
@@ -81,6 +120,10 @@ async function movePageStateDir(baseDir, fromName, toName) {
   }
 }
 
+async function dropPageStateDir(baseDir, name) {
+  await fs.rm(pageStateDirPath(baseDir, name), { recursive: true, force: true });
+}
+
 // The document editors and comparisons see: the stored file with its merge state put back.
 async function logicalDocument(baseDir, name, stored) {
   if (typeof stored !== 'string') return stored;
@@ -106,6 +149,6 @@ async function storePageState(baseDir, name, html) {
 }
 
 module.exports = {
-  pageStatePath, readPageState, writePageState, dropPageState, movePageState, movePageStateDir,
-  logicalDocument, logicalBytes, storePageState
+  pageStatePath, readPageState, writePageState, dropPageState, dropPageStateDir,
+  movePageState, movePageStateDir, logicalDocument, logicalBytes, storePageState
 };

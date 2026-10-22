@@ -3,7 +3,7 @@ const fs = fsModule.promises;
 const path = require('upath');
 const { getConsentRegistry, resolveReadPath, resolveWritePath, validateSegments } = require('../utils/path-resolver');
 const { withDocumentWrite, withStructureChange, atomicWriteFile } = require('../utils/write-queue');
-const { storePageState, movePageState, movePageStateDir } = require('../page-state-store');
+const { storePageState, movePageState, movePageStateDir, dropPageState, dropPageStateDir } = require('../page-state-store');
 const templateManifest = require('../document-templates/manifest.json');
 
 function refusal(reason, message, status = 400) {
@@ -192,6 +192,9 @@ async function executeCommand({ root, authority, engine, request, tree, moved, c
         if (request.command === 'rename' || request.command === 'move') {
           if (fromStat.isDirectory()) await movePageStateDir(root.path, fromRel, toRel);
           else await movePageState(root.path, fromRel, toRel);
+        } else if (request.command === 'trash') {
+          if (fromStat.isDirectory()) await dropPageStateDir(root.path, fromRel);
+          else await dropPageState(root.path, fromRel);
         }
       }
     } finally {

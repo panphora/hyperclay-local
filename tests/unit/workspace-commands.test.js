@@ -94,6 +94,25 @@ test('renaming a folder takes its documents\u2019 merge state with it', async ()
   expect(stored).not.toContain('merge="page"');
 });
 
+test('Trashing a page drops its merge state, and Trashing a folder drops the whole mirror', async () => {
+  h = await fixture();
+  const template = await fs.readFile(path.join(__dirname, '../../src/main/document-templates/page.html'), 'utf8');
+  await fs.writeFile(path.join(h.dir, 'A.html'), await storePageState(h.dir, 'A.html', template));
+  await fs.mkdir(path.join(h.dir, 'Notes'), { recursive: true });
+  await fs.writeFile(path.join(h.dir, 'Notes/A.html'), await storePageState(h.dir, 'Notes/A.html', template));
+  const request = await h.start();
+
+  expect(await command(request, { command: 'trash', path: 'A.html' }))
+    .toEqual({ status: 200, body: { path: '.trash/A.html' } });
+  expect(await readPageState(h.dir, 'A.html')).toBeNull();
+
+  expect(await command(request, { command: 'trash', path: 'Notes' }))
+    .toEqual({ status: 200, body: { path: '.trash/Notes' } });
+  await expect(fs.access(path.join(h.dir, '.hyperclay', 'page-state', 'Notes')))
+    .rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await readPageState(h.dir, 'Notes/A.html')).toBeNull();
+});
+
 test('occupied destinations, cross-root paths, unsafe paths, and unknown templates are refused', async () => {
   h = await fixture();
   await fs.writeFile(path.join(h.dir, 'A.html'), '<html>A</html>');

@@ -35,7 +35,8 @@ const { getConsentRegistry, resolveWritePath } = require('../main/utils/path-res
 const { withStructureChange } = require('../main/utils/write-queue');
 const { withLocalDocumentWrite, withLocalDirectoryChange, withLocalStructureDelete, claimLocalDocumentTarget, structureEntryFor } = require('./local-boundary');
 const {
-  readPageRecord, applyPageRecord, storedPageFile, moveDocumentPageState, moveFolderPageState
+  readPageRecord, applyPageRecord, storedPageFile, moveDocumentPageState, moveFolderPageState,
+  dropDocumentPageState, dropFolderPageState
 } = require('./page-state');
 
 /**
@@ -451,6 +452,7 @@ module.exports = {
     }
 
     await this.repo.delete(nodeId);
+    await dropDocumentPageState(this, localFilename);
 
     console.log(`[SYNC] SSE node-deleted: Trashed ${localFilename}`);
     this.emit('file-synced', { file: localFilename, action: 'trash', source: 'sse', type: nodeType });
@@ -504,6 +506,7 @@ module.exports = {
       }
       map.delete(String(nodeId));
     });
+    await dropFolderPageState(this, localFolderPath);
 
     console.log(`[SYNC] SSE node-deleted: Trashed folder ${localFolderPath} (${descendants.length} descendant(s))`);
     this.emit('file-synced', { file: localFolderPath, action: 'trash', source: 'sse', type: 'folder' });

@@ -66,7 +66,7 @@ async function run() {
         article: html.match(/<article[^>]*>([\\s\\S]*?)<\\/article>/)[1] }));
     `;
     const decoded = JSON.parse(execFileSync(process.execPath,
-      ['--input-type=module', '-e', restart, file, path.join(dir, '.hyperclay', 'page-state', 'doc.json')],
+      ['--input-type=module', '-e', restart, file, path.join(dir, '.hyperclay', 'page-state', 'doc.html.json')],
       { cwd: process.cwd(), encoding: 'utf8' }));
     assert.deepEqual(decoded, { text: 'ac', score: 1, article: '<p data-id="p">ac</p>' });
     const versionDir = path.join(dir, '.hyperclay', 'versions', 'doc');

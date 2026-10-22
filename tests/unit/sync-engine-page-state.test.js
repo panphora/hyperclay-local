@@ -73,6 +73,7 @@ const writeQueue = require('../../src/main/utils/write-queue');
 const {
   storePageState, readPageState, pageStatePath
 } = require('../../src/main/page-state-store');
+const { sendPageState } = require('../../src/sync-engine/page-state');
 
 const TEMPLATE = fsSync.readFileSync(nodePath.join(__dirname, '../../src/main/document-templates/page.html'), 'utf8');
 const { state: TEMPLATE_STATE } = splitPage(TEMPLATE);
@@ -347,5 +348,60 @@ describe('a remote rename takes the page state with it', () => {
 
     expect(await readPageState(root, 'Notes/A.html')).toBeNull();
     expect(await readPageState(root, 'Archive/A.html')).toEqual(TEMPLATE_STATE);
+  });
+});
+
+describe('a remote delete takes the page state with it', () => {
+  test('a deleted document drops its sidecar', async () => {
+    await writePage('page.html');
+    engine.repo.seed([[7, { type: 'site', path: 'page.html', inode: null }]]);
+
+    await engine.handleNodeDeleted({ nodeId: 7, nodeType: 'site', path: 'page.html' });
+
+    expect(fsSync.existsSync(full('.trash/page.html'))).toBe(true);
+    expect(await readPageState(root, 'page.html')).toBeNull();
+  });
+
+  test('a deleted folder drops its documents\u2019 sidecars', async () => {
+    await writePage('Notes/A.html');
+    engine.repo.seed([
+      [8, { type: 'folder', path: 'Notes', inode: null }],
+      [7, { type: 'site', path: 'Notes/A.html', inode: null }]
+    ]);
+
+    await engine.handleNodeDeleted({ nodeId: 8, nodeType: 'folder', path: 'Notes' });
+
+    expect(fsSync.existsSync(full('.trash/Notes/A.html'))).toBe(true);
+    expect(await readPageState(root, 'Notes/A.html')).toBeNull();
+  });
+});
+
+describe('an upload sends a record only for the file it was written from', () => {
+  test('a sidecar whose rev does not match the file is not sent', async () => {
+    await writePage('page.html');
+    await fsp.writeFile(full('page.html'), onDisk('page.html').replace(/data-rev="[^"]*"/, 'data-rev="moved-on"'));
+
+    await expect(sendPageState(engine, 7, 'page.html')).resolves.toBe(false);
+
+    expect(apiClient.putPageState).not.toHaveBeenCalled();
+  });
+
+  test('a sidecar whose rev matches the file is sent', async () => {
+    await writePage('page.html');
+
+    await expect(sendPageState(engine, 7, 'page.html')).resolves.toBe(true);
+
+    expect(apiClient.putPageState).toHaveBeenCalledWith(expect.anything(), 7, TEMPLATE_STATE);
+  });
+
+  test('a document with no sidecar, and one whose file is gone, send nothing', async () => {
+    await fsp.writeFile(full('plain.html'), '<html><body>plain</body></html>');
+    await writePage('gone.html');
+    await fsp.rm(full('gone.html'));
+
+    await expect(sendPageState(engine, 7, 'plain.html')).resolves.toBe(false);
+    await expect(sendPageState(engine, 7, 'gone.html')).resolves.toBe(false);
+
+    expect(apiClient.putPageState).not.toHaveBeenCalled();
   });
 });
