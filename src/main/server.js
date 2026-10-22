@@ -1418,17 +1418,17 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     });
 
     // clay.live's Local data lane, installed only when a room registry exists and
-    // only on the marked `/_/sync/data` address. Its own 64 KB body cap is
-    // registered here, ahead of the 10 MB live-sync parser below, so a frame that
-    // is too large for this lane can never be parsed under the legacy lane's
-    // limit. The marker stripper above has already rewritten the URL to
-    // `/sync/data`, so the route is registered bare and gated on the marker.
+    // only on the marked `/_/sync/data` address. Its own 5 MB body cap matches the
+    // save lane and is registered here, ahead of the 10 MB live-sync parser below:
+    // the fast lane packs small ops under 64 KB and sends one larger op in a
+    // request of its own. The marker stripper above has already rewritten the URL
+    // to `/sync/data`, so the route is registered bare and gated on the marker.
     if (ctx.localAuthority) {
       const liveData = createLocalLiveData({
         authority: ctx.localAuthority,
         resolveTarget: resolveLiveTarget,
       });
-      const liveDataBody = express.json({ limit: '64kb' });
+      const liveDataBody = express.json({ limit: '5mb' });
       const parseLiveDataBody = (req, res, next) => liveDataBody(req, res, (err) => {
         if (!err) return next();
         if (err.type === 'entity.too.large') {

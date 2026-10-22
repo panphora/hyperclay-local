@@ -532,7 +532,7 @@ describe('the marked data lane', () => {
 
     const oversized = await postFrame(fixture, {
       clientId: 'cA',
-      body: JSON.stringify({ ...frame(conn, 1), pad: 'x'.repeat(70 * 1024) }),
+      body: JSON.stringify({ ...frame(conn, 1), pad: 'x'.repeat(5 * 1024 * 1024 + 1024) }),
     });
     expect(oversized.status).toBe(413);
     expect(oversized.json).toEqual({ msg: 'Live update refused: too-large.', msgType: 'error', code: 'too-large' });
@@ -542,7 +542,7 @@ describe('the marked data lane', () => {
       method: 'POST',
       target: '/sync',
       headers: { Origin: fixture.origin, 'Content-Type': 'application/json', ...SAME_ORIGIN },
-      body: JSON.stringify({ sender: 'cA', snapshot: 'x'.repeat(70 * 1024) }),
+      body: JSON.stringify({ sender: 'cA', snapshot: 'x'.repeat(5 * 1024 * 1024 + 1024) }),
     });
     expect(legacy.status).toBe(400);
     expect(legacy.json.error).toBe('Document-URL header is required');
@@ -573,6 +573,28 @@ describe('the marked data lane', () => {
     const replenished = await postFrame(fixture, { clientId: 'cA', body: frame(conn, 1) });
     expect(replenished.status).toBe(200);
     expect(replenished.json).toEqual({ duplicate: true, seq: 1, epoch: 'e1' });
+    expect(named(a, 'data').length).toBe(1);
+  });
+
+  test('a 200 KB frame lands and reaches the other editor', async () => {
+    const h = harness();
+    const fixture = await fixtureFor(h);
+
+    const a = await open(fixture, 'cA');
+    const b = await open(fixture, 'cB');
+    const conn = (await getState(fixture, { clientId: 'cA' })).json.conn;
+    const blob = 'x'.repeat(200 * 1024);
+
+    const posted = await postFrame(fixture, {
+      clientId: 'cA',
+      body: { name: 'store', n: 1, ops: [{ op: 'set', path: ['blob'], value: blob }], conn },
+    });
+    expect(posted.status).toBe(200);
+    expect(posted.json.seq).toBe(1);
+
+    await waitFor(() => named(b, 'data').length === 1, 'the other editor to see the whole value');
+    const data = named(b, 'data')[0];
+    expect(data.payload.ops).toEqual([{ op: 'set', path: ['blob'], value: blob }]);
     expect(named(a, 'data').length).toBe(1);
   });
 
