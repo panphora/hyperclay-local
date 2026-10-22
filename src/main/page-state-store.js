@@ -2,7 +2,7 @@
 // A record is { v: 1, rev, tag }, the shape splitPage and composePage use.
 const fs = require('fs').promises;
 const path = require('path');
-const { splitPage, composePage } = require('@panphora/clayjs/server/rooms');
+const rooms = () => require('@panphora/clayjs/server/rooms');
 const { PAGE_STATE_DIR } = require('./utils/artifact-paths');
 const { atomicWriteFile } = require('./utils/write-queue');
 
@@ -85,7 +85,7 @@ async function movePageStateDir(baseDir, fromName, toName) {
 async function logicalDocument(baseDir, name, stored) {
   if (typeof stored !== 'string') return stored;
   if (!baseDir || !name) return stored;
-  return composePage(stored, await readPageState(baseDir, name));
+  return rooms().composePage(stored, await readPageState(baseDir, name));
 }
 
 // The same composition for a caller holding the file's BYTES: a document with no
@@ -95,12 +95,12 @@ async function logicalBytes(baseDir, name, stored) {
   if (!baseDir || !name) return stored;
   const state = await readPageState(baseDir, name);
   if (!state) return stored;
-  return Buffer.from(composePage(stored.toString('utf8'), state), 'utf8');
+  return Buffer.from(rooms().composePage(stored.toString('utf8'), state), 'utf8');
 }
 
 // Writes the sidecar (before the caller writes the file) and returns the file to store.
 async function storePageState(baseDir, name, html) {
-  const { file, state } = splitPage(html);
+  const { file, state } = rooms().splitPage(html);
   if (state) await writePageState(baseDir, name, state);
   return file;
 }

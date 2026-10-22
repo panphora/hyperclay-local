@@ -44,7 +44,7 @@ const { buildEnvelope } = require('../sync-engine/control-lane-core.cjs');
 const { createLocalLiveData } = require('./local-live-data.js');
 const { hasPageStore, loadPageModules, authoritativePageHtml } = require('./utils/page-api');
 const { logicalDocument, logicalBytes, storePageState } = require('./page-state-store.js');
-const { splitPage, composePage } = require('@panphora/clayjs/server/rooms');
+const roomsPackage = () => require('@panphora/clayjs/server/rooms');
 const cheerio = require('cheerio');
 
 // Initialize Eta
@@ -55,8 +55,8 @@ const eta = new Eta({
 
 // The logical document a write stores and the clean file part that reaches disk.
 async function splitWrite(baseDir, name, html, { keepState = true } = {}) {
-  const { file, state } = splitPage(html);
-  if (state) return { file, logical: composePage(file, state) };
+  const { file, state } = roomsPackage().splitPage(html);
+  if (state) return { file, logical: roomsPackage().composePage(file, state) };
   return { file, logical: keepState ? await logicalDocument(baseDir, name, file) : file };
 }
 
@@ -2004,7 +2004,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         // If first save, backup the existing site content first
         if (isFirstSave && existingContent !== null) {
           try {
-            await createBackup(baseDir, backupName, splitPage(existingContent).file);
+            await createBackup(baseDir, backupName, roomsPackage().splitPage(existingContent).file);
             console.log(`Created initial backup of existing ${name}`);
           } catch (error) {
             // File doesn't exist yet, that's OK
