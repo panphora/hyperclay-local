@@ -151,10 +151,13 @@ async function handleWorkspaceRoute({ req, res, url, root, route, settings, sync
     if (!response.ok) return relayRefusal(res, response);
     const body = await response.json().catch(() => null);
     const uploaded = body?.uploads?.[0]?.url;
-    if (typeof uploaded !== 'string' || !uploaded.startsWith('/_/uploads/')) {
+    if (typeof uploaded !== 'string' || !uploaded.startsWith('/')) {
       return sendJson(res, 502, { error: 'The upload response was incomplete; refresh before trying again', reason: 'unknown' });
     }
-    return sendJson(res, 200, { path: `uploads/${uploaded.slice('/_/uploads/'.length)}` });
+    const stored = uploaded.startsWith('/_/uploads/')
+      ? `uploads/${uploaded.slice('/_/uploads/'.length)}`
+      : uploaded.slice(1);
+    return sendJson(res, 200, { path: stored });
   }
   if (route === 'download' && req.method === 'GET') {
     const rel = safePath(url.searchParams.get('path'));

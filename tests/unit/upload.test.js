@@ -445,19 +445,32 @@ describe('uploads', () => {
     .set('Upload-Folder', encodeURIComponent(folder))
     .attach('file', buffer, filename);
 
-  test('a folder with no document stores the file in that folder\'s assets', async () => {
+  test('a folder with no document stores the file in that folder', async () => {
     await fs.mkdir(path.join(dir, 'Q3 Plans'));
     const res = await uploadToFolder(Buffer.from('PNGDATA'), 'cover.png', 'Q3 Plans');
     expect(res.status).toBe(200);
     const [file] = res.body.uploads;
-    expect(file.url).toMatch(/^\/_\/uploads\/assets-q3-plans\/cover-[0-9a-f]{6}\.png$/);
-    expect(await fs.readFile(path.join(assets('assets-q3-plans'), file.name), 'utf8')).toBe('PNGDATA');
+    expect(file.url).toMatch(/^\/Q3%20Plans\/cover-[0-9a-f]{6}\.png$/);
+    expect(await fs.readFile(path.join(dir, 'Q3 Plans', file.name), 'utf8')).toBe('PNGDATA');
+    await expect(fs.readdir(path.join(dir, 'uploads'))).rejects.toThrow();
   });
 
-  test('the root folder as the upload context uses the default assets folder', async () => {
+  test('a file uploaded into a folder with no document is served from that folder', async () => {
+    await fs.mkdir(path.join(dir, 'Shots'));
+    const res = await uploadToFolder(Buffer.from('PNGDATA'), 'cover.png', 'Shots');
+    expect(res.status).toBe(200);
+    const served = await request(app).get(res.body.uploads[0].url).set('Host', 'localhost');
+    expect(served.status).toBe(200);
+    expect(served.headers['x-content-type-options']).toBe('nosniff');
+    expect(Buffer.from(served.body).toString()).toBe('PNGDATA');
+  });
+
+  test('the root folder as the upload context stores the file at the root', async () => {
     const res = await uploadToFolder(Buffer.from('X'), 'a.png', '');
     expect(res.status).toBe(200);
-    expect(res.body.uploads[0].url).toMatch(/^\/_\/uploads\/assets-document\/a-[0-9a-f]{6}\.png$/);
+    const [file] = res.body.uploads;
+    expect(file.url).toMatch(/^\/a-[0-9a-f]{6}\.png$/);
+    expect(await fs.readFile(path.join(dir, file.name), 'utf8')).toBe('X');
   });
 
   test('a missing upload folder is a 404 and writes nothing', async () => {

@@ -368,11 +368,12 @@ function splitUploadName(fileName) {
   return { stem: base.slice(0, dot) || 'file', ext: base.slice(dot) };
 }
 
-// Every upload lands in this root's `uploads/assets-<stem>/`, never beside the document, and the
+// Every document upload lands in this root's `uploads/assets-<stem>/`, never beside the document, and the
 // page links it as `/_/uploads/assets-<stem>/<name>`: the same layout and the same link
 // hyperclay.com uses, so a synced folder holds identical bytes on both sides, and renaming or
 // moving the document never strands its files. The stem is slugged to hyperclay.com's folder
 // alphabet so the folder can sync: `My Board.v2.html` -> `assets-my-board-v2`.
+// An upload into a folder with no document (the workspace window) lands in that folder itself.
 const UPLOADS_FOLDER = 'uploads';
 
 function assetsFolderName(docRelPath) {
@@ -410,7 +411,7 @@ async function storeUpload(paths, dirRel, fileName, content, token = null, onCan
   const digest = crypto.createHash('sha256').update(content).digest('hex');
   for (let len = 6; len <= 32; len += 2) {
     const name = `${stem}-${digest.slice(0, len)}${ext}`;
-    const rel = `${dirRel}/${name}`;
+    const rel = dirRel ? `${dirRel}/${name}` : name;
     validateSegments(rel);
     const abs = await resolveWritePath(paths, rel);
     const target = onCandidate ? await onCandidate({ rel, abs }) : null;
@@ -2634,7 +2635,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           return res.status(415).json({ msg: 'That kind of file cannot be uploaded.', msgType: 'error', code: 'unsupported-type' });
         }
 
-        const dirRel = `${UPLOADS_FOLDER}/${assetsFolderName(docName ?? folderRel)}`;
+        const dirRel = docName !== null ? `${UPLOADS_FOLDER}/${assetsFolderName(docName)}` : folderRel;
         const dirPath = authority ? await resolveWritePath(paths, dirRel) : null;
         const dirLocation = authority
           ? { rootId: ctx.root.id, logicalPath: dirRel, canonicalPath: dirPath }
@@ -2721,7 +2722,11 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         // A host path, resolved by GET /_/uploads/ on whatever port this root is
         // served from. Percent-encoded per segment, while the stored name keeps its
         // own characters: a raw space breaks srcset, where a space separates candidates.
-        const url = `/_/uploads/${strictSegment(path.basename(dirRel))}/${strictSegment(stored.name)}`;
+        // A document upload names its file inside `uploads/`; a folder upload names the
+        // file where it sits, which the static route already serves.
+        const url = docName !== null
+          ? `/_/uploads/${strictSegment(path.basename(dirRel))}/${strictSegment(stored.name)}`
+          : `/${folderRel ? `${folderRel.split('/').map(strictSegment).join('/')}/` : ''}${strictSegment(stored.name)}`;
         return res.json({
           msg: 'Uploaded',
           msgType: 'success',
