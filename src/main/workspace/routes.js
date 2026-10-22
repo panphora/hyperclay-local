@@ -2,6 +2,7 @@ const fs = require('fs').promises;
 const path = require('upath');
 const { getConsentRegistry, resolveReadPath } = require('../utils/path-resolver');
 const { documentEtag } = require('../spec-wire');
+const { logicalBytes } = require('../page-state-store');
 const { safePath, refusal } = require('./commands');
 
 const SAVE_MAX_BYTES = 20 * 1024 * 1024;
@@ -83,7 +84,12 @@ async function handleWorkspaceRoute({ req, res, url, root, route, settings, sync
   if (route === 'source' && req.method === 'GET') {
     const rel = documentPath(url.searchParams.get('path'));
     const bytes = await fs.readFile(await fileFor(root, rel));
-    return sendJson(res, 200, { html: bytes.toString('utf8'), etag: documentEtag(bytes) });
+    // The editor is sent the clean file, but the stamp describes the logical
+    // document the save route will compare its If-Match against.
+    return sendJson(res, 200, {
+      html: bytes.toString('utf8'),
+      etag: documentEtag(await logicalBytes(root.path, rel, bytes))
+    });
   }
   if (route === 'source' && req.method === 'PUT') {
     const request = await readJson(req, SAVE_MAX_BYTES + 1024 * 1024);

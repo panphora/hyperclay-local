@@ -455,7 +455,10 @@ describe('RootObserver with a local authority', () => {
     await fs.writeFile(file('index.html'), html);
     const read = fs.readFile;
     let attempts = 0;
+    // Counted per read of the DOCUMENT: the observation also reads the document's
+    // page-state sidecar, which is not an attempt at the document.
     const spy = jest.spyOn(fs, 'readFile').mockImplementation((...args) => {
+      if (args[0] !== file('index.html')) return read.apply(fs, args);
       attempts += 1;
       if (attempts === 1) return Promise.reject(new Error('transient read failure'));
       return read.apply(fs, args);

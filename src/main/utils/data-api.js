@@ -15,6 +15,7 @@ const { extractData, extractViaTag, parseExtractionRules, writeViaTag, writeWith
 const { writeApiSidecarData, deleteApiSidecar, readFreshSidecar } = require('./api-sidecar');
 const { withFileLock, assertWriteContext } = require('./write-queue');
 const { documentEtag, ifMatchSatisfied } = require('../spec-wire');
+const { logicalBytes } = require('../page-state-store');
 
 // Map an api-tag extraction failure to the platform's author-facing 400 bodies
 // (data-actions.js serveSiteApi). Returns null for an unmapped error → caller
@@ -126,7 +127,9 @@ async function serveSiteApiInLock(baseDir, name, sourcePath) {
     };
   }
 
-  const stored = await fs.readFile(sourcePath);
+  // The logical document: the bytes on disk with the page editor's merge state put
+  // back, so the ETag below is the one /save compares an If-Match against.
+  const stored = await logicalBytes(baseDir, name, await fs.readFile(sourcePath));
   const etag = documentEtag(stored);
 
   const fresh = await readFreshSidecar(baseDir, name, sourceStat.mtimeMs);
@@ -172,7 +175,7 @@ async function extractSiteDataLocal(baseDir, name, dataParam, { sourcePath, boun
 
   let stored;
   try {
-    stored = await fs.readFile(sourcePath || path.join(baseDir, name));
+    stored = await logicalBytes(baseDir, name, await fs.readFile(sourcePath || path.join(baseDir, name)));
   } catch {
     return {
       status: 404,
@@ -255,7 +258,7 @@ async function applySiteDataLocal(baseDir, name, data, options = {}) {
     const admittedPath = boundary ? boundary.target.canonicalPath : sourcePath;
     let stored;
     try {
-      stored = await fs.readFile(admittedPath);
+      stored = await logicalBytes(baseDir, name, await fs.readFile(admittedPath));
     } catch (e) {
       if (e.code !== 'ENOENT') throw e;
       return { status: 404, json: { error: 'Site content not found', message: 'The site exists but has no content' } };

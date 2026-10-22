@@ -7,6 +7,7 @@ const { createApp } = require('../../src/main/server');
 const { createLocalAuthority } = require('../../src/main/local-authority');
 const { withDocumentWrite } = require('../../src/main/utils/write-queue');
 const { documentEtag } = require('../../src/main/spec-wire');
+const { logicalDocument } = require('../../src/main/page-state-store');
 const { pageFixture } = require('./page-fixture');
 
 async function run() {
@@ -82,13 +83,20 @@ async function run() {
     assert.notEqual(written.headers['page-revision'], fresh.headers['page-revision']);
     const stored = await fs.readFile(file, 'utf8');
     assert.match(stored, />new<\/p>/);
-    assert.equal(documentEtag(stored), written.headers.etag);
+    // The file on disk holds no merge state; the stamp describes the logical
+    // document, which is the stored file with that state put back.
+    assert.doesNotMatch(stored, /merge="page"/);
+    assert.equal(documentEtag(await logicalDocument(dir, 'doc.html', stored)), written.headers.etag);
     assert.ok(authority.rooms.state(room).stores.page.value.y);
     console.log('page API proof passed');
   } finally {
     for (const member of members) member.close();
     await new Promise((resolve) => server.close(resolve));
-    await fs.rm(dir, { recursive: true, force: true });
+    // The data-loss guard writes into .hyperclay/guard detached from the request by
+    // design, so it can still be running here. Let it settle, and retry the removal
+    // if it lands mid-teardown.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 }
 

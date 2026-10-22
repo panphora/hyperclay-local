@@ -2,6 +2,7 @@
 // A record is { v: 1, rev, tag }, the shape splitPage and composePage use.
 const fs = require('fs').promises;
 const path = require('path');
+const { splitPage, composePage } = require('@panphora/clayjs/server/rooms');
 const { PAGE_STATE_DIR } = require('./utils/artifact-paths');
 const { atomicWriteFile } = require('./utils/write-queue');
 
@@ -50,4 +51,31 @@ async function movePageState(baseDir, fromName, toName) {
   }
 }
 
-module.exports = { pageStatePath, readPageState, writePageState, dropPageState, movePageState };
+// The document editors and comparisons see: the stored file with its merge state put back.
+async function logicalDocument(baseDir, name, stored) {
+  if (typeof stored !== 'string') return stored;
+  if (!baseDir || !name) return stored;
+  return composePage(stored, await readPageState(baseDir, name));
+}
+
+// The same composition for a caller holding the file's BYTES: a document with no
+// state is handed back untouched, because decoding and re-encoding would rewrite
+// every file that is not valid UTF-8.
+async function logicalBytes(baseDir, name, stored) {
+  if (!baseDir || !name) return stored;
+  const state = await readPageState(baseDir, name);
+  if (!state) return stored;
+  return Buffer.from(composePage(stored.toString('utf8'), state), 'utf8');
+}
+
+// Writes the sidecar (before the caller writes the file) and returns the file to store.
+async function storePageState(baseDir, name, html) {
+  const { file, state } = splitPage(html);
+  if (state) await writePageState(baseDir, name, state);
+  return file;
+}
+
+module.exports = {
+  pageStatePath, readPageState, writePageState, dropPageState, movePageState,
+  logicalDocument, logicalBytes, storePageState
+};

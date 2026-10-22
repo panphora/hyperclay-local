@@ -43,6 +43,8 @@ const { MAX_EXTERNAL_HTML } = require('./root-observer');
 const { buildEnvelope } = require('../sync-engine/control-lane-core.cjs');
 const { createLocalLiveData } = require('./local-live-data.js');
 const { hasPageStore, loadPageModules, authoritativePageHtml } = require('./utils/page-api');
+const { logicalDocument, logicalBytes, storePageState } = require('./page-state-store.js');
+const { splitPage, composePage } = require('@panphora/clayjs/server/rooms');
 const cheerio = require('cheerio');
 
 // Initialize Eta
@@ -240,8 +242,10 @@ async function resolveWriteTarget(paths, name) {
   return await resolveWritePath(paths, name);
 }
 
-// Serve the file's ORIGINAL BYTES. Reading as utf8 and re-encoding on the way
-// out silently rewrites any file that is not valid UTF-8.
+// Serve the file's ORIGINAL BYTES — with a page editor's merge state put back,
+// which is the document a client holds. Reading as utf8 and re-encoding on the way
+// out silently rewrites any file that is not valid UTF-8, so a document with no
+// such state is served from the bytes exactly as they were read.
 //
 // The response also carries the stamp of those exact bytes on the root element
 // (spec §4 response metadata, `documentetag`), so a tab that loaded this document
@@ -251,8 +255,11 @@ async function resolveWriteTarget(paths, name) {
 // the attribute cannot describe a version other than the one being served. The
 // file itself is untouched, and every response gets it, in view and edit mode:
 // the repair fetch needs it as much as the navigation that preceded it.
-async function serveHtml(res, filePath, frame = null) {
-  const html = await fs.readFile(filePath);
+async function serveHtml(res, filePath, frame = null, baseDir = null, name = null) {
+  // The document served is the logical one: the bytes on disk with the page
+  // editor's merge state put back. A document with no such state is served from
+  // the bytes exactly as read, so nothing outside a page editor is re-encoded.
+  const html = await logicalBytes(baseDir, name, await fs.readFile(filePath));
   res.set('Content-Type', 'text/html');
   const stamped = injectDocumentEtag(html, documentEtag(html));
   if (!frame) return res.send(stamped);
@@ -1924,6 +1931,23 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // store, and a refusal must leave no backup and no written byte behind.
       content = formatHtml(scopeTailwindLink(name, content));
 
+      // The logical document keeps the page editor's merge state and is what every
+      // admission, stamp, broadcast and answer below describes. Only the file part
+      // reaches disk, with that state kept in its sidecar. Composing the two back
+      // together makes `content` exactly what a later read of this save composes,
+      // so the stamp returned here is the one the next If-Match is judged against.
+      //
+      // A client that never held the state — the code editor is sent the clean
+      // file — saves the document without it. It is still the same document, so
+      // the state its sidecar holds is put back here too. A page conversion is the
+      // one save where the absence is the point, so that one is never put back.
+      const { file: fileContent, state: pageState } = splitPage(content);
+      if (pageState) {
+        content = composePage(fileContent, pageState);
+      } else if (!pageConversion) {
+        content = await logicalDocument(baseDir, name, fileContent);
+      }
+
       const authority = ctx.localAuthority;
       const authorityWrite = Boolean(authority && target && token);
       let pageToken = null;
@@ -1964,19 +1988,28 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           isFirstSave = true;
         }
 
+        // The bytes already on disk, read once: the first-save backup stores their
+        // file part, and a save that changed only the merge state leaves them alone.
+        let existingContent = null;
+        try {
+          existingContent = await fs.readFile(filePath, 'utf8');
+        } catch (error) {
+          // File doesn't exist yet, that's OK
+        }
+
         // If first save, backup the existing site content first
-        if (isFirstSave) {
+        if (isFirstSave && existingContent !== null) {
           try {
-            const existingContent = await fs.readFile(filePath, 'utf8');
-            await createBackup(baseDir, backupName, existingContent);
+            await createBackup(baseDir, backupName, splitPage(existingContent).file);
             console.log(`Created initial backup of existing ${name}`);
           } catch (error) {
             // File doesn't exist yet, that's OK
           }
         }
 
-        // Create backup of the new content
-        await createBackup(baseDir, backupName, content);
+        // Create backup of the new content. A save that changed only the merge
+        // state leaves the file unchanged, so it writes no new version.
+        if (existingContent !== fileContent) await createBackup(baseDir, backupName, fileContent);
 
         // Write via temp + rename: a crash or a full disk can never leave the
         // served file holding partial bytes.
@@ -1991,7 +2024,9 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
             throw error;
           }
         } : null;
-        await atomicWriteFile(filePath, content, 'utf8', beforeRename);
+        // The sidecar lands before the file, and only the file part reaches disk.
+        const storedContent = await storePageState(baseDir, name, content);
+        await atomicWriteFile(filePath, storedContent, 'utf8', beforeRename);
 
         // Mark as browser save so file watcher doesn't send redundant notification.
         // Key is full path with extension so it matches engine-watcher's wasBrowserSave check.
@@ -2256,7 +2291,11 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         let storedBytes = null;
         let unreadable = null;
         try {
-          storedBytes = await fs.readFile(canonicalPath);
+          // The page editor's merge state lives in a sidecar, so the document this
+          // save judges is the stored file with that state put back: the If-Match
+          // below, the 412 stamp and the data-clobber guard all describe it. A
+          // document with no such state keeps its exact bytes.
+          storedBytes = await logicalBytes(baseDir, name, await fs.readFile(canonicalPath));
         } catch (e) {
           if (e.code !== 'ENOENT') unreadable = e;
         }
@@ -2540,16 +2579,17 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       const href = documentUrlHeader(req);
       if (href) {
         try {
-          const filePath = await resolveWriteTarget(paths, resolveResourceFromHref(href));
+          const name = resolveResourceFromHref(href);
+          const filePath = await resolveWriteTarget(paths, name);
           const stats = await fs.stat(filePath);
           if (stats.isFile()) {
             // Read before the block is built, so a file that stats but cannot be
             // read takes the same omission path as one that is not there, rather
             // than reporting itself writable with no stamp.
-            // Bytes, not decoded text, for the same reason the save route reads bytes:
-            // the stamp announced here is the one a client will send back as If-Match,
+            // The logical document, for the same reason the save route reads it: the
+            // stamp announced here is the one a client will send back as If-Match,
             // and the two must be computed over the same thing.
-            const stored = await fs.readFile(filePath);
+            const stored = await logicalBytes(baseDir, name, await fs.readFile(filePath));
             // Everything under the served folder belongs to the person running
             // this app, so there is no permission to consult: writable is what
             // this host IS.
@@ -3176,11 +3216,12 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     }
 
     async function readPageApi(target, token, name, query) {
-      const stored = await fs.readFile(target.canonicalPath).catch((error) => {
+      const bytes = await fs.readFile(target.canonicalPath).catch((error) => {
         if (error.code === 'ENOENT') return null;
         throw error;
       });
-      if (!stored) return null;
+      if (!bytes) return null;
+      const stored = await logicalBytes(baseDir, name, bytes);
       const html = stored.toString('utf8');
       if (!hasPageStore(html)) return null;
       const changed = await ctx.localAuthority.reconcileDisk(target, html, token);
@@ -3275,10 +3316,11 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         if (preparedWrite?.result) return sendApiResult(res, preparedWrite.result);
         const result = ctx.localAuthority
           ? await runDocumentWrite(req, name, sourcePath, async (target, token) => {
-              const stored = await fs.readFile(target.canonicalPath).catch((error) => {
+              const bytes = await fs.readFile(target.canonicalPath).catch((error) => {
                 if (error.code === 'ENOENT') return null;
                 throw error;
               });
+              const stored = bytes && await logicalBytes(baseDir, name, bytes);
               const previous = stored?.toString('utf8');
               if (stored && hasPageStore(previous)) {
                 const etag = documentEtag(stored);
@@ -3499,7 +3541,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           const wireId = Number(req.query['workspace-frame']);
           const frame = Number.isSafeInteger(wireId) && wireId > 0 && ctx.workspaceFrame
             ? ctx.workspaceFrame(ctx.root.id, htmlMatch[1], wireId) : null;
-          return await serveHtml(res, realPath, frame);
+          return await serveHtml(res, realPath, frame, baseDir, htmlMatch[1]);
         }
         // An SVG is a document: it can carry <script>, and served inline from
         // this origin it runs with the same authority as the page beside it.

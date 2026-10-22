@@ -20,6 +20,7 @@ const { documentEtag } = require('./spec-wire');
 const dataGuard = require('./data-loss-guard');
 const { withDocumentWrite, withStructureChange } = require('./utils/write-queue');
 const { getConsentRegistry, resolveWritePath } = require('./utils/path-resolver');
+const { logicalBytes } = require('./page-state-store');
 
 const EMPTY_QUIET_MS = 3000;
 const MAX_EXTERNAL_HTML = 12 * 1024 * 1024;
@@ -210,16 +211,20 @@ class RootObserver extends EventEmitter {
 
     if (bytes.length === 0 && !settled) return { kind: 'empty' };
 
+    // Classified against the logical document: the bytes on disk with the page
+    // editor's merge state put back, which is what this host stamps and publishes.
+    const logical = await logicalBytes(this.root.path, rel, bytes);
+
     const stamp = this.localAuthority.confirmedStamp(canonicalPath);
-    if (stamp && stamp.identity === target.identity && stamp.etag === documentEtag(bytes) &&
+    if (stamp && stamp.identity === target.identity && stamp.etag === documentEtag(logical) &&
         stamp.dev === before.dev && stamp.ino === before.ino &&
         stamp.size === before.size && stamp.mtimeNs === before.mtimeNs) {
       this.emit('change', { rel, kind: 'self' });
       return { kind: 'self' };
     }
 
-    const changed = await this.localAuthority.observeExternal(target, bytes.toString('utf8'), token);
-    this._notifyExternal(rel, bytes, null, {
+    const changed = await this.localAuthority.observeExternal(target, logical.toString('utf8'), token);
+    this._notifyExternal(rel, logical, null, {
       reason: changed.kind === 'replacement' ? 'external-replacement' : undefined,
       recovered: changed.recovered,
     });

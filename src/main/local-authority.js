@@ -5,6 +5,7 @@ const { assertWriteContext, assertStructureContext } = require('./utils/write-qu
 const { documentEtag } = require('./spec-wire');
 const { publishRecoveredCopy } = require('./utils/backup');
 const { compatibleContinuation, renderRecovered } = require('./external-recovery');
+const { logicalDocument } = require('./page-state-store');
 
 const EVENT_NAMES = new Set(['data', 'data-state', 'data-writer']);
 const RATE_LIMIT = Object.freeze({ rate: 25, burst: 40, idleMs: 60 * 1000 });
@@ -32,7 +33,13 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
   // callers that only touch the other Local modules.
   const core = require('@panphora/clayjs/server/rooms');
   if (!rooms) rooms = core.createRooms({ now });
-  if (!readSaved) readSaved = (target) => fs.promises.readFile(target.canonicalPath, 'utf8');
+  // The saved document a room is seeded from is the logical one: the file on disk
+  // with the page editor's merge state put back, which is what the editor holds.
+  if (!readSaved) readSaved = async (target) => {
+    const html = await fs.promises.readFile(target.canonicalPath, 'utf8');
+    const root = roots.get(target.rootId);
+    return root && target.logicalPath ? logicalDocument(root.path, target.logicalPath, html) : html;
+  };
 
   let checkpointService = null;
 
