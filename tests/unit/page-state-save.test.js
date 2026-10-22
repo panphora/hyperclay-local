@@ -12,6 +12,7 @@ const fsSync = require('fs');
 const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
+const { execFileSync } = require('child_process');
 const request = require('supertest');
 
 const { splitPage, composePage, createRooms } = require('@panphora/clayjs/server/rooms');
@@ -228,6 +229,53 @@ describe('a page document is stored clean and read composed', () => {
     const seeded = opened[opened.length - 1].html;
     expect(seeded).toContain('merge="page"');
     expect(seeded).toContain('data-page="1"');
+  });
+
+  // The code editor asks for the representation and then edits that buffer, so the
+  // answer has to be the file part. The stamp is still the composed document's,
+  // because that is the document the next If-Match is judged against.
+  test('a save asked for its representation answers the clean file and the composed stamp', async () => {
+    const first = await save(FIXTURE, { Prefer: 'return=representation' });
+
+    expect(first.status).toBe(200);
+    expect(first.body.html).not.toContain('merge="page"');
+    expect(first.body.html).toBe(await onDisk());
+    expect(first.body.etag).toBe(documentEtag(LOGICAL));
+
+    const second = await save(first.body.html, { 'If-Match': first.body.etag });
+
+    expect(second.status).toBe(200);
+    expect(second.body.etag).toBe(first.body.etag);
+  });
+
+  // The saved lane feeds view-mode tabs. They are shown the document as it sits on
+  // disk, so the merge state never reaches a copy of the page that is not an editor.
+  test('the saved lane publishes the clean file', async () => {
+    await save(FIXTURE);
+
+    const saved = live.broadcast.mock.calls.filter(([, , opts]) => opts && opts.lane === 'saved');
+    expect(saved).toHaveLength(1);
+    expect(saved[0][1].html).not.toContain('merge="page"');
+    expect(saved[0][1].html).toBe(await onDisk());
+  });
+
+  // A save that replaces the page: the article's rev moved, so the sidecar's merge
+  // state no longer composes and the document being written carries no page tag at
+  // all. The open room still holds the old article and its unsaved edits, so those
+  // are kept as a version and the room restarts on the new document.
+  //
+  // The checkpoint core is loaded with a dynamic import, which jest's vm cannot
+  // run, so this case runs in a child process the way the checkpoint tests do.
+  test('a save that replaces the page keeps the room\'s unsaved edits as a version', () => {
+    const output = execFileSync(process.execPath, [
+      path.join(__dirname, '../helpers/save-page-replacement-probe.cjs'),
+    ], { cwd: process.cwd(), encoding: 'utf8', timeout: 60000 });
+
+    expect(output).toContain('dirty true');
+    expect(output).toContain('status 200');
+    expect(output).toContain('kept unsaved edit true');
+    expect(output).toContain('room page store false');
+    expect(output).toContain('disk replaced true');
   });
 
   test('a document that is not a page saves byte for byte', async () => {

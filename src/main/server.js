@@ -1925,7 +1925,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     async function commitDocument({
       name, filePath, content, dataLossPrev, userDriven, saveId, origin = 'save',
       target = null, token = null, ifMatch = undefined, pageConversion = undefined,
-      persistentToken = null, readIdentity = null,
+      persistentToken = null, readIdentity = null, answer = null,
     }) {
       // ANCILLARY DISK CONVENTION: versions dir and backups use baseName without
       // extension (matches platform's versions/{baseName}/ layout).
@@ -1951,6 +1951,10 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       const write = await splitWrite(baseDir, name, content, { keepState: !pageConversion });
       const fileContent = write.file;
       content = write.logical;
+      // A caller that has to hand a client the document it can safely edit asks for
+      // the file part here: the composed form above carries merge state that belongs
+      // in the sidecar, never in a buffer somebody types into.
+      if (answer) answer.html = fileContent;
 
       const authority = ctx.localAuthority;
       const authorityWrite = Boolean(authority && target && token);
@@ -1961,7 +1965,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           // conversion is admitted here, before the first backup, and its
           // reservation is held across the backup and the atomic write so no
           // frame can change the room while the disk result is pending.
-          const { checkPageWriteAdmission } = require('@panphora/clayjs/server/rooms');
+          const { checkPageWriteAdmission, pageLineageLost } = require('@panphora/clayjs/server/rooms');
           const rooms = authority.rooms;
           const open = rooms.get(filePath);
           const room = open && String(open.nodeId) === String(target.identity) ? open : null;
@@ -1976,6 +1980,34 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           } else if (admission === 'conversion') {
             pageToken = rooms.reservePage(filePath, {
               nodeId: target.identity, header: pageConversion, currentHtml, html: content, ifMatch,
+            });
+          } else if (admission === 'ordinary' && room && pageLineageLost(room, content)) {
+            // The open room still holds the article this save replaces, and the
+            // document being written no longer carries the page tag that bound them:
+            // an outside edit or a code save replaced the page under it. Restore's
+            // pattern, applied here: the room's unsaved edits become a version of
+            // their own, and the room restarts on the new document instead of
+            // keeping the old page store, which its next checkpoint would render
+            // back over the replacement. A room whose edits cannot be kept is
+            // refused, so the person can save them rather than lose them.
+            if (authority.roomIsDirty(room)) {
+              let kept = null;
+              try {
+                kept = ctx.localCheckpoint
+                  ? await ctx.localCheckpoint.safetyBackup(filePath, currentHtml)
+                  : null;
+              } catch (error) {
+                console.error(`Refusing a save of ${name}: the open room cannot be backed up`, error);
+              }
+              if (kept === null) {
+                const error = new Error('Unsaved edits could not be kept. Save them before replacing this page.');
+                error.code = 'unsaved-edits';
+                throw error;
+              }
+              await createBackup(baseDir, backupName, kept);
+            }
+            pageToken = rooms.reservePageReplacement(filePath, {
+              nodeId: target.identity, html: content,
             });
           }
           if (persistentToken) rooms.checkPersistent(persistentToken, { html: content });
@@ -2092,13 +2124,13 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
             msgType: 'warning',
             msg: `${path.basename(name)} was updated through the data API`,
             action: 'reload',
-            data: Buffer.byteLength(content, 'utf8') <= MAX_EXTERNAL_HTML
-              ? { kind: 'external-change', html: content, sender: 'data-api', etag: documentEtag(content) }
+            data: Buffer.byteLength(fileContent, 'utf8') <= MAX_EXTERNAL_HTML
+              ? { kind: 'external-change', html: fileContent, sender: 'data-api', etag: documentEtag(content) }
               : { kind: 'external-change', sender: 'data-api' },
           });
         }
         if (!authorityWrite) {
-          live.broadcast(name, { html: content, sender: origin === 'api' ? 'data-api' : 'server-save' }, { lane: 'saved' });
+          live.broadcast(name, { html: fileContent, sender: origin === 'api' ? 'data-api' : 'server-save' }, { lane: 'saved' });
         }
         // Refresh the per-site API data sidecar BEFORE the fallible Tailwind compile,
         // so a Tailwind failure can't skip it and leave stale API data on disk
@@ -2265,6 +2297,10 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // this route gives.
       let conflict = null;
 
+      // Filled by the commit below with the clean file part, which is what a
+      // `Prefer: return=representation` caller may be handed.
+      const answer = {};
+
       try {
         // A1: the queue wraps the ENTIRE read-modify-write region — the pre-write
         // read, the first-save check, the backup, the write, and the derived
@@ -2369,7 +2405,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
 
         content = await commitDocument({
           name, filePath: canonicalPath, content, dataLossPrev, userDriven, saveId,
-          target, token, ifMatch, pageConversion: req.headers['page-conversion'],
+          target, token, ifMatch, pageConversion: req.headers['page-conversion'], answer,
         });
         });
 
@@ -2414,7 +2450,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           // never returned asks the host later and compares this id with its own; a
           // client whose request DID return has it confirmed in the same breath.
           ...(saveId ? { saveId } : {}),
-          ...(req.headers.prefer === 'return=representation' ? { html: content } : {})
+          ...(req.headers.prefer === 'return=representation' ? { html: answer.html } : {})
         });
         console.log(`Saved: ${name}`);
       } catch (error) {
@@ -2436,6 +2472,10 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         if (error && error.code === 'moved-or-deleted') {
           console.log(`Refused a save of ${name}: ${error.code}`);
           return res.status(409).json({ msg: error.message, msgType: 'error', code: 'moved-or-deleted' });
+        }
+        if (error && error.code === 'unsaved-edits') {
+          console.log(`Refused a save of ${name}: ${error.code}`);
+          return res.status(409).json({ msg: error.message, msgType: 'error', code: 'unsaved-edits' });
         }
         console.error(`Error saving file ${name}:`, error);
         errorLogger.error('Server', `Save error: ${name}`, error);
@@ -2519,7 +2559,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           await authority.confirmKnownWrite(target, content, token, { sender: 'server-save' });
         } else {
           // Morph view-mode tabs with the persisted on-disk HTML.
-          live.broadcast(name, { html: content, sender: 'server-save' }, { lane: 'saved' });
+          live.broadcast(name, { html: require('@panphora/clayjs/server/rooms').splitPage(content).file, sender: 'server-save' }, { lane: 'saved' });
         }
       } finally {
         if (pageToken) authority.rooms.releasePage(pageToken);

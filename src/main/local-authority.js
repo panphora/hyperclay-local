@@ -1024,10 +1024,15 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
 
   const HTML_PATH = /\.(html?|htmlclay)$/i;
 
+  // The saved lane feeds view-mode tabs, which are handed the document as it sits
+  // on disk. The composed form carries the page editor's merge state, and that
+  // state belongs beside the file, not in a tab's copy of it. Required lazily: a
+  // boot test forbids loading the rooms package at startup.
   function broadcastSaved(target, html, sender) {
     const live = target && target.live;
     if (!live || typeof live.broadcast !== 'function') return;
-    live.broadcast(target.logicalPath, { html, sender }, { lane: 'saved' });
+    const { splitPage } = require('@panphora/clayjs/server/rooms');
+    live.broadcast(target.logicalPath, { html: splitPage(html).file, sender }, { lane: 'saved' });
   }
 
   const broadcasts = (target) => typeof target?.live?.broadcast === 'function';
