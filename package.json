@@ -210,6 +210,7 @@
   },
   "dependencies": {
     "@panphora/clayjs": "^1.13.1",
+    "@panphora/hyperclay-workspace": "^0.2.1",
     "busboy": "^1.6.0",
     "cheerio": "1.2.0",
     "chokidar": "^3.6.0",

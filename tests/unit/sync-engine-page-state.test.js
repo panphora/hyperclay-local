@@ -71,7 +71,7 @@ const { SyncEngine } = require('../../src/sync-engine/index');
 const { executeDecision } = require('../../src/sync-engine/reconcile/execute');
 const writeQueue = require('../../src/main/utils/write-queue');
 const {
-  storePageState, readPageState, pageStatePath
+  storePageState, readPageState, writePageState, pageStatePath
 } = require('../../src/main/page-state-store');
 const { sendPageState } = require('../../src/sync-engine/page-state');
 
@@ -155,6 +155,16 @@ describe('an upload sends the page state before the content', () => {
     expect(apiClient.putPageState).toHaveBeenCalledWith(expect.anything(), 7, TEMPLATE_STATE);
     expect(apiClient.putPageState.mock.invocationCallOrder[0])
       .toBeLessThan(apiClient.putNodeContent.mock.invocationCallOrder[0]);
+  });
+
+  // A write whose file never landed leaves a newer record in the sidecar; the file is still its own page.
+  test('the record sent is the one for the file on disk, not a newer one that never landed', async () => {
+    await writePage('page.html');
+    await writePageState(root, 'page.html', { rev: 'never-landed', tag: TEMPLATE_STATE.tag });
+
+    expect(await sendPageState(engine, 7, 'page.html')).toBe(true);
+
+    expect(apiClient.putPageState).toHaveBeenCalledWith(expect.anything(), 7, TEMPLATE_STATE);
   });
 
   test('a document that is not a page sends no record', async () => {
