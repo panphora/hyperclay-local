@@ -18,6 +18,7 @@ const { RootServerPool } = require('./root-servers');
 const { createShellServer } = require('./workspace/shell-server');
 const { createWorkspaceWindow } = require('./workspace/window');
 const { createWorkspaceLifecycle } = require('./workspace/lifecycle');
+const { createFlushParticipants } = require('./workspace/flush-participants');
 const { SyncManager } = require('./sync-manager');
 const { RootObserver } = require('./root-observer');
 const { createRootLive } = require('./utils/root-live');
@@ -152,14 +153,19 @@ const shellServer = createShellServer({
     syncStatuses: manager?.statuses() || [],
   }),
   rootTitleFor,
+  onFlushResult: (client, result) => flushParticipants.fromTab(client, result),
+  onFlushClientGone: client => flushParticipants.tabGone(client),
 });
 let workspaceLifecycle;
 const workspaceWindow = createWorkspaceWindow({
-  shellServer, roots: rootsState, onFlushResult: result => workspaceLifecycle.receiveFlushResult(result),
+  shellServer, roots: rootsState, onFlushResult: result => flushParticipants.fromWindow(result),
   onRendererGone: () => workspaceLifecycle.rendererGone(),
 });
+const flushParticipants = createFlushParticipants({
+  window: workspaceWindow, shell: shellServer, deliver: result => workspaceLifecycle.receiveFlushResult(result),
+});
 workspaceLifecycle = createWorkspaceLifecycle({
-  workspace: workspaceWindow,
+  workspace: flushParticipants,
   checkpoint: localCheckpoint,
   showMessage: options => dialog.showMessageBox(options),
   execute: async (kind, _rootId, run) => {

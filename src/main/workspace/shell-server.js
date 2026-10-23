@@ -15,6 +15,53 @@ const fold = text => text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLoc
 
 const ENTRY_TTL_MS = 60_000;
 
+// A browser tab has no preload, so this stands in for it. Flush requests ride the workspace's
+// own events stream (a second long-lived request per tab would exhaust the browser's six
+// connections per host): the stream is opened with `?flush=1`, and the flush lines are taken
+// out before the workspace client reads it.
+const BROWSER_NATIVE = `(() => {
+  if (window.workspaceNative) return;
+  const token = document.querySelector('meta[name="workspace-token"]').content;
+  const listeners = new Set();
+  const realFetch = window.fetch.bind(window);
+  let client = null;
+  const reply = (requestId, participants) => realFetch('/api/flush-result', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Workspace-Token': token },
+    body: JSON.stringify({ client, requestId, participants }) });
+  window.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+    if (url.origin !== location.origin || url.pathname !== '/api/events') return realFetch(input, init);
+    url.searchParams.set('flush', '1');
+    const response = await realFetch(url, init);
+    if (!response.ok || !response.body) return response;
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    let buffer = '';
+    const body = response.body.pipeThrough(new TransformStream({ transform(chunk, out) {
+      buffer += decoder.decode(chunk, { stream: true });
+      for (let end = buffer.indexOf('\\n'); end !== -1; end = buffer.indexOf('\\n')) {
+        const line = buffer.slice(0, end + 1);
+        buffer = buffer.slice(end + 1);
+        let value = null;
+        try { value = JSON.parse(line); } catch {}
+        if (value && typeof value.flushClient === 'string') client = value.flushClient;
+        else if (value && typeof value.flushRequest === 'string') {
+          if (listeners.size) for (const listener of listeners) listener({ requestId: value.flushRequest });
+          else reply(value.flushRequest, []).catch(() => {});
+        } else out.enqueue(encoder.encode(line));
+      }
+    } }));
+    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  };
+  window.workspaceNative = {
+    onNavigate: () => () => {},
+    onPermissionRefused: () => () => {},
+    onFlushRequest: callback => { listeners.add(callback); return () => listeners.delete(callback); },
+    flushResult: result => reply(result.requestId, result.participants),
+    openExternal: async url => { window.open(url, '_blank', 'noopener'); },
+  };
+})();`;
+
 function cookieOf(req, name) {
   for (const part of (req.headers.cookie || '').split(';')) {
     const at = part.indexOf('=');
@@ -38,7 +85,8 @@ async function readBody(req) {
 }
 
 function createShellServer({ authority, rootPool, observerFor, settings, appVersion, connection = () => ({}),
-  syncManager = () => null, rootTitleFor = root => path.basename(root.path), appDataPath = null, checkpoint = null }) {
+  syncManager = () => null, rootTitleFor = root => path.basename(root.path), appDataPath = null, checkpoint = null,
+  onFlushResult = () => false, onFlushClientGone = () => {} }) {
   const token = crypto.randomBytes(32).toString('base64url');
   const bootstrapSecret = crypto.randomBytes(32).toString('base64url');
   const sessionSecret = crypto.randomBytes(32).toString('base64url');
@@ -48,6 +96,8 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
   const indexes = new Map();
   const wires = new Map();
   const subscribers = new Set();
+  const flushClients = new Map();
+  let nextFlushClient = 1;
   const changedPaths = new Map();
   const autoNamer = appDataPath ? createAutoNamer({
     appDataPath, authority, checkpoint,
@@ -169,7 +219,9 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
         server.once('error', reject);
         server.listen(0, '127.0.0.1', resolve);
       });
-      origin = `http://127.0.0.1:${server.address().port}`;
+      // `localhost`, like the root servers, so the documents the workspace frames are same-site
+      // and their SameSite=Lax owner cookie reaches them.
+      origin = `http://localhost:${server.address().port}`;
       return { origin };
     } catch (error) { server = null; throw error; }
   }
@@ -192,10 +244,23 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
         res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
         res.write(': connected\n');
         subscribers.add(res);
+        const client = url.searchParams.get('flush') === '1' ? String(nextFlushClient++) : null;
+        if (client) {
+          flushClients.set(client, res);
+          res.write(`${JSON.stringify({ flushClient: client })}\n`);
+        }
         const heartbeat = setInterval(() => res.write(': heartbeat\n'), 25_000);
         heartbeat.unref?.();
-        req.on('close', () => { clearInterval(heartbeat); subscribers.delete(res); });
+        req.on('close', () => {
+          clearInterval(heartbeat);
+          subscribers.delete(res);
+          if (client && flushClients.delete(client)) onFlushClientGone(client);
+        });
         return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/flush-result') {
+        const { client, requestId, participants } = await readBody(req);
+        return sendJson(res, 200, { ok: flushClients.has(client) && onFlushResult(client, { requestId, participants }) === true });
       }
       const match = /^\/api\/roots\/([^/]+)\/(tree|list|search|document|commands|source|versions|version|restore|upload|download|consents|conflicts\/resolve)$/.exec(url.pathname);
       if (!match) throw refusal('unsupported', 'Route is not available yet', 501);
@@ -282,8 +347,8 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
     if (url.pathname === '/' || /^\/roots\/[^/]+\/(files|document)$/.test(url.pathname)) {
       if (!browserAdmitted(req)) return sendJson(res, 403, { error: 'Forbidden', reason: 'forbidden' });
       const css = manifest.entry.css.map(file => `<link rel="stylesheet" href="/${file}">`).join('');
-      const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="workspace-token" content="${token}">${css}</head><body><div id="workspace-root"></div><script type="module" src="/${manifest.entry.javascript}"></script></body></html>`;
-      // The cookie is sent to every 127.0.0.1 port, so a page served from any of them could
+      const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="workspace-token" content="${token}">${css}<script>${BROWSER_NATIVE}</script></head><body><div id="workspace-root"></div><script type="module" src="/${manifest.entry.javascript}"></script></body></html>`;
+      // The cookie is sent to every localhost port, so a page served from any of them could
       // otherwise frame the workspace and steer clicks into another root.
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
@@ -326,6 +391,10 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
       for (const key of wires.keys()) if (!current.has(key.split(':')[0])) wires.delete(key);
       emit({ type: 'roots' });
     },
+    flushClients: () => [...flushClients.keys()],
+    requestFlush(requestId) {
+      for (const res of flushClients.values()) res.write(`${JSON.stringify({ flushRequest: requestId })}\n`);
+    },
     connectionChanged(online) { emit({ type: 'connection', online }); },
     syncChanged(rootId, state) { emit({ type: 'sync', rootId, state }); },
     // Browser visits to a root's `/` start the server too, so concurrent callers share one start.
@@ -345,6 +414,7 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
       autoNamer?.close();
       for (const res of subscribers) res.end();
       subscribers.clear();
+      flushClients.clear();
       entries.clear();
       if (server) await new Promise(resolve => server.close(resolve));
       server = null;

@@ -39,3 +39,14 @@ test('GET / falls back to the directory listing when no entry is available', asy
   expect(res.status).toBe(200);
   expect(res.text).toContain('href="/A.html"');
 });
+
+test('only a top-level GET opens the workspace; HEAD and framed loads get the listing', async () => {
+  const workspaceEntry = jest.fn(async () => 'http://localhost:9/enter?ticket=abc');
+  server = await listenLoopback(createApp({ root, devHooks: null, isKnownPath: null, workspaceEntry }));
+  expect((await request(server).head('/')).status).toBe(200);
+  const framed = await request(server).get('/').set('Sec-Fetch-Dest', 'iframe');
+  expect(framed.status).toBe(200);
+  expect(framed.text).toContain('href="/A.html"');
+  expect(workspaceEntry).not.toHaveBeenCalled();
+  expect((await request(server).get('/').set('Sec-Fetch-Dest', 'document')).status).toBe(302);
+});

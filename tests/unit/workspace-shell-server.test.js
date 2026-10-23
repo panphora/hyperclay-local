@@ -45,7 +45,7 @@ test('package app is loaded by start, not by module import or construction', asy
   expect(typeof createShellServer).toBe('function');
   expect(h.shell.origin).toBeNull();
   await h.start();
-  expect(h.shell.origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+  expect(h.shell.origin).toMatch(/^http:\/\/localhost:\d+$/);
 });
 
 test('events carry one epoch and strictly increasing sequence and disconnect releases the listener', async () => {
@@ -154,4 +154,48 @@ test('concurrent starts share one server, and stop closes it', async () => {
   for (const ticket of tickets) expect((await fetch(ticket, { redirect: 'manual' })).status).toBe(302);
   await h.shell.stop();
   await expect(fetch(origin)).rejects.toThrow();
+});
+
+test('a browser tab joins the flush through its events stream', async () => {
+  const results = [];
+  const gone = [];
+  h = await fixture({ onFlushResult: (client, result) => { results.push([client, result]); return true; },
+    onFlushClientGone: client => gone.push(client) });
+  const request = await h.start();
+  const plain = await request('/api/events');
+  const tab = await request('/api/events?flush=1');
+  expect(h.shell.flushClients()).toEqual(['1']);
+  h.shell.requestFlush('7:1');
+  const reader = tab.body.getReader();
+  let text = '';
+  while (!text.includes('flushRequest')) text += new TextDecoder().decode((await reader.read()).value);
+  const lines = text.split('\n').filter(line => line.startsWith('{')).map(JSON.parse);
+  expect(lines).toEqual([{ flushClient: '1' }, { flushRequest: '7:1' }]);
+  const participants = [{ id: 'p', name: 'A.html', revision: 2, durable: true }];
+  const posted = await request('/api/flush-result', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client: '1', requestId: '7:1', participants }) });
+  expect(await posted.json()).toEqual({ ok: true });
+  expect(results).toEqual([['1', { requestId: '7:1', participants }]]);
+  const stranger = await request('/api/flush-result', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client: '9', requestId: '7:1', participants }) });
+  expect(await stranger.json()).toEqual({ ok: false });
+  expect((await fetch(`${h.shell.origin}/api/flush-result`, { method: 'POST',
+    body: JSON.stringify({ client: '1', requestId: '7:1', participants }) })).status).toBe(403);
+  await reader.cancel();
+  await new Promise(resolve => setTimeout(resolve, 50));
+  expect(gone).toEqual(['1']);
+  expect(h.shell.flushClients()).toEqual([]);
+  await plain.body.cancel();
+});
+
+test('the browser page carries the stand-in bridge, and the shell lives on localhost', async () => {
+  h = await fixture();
+  await h.start();
+  expect(new URL(h.shell.origin).hostname).toBe('localhost');
+  const entry = await fetch(h.shell.entryUrl('root-a'), { redirect: 'manual' });
+  const cookie = entry.headers.get('set-cookie').split(';')[0];
+  const html = await (await fetch(`${h.shell.origin}/roots/root-a/files`, { headers: { Cookie: cookie } })).text();
+  const script = /<script>([\s\S]*?)<\/script>/.exec(html)[1];
+  expect(() => new Function(script)).not.toThrow();
+  expect(script).toContain('if (window.workspaceNative) return;');
 });

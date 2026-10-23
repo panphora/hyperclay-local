@@ -3600,9 +3600,12 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         const urlPath = decodeOnce(req.path);
 
         // The root opens the workspace. The listing stays as the fallback when the
-        // workspace cannot start, and for every folder below the root.
+        // workspace cannot start, for every folder below the root, and for anything that
+        // is not a top-level page load (HEAD, a framed document's link to `/`, an <img>).
         if (urlPath === '/') {
-          const entry = ctx.workspaceEntry ? await ctx.workspaceEntry(ctx.root.id) : null;
+          const dest = req.get('sec-fetch-dest');
+          const navigation = req.method === 'GET' && (!dest || dest === 'document');
+          const entry = navigation && ctx.workspaceEntry ? await ctx.workspaceEntry(ctx.root.id) : null;
           if (entry) {
             res.set('Cache-Control', 'no-store');
             return res.redirect(302, entry);

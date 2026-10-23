@@ -22,6 +22,7 @@ async function fixture(options = {}) {
     settings: () => settings, appVersion: '1.31.1',
     connection: () => ({ online: true, account: { signedIn: false, username: null } }),
     rootTitleFor: () => 'My files',
+    onFlushResult: options.onFlushResult, onFlushClientGone: options.onFlushClientGone,
   });
   const close = async () => {
     await shell.stop();
