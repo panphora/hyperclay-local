@@ -41,6 +41,7 @@ function runUiPass({ localDir, hyperclayDir, spawn = spawnSync, git } = {}) {
       ...process.env,
       PATH: `${path.join(hyperclayDir, 'node_modules/.bin')}${path.delimiter}${process.env.PATH}`,
       RUN_DESKTOP_UI: '1',
+      HYPERCLAY_OPT_IN_TESTS: '1',
       HYPERCLAY_LOCAL_DIR: localDir,
       TEST_DB_PREFIX: `release_${Date.now()}`,
       NODE_OPTIONS: '--experimental-vm-modules',
