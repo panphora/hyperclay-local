@@ -1,4 +1,5 @@
 const fs = require('fs').promises;
+const upath = require('upath');
 const http = require('http');
 const { createApp, sweepExpiredSnapshots } = require('./server');
 const { createRootLive } = require('./utils/root-live');
@@ -82,7 +83,7 @@ class RootServer {
   }
 
   async canonicalPath() {
-    try { return await fs.realpath(this.root.path); } catch { return this.root.path; }
+    try { return upath.resolve(await fs.realpath(this.root.path)); } catch { return upath.resolve(this.root.path); }
   }
 
   pruneVersions() {

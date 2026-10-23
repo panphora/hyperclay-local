@@ -5,7 +5,7 @@
 
 const fs = require('fs');
 const os = require('os');
-const path = require('path');
+const path = require('upath');
 const { createRooms, stampOf, serializeLive } = require('@panphora/clayjs/server/rooms');
 const { createLocalAuthority } = require('../../src/main/local-authority');
 const { withDocumentWrite, withStructureChange } = require('../../src/main/utils/write-queue');
@@ -13,7 +13,7 @@ const { documentEtag } = require('../../src/main/spec-wire');
 
 const dirs = [];
 function tempRoot() {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'authority-admission-')));
+  const dir = path.resolve(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'authority-admission-'))));
   dirs.push(dir);
   return dir;
 }
@@ -571,7 +571,7 @@ describe('D1 structure preparation', () => {
       expect(h.core.get(content)).toBe(alias.room);
       expect(h.core.get(renamed)).toBeNull();
       expect(h.authority.identityAt(content)).toBe(alias.target.identity);
-      expect(fs.realpathSync(link)).toBe(content);
+      expect(path.resolve(fs.realpathSync(link))).toBe(content);
 
       expect(await h.authority.releaseStructure(plan, token)).toBe(true);
       expect(h.releases).toHaveLength(1);
@@ -753,7 +753,7 @@ describe('D1 structure preparation', () => {
     expect(h.rekeys).toEqual([]);
     expect(h.core.get(cPath)).toBe(c.room);
     expect(h.core.keys()).toEqual([cPath]);
-    expect(fs.realpathSync(link)).toBe(content);
+    expect(path.resolve(fs.realpathSync(link))).toBe(content);
   });
 
   test('release is idempotent and frees every hold for the next transaction', async () => {
@@ -1169,7 +1169,7 @@ describe('D1 structure commit', () => {
       expect(h.authority.findBoundTarget({ rootId: 'root-b', logicalPath: 'other.html', origin: 'http://127.0.0.1:7001' })).toBe(other);
     });
 
-    expect(fs.realpathSync(renamed)).toBe(content);
+    expect(path.resolve(fs.realpathSync(renamed))).toBe(content);
     expect(fs.existsSync(link)).toBe(false);
     member.close();
     expect(h.leaves).toHaveLength(1);
@@ -1207,7 +1207,7 @@ describe('D1 structure commit', () => {
       expect(h.authority.isRetired({ rootId: 'root-a', logicalPath: 'two/link.html' })).toBe(false);
     });
 
-    expect(fs.realpathSync(renamed)).toBe(movedContent);
+    expect(path.resolve(fs.realpathSync(renamed))).toBe(movedContent);
   });
 
   test('a member closed late after its key gained another occupant never leaves the new room', async () => {
@@ -1455,7 +1455,7 @@ describe('D1 alias routes', () => {
     });
 
     expect(fs.existsSync(dir)).toBe(false);
-    expect(fs.realpathSync(path.join(moved, 'link.html'))).toBe(content);
+    expect(path.resolve(fs.realpathSync(path.join(moved, 'link.html')))).toBe(content);
     const rejected = await validate(h.authority, claimB, locationB).catch((err) => err);
     expect(rejected.name).toBe('LocalAuthorityError');
     expect(rejected.code).toBe('moved');
@@ -1532,7 +1532,7 @@ describe('D1 alias routes', () => {
     expect(h.core.get(one)).toBe(o.room);
     expect(fs.existsSync(dir)).toBe(true);
     expect(fs.existsSync(moved)).toBe(false);
-    expect(fs.realpathSync(path.join(dir, 'link.html'))).toBe(content);
+    expect(path.resolve(fs.realpathSync(path.join(dir, 'link.html')))).toBe(content);
     expect(h.authority.findBoundTarget({ rootId: 'root-b', logicalPath: 'dir/link.html', origin: 'http://127.0.0.1:7001' })).toBe(b.target);
     expect(h.authority.connectedIds(content)).toEqual(['cB']);
     expect(h.authority.isRetired({ rootId: 'root-a', logicalPath: 'dir/link.html' })).toBe(false);
@@ -1594,7 +1594,7 @@ describe('D1 alias routes', () => {
     });
 
     expect(fs.existsSync(link)).toBe(false);
-    expect(fs.realpathSync(renamed)).toBe(content);
+    expect(path.resolve(fs.realpathSync(renamed))).toBe(content);
     const rejected = await validate(h.authority, claimB, locationB).catch((err) => err);
     expect(rejected.code).toBe('moved');
   });

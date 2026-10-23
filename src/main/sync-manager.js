@@ -233,7 +233,7 @@ class SyncManager extends EventEmitter {
     if (!refused && this.localAuthority) {
       let canonicalPath = null;
       try {
-        canonicalPath = await fs.realpath(root.path);
+        canonicalPath = path.resolve(await fs.realpath(root.path));
       } catch {
         canonicalPath = null;
       }
