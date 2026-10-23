@@ -121,7 +121,7 @@ async function executeCommand({ root, authority, engine, request, tree, moved, c
     if (restoring || request.command === 'trash') await assertTrashDirectory(root);
     const fromRel = restoring ? safePath(request.trashPath, { trash: true }) : safePath(request.path);
     const fromLocation = path.join(root.path, fromRel);
-    const fromStat = await fs.lstat(fromLocation).catch(error => {
+    const fromStat = await fs.lstat(fromLocation, { bigint: true }).catch(error => {
       if (error.code === 'ENOENT') throw refusal('missing', 'Source is missing', 404);
       throw error;
     });
@@ -159,7 +159,7 @@ async function executeCommand({ root, authority, engine, request, tree, moved, c
         destination = await targetFor(toRel);
       }
     } else if (await exists(destination)) {
-      const targetStat = await fs.lstat(destination);
+      const targetStat = await fs.lstat(destination, { bigint: true });
       if (request.command !== 'rename' || targetStat.dev !== fromStat.dev || targetStat.ino !== fromStat.ino) {
         throw refusal('conflict', 'Destination exists', 409);
       }
