@@ -79,7 +79,7 @@ async function startEngine(opts) {
   engine.startUnifiedWatcher = jest.fn();
   engine.connectToStream = jest.fn();
 
-  syncFolder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'engine-generation-')));
+  syncFolder = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'engine-generation-')));
   await engine.init(
     'hcsk_test',
     'acme',

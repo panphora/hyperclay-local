@@ -2,3 +2,7 @@
 * text=auto
 tests/fixtures/release-ferry/lock.js text eol=lf
 tests/fixtures/release-ferry/paths.js text eol=lf
+# Shipped byte for byte and checked against sha256 manifests, so a Windows
+# checkout must not turn their LF into CRLF.
+src/main/document-templates/** -text
+src/main/offline-runtime/** -text

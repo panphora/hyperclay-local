@@ -5,7 +5,7 @@ const { EventEmitter } = require('events');
 const { createShellServer } = require('../../src/main/workspace/shell-server');
 
 async function fixture(options = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-shell-'));
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-shell-')));
   const appDataPath = options.appDataPath || await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-app-data-'));
   const root = { id: 'root-a', kind: options.kind || 'personal', path: dir, port: 4321 };
   const observer = new EventEmitter();

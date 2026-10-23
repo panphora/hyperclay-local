@@ -540,7 +540,7 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
   const realFileOps = jest.requireActual('../../src/sync-engine/file-operations');
 
   test('an empty uploads/ put back with a new inode restores its subtree instead of cascading it away', async () => {
-    const root = fsSync.realpathSync(fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-')));
+    const root = fsSync.realpathSync.native(fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-')));
     try {
       fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
       fsSync.writeFileSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'), 'x');
@@ -584,7 +584,7 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
   });
 
   test('an uploads folder renamed away whose rename-back fails is restored, never moved', async () => {
-    const root = fsSync.realpathSync(fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-')));
+    const root = fsSync.realpathSync.native(fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-')));
     let rename = null;
     try {
       fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
@@ -630,7 +630,7 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
   });
 
   test('a missing file under uploads/ is restored, never renamed from a lookalike elsewhere', async () => {
-    const root = fsSync.realpathSync(fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-')));
+    const root = fsSync.realpathSync.native(fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-')));
     try {
       fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
       fsSync.writeFileSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'), 'x');
@@ -676,7 +676,7 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
   });
 
   test('a file missing while its folder is present is restored, not deleted', async () => {
-    const root = fsSync.realpathSync(fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-')));
+    const root = fsSync.realpathSync.native(fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-')));
     try {
       fsSync.mkdirSync(nodePath.join(root, 'uploads', 'assets-a'), { recursive: true });
       fsSync.writeFileSync(nodePath.join(root, 'uploads', 'assets-a', 'x.png'), 'x');
@@ -722,7 +722,7 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
   });
 
   test('a missing page under uploads/ whose folder is gone is restored, never renamed from a lookalike', async () => {
-    const root = fsSync.realpathSync(fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-')));
+    const root = fsSync.realpathSync.native(fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-')));
     try {
       fsSync.mkdirSync(nodePath.join(root, 'uploads'), { recursive: true });
       fsSync.mkdirSync(nodePath.join(root, 'elsewhere'), { recursive: true });
@@ -778,7 +778,7 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
     // that is not on disk is the only evidence, and it excludes pairing too.
     const stat = require('fs').promises.stat;
     stat.mockRestore();
-    const root = fsSync.realpathSync(fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-')));
+    const root = fsSync.realpathSync.native(fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'hyperclay-uploads-')));
     try {
       fsSync.mkdirSync(nodePath.join(root, 'uploads'), { recursive: true });
       fsSync.mkdirSync(nodePath.join(root, 'elsewhere'), { recursive: true });
