@@ -13,6 +13,16 @@ const MIME = { '.js': 'text/javascript', '.css': 'text/css', '.woff': 'font/woff
 const collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
 const fold = text => text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
 
+const ENTRY_TTL_MS = 60_000;
+
+function cookieOf(req, name) {
+  for (const part of (req.headers.cookie || '').split(';')) {
+    const at = part.indexOf('=');
+    if (at > 0 && part.slice(0, at).trim() === name) return part.slice(at + 1).trim();
+  }
+  return null;
+}
+
 function sendJson(res, status, value) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
   res.end(JSON.stringify(value));
@@ -31,6 +41,8 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
   syncManager = () => null, rootTitleFor = root => path.basename(root.path), appDataPath = null, checkpoint = null }) {
   const token = crypto.randomBytes(32).toString('base64url');
   const bootstrapSecret = crypto.randomBytes(32).toString('base64url');
+  const sessionSecret = crypto.randomBytes(32).toString('base64url');
+  const entries = new Map();
   const epoch = crypto.randomBytes(16).toString('base64url');
   const trees = new Map();
   const indexes = new Map();
@@ -128,6 +140,13 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
       (!req.headers['sec-fetch-site'] || req.headers['sec-fetch-site'] === 'same-origin');
   }
 
+  // Cookies ignore the port, so two copies of the app on one machine each need their own name.
+  const sessionCookie = () => `hyperclay-workspace-${new URL(origin).port}`;
+
+  function browserAdmitted(req) {
+    return req.headers['x-workspace-bootstrap'] === bootstrapSecret || cookieOf(req, sessionCookie()) === sessionSecret;
+  }
+
   async function handle(req, res) {
     const url = new URL(req.url, origin);
     if (req.headers.host !== new URL(origin).host) return sendJson(res, 403, { error: 'Forbidden', reason: 'forbidden' });
@@ -221,8 +240,20 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
     }
 
     if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed', reason: 'unsupported' });
+    if (url.pathname === '/enter') {
+      const ticket = url.searchParams.get('ticket') || '';
+      const entry = entries.get(ticket);
+      entries.delete(ticket);
+      if (!entry || entry.expires < Date.now()) return sendJson(res, 403, { error: 'Forbidden', reason: 'forbidden' });
+      res.writeHead(302, {
+        Location: `/roots/${encodeURIComponent(entry.rootId)}/files`,
+        'Set-Cookie': `${sessionCookie()}=${sessionSecret}; Path=/; HttpOnly; SameSite=Lax`,
+        'Cache-Control': 'no-store',
+      });
+      return res.end();
+    }
     if (url.pathname === '/' || /^\/roots\/[^/]+\/(files|document)$/.test(url.pathname)) {
-      if (req.headers['x-workspace-bootstrap'] !== bootstrapSecret) return sendJson(res, 403, { error: 'Forbidden', reason: 'forbidden' });
+      if (!browserAdmitted(req)) return sendJson(res, 403, { error: 'Forbidden', reason: 'forbidden' });
       const css = manifest.entry.css.map(file => `<link rel="stylesheet" href="/${file}">`).join('');
       const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="workspace-token" content="${token}">${css}</head><body><div id="workspace-root"></div><script type="module" src="/${manifest.entry.javascript}"></script></body></html>`;
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
@@ -242,6 +273,14 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
     get origin() { return origin; },
     frame(rootId, rel, wireId) {
       return origin && wires.get(`${rootId}:${rel}`) === wireId ? { wireId, shellOrigin: origin } : null;
+    },
+    entryUrl(rootId) {
+      if (!origin || !(settings().roots || []).some(root => root.id === rootId)) return null;
+      const now = Date.now();
+      for (const [ticket, entry] of entries) if (entry.expires < now) entries.delete(ticket);
+      const ticket = crypto.randomBytes(32).toString('base64url');
+      entries.set(ticket, { rootId, expires: now + ENTRY_TTL_MS });
+      return `${origin}/enter?ticket=${ticket}`;
     },
     rootsChanged() {
       const current = new Map((settings().roots || []).map(root => [root.id, root.path]));
@@ -292,6 +331,7 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
       autoNamer?.close();
       for (const res of subscribers) res.end();
       subscribers.clear();
+      entries.clear();
       if (server) await new Promise(resolve => server.close(resolve));
       server = null;
       origin = null;

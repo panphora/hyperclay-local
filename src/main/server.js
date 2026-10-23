@@ -3599,8 +3599,14 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         // A malformed `%` throws URIError, which decodeOnce turns into a 400.
         const urlPath = decodeOnce(req.path);
 
-        // Root always shows directory listing
+        // The root opens the workspace. The listing stays as the fallback when the
+        // workspace cannot start, and for every folder below the root.
         if (urlPath === '/') {
+          const entry = ctx.workspaceEntry ? await ctx.workspaceEntry(ctx.root.id) : null;
+          if (entry) {
+            res.set('Cache-Control', 'no-store');
+            return res.redirect(302, entry);
+          }
           return await serveDirListing(res, paths.baseReal, paths.baseReal);
         }
 

@@ -83,3 +83,52 @@ test('token stays out of document HTML, URLs, and console output', async () => {
     expect(JSON.stringify(log.mock.calls) + JSON.stringify(error.mock.calls)).not.toContain(h.shell.token);
   } finally { log.mockRestore(); error.mockRestore(); }
 });
+
+test('entryUrl answers a one-time link for a known root and nothing before start or for an unknown one', async () => {
+  h = await fixture();
+  expect(h.shell.entryUrl('root-a')).toBeNull();
+  await h.start();
+  const entry = h.shell.entryUrl('root-a');
+  expect(entry).toMatch(new RegExp(`^${h.shell.origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/enter\\?ticket=[A-Za-z0-9_-]+$`));
+  expect(h.shell.entryUrl('no-such-root')).toBeNull();
+});
+
+test('a ticket enters the workspace, sets the session cookie, and is spent once', async () => {
+  h = await fixture();
+  await h.start();
+  const entry = h.shell.entryUrl('root-a');
+  const response = await fetch(entry, { redirect: 'manual' });
+  expect(response.status).toBe(302);
+  expect(response.headers.get('location')).toBe('/roots/root-a/files');
+  expect(response.headers.get('cache-control')).toBe('no-store');
+  const cookie = response.headers.get('set-cookie');
+  const port = new URL(h.shell.origin).port;
+  expect(cookie).toContain(`hyperclay-workspace-${port}=`);
+  expect(cookie).toContain('HttpOnly');
+  expect(cookie).toContain('SameSite=Lax');
+  expect(cookie).toContain('Path=/');
+
+  expect((await fetch(entry, { redirect: 'manual' })).status).toBe(403);
+  expect((await fetch(`${h.shell.origin}/enter?ticket=made-up`, { redirect: 'manual' })).status).toBe(403);
+
+  const spent = await h.shell.entryUrl('root-a');
+  const now = Date.now();
+  const clock = jest.spyOn(Date, 'now').mockReturnValue(now + 60_001);
+  try {
+    expect((await fetch(spent, { redirect: 'manual' })).status).toBe(403);
+  } finally { clock.mockRestore(); }
+});
+
+test('the session cookie serves the workspace page with the token and only for the right value', async () => {
+  h = await fixture();
+  await h.start();
+  const entry = await fetch(h.shell.entryUrl('root-a'), { redirect: 'manual' });
+  const cookie = entry.headers.get('set-cookie').split(';')[0];
+  const page = await fetch(`${h.shell.origin}/roots/root-a/files`, { headers: { Cookie: cookie } });
+  expect(page.status).toBe(200);
+  expect(await page.text()).toContain(`<meta name="workspace-token" content="${h.shell.token}">`);
+  const port = new URL(h.shell.origin).port;
+  expect((await fetch(`${h.shell.origin}/roots/root-a/files`,
+    { headers: { Cookie: `hyperclay-workspace-${port}=wrong` } })).status).toBe(403);
+  expect((await fetch(`${h.shell.origin}/roots/root-a/files`)).status).toBe(403);
+});

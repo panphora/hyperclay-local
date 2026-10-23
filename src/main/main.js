@@ -126,6 +126,15 @@ const pool = new RootServerPool({
   localAuthority,
   localCheckpoint,
   workspaceFrame: (rootId, rel, wireId) => shellServer.frame(rootId, rel, wireId),
+  workspaceEntry: async (rootId) => {
+    try {
+      await shellServer.start();
+      return shellServer.entryUrl(rootId);
+    } catch (error) {
+      console.error('[workspace] Could not open the workspace for a browser:', error.message);
+      return null;
+    }
+  },
 });
 
 const shellServer = createShellServer({
