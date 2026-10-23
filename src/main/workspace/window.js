@@ -1,6 +1,7 @@
 const path = require('upath');
 const { offlineSession, protocolMismatch } = require('./offline-session');
 const { isAllowedExternalUrl } = require('../ui/main-ipc');
+const { getConsentRegistry, resolveReadPath } = require('../utils/path-resolver');
 
 const GRANTED = new Set(['clipboard-sanitized-write', 'fullscreen']);
 
@@ -41,6 +42,15 @@ function createWorkspaceWindow({ electron = require('electron'), shellServer, ro
   ipcMain.handle('workspace-open-external', (event, url) => {
     if (!trusted(event)) return { ok: false, error: 'forbidden' };
     return isAllowedExternalUrl(url) || isRoot(url) ? open(url) : external(url);
+  });
+  ipcMain.handle('workspace-show-in-folder', async (event, { rootId, path: rel } = {}) => {
+    if (!trusted(event)) return { ok: false, error: 'forbidden' };
+    const root = roots().find(item => item.id === rootId);
+    if (!root || typeof rel !== 'string' || !rel) return { ok: false, error: 'unknown' };
+    try {
+      shell.showItemInFolder(await resolveReadPath(getConsentRegistry(root.path), rel));
+      return { ok: true };
+    } catch { return { ok: false, error: 'missing' }; }
   });
   ipcMain.handle('workspace-flush-result', (event, result) => trusted(event) ? onFlushResult(result) : false);
   ipcMain.on('workspace-flush-listener', (event, added) => {

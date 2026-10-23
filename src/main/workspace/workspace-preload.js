@@ -22,4 +22,5 @@ contextBridge.exposeInMainWorld('workspaceNative', {
   onPermissionRefused: callback => listen('workspace-permission-refused', callback),
   flushResult: result => ipcRenderer.invoke('workspace-flush-result', result),
   openExternal: url => ipcRenderer.invoke('workspace-open-external', url),
+  showInFolder: (rootId, path) => ipcRenderer.invoke('workspace-show-in-folder', { rootId, path }),
 });

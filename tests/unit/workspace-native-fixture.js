@@ -11,6 +11,7 @@ function nativeFixture(overrides = {}) {
   const ipcMain = { handle: (name, handler) => handlers.set(name, handler), on: (name, handler) => handlers.set(name, handler) };
   const dock = { show: jest.fn(), hide: jest.fn() };
   const external = jest.fn();
+  const reveal = jest.fn();
   class FakeWindow extends EventEmitter {
     constructor(options) {
       super();
@@ -33,11 +34,11 @@ function nativeFixture(overrides = {}) {
     start: jest.fn(async () => { shellServer.origin = 'http://127.0.0.1:7000'; }) };
   const roots = [{ id: 'root-a', port: 4321, state: 'running' }];
   const workspace = createWorkspaceWindow({
-    electron: { BrowserWindow: FakeWindow, ipcMain, app: { dock }, shell: { openExternal: external } },
+    electron: { BrowserWindow: FakeWindow, ipcMain, app: { dock }, shell: { openExternal: external, showItemInFolder: reveal } },
     shellServer, roots: () => roots, sessionForWindow: () => session, mismatch: () => false,
     platform: 'darwin', ...overrides,
   });
-  return { workspace, windows, session, handlers, dock, external, shellServer, roots };
+  return { workspace, windows, session, handlers, dock, external, reveal, shellServer, roots };
 }
 
 module.exports = { nativeFixture };
