@@ -134,6 +134,7 @@ describe('release.js wiring', () => {
       flags: { skipUiPass: skip, noInstall },
       colors: { cyan: '', reset: '' },
       AbortController,
+      spawnSync: jest.fn(() => ({ status: 0 })),
       process: { chdir: jest.fn(), once: jest.fn(), removeListener: jest.fn() },
       console: { log: jest.fn() },
       initLog: jest.fn(),
