@@ -1,6 +1,6 @@
 const fs = require('fs');
 const os = require('os');
-const path = require('path');
+const path = require('upath');
 const { nativeFixture } = require('./workspace-native-fixture');
 
 test('only the owned shell main frame can answer a flush or open an external link', async () => {
@@ -23,7 +23,7 @@ test('only the owned shell main frame can answer a flush or open an external lin
 
 test('show in folder reveals only a file inside a registered root, for the shell main frame', async () => {
   const h = nativeFixture();
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reveal-')));
+  const dir = path.resolve(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'reveal-'))));
   fs.mkdirSync(path.join(dir, 'Notes'));
   fs.writeFileSync(path.join(dir, 'Notes', 'a.html'), '<p>a</p>');
   h.roots[0].path = dir;

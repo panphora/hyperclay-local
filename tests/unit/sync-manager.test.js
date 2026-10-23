@@ -71,6 +71,7 @@ jest.mock('../../src/sync-engine/engine-sse', () => ({
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const upath = require('upath');
 const eventsource = require('eventsource');
 const sse = require('../../src/sync-engine/engine-sse');
 const { SessionRunner } = require('../../src/sync-engine/reconcile/session-runner');
@@ -386,7 +387,7 @@ describe('SyncManager sessions', () => {
     await manager.start(sessionA, rootA);
 
     expect(localAuthority.registerRoot).toHaveBeenCalledWith(
-      { ...rootA, canonicalPath: fs.realpathSync(rootA.path) },
+      { ...rootA, canonicalPath: upath.resolve(fs.realpathSync.native(rootA.path)) },
       { owner: sessionA.id },
     );
     expect(localAuthority.closeRoot).not.toHaveBeenCalled();
@@ -428,7 +429,7 @@ describe('SyncManager sessions', () => {
 
       expect(localAuthority.registerRoot).toHaveBeenCalledTimes(1);
       expect(localAuthority.registerRoot).toHaveBeenCalledWith(
-        { ...rootA, canonicalPath: fs.realpathSync(rootA.path) },
+        { ...rootA, canonicalPath: upath.resolve(fs.realpathSync.native(rootA.path)) },
         { owner: sessionA.id },
       );
       expect(manager.get(sessionA.id).isRunning).toBe(true);

@@ -6,6 +6,12 @@ const manifest = require('../../src/main/document-templates/manifest.json');
 const { splitPage } = require('@panphora/clayjs/server/rooms');
 const { readPageState } = require('../../src/main/page-state-store');
 
+async function nextChunk(reader) {
+  const { value, done } = await reader.read();
+  if (done) throw new Error('The event stream ended early');
+  return new TextDecoder().decode(value);
+}
+
 let h;
 afterEach(async () => { if (h) await h.close(); h = null; });
 
@@ -87,7 +93,7 @@ test('create publishes one changed event for its document path', async () => {
   expect(await command(request, { command: 'create', parent: '', name: 'new.html', template: 'blank' }))
     .toEqual({ status: 200, body: { path: 'new.html' } });
   let output = '';
-  while (!output.includes('"type":"changed"')) output += new TextDecoder().decode((await reader.read()).value);
+  while (!output.includes('"type":"changed"')) output += await nextChunk(reader);
   expect(output.split('\n').filter(line => line.includes('"type":"changed"'))).toHaveLength(1);
   expect(output).toContain('"paths":["new.html"]');
   await reader.cancel();

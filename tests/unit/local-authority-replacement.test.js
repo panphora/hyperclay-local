@@ -2,7 +2,7 @@ const { liveTags } = require('@panphora/clayjs/server/rooms');
 const { compatibleContinuation, renderRecovered } = require('../../src/main/external-recovery');
 const fs = require('fs');
 const os = require('os');
-const path = require('path');
+const path = require('upath');
 const { createRooms, splitPage } = require('@panphora/clayjs/server/rooms');
 const { createLocalAuthority } = require('../../src/main/local-authority');
 const { RootObserver } = require('../../src/main/root-observer');
@@ -51,7 +51,7 @@ describe('external replacement of a dirty room', () => {
   let opened;
 
   beforeEach(async () => {
-    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'local-recovery-')));
+    dir = path.resolve(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'local-recovery-'))));
     file = path.join(dir, 'page.html');
     fs.writeFileSync(file, baseline);
     rooms = createRooms({});
@@ -125,7 +125,7 @@ describe('external replacement of a dirty room', () => {
   });
 
   test('every registered alias history receives one recovered copy and its own notice', async () => {
-    const aliasRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'local-recovery-second-')));
+    const aliasRoot = path.resolve(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'local-recovery-second-'))));
     const notices = [];
     authority.registerRoot({ id: 'root-b', path: aliasRoot, canonicalPath: aliasRoot }, { owner: 'server' });
     fs.symlinkSync(file, path.join(aliasRoot, 'alias.html'));
@@ -307,7 +307,7 @@ describe('external replacement of a dirty room', () => {
   });
 
   test('removing a symlink alias leaves the external room and its other root intact', async () => {
-    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'local-recovery-alias-')));
+    const outside = path.resolve(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'local-recovery-alias-'))));
     const external = path.join(outside, 'shared.html');
     const alias = path.join(dir, 'alias.html');
     fs.writeFileSync(external, baseline);
@@ -380,7 +380,7 @@ describe('a stale page copy written over a dirty room', () => {
   let observed;
 
   beforeEach(async () => {
-    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'local-stale-page-')));
+    dir = path.resolve(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'local-stale-page-'))));
     file = path.join(dir, 'article.html');
     // Two versions of the page, block a changed between them.
     fs.writeFileSync(file, await storePageState(dir, 'article.html', older.html));

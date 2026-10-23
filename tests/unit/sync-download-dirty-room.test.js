@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const os = require('node:os');
-const path = require('node:path');
+const path = require('upath');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 
@@ -37,7 +37,7 @@ const listHtml = dir => fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes
 }) : [];
 
 async function run(mode, withRecord) {
-  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), `${mode}-${withRecord ? 'record' : 'missing'}-`));
+  const dir = path.resolve(fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), `${mode}-${withRecord ? 'record' : 'missing'}-`)));
   const file = path.join(dir, 'article.html');
   const fixture = pageFixture('abc');
   const next = pageFixture('xyz');
@@ -82,6 +82,10 @@ async function run(mode, withRecord) {
   expect(rooms.get(file)).not.toBe(room);
   fs.rmSync(dir, { recursive: true, force: true });
 }
+
+// Each case drives real rooms, and the first one pays for loading them; 5 s is too
+// tight for that on a busy Windows runner.
+jest.setTimeout(30000);
 
 describe('a page downloaded over a room with unsaved edits', () => {
   for (const mode of ['download', 'sse', 'reconcile']) {

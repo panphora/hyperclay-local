@@ -35,12 +35,10 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           npm-version: ${{ env.NPM_VERSION }}
 
-      # Serial, though both reasons for it are now fixed: the GC segfault was V8 13.6,
-      # which is every Node 24, and the "fails intermittently, passes in isolation"
-      # flakiness was supertest binding its test servers on the wildcard address
-      # (tests/helpers/loopback.js). Kept for one release so that a CI failure means
-      # the code rather than the move to Node 26. Drop the flag once that holds.
-      - run: npm run test:app -- --runInBand
+      # Parallel. Serial ran every file in one process, so whatever a file left open
+      # piled up until late files missed their timeouts, and Windows outgrew the job's
+      # 25 minutes.
+      - run: npm run test:app
 
   # The conformance gate drives the Malleable HTML File host-test page against a real
   # listener, in a browser, from the host's own origin. That origin is the point: the

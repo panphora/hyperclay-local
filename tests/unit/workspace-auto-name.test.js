@@ -154,7 +154,7 @@ test('the authority confirms its own atomic save to the auto namer', async () =>
   expect(namer.entries.size).toBe(1);
   await namer.observe(root, 'change', 'untitled.html');
   expect(namer.entries.size).toBe(1);
-  expect([...namer.entries.values()][0].fileIdentity.ino).toBe(String((await fs.stat(file)).ino));
+  expect([...namer.entries.values()][0].fileIdentity.ino).toBe(String((await fs.stat(file, { bigint: true })).ino));
   await namer.settle(file);
   expect(rename).toHaveBeenCalledTimes(1);
   expect(await fs.readFile(path.join(dir, 'updated.html'), 'utf8')).toBe(updated);

@@ -1,5 +1,5 @@
 const fs = require('fs').promises;
-const path = require('path');
+const path = require('upath');
 const { RootTree } = require('../../src/main/workspace/tree');
 const { RootServer } = require('../../src/main/root-servers');
 const { fixture } = require('./workspace-fixture');
@@ -19,7 +19,7 @@ test('subscribes before the disk walk and applies a change during the walk', asy
   const original = fs.readdir;
   let fired = false;
   fs.readdir = async (...args) => {
-    if (!fired && args[0] === h.dir) {
+    if (!fired && path.resolve(String(args[0])) === path.resolve(h.dir)) {
       fired = true;
       const names = await original(...args);
       await fs.writeFile(path.join(h.dir, 'new.html'), '<html>new</html>');

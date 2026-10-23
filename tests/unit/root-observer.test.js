@@ -2,7 +2,7 @@
 // generous timeouts — the truncate-then-write window and the quiet publish are
 // time behavior, so they are exercised against the clock, not fake timers.
 const fs = require('fs').promises;
-const path = require('path');
+const path = require('upath');
 const os = require('os');
 
 jest.mock('../../src/main/data-loss-guard', () => ({
@@ -47,7 +47,7 @@ describe('RootObserver', () => {
   const file = (name) => path.join(dir, name);
 
   beforeEach(async () => {
-    dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'root-observer-')));
+    dir = path.resolve(await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'root-observer-'))));
     browserSaves = new Set();
     live = {
       notify: jest.fn(),
@@ -279,7 +279,7 @@ describe('RootObserver with a local authority', () => {
   };
 
   beforeEach(async () => {
-    dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'root-observer-authority-')));
+    dir = path.resolve(await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'root-observer-authority-'))));
     authority = createLocalAuthority({ withDocument: withDocumentWrite });
     changes = [];
     removes = [];

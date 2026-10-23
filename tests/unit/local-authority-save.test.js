@@ -23,7 +23,8 @@ jest.mock('livesync-hyperclay', () => ({
 const fs = require('fs');
 const fsp = fs.promises;
 const os = require('os');
-const path = require('path');
+const path = require('upath');
+const { testPosix } = require('../helpers/platform');
 const request = require('supertest');
 
 const { liveSync } = require('livesync-hyperclay');
@@ -40,7 +41,7 @@ const PAGE = (value) => `<!DOCTYPE html><html><body><script type="application/js
 
 const dirs = [];
 function tempDir() {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'auth-save-')));
+  const dir = path.resolve(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'auth-save-'))));
   dirs.push(dir);
   return dir;
 }
@@ -594,7 +595,7 @@ describe('B3a: the browser save through the shared boundary', () => {
     expect(renames).toBeGreaterThanOrEqual(2);
   });
 
-  test('a first save the disk refuses leaves no authority identity or binding', async () => {
+  testPosix('a first save the disk refuses leaves no authority identity or binding', async () => {
     const h = harness();
     const sub = path.join(h.dir, 'sub');
     const target = path.join(sub, 'new.html');

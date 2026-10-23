@@ -6,6 +6,7 @@ const http = require('http');
 const net = require('net');
 const path = require('path');
 const os = require('os');
+const upath = require('upath');
 
 jest.mock('../../src/main/utils/data-extractor', () => ({
   extractData: jest.fn(),
@@ -237,7 +238,7 @@ describe('C1.5: one root, one server, one saved port', () => {
       await server.start();
 
       expect(localAuthority.registerRoot).toHaveBeenCalledWith({
-        id: 'personal-root', kind: 'personal', path: personalDir, port, canonicalPath: personalDir,
+        id: 'personal-root', kind: 'personal', path: personalDir, port, canonicalPath: upath.resolve(personalDir),
       });
       expect(localAuthority.closeRoot).not.toHaveBeenCalled();
 
@@ -274,7 +275,7 @@ describe('C1.5: one root, one server, one saved port', () => {
       expect(localAuthority.calls.register).toBe(1);
       expect(events).toEqual(['register:personal-root']);
       expect(localAuthority.roots.get('personal-root')).toEqual({
-        id: 'personal-root', kind: 'personal', path: personalDir, port, canonicalPath: personalDir,
+        id: 'personal-root', kind: 'personal', path: personalDir, port, canonicalPath: upath.resolve(personalDir),
       });
       expect(server.state).toBe('running');
       expect(server.server.address().port).toBe(port);

@@ -11,7 +11,7 @@
 const http = require('http');
 const fs = require('fs').promises;
 const os = require('os');
-const path = require('path');
+const path = require('upath');
 const { EventEmitter } = require('events');
 
 const { createRooms } = require('@panphora/clayjs/server/rooms');
@@ -275,7 +275,7 @@ const open = async (fixture, target) => {
 };
 
 beforeEach(async () => {
-  dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'live-data-shared-')));
+  dir = path.resolve(await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'live-data-shared-'))));
   await fs.writeFile(path.join(dir, FILE), DOC(0));
   fixtures = [];
   streams = [];

@@ -10,7 +10,7 @@ jest.mock('../../src/main/data-loss-guard', () => ({
 
 const fsSync = require('fs');
 const fs = require('fs').promises;
-const path = require('path');
+const path = require('upath');
 const os = require('os');
 const { execFileSync } = require('child_process');
 const request = require('supertest');
@@ -75,7 +75,7 @@ describe('a page document is stored clean and read composed', () => {
   };
 
   beforeEach(async () => {
-    dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'page-state-save-')));
+    dir = path.resolve(await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'page-state-save-'))));
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -400,8 +400,8 @@ describe('a rebase reads its history from inside the folder only', () => {
 
   beforeEach(async () => {
     jest.spyOn(console, 'error').mockImplementation(() => {});
-    dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'page-rebase-symlink-')));
-    outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'page-rebase-outside-')));
+    dir = path.resolve(await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'page-rebase-symlink-'))));
+    outside = path.resolve(await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'page-rebase-outside-'))));
     await write(dir);
     await fs.writeFile(path.join(outside, '2026-01-01-00-00-00-000+0000.html'), version('old-rev', { text: 'base' }));
   });

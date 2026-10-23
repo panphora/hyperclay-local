@@ -1,6 +1,6 @@
 const fs = require('node:fs/promises');
 const os = require('node:os');
-const path = require('node:path');
+const path = require('upath');
 const assert = require('node:assert/strict');
 const { splitPage } = require('@panphora/clayjs/server/rooms');
 const { createBackup } = require('../../src/main/utils/backup');
@@ -29,7 +29,7 @@ function typeMore(value) {
 // An outside edit the open room keeps waits for a tab to merge it in. Until then
 // the room's unsaved edits get a recovered copy holding them, not the outside edit.
 async function run(mode, { second = false } = {}) {
-  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), `outside-edit-${mode}-`)));
+  const dir = path.resolve(await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), `outside-edit-${mode}-`))));
   const file = path.join(dir, 'A.html');
   const older = pageFixture('abc');
   const stored = pageFixture('xyz');
@@ -95,6 +95,10 @@ async function run(mode, { second = false } = {}) {
     expect(after.some((html) => html.includes('outside<'))).toBe(false);
   } finally { await server.stop(); await fs.rm(dir, { recursive: true, force: true }); }
 }
+
+// Each case drives real rooms, and the first one pays for loading them; 5 s is too
+// tight for that on a busy Windows runner.
+jest.setTimeout(30000);
 
 describe('an outside edit over a dirty room keeps its unsaved edits as a recovered copy', () => {
   test('a save at the current revision', () => run('same-rev-save'));

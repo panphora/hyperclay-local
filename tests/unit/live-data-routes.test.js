@@ -12,7 +12,7 @@
 const http = require('http');
 const fs = require('fs').promises;
 const os = require('os');
-const path = require('path');
+const path = require('upath');
 
 const { createRooms } = require('@panphora/clayjs/server/rooms');
 const { liveSync } = require('livesync-hyperclay');
@@ -239,7 +239,7 @@ const open = async (fixture, clientId, lane = 'live') => {
 };
 
 beforeEach(async () => {
-  dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'live-data-routes-')));
+  dir = path.resolve(await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'live-data-routes-'))));
   await fs.writeFile(path.join(dir, FILE), DOC(0));
   fixtures = [];
   aliases = [];

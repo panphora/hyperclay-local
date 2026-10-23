@@ -49,6 +49,9 @@ const os = require('os');
 const nodePath = require('path');
 const upath = require('upath');
 
+// The sync folder as the engine resolves it: '/test/sync' on POSIX, a drive-qualified path on Windows.
+const ROOT = upath.resolve('/test/sync');
+
 jest.mock('../../src/sync-engine/file-operations');
 jest.mock('../../src/sync-engine/utils', () => {
   const actual = jest.requireActual('../../src/sync-engine/utils');
@@ -75,7 +78,7 @@ function checksum(content) {
   return crypto.createHash('sha256').update(content).digest('hex').substring(0, 16);
 }
 
-const localFile = (rel) => ({ path: `/test/sync/${rel}`, relativePath: rel, mtime: new Date('2024-01-01'), size: 100 });
+const localFile = (rel) => ({ path: `${ROOT}/${rel}`, relativePath: rel, mtime: new Date('2024-01-01'), size: 100 });
 
 // A list carrying `complete: true` promises it is the whole inventory; only such
 // a list may ever justify a local delete (protocol 2).
@@ -89,7 +92,7 @@ const node = (id, type, name, dir, parentId, etag) => (etag === undefined
   ? { id, type, name, path: dir, parentId }
   : { id, type, name, path: dir, parentId, etag });
 
-const localFolder = (rel) => [rel, { fullPath: `/test/sync/${rel}` }];
+const localFolder = (rel) => [rel, { fullPath: `${ROOT}/${rel}` }];
 
 const realBufferChecksum = jest.requireActual('../../src/sync-engine/file-operations').calculateBufferChecksum;
 const STUB_STAT = { mtime: new Date('2024-01-01'), mtimeMs: 1704067200000, size: 100, mode: 0o644 };
@@ -104,7 +107,7 @@ beforeEach(() => {
     syncEngine = new SyncEngine();
   });
 
-  syncEngine.syncFolder = '/test/sync';
+  syncEngine.syncFolder = ROOT;
   syncEngine.serverUrl = 'http://localhyperclay.com';
   syncEngine.apiKey = 'hcsk_test';
   syncEngine.isRunning = true;
@@ -246,7 +249,7 @@ describe('performInitialFolderSync — an offline folder delete propagates (bug 
     ]), { generation: 1 });
 
     expect(apiClient.deleteNode).not.toHaveBeenCalledWith(expect.anything(), 10, expect.anything());
-    expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/proj');
+    expect(fileOps.ensureDirectory).toHaveBeenCalledWith(`${ROOT}/proj`);
     expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 11);
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
     expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 13);
@@ -271,8 +274,8 @@ describe('performInitialFolderSync — an offline folder delete propagates (bug 
     ]), { generation: 1 });
 
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
-    expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/proj');
-    expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/proj/sub');
+    expect(fileOps.ensureDirectory).toHaveBeenCalledWith(`${ROOT}/proj`);
+    expect(fileOps.ensureDirectory).toHaveBeenCalledWith(`${ROOT}/proj/sub`);
     expect(syncEngine.repo.has('12')).toBe(true);
     expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 13);
   });
@@ -294,7 +297,7 @@ describe('performInitialFolderSync — an offline folder delete propagates (bug 
       node(14, 'site', 'new.html', 'proj', 10, 'new-etag')
     ]), { generation: 1 });
 
-    expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/proj');
+    expect(fileOps.ensureDirectory).toHaveBeenCalledWith(`${ROOT}/proj`);
     expect(apiClient.deleteNode).not.toHaveBeenCalledWith(expect.anything(), 10, expect.anything());
     expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 14);
   });
@@ -309,7 +312,7 @@ describe('performInitialFolderSync — a pass that may not delete', () => {
     await syncEngine.reconcileAll(offlineDeletedInventory(), { generation: 1, bootstrap: true });
 
     expect(apiClient.deleteNode).not.toHaveBeenCalledWith(expect.anything(), 10, expect.anything());
-    expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/proj');
+    expect(fileOps.ensureDirectory).toHaveBeenCalledWith(`${ROOT}/proj`);
   });
 
   test('a first pass (no lastSyncedAt) restores the folder instead of deleting it', async () => {
@@ -321,7 +324,7 @@ describe('performInitialFolderSync — a pass that may not delete', () => {
     await syncEngine.reconcileAll(offlineDeletedInventory(), { generation: 1 });
 
     expect(apiClient.deleteNode).not.toHaveBeenCalledWith(expect.anything(), 10, expect.anything());
-    expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/proj');
+    expect(fileOps.ensureDirectory).toHaveBeenCalledWith(`${ROOT}/proj`);
   });
 
   test('a legacy list forgets and deletes nothing', async () => {
@@ -358,13 +361,13 @@ describe('performInitialFolderSync — a pass that may not delete', () => {
 
 describe('performInitialFolderSync — creating and relocating folders', () => {
   test('a new server folder is created locally, cascade-marked and tracked', async () => {
-    fileOps.ensureDirectory.mockResolvedValue('/test/sync/new');
+    fileOps.ensureDirectory.mockResolvedValue(`${ROOT}/new`);
 
     await syncEngine.performInitialFolderSync([
       node(20, 'folder', 'new', '', 0)
     ]);
 
-    expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/new');
+    expect(fileOps.ensureDirectory).toHaveBeenCalledWith(`${ROOT}/new`);
     expect(syncEngine.cascade.consume('new')).toBe(true);
     expect(syncEngine.repo.get('20')).toMatchObject({ type: 'folder', path: 'new', parentId: 0 });
   });
@@ -437,7 +440,7 @@ describe('performInitialFolderSync — a rename without a usable inode is recogn
 
   // The real fileExists is synchronous and the root check reads it too; answers are per path.
   function existingPaths(paths) {
-    fileOps.fileExists.mockImplementation((p) => p === '/test/sync' || paths.includes(p));
+    fileOps.fileExists.mockImplementation((p) => p === ROOT || paths.includes(p));
   }
 
   function inventory() {
@@ -450,7 +453,7 @@ describe('performInitialFolderSync — a rename without a usable inode is recogn
   test('two lookalike candidates are no evidence: the decision path runs', async () => {
     seedFolderWithoutInode();
     fileOps.getLocalFolders.mockResolvedValue(new Map([localFolder('renamed'), localFolder('copy')]));
-    existingPaths(['/test/sync/renamed/p.html', '/test/sync/copy/p.html']);
+    existingPaths([`${ROOT}/renamed/p.html`, `${ROOT}/copy/p.html`]);
 
     await syncEngine.performInitialFolderSync(inventory());
 
@@ -462,8 +465,8 @@ describe('performInitialFolderSync — a rename without a usable inode is recogn
   test('a changed file is not a match', async () => {
     seedFolderWithoutInode();
     fileOps.getLocalFolders.mockResolvedValue(new Map([localFolder('renamed')]));
-    existingPaths(['/test/sync/renamed/p.html']);
-    fileOps.readFile.mockImplementation(async (p) => (p === '/test/sync/renamed/p.html'
+    existingPaths([`${ROOT}/renamed/p.html`]);
+    fileOps.readFile.mockImplementation(async (p) => (p === `${ROOT}/renamed/p.html`
       ? '<html>changed</html>'
       : '<html>content</html>'));
 
@@ -503,8 +506,8 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
     await syncEngine.reconcileAll(uploadsInventory(), { generation: 1 });
 
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
-    expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/uploads');
-    expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/uploads/assets-a');
+    expect(fileOps.ensureDirectory).toHaveBeenCalledWith(`${ROOT}/uploads`);
+    expect(fileOps.ensureDirectory).toHaveBeenCalledWith(`${ROOT}/uploads/assets-a`);
     expect(apiClient.getNodeContent).toHaveBeenCalledWith(expect.anything(), 12);
     expect(syncEngine.repo.has('10')).toBe(true);
     expect(syncEngine.repo.has('12')).toBe(true);
@@ -516,8 +519,8 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
     fileOps.getLocalFiles.mockResolvedValue(new Map());
     fileOps.getLocalUploads.mockResolvedValue(new Map());
     gone();
-    nodeMapModule.getInode.mockImplementation(async (p) => (p === '/test/sync/elsewhere' ? '222:1' : 12345));
-    fileOps.fileExists.mockImplementation((p) => p !== '/test/sync/uploads');
+    nodeMapModule.getInode.mockImplementation(async (p) => (p === `${ROOT}/elsewhere` ? '222:1' : 12345));
+    fileOps.fileExists.mockImplementation((p) => p !== `${ROOT}/uploads`);
 
     const rename = jest.spyOn(require('fs').promises, 'rename').mockRejectedValue(new Error('EACCES'));
 
@@ -525,7 +528,7 @@ describe('performInitialFolderSync — the locked root uploads folder', () => {
 
     expect(apiClient.renameNode).not.toHaveBeenCalled();
     expect(apiClient.deleteNode).not.toHaveBeenCalled();
-    expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/uploads');
+    expect(fileOps.ensureDirectory).toHaveBeenCalledWith(`${ROOT}/uploads`);
 
     rename.mockRestore();
   });

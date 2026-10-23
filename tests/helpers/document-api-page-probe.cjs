@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
-const path = require('node:path');
+const path = require('upath');
 const request = require('supertest');
 const { createApp } = require('../../src/main/server');
 const { createLocalAuthority } = require('../../src/main/local-authority');
@@ -11,7 +11,7 @@ const { logicalDocument } = require('../../src/main/page-state-store');
 const { pageFixture } = require('./page-fixture');
 
 async function run() {
-  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'local-page-api-')));
+  const dir = path.resolve(await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'local-page-api-'))));
   const file = path.join(dir, 'doc.html');
   const fixture = pageFixture();
   await fs.writeFile(file, fixture.html);

@@ -38,7 +38,7 @@ jest.mock('../../src/sync-engine/api-client');
 const fs = require('fs');
 const fsp = fs.promises;
 const os = require('os');
-const path = require('path');
+const path = require('upath');
 const request = require('supertest');
 
 const { liveSync } = require('livesync-hyperclay');
@@ -69,7 +69,7 @@ const STYLED = (value) => '<!DOCTYPE html><html><head>'
 const dirs = [];
 
 function tempDir() {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'auth-schedules-')));
+  const dir = path.resolve(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'auth-schedules-'))));
   dirs.push(dir);
   return dir;
 }

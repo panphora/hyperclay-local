@@ -1,6 +1,6 @@
 const fs = require('fs');
 const os = require('os');
-const path = require('path');
+const path = require('upath');
 const request = require('supertest');
 const { splitPage, createRooms } = require('@panphora/clayjs/server/rooms');
 const { createApp } = require('../../src/main/server.js');
@@ -17,7 +17,7 @@ const NAME = 'article.html';
 
 async function run() {
   dataGuard.runDataLossGuard = async () => null;
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'save-page-replacement-')));
+  const dir = path.resolve(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'save-page-replacement-'))));
   const file = path.join(dir, NAME);
   const fixture = pageFixture('abc');
   fs.writeFileSync(file, await storePageState(dir, NAME, fixture.html));

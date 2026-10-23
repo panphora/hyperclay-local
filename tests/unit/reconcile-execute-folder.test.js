@@ -62,6 +62,9 @@ const STUB_STAT = { mtime: new Date('2024-01-01'), mtimeMs: 1704067200000, size:
 
 const { executeDecision } = require('../../src/sync-engine/reconcile/execute');
 
+// The sync folder as the engine resolves it: '/test/sync' on POSIX, a drive-qualified path on Windows.
+const ROOT = require('upath').resolve('/test/sync');
+
 let syncEngine;
 
 beforeEach(() => {
@@ -72,7 +75,7 @@ beforeEach(() => {
     syncEngine = new SyncEngine();
   });
 
-  syncEngine.syncFolder = '/test/sync';
+  syncEngine.syncFolder = ROOT;
   syncEngine.serverUrl = 'http://localhyperclay.com';
   syncEngine.apiKey = 'hcsk_test';
   syncEngine.isRunning = true;
@@ -119,12 +122,12 @@ beforeEach(() => {
 
 describe('executeDecision — a folder download', () => {
   test('creates the directory (cascade-marked) and records the folder in the node map', async () => {
-    fileOps.ensureDirectory.mockResolvedValue('/test/sync/proj');
+    fileOps.ensureDirectory.mockResolvedValue(`${ROOT}/proj`);
 
     const result = await executeDecision(syncEngine, '10', { action: 'download' }, { path: 'proj', type: 'folder', parentId: 0 });
 
     expect(result.action).toBe('download');
-    expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/proj');
+    expect(fileOps.ensureDirectory).toHaveBeenCalledWith(`${ROOT}/proj`);
     expect(syncEngine.cascade.consume('proj')).toBe(true);
     expect(syncEngine.repo.get('10')).toEqual({ type: 'folder', path: 'proj', parentId: 0, inode: null });
     expect(apiClient.getNodeContent).not.toHaveBeenCalled();
@@ -137,7 +140,7 @@ describe('executeDecision — a folder download', () => {
 
     await executeDecision(syncEngine, '10', { action: 'download' }, { path: 'moved/proj', type: 'folder', parentId: 7 });
 
-    expect(fileOps.ensureDirectory).toHaveBeenCalledWith('/test/sync/moved/proj');
+    expect(fileOps.ensureDirectory).toHaveBeenCalledWith(`${ROOT}/moved/proj`);
     expect(syncEngine.repo.get('10').path).toBe('moved/proj');
     expect(syncEngine.repo.get('10').parentId).toBe(7);
   });

@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
-const path = require('node:path');
+const path = require('upath');
 const { splitPage } = require('@panphora/clayjs/server/rooms');
 const { createBackup } = require('../../src/main/utils/backup');
 const { documentEtag } = require('../../src/main/spec-wire');
@@ -13,7 +13,7 @@ const { storePageState, readPageState, logicalBytes } = require('../../src/main/
 const { pageFixture } = require('./page-fixture');
 
 async function run() {
-  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-restore-page-room-')));
+  const dir = path.resolve(await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-restore-page-room-'))));
   const file = path.join(dir, 'A.html');
   const older = pageFixture('abc');
   const stored = pageFixture('xyz');

@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
-const path = require('node:path');
+const path = require('upath');
 const { publishRecoveredCopy } = require('../../src/main/utils/backup');
 const { documentEtag } = require('../../src/main/spec-wire');
 const { RootServer } = require('../../src/main/root-servers');
@@ -11,7 +11,7 @@ const { withDocumentWrite } = require('../../src/main/utils/write-queue');
 const { pageFixture } = require('./page-fixture');
 
 async function run() {
-  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-restore-room-')));
+  const dir = path.resolve(await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-restore-room-'))));
   const file = path.join(dir, 'A.html');
   const page = pageFixture();
   await fs.writeFile(file, page.html);

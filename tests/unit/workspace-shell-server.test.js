@@ -2,6 +2,12 @@ const fs = require('fs').promises;
 const http = require('http');
 const { fixture } = require('./workspace-fixture');
 
+async function nextChunk(reader) {
+  const { value, done } = await reader.read();
+  if (done) throw new Error('The event stream ended early');
+  return new TextDecoder().decode(value);
+}
+
 let h;
 afterEach(async () => { if (h) await h.close(); h = null; });
 
@@ -60,7 +66,7 @@ test('events carry one epoch and strictly increasing sequence and disconnect rel
   const reader = response.body.getReader();
   let text = '';
   while (text.split('\n').filter(line => line.startsWith('{')).length < 3) {
-    text += new TextDecoder().decode((await reader.read()).value);
+    text += await nextChunk(reader);
   }
   const events = text.split('\n').filter(line => line.startsWith('{')).map(JSON.parse);
   expect(events.map(event => event.type)).toEqual(['roots', 'connection', 'sync']);
@@ -168,7 +174,7 @@ test('a browser tab joins the flush through its events stream', async () => {
   h.shell.requestFlush('7:1');
   const reader = tab.body.getReader();
   let text = '';
-  while (!text.includes('flushRequest')) text += new TextDecoder().decode((await reader.read()).value);
+  while (!text.includes('flushRequest')) text += await nextChunk(reader);
   const lines = text.split('\n').filter(line => line.startsWith('{')).map(JSON.parse);
   expect(lines).toEqual([{ flushClient: '1' }, { flushRequest: '7:1' }]);
   const participants = [{ id: 'p', name: 'A.html', revision: 2, durable: true }];

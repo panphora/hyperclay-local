@@ -6,7 +6,7 @@
 
 const fs = require('fs');
 const os = require('os');
-const path = require('path');
+const path = require('upath');
 const http = require('http');
 
 const { createLocalAuthority } = require('../../src/main/local-authority');
@@ -77,7 +77,7 @@ afterEach(async () => {
 // A real served folder, the real document boundary, and a readSaved that reads
 // the real file and counts what it read.
 function setup() {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'live-admission-')));
+  const dir = path.resolve(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'live-admission-'))));
   dirs.push(dir);
   const canonical = path.join(dir, FILE);
   fs.writeFileSync(canonical, DOC(0));

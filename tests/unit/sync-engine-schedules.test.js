@@ -118,7 +118,9 @@ const fsScenario = require('../helpers/fs-scenario');
 const mockScenario = fsScenario;
 const { FakeServer, install } = require('../helpers/sync-fake-server');
 
-const SCHEDULES = Number(process.env.SCHEDULES || 60);
+// The schedules are deterministic per seed and platform-independent, so Windows, where
+// this file costs five minutes of CI, runs the first quarter; macOS and Linux run all 60.
+const SCHEDULES = Number(process.env.SCHEDULES || (process.platform === 'win32' ? 15 : 60));
 // Which lane a request came from. A call the live lane started before a pass
 // began keeps the live lane's context, so the pass is never blamed for it.
 const lane = new AsyncLocalStorage();

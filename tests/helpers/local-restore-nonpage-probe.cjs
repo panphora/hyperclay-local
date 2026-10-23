@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
-const path = require('node:path');
+const path = require('upath');
 const { publishRecoveredCopy } = require('../../src/main/utils/backup');
 const { documentEtag } = require('../../src/main/spec-wire');
 const { RootServer } = require('../../src/main/root-servers');
@@ -13,7 +13,7 @@ const current = '<!doctype html><html><head><script type="application/json" clay
 const recovered = '<!doctype html><html><head><script type="application/json" clay="live" merge="todos">{"items":["z"]}</script></head><body><ul></ul></body></html>';
 
 async function run() {
-  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'restore-nonpage-')));
+  const dir = path.resolve(await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'restore-nonpage-'))));
   const file = path.join(dir, 'todo.html');
   await fs.writeFile(file, current);
   const copy = await publishRecoveredCopy(dir, 'todo.html', recovered);

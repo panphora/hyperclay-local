@@ -1,6 +1,6 @@
 const fs = require('fs');
 const os = require('os');
-const path = require('path');
+const path = require('upath');
 const { createLocalAuthority } = require('../../src/main/local-authority');
 const { createLocalCheckpoint } = require('../../src/main/local-checkpoint');
 const { withDocumentWrite } = require('../../src/main/utils/write-queue');
@@ -8,7 +8,7 @@ const { pageFixture } = require('./page-fixture');
 const { storePageState, readPageState } = require('../../src/main/page-state-store');
 
 async function run() {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'l3-probe4-')));
+  const dir = path.resolve(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'l3-probe4-'))));
   const file = path.join(dir, 'doc.html');
   const fixture = pageFixture('abc');
   fs.writeFileSync(file, await storePageState(dir, 'doc.html', fixture.html));

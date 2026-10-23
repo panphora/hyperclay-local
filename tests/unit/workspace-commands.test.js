@@ -12,7 +12,7 @@ jest.mock('../../src/sync-engine/node-map', () => jest.requireActual('../../src/
 
 const fs = require('fs').promises;
 const os = require('os');
-const path = require('path');
+const path = require('upath');
 const { createLocalAuthority } = require('../../src/main/local-authority');
 const { withDocumentWrite, withStructureChange } = require('../../src/main/utils/write-queue');
 const { fixture } = require('./workspace-fixture');
@@ -140,7 +140,7 @@ test('renaming a document keeps the authority identity and emits one moved event
   const authority = createLocalAuthority({ withDocument: withDocumentWrite });
   h = await fixture({ authority, engine: { serial } });
   await fs.writeFile(path.join(h.dir, 'A.html'), '<html>A</html>');
-  const canonicalRoot = await fs.realpath(h.dir);
+  const canonicalRoot = path.resolve(await fs.realpath(h.dir));
   await withStructureChange(() => authority.registerRoot({ ...h.root, canonicalPath: canonicalRoot }));
   const oldPath = path.join(canonicalRoot, 'A.html');
   authority.bindTarget({ rootId: h.root.id, logicalPath: 'A.html', canonicalPath: oldPath, origin: null, live: null });
@@ -152,7 +152,11 @@ test('renaming a document keeps the authority identity and emits one moved event
   h.observer.emit('raw', { event: 'unlink', rel: 'A.html' });
   h.observer.emit('raw', { event: 'add', rel: 'B.html' });
   let stream = '';
-  while (!stream.includes('"type":"moved"')) stream += new TextDecoder().decode((await reader.read()).value);
+  while (!stream.includes('"type":"moved"')) {
+    const { value, done } = await reader.read();
+    if (done) throw new Error('The event stream ended before a moved event');
+    stream += new TextDecoder().decode(value);
+  }
   expect(stream.split('\n').filter(line => line.includes('"type":"moved"'))).toHaveLength(1);
   expect(stream).not.toContain('"type":"changed"');
   expect(serial).toHaveBeenCalledTimes(1);
@@ -164,7 +168,7 @@ test('renaming a document keeps the authority identity and emits one moved event
 test('create admits and confirms a new document through the authority writer', async () => {
   const authority = createLocalAuthority({ withDocument: withDocumentWrite });
   h = await fixture({ authority });
-  const canonicalRoot = await fs.realpath(h.dir);
+  const canonicalRoot = path.resolve(await fs.realpath(h.dir));
   await withStructureChange(() => authority.registerRoot({ ...h.root, canonicalPath: canonicalRoot }));
   const request = await h.start();
   expect(await command(request, { command: 'create', parent: null, name: 'New.html', template: 'blank' }))

@@ -82,7 +82,7 @@ const TAG = 'merge="page"';
 let root;
 let engine;
 
-const full = (rel) => nodePath.join(root, rel);
+const full = (rel) => upath.join(root, rel);
 const onDisk = (rel) => fsSync.readFileSync(full(rel), 'utf8');
 const writesOf = () => writeQueue.atomicWriteFile.mock.calls.map(([filePath]) => filePath);
 const indexOfWrite = (filePath) => writesOf().indexOf(filePath);
@@ -96,7 +96,7 @@ async function writePage(rel) {
 beforeEach(async () => {
   jest.clearAllMocks();
 
-  root = await fsp.realpath(await fsp.mkdtemp(nodePath.join(os.tmpdir(), 'page-state-sync-')));
+  root = upath.resolve(await fsp.realpath(await fsp.mkdtemp(nodePath.join(os.tmpdir(), 'page-state-sync-'))));
   const metaDir = nodePath.join(root, '.meta');
   await fsp.mkdir(metaDir);
 

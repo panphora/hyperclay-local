@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs/promises');
 const os = require('node:os');
-const path = require('node:path');
+const path = require('upath');
 const http = require('node:http');
 const request = require('supertest');
 const { createApp } = require('../../src/main/server');
@@ -12,7 +12,7 @@ const { withDocumentWrite, withStructureChange } = require('../../src/main/utils
 const { pageFixture } = require('./page-fixture');
 
 async function run() {
-  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'local-checkpoint-')));
+  const dir = path.resolve(await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'local-checkpoint-'))));
   const file = path.join(dir, 'doc.html');
   const fixture = pageFixture();
   const html = fixture.html.replace('</head>', '<script type="application/json" merge="game" clay="live">{"score":0}</script></head>');

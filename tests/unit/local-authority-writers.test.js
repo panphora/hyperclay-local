@@ -29,7 +29,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
 const os = require('os');
-const path = require('path');
+const path = require('upath');
 
 // A request still in flight when a test fails is destroyed by closeLoopback; owning its
 // rejection keeps that from becoming an uncaught error that ends the whole jest run.
@@ -52,7 +52,7 @@ const doc = (value) => `<!doctype html><html><body>${tag('count', value)}</body>
 
 const dirs = [];
 function tempDir() {
-  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'auth-writers-')));
+  const dir = path.resolve(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'auth-writers-'))));
   dirs.push(dir);
   return dir;
 }

@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
-const path = require('node:path');
+const path = require('upath');
 const { createRooms, splitPage } = require('@panphora/clayjs/server/rooms');
 const { createLocalAuthority } = require('../../src/main/local-authority');
 const { createLocalCheckpoint } = require('../../src/main/local-checkpoint');
@@ -22,7 +22,7 @@ const article = (html) => /<article[^>]*>([\s\S]*)<\/article>/.exec(html)[1].tri
 // One room over two versions of a page, made dirty, with an older copy of the
 // page written to disk underneath it. `edit` puts the hand edit in that copy.
 async function scenario(older, stored, edit) {
-  const dir = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'stale-page-checkpoint-')));
+  const dir = path.resolve(await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'stale-page-checkpoint-'))));
   const file = path.join(dir, 'article.html');
   await fsp.writeFile(file, await storePageState(dir, 'article.html', older.html));
   await createBackup(dir, 'article', splitPage(older.html).file);
