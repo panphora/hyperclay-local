@@ -331,7 +331,7 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
     // Browser visits to a root's `/` start the server too, so concurrent callers share one start.
     start() {
       if (origin) return Promise.resolve({ origin });
-      return listen();
+      starting ??= listen().finally(() => { starting = null; });
       return starting;
     },
     async stop() {
