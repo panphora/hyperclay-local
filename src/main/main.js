@@ -2073,6 +2073,19 @@ app.on('second-instance', (event, argv) => {  // Windows/Linux re-launch with fi
   if (updateNowVersion && updater) updater.updateNow(updateNowVersion);
 });
 
+// The page merge code (jsdom and clayjs's checkpoint and rooms) takes about half a second to
+// load. Loading it on first use stalled a page's first save, and this thread also routes the
+// person's scrolling and typing to the windows, so it loads during launch instead.
+function preloadPageModules() {
+  try {
+    require('@panphora/clayjs/server/checkpoint');
+    require('@panphora/clayjs/server/rooms');
+    require('./page-rebase').createDocument().defaultView.close();
+  } catch (error) {
+    console.error('[APP] Could not preload the page modules:', error && error.message ? error.message : error);
+  }
+}
+
 app.whenReady().then(async () => {
   app.setName('Hyperclay Local');
 
@@ -2137,6 +2150,7 @@ app.whenReady().then(async () => {
   // (safeStorage.decryptString can block for seconds on first call after a
   // code-signature change).
   setImmediate(async () => {
+    preloadPageModules();
     if (settings.syncEnabled && settings.hasApiKey && personalRootPath()) {
       console.log('[APP] Auto-restarting sync from previous session...');
 
