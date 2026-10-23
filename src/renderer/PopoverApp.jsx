@@ -414,6 +414,7 @@ const PopoverApp = () => {
     if (!api) return;
 
     if (action === 'open') api.openWorkspace(card.rootId);
+    else if (action === 'browser') api.openInBrowser(card.rootId);
     else if (action === 'reveal') api.revealFolder(card.rootId);
     else if (action === 'more') api.showCardMenu(card.rootId);
     else if (action === 'web') api.openWeb(card.accountId);
@@ -513,8 +514,16 @@ const PopoverApp = () => {
             <HomeView
               cards={state.cards || []}
               banner={state.banner}
-              syncActive={!!state.hasApiKey && !!state.syncEnabled}
-              serverLoading={serverLoading}
+              switches={{
+                serverEnabled: state.serverEnabled,
+                syncEnabled: state.syncEnabled,
+                hasApiKey: state.hasApiKey,
+                serverLoading,
+                syncLoading,
+                onServerFlip: handleServerFlip,
+                onSyncFlip: handleSyncFlip,
+                onConnect: () => setCurrentView('credentials'),
+              }}
               onChooseFolder={handleChooseFolder}
               onAction={handleAction}
             />
@@ -564,19 +573,6 @@ const PopoverApp = () => {
             />
           )}
         </div>
-
-        {currentView === 'home' && (
-          <SwitchStrip
-            serverEnabled={state.serverEnabled}
-            syncEnabled={state.syncEnabled}
-            hasApiKey={state.hasApiKey}
-            serverLoading={serverLoading}
-            syncLoading={syncLoading}
-            onServerFlip={handleServerFlip}
-            onSyncFlip={handleSyncFlip}
-            onConnect={() => setCurrentView('credentials')}
-          />
-        )}
 
         <div style={{ height: 34, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 16px' }}>
           <TextButton onClick={handleOptions} style={{ fontSize: 12 }}>Options</TextButton>
@@ -684,7 +680,8 @@ const Plate = ({ banner, appUpdate, onReconnect }) => {
   return null;
 };
 
-const Chip = ({ label, on, loading, onFlip, ariaLabel }) => (
+// The on/off switch beside the status line it controls.
+const Switch = ({ on, loading, onFlip, ariaLabel }) => (
   <Press
     role="switch"
     aria-checked={on}
@@ -692,14 +689,14 @@ const Chip = ({ label, on, loading, onFlip, ariaLabel }) => (
     disabled={loading}
     onClick={onFlip}
     style={{
-      height: 36, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
-      padding: '0 8px 0 12px', fontSize: 13, color: on ? C.text : C.muted, opacity: loading ? 0.7 : 1,
+      height: 26, flex: 'none', display: 'flex', alignItems: 'center', gap: 7,
+      padding: '0 4px 0 9px', fontSize: 12, color: on ? C.text : C.muted, opacity: loading ? 0.7 : 1,
     }}
   >
-    <span>{loading ? (on ? 'Stopping…' : 'Starting…') : (on ? label : `${label} off`)}</span>
-    <span style={{ ...sunken(), width: 34, height: 18, padding: 2, display: 'flex', justifyContent: on ? 'flex-end' : 'flex-start' }}>
+    <span>{loading ? '…' : (on ? 'On' : 'Off')}</span>
+    <span style={{ ...sunken(), width: 30, height: 16, padding: 2, display: 'flex', justifyContent: on ? 'flex-end' : 'flex-start' }}>
       <span style={{
-        width: 14, height: 14, display: 'block',
+        width: 12, height: 12, display: 'block',
         background: on ? C.green : '#4A5070',
         boxShadow: on ? '0 0 6px rgba(69,209,122,.6)' : 'none',
       }} />
@@ -707,49 +704,109 @@ const Chip = ({ label, on, loading, onFlip, ariaLabel }) => (
   </Press>
 );
 
-const SwitchStrip = ({
-  serverEnabled, syncEnabled, hasApiKey, serverLoading, syncLoading, onServerFlip, onSyncFlip, onConnect,
-}) => (
-  <div style={{ flex: 'none', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, padding: '10px 16px' }}>
-    <Chip
-      label="Serve"
-      on={serverEnabled}
-      loading={serverLoading}
-      onFlip={onServerFlip}
-      ariaLabel={serverEnabled ? 'Turn server off' : 'Turn server on'}
-    />
-    {hasApiKey ? (
-      <Chip
-        label="Sync"
-        on={syncEnabled}
-        loading={syncLoading}
-        onFlip={onSyncFlip}
-        ariaLabel={syncEnabled ? 'Turn sync off' : 'Turn sync on'}
-      />
-    ) : (
-      <Press onClick={onConnect} style={{ height: 36, fontSize: 13, color: C.blue }}>
-        Connect sync →
-      </Press>
-    )}
+const StatusLine = ({ led, title, detail, detailColor, first, children }) => (
+  <div style={{
+    display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px 9px 12px',
+    boxShadow: first ? 'none' : `inset 0 1px 0 ${C.line}`,
+  }}>
+    <Led tone={led} />
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontFamily: FIXEDSYS, fontSize: 13, color: C.text }}>{title}</div>
+      {detail && (
+        <div style={{ marginTop: 3, fontSize: 11.5, color: detailColor || C.soft, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {detail}
+        </div>
+      )}
+    </div>
+    {children}
   </div>
 );
+
+// Two answers in one readout: is it served, and is it synced. `card` is the one folder the
+// panel shows, or null when the lines speak for every folder on this computer.
+const StatusWell = ({ card, cards, switches }) => {
+  const { serverEnabled, syncEnabled, hasApiKey, serverLoading, syncLoading, onServerFlip, onSyncFlip, onConnect } = switches;
+  const address = card ? addressOf(card) : null;
+  const live = card ? !!address?.live : cards.some((item) => item.url);
+  const portTaken = card?.state === 'port-taken';
+  const serve = portTaken ? { led: 'red', title: "Can't serve", detail: card.detailLong || capitalize(card.detail), color: C.red }
+    : !serverEnabled ? { led: 'off', title: 'Not serving', detail: 'Turn on to open your documents' }
+      : !live ? { led: 'amber', title: 'Starting…', detail: null }
+        : card ? { led: 'green', title: 'Serving', detail: `at ${address.text}` }
+          : { led: 'green', title: 'Serving', detail: `${cards.filter((item) => item.url).length} folders on this computer` };
+  const synced = card?.state === 'synced';
+  const sync = !hasApiKey ? { led: 'off', title: 'Not synced', detail: 'Only on this computer' }
+    : !syncEnabled ? { led: 'off', title: 'Sync off', detail: 'Changes stay on this computer' }
+      : !card ? { led: 'green', title: 'Sync on', detail: 'Each folder shows its own state' }
+        : synced ? {
+          led: 'green',
+          title: `Synced${card.kind === 'personal' && card.title ? ` as @${card.title}` : ''}`,
+          detail: card.lastSyncAt ? formatRelativeTime(card.lastSyncAt) : 'Up to date',
+        }
+          : {
+            led: card.state === 'serve-only' ? 'off' : (STATE_TONE[card.state] || 'off'),
+            title: card.state === 'syncing' ? 'Syncing' : 'Not synced',
+            detail: card.state === 'syncing' ? capitalize(card.detail) : (card.detailLong || capitalize(card.detail)),
+            color: NOTE_COLOR[card.state],
+          };
+  return (
+    <div style={sunken()}>
+      <StatusLine first led={serve.led} title={serve.title} detail={serve.detail} detailColor={serve.color}>
+        <Switch on={serverEnabled} loading={serverLoading} onFlip={onServerFlip}
+          ariaLabel={serverEnabled ? 'Turn server off' : 'Turn server on'} />
+      </StatusLine>
+      <StatusLine led={sync.led} title={sync.title} detail={sync.detail} detailColor={sync.color}>
+        {hasApiKey ? (
+          <Switch on={syncEnabled} loading={syncLoading} onFlip={onSyncFlip}
+            ariaLabel={syncEnabled ? 'Turn sync off' : 'Turn sync on'} />
+        ) : (
+          <Press variant="link" onClick={onConnect} style={small}>Connect sync →</Press>
+        )}
+      </StatusLine>
+    </div>
+  );
+};
+
+const SectionLabel = ({ children, style }) => (
+  <div style={{ fontFamily: FIXEDSYS, fontSize: 11, letterSpacing: '.08em', color: C.muted, margin: '6px 0 6px', ...style }}>
+    {children}
+  </div>
+);
+
+const wide = { width: '100%', height: 38, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' };
+const homeStyle = { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '4px 16px 0' };
 
 // =============================================================================
 // HOME VIEW
 // =============================================================================
 
-const HomeView = ({ cards, banner, syncActive, serverLoading, onChooseFolder, onAction }) => {
+const HomeView = ({ cards, banner, switches, onChooseFolder, onAction }) => {
   const personal = cards.find((card) => card.kind === 'personal');
   // Under an account-wide plate, Disconnect is the wrong advice; it stays in the ⋯ menu.
   const keyRevoked = banner === 'reconnect' || banner === 'server-update';
+  const syncActive = !!switches.hasApiKey && !!switches.syncEnabled;
+  if (!personal) {
+    return (
+      <div style={homeStyle}>
+        <FirstRun serverLoading={switches.serverLoading} hasApiKey={switches.hasApiKey}
+          onChooseFolder={onChooseFolder} onConnect={switches.onConnect} />
+        {cards.length > 0 && <FolderList cards={cards} keyRevoked={keyRevoked} syncActive={syncActive} onAction={onAction} />}
+      </div>
+    );
+  }
+  if (cards.length === 1) {
+    return (
+      <div style={homeStyle}>
+        <Hero card={personal} keyRevoked={keyRevoked} switches={switches} onAction={onAction} />
+      </div>
+    );
+  }
   return (
-    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '4px 16px 0' }}>
-      <Press onClick={() => window.electronAPI?.openWorkspace()} style={{ height: 36, marginTop: 8 }}>Open workspace</Press>
-      {!personal && <FirstRun serverLoading={serverLoading} onChooseFolder={onChooseFolder} />}
-      {personal && cards.length === 1 && <Hero card={personal} keyRevoked={keyRevoked} onAction={onAction} />}
-      {(personal ? cards.length > 1 : cards.length > 0) && (
-        <FolderList cards={cards} keyRevoked={keyRevoked} syncActive={syncActive} onAction={onAction} />
-      )}
+    <div style={homeStyle}>
+      <Press variant="go" onClick={() => window.electronAPI?.openWorkspace()} style={{ ...wide, marginTop: 4 }}>Open workspace</Press>
+      <FolderList cards={cards} keyRevoked={keyRevoked} syncActive={syncActive} onAction={onAction} />
+      <SectionLabel style={{ marginTop: 10 }}>THIS COMPUTER</SectionLabel>
+      <div style={{ marginBottom: 8 }}><StatusWell card={null} cards={cards} switches={switches} /></div>
     </div>
   );
 };
@@ -797,26 +854,12 @@ const CardButtons = ({ card, keyRevoked, onAction }) => {
   );
 };
 
-const Hero = ({ card, keyRevoked, onAction }) => {
+const Hero = ({ card, keyRevoked, switches, onAction }) => {
   const address = addressOf(card);
-  const statusTone = card.state === 'serve-only' ? 'off' : (STATE_TONE[card.state] || 'off');
   return (
-    <div {...cardAttrs(card)} style={{ marginTop: 14 }}>
-      {address && (
-        <Press
-          onClick={() => onAction('open', card)}
-          disabled={!address.live}
-          style={{
-            width: '100%', height: 52, padding: '0 14px', display: 'flex', alignItems: 'center', gap: 10,
-            fontSize: 18, opacity: address.live ? 1 : 0.55,
-          }}
-        >
-          <Led tone={address.live ? 'green' : (card.state === 'port-taken' ? 'red' : 'off')} />
-          <span data-card-address style={{ color: address.color }}>{address.text}</span>
-          {address.live && <span style={{ marginLeft: 'auto', color: C.soft, fontSize: 14 }}>↗</span>}
-        </Press>
-      )}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, fontSize: 12, color: C.soft }}>
+    <div {...cardAttrs(card)}>
+      <SectionLabel>FOLDER</SectionLabel>
+      <div style={{ ...sunken(), display: 'flex', alignItems: 'center', gap: 6, padding: '7px 8px 7px 12px', fontSize: 12, color: C.soft }}>
         <span
           title={card.folder || undefined}
           style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl', textAlign: 'left' }}
@@ -835,11 +878,22 @@ const Hero = ({ card, keyRevoked, onAction }) => {
           </Press>
         )}
       </div>
-      <div style={{ ...sunken(), marginTop: 14, padding: '9px 12px', fontSize: 12, lineHeight: 1.45, color: C.soft, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-        <span style={{ height: '1.45em', display: 'flex', alignItems: 'center' }}><Led tone={statusTone} /></span>
-        <span>{heroStatus(card)}</span>
-      </div>
+      <SectionLabel style={{ marginTop: 14 }}>STATUS</SectionLabel>
+      <StatusWell card={card} switches={switches} />
       <CardButtons card={card} keyRevoked={keyRevoked} onAction={onAction} />
+      <Press variant="go" onClick={() => onAction('open', card)} style={{ ...wide, marginTop: 14 }}>Open workspace</Press>
+      {address && (
+        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, color: C.muted }}>
+          <span>{address.live ? 'or in your browser' : 'In your browser'}</span>
+          {address.live ? (
+            <TextButton onClick={() => onAction('browser', card)} color={C.blue} style={{ fontSize: 12 }}>
+              <span data-card-address style={{ color: address.color }}>{address.text}</span> ↗
+            </TextButton>
+          ) : (
+            <span data-card-address style={{ color: address.color }}>{address.text}</span>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -933,15 +987,42 @@ const FolderRow = ({ card, first, compact, keyRevoked, syncActive, onAction }) =
   );
 };
 
-const FirstRun = ({ serverLoading, onChooseFolder }) => (
-  <div style={{ marginTop: 22, display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-    <div style={{ fontFamily: FIXEDSYS, fontSize: 16, color: C.text }}>Pick a folder to serve</div>
-    <p style={{ margin: '12px 0 0', fontSize: 12, lineHeight: 1.5, color: C.soft }}>
-      Every .html file in it opens in your browser and saves itself back into the folder.
+const Step = ({ n, now, title, children }) => (
+  <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+    <span style={{
+      width: 22, height: 22, flex: 'none', display: 'grid', placeItems: 'center', fontFamily: FIXEDSYS, fontSize: 12,
+      ...(now ? { background: C.green, color: '#0B2415', boxShadow: '0 0 8px rgba(69,209,122,.5)' } : { ...sunken(), color: C.muted }),
+    }}>
+      {n}
+    </span>
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontFamily: FIXEDSYS, fontSize: 13, color: now ? C.text : C.soft }}>{title}</div>
+      {children}
+    </div>
+  </div>
+);
+
+const stepText = (now) => ({ margin: '4px 0 0', fontSize: 11.5, lineHeight: 1.45, color: now ? C.soft : C.muted });
+
+const FirstRun = ({ serverLoading, hasApiKey, onChooseFolder, onConnect }) => (
+  <div>
+    <p style={{ margin: '4px 0 0', fontSize: 12, lineHeight: 1.5, color: C.soft }}>
+      Turns a folder of HTML files on this computer into documents that open in your browser and save themselves.
     </p>
-    <Press variant="go" onClick={onChooseFolder} disabled={serverLoading} style={{ ...large, marginTop: 16 }}>
-      {serverLoading ? 'Starting…' : 'Choose Folder…'}
-    </Press>
+    <Step n={1} now title="Choose a folder">
+      <p style={stepText(true)}>Any folder works, even an empty one. It starts serving as soon as you pick it.</p>
+      <Press variant="go" onClick={onChooseFolder} disabled={serverLoading} style={{ ...large, marginTop: 10 }}>
+        {serverLoading ? 'Starting…' : 'Choose folder…'}
+      </Press>
+    </Step>
+    <Step n={2} title="Open your workspace">
+      <p style={stepText(false)}>Browse, create and edit the documents in that folder.</p>
+      <Press disabled style={{ ...small, marginTop: 8 }}>Open workspace</Press>
+    </Step>
+    <Step n={3} title="Sync, if you like">
+      <p style={stepText(false)}>Connect hyperclay.com to keep a copy online. Team folders show up here too.</p>
+      {!hasApiKey && <Press variant="link" onClick={onConnect} style={{ ...small, marginTop: 8 }}>Connect sync →</Press>}
+    </Step>
   </div>
 );
 
@@ -1355,13 +1436,15 @@ const ProfileView = ({ onDone }) => {
         Use this name in files opened with this app. Files can save your name and person ID, and anyone who receives those files can read them.
       </div>
 
-      <Chip
-        label="Use my profile in files"
-        on={profile.enabled}
-        loading={false}
-        onFlip={busy ? undefined : toggle}
-        ariaLabel={profile.enabled ? 'Stop using my profile in files' : 'Use my profile in files'}
-      />
+      <div style={{ ...sunken(), display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px 8px 12px' }}>
+        <span style={{ flex: 1, fontFamily: FIXEDSYS, fontSize: 13, color: C.text }}>Use my profile in files</span>
+        <Switch
+          on={profile.enabled}
+          loading={false}
+          onFlip={busy ? undefined : toggle}
+          ariaLabel={profile.enabled ? 'Stop using my profile in files' : 'Use my profile in files'}
+        />
+      </div>
 
       <div style={{ marginTop: 14, fontSize: 12, lineHeight: 1.5, color: C.soft }}>
         {profile.connected ? (
