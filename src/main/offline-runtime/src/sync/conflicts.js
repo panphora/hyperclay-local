@@ -56,9 +56,9 @@ function install(apply, raw) {
   return id;
 }
 
-export function beginApply({ source, seq = null, etag = null, domain, root }) {
+export function beginApply({ source, seq = null, etag = null, domain, root, recoveryRoot = null }) {
   const id = nextId('a');
-  applies.set(id, { id, source, seq, etag, ticket: 0, domain, root, ids: new Set() });
+  applies.set(id, { id, source, seq, etag, ticket: 0, domain, root, recoveryRoot, ids: new Set() });
   pending.add(id);
   register().changed();
   return id;

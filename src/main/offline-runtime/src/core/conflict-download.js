@@ -36,7 +36,7 @@ export function buildRecovery(records, { refused = false } = {}) {
     if (apply && !seen.has(apply.id)) { seen.add(apply.id); applies.push(apply); }
   }
   applies.sort((a, b) => (a.ticket || 0) - (b.ticket || 0));
-  const pageOf = (a) => serializeRecoveryClone(a.root, { prepared: a.domain === "save" });
+  const pageOf = (a) => serializeRecoveryClone(a.recoveryRoot ?? a.root, { prepared: a.domain === "save" });
 
   let html;
   let older;

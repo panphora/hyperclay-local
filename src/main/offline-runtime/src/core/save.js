@@ -21,7 +21,8 @@ import {
   saveFateIsUnknown,
   withKeepalive
 } from "./save-core.js";
-import { captureForComparison, captureForComparisonAndDirty, captureForSaveAndComparison, captureForDirtyCheck } from "./snapshot.js";
+import { captureForComparison, captureForComparisonAndDirty, captureForSaveAndComparison, captureForDirtyCheck, captureSaveClone } from "./snapshot.js";
+import { paintSignature } from "../lib/derived.js";
 import { NO_TRIGGER_AUTOSAVE_SELECTOR } from "../lib/region-policy.js";
 import { seedEtag, lastSeenEtag } from "./etag.js";
 import { gateCaptureToken, gateClearIfUnchanged, pageMaybeDirty } from "../lib/dirty-gate.js";
@@ -37,6 +38,7 @@ import { initUserGesture, markExplicitSave, clearExplicitSave } from "../lib/use
 // Both read across it at call time, never while a module is evaluating, so neither
 // side sees a half-built module.
 import { bytesUnsaved } from "./unsaved-warning.js";
+import { bootPhase } from "./boot-phase.js";
 
 // Keep this library's own root state out of the saved bytes.
 //
@@ -378,7 +380,7 @@ function skipped_(msg) {
  * where the write may or may not have landed, so it is not treated as success
  * either.
  */
-function applySaveResult(result, forComparison, forDirty, label, gateToken, forSave = null, captureId = null) {
+function applySaveResult(result, forComparison, forDirty, label, gateToken, forSave = null, captureId = null, quietConflict = false) {
   if (result.ok) {
     // Both baselines advance from the SAME pre-request capture, never from the
     // live DOM, so an edit made while the request was on the wire stays unsaved.
@@ -394,6 +396,16 @@ function applySaveResult(result, forComparison, forDirty, label, gateToken, forS
     logBaseline(label, `${lastSavedContents.length} chars`);
     releaseConflictHold();
   } else if (result.msgType === 'conflict') {
+    // A refused heal leaves the tab as it was: still clean, no save event, no
+    // hold. The save that beat it reaches this tab through sync.
+    if (quietConflict) {
+      if (savingTimeout) {
+        clearTimeout(savingTimeout);
+        savingTimeout = null;
+      }
+      document.documentElement.setAttribute('savestatus', 'saved');
+      return;
+    }
     holdForConflict(result.conflictEtag);
     setSaveState('conflict', result.msg, result.msgType, {
       hadTimeout: result.hadTimeout === true,
@@ -585,7 +597,7 @@ export function savePage(callback = () => {}) {
  * @param {Function} callback - Optional callback for custom handling
  * @returns {Promise<{msg: string, msgType: string}>}
  */
-export function savePageForce(callback = () => {}) {
+export function savePageForce(callback = () => {}, { quietConflict = false } = {}) {
   return new Promise((resolve) => {
     if (!isEditMode && !window.clay?.testMode) {
       const skipped = skipped_('Not in edit mode');
@@ -629,7 +641,7 @@ export function savePageForce(callback = () => {}) {
     saveCapturedHtml(forSave, captureId, (result) => {
       ownSaveOnWire = false;
       inFlightComparisons.delete(comparison);
-      applySaveResult(result, comparison.forComparison, comparison.forDirty, 'updated after force save', gateToken, forSave, captureId);
+      applySaveResult(result, comparison.forComparison, comparison.forDirty, 'updated after force save', gateToken, forSave, captureId, quietConflict);
       if (typeof callback === 'function') {
         callback(result);
       }
@@ -797,6 +809,56 @@ let baselineActive = true;
 let baselineSettledAt = false;
 export function baselineSettled() { return baselineSettledAt; }
 
+// A repaint that leaves the page's painted values different from the file's means
+// the file is stale: an agent wrote a record without painting it. One clean,
+// autosaving tab saves the painted page so the bytes on disk heal. The delay is
+// jittered and the check reruns when it fires, so when several tabs repaint the
+// same frame, the first save reaches the others and they skip.
+const PAINT_HEAL_MIN_MS = 250;
+const PAINT_HEAL_SPREAD_MS = 1250;
+let paintHealTimer = null;
+
+const HEAL_KEY = 'clay:paint-heal:' + location.pathname;
+
+function hashSignature(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return String(h >>> 0);
+}
+
+function healedFrom(signature) {
+  try { return localStorage.getItem(HEAL_KEY) === hashSignature(signature); } catch { return false; }
+}
+
+function noteHealedFrom(signature) {
+  try { localStorage.setItem(HEAL_KEY, hashSignature(signature)); } catch {}
+}
+
+/** The painted values of the page as it would be saved. */
+export function currentPaintSignature() {
+  return paintSignature(captureSaveClone({ flushUndo: false }));
+}
+
+/**
+ * Save the page if its painted values differ from the file's. `fileSignature` is
+ * the file's paintSignature, or a function returning it (or null when unknown)
+ * when the timer fires.
+ */
+export function schedulePaintHeal(fileSignature) {
+  if (!isEditMode || isDraftMode) return;
+  clearTimeout(paintHealTimer);
+  paintHealTimer = setTimeout(() => {
+    paintHealTimer = null;
+    const onDisk = typeof fileSignature === 'function' ? fileSignature() : fileSignature;
+    if (onDisk == null || !autosaveActive() || !baselineSettled() || isSaveConflicted() || autosaveIsSuspended()) return;
+    if (captureForDirtyCheck({ flushUndo: false }) !== lastSavedDirty) return;
+    if (onDisk === currentPaintSignature()) return;
+    if (healedFrom(onDisk)) return;
+    noteHealedFrom(onDisk);
+    savePageForce(() => {}, { quietConflict: true });
+  }, PAINT_HEAL_MIN_MS + Math.random() * PAINT_HEAL_SPREAD_MS);
+}
+
 registerStyleAdoption(identity => {
   const strip = styleComparisonStripper(identity);
   lastSavedContents = strip(lastSavedContents);
@@ -825,6 +887,19 @@ registerStyleAdoption(identity => {
 
 const SETTLE_MS = 500;        // Wait for no mutations for this long
 const MAX_SETTLE_MS = 3000;   // Max time to wait before forcing capture
+const MAX_HOLD_MS = 10000;   // A held settle releases itself after this
+
+let settleNow = null;
+
+/**
+ * The loader's mount phase calls this once the derive engine has taken its first
+ * pass. The settle runs at once on the painted page, unless a person already
+ * edited or a save already installed a baseline (captureBaseline's guard).
+ */
+export function releaseBootSettle() {
+  bootPhase.holdSettle = false;
+  if (settleNow) settleNow();
+}
 
 function initBaselineCapture() {
   if (!isEditMode) return;
@@ -892,19 +967,32 @@ function initBaselineCapture() {
     baselineSettledAt = true;
     document.dispatchEvent(new CustomEvent('clay:baseline-settled'));
   };
+  settleNow = captureBaseline;
+
+  // While the loader holds the settle for a derive engine's first pass, neither
+  // the quiet timer nor the max timeout may settle; releaseBootSettle does.
+  const settle = () => {
+    if (!bootPhase.holdSettle) captureBaseline();
+  };
 
   // Start settle observer - fires when no mutations for SETTLE_MS.
   // require:'autosave' so churn in no-save / save-* / no-watch regions doesn't
   // keep resetting the settle timer or count toward the baseline.
   unsubscribeMutation = Mutation.onAnyChange(
     { debounce: SETTLE_MS, omitChangeDetails: true, require: 'autosave' },
-    captureBaseline
+    settle
   );
 
   // Max timeout fallback
   setTimeout(() => {
-    if (!settled) captureBaseline();
+    if (!settled) settle();
   }, MAX_SETTLE_MS);
+
+  // The loader releases a held settle after the derive engine mounts. If boot
+  // never gets there (a plugin's ready stalls, boot throws), release it anyway.
+  setTimeout(() => {
+    if (!settled && bootPhase.holdSettle) releaseBootSettle();
+  }, MAX_HOLD_MS);
 }
 
 // Run when DOM is ready

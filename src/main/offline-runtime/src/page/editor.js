@@ -338,7 +338,9 @@ function checkboxClick(view, event) {
 export function createPageEditor(mount, { blocks = null, onChange = null, upload, highlight, doc: initialDoc, dispatch, history: useHistory = true, undo, redo, editable = true, toolHost: providedToolHost = null, onAiTool = null, reviseTool = null, board = null } = {}) {
   const doc = mount.ownerDocument;
   const toolHost = providedToolHost ?? createToolHost({ mode: "edit" });
-  styleWithLegacyId(STYLE_ID, PAGE_EDITOR_CSS, STYLE_ID);
+  // Editor chrome, injected on every edit-mode boot and kept out of the saved file:
+  // the reader theme <link> styles the page for visitors.
+  styleWithLegacyId(STYLE_ID, PAGE_EDITOR_CSS, STYLE_ID, ["editor-ui"]);
   const shell = doc.createElement("div");
   shell.className = "page-shell";
   shell.setAttribute("clay", "editor-ui");

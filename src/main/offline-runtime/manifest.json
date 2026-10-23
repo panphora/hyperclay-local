@@ -1,5 +1,5 @@
 {
-  "clayjsVersion": "1.14.0",
+  "clayjsVersion": "1.15.0",
   "files": [
     {
       "url": "https://clayjs.com/v1/all.js",
@@ -70,7 +70,7 @@
     {
       "url": "https://clayjs.com/v1/sap.js",
       "path": "sap.js",
-      "sha256": "0bd6bc064a15769c6194c7af8e06311b1f232104d8c200715f25765836ef2d54",
+      "sha256": "e5e4361faf49fca2821de42855240873da6fe2805f523d13079e12d722785d07",
       "contentType": "text/javascript; charset=utf-8"
     },
     {
@@ -134,9 +134,15 @@
       "contentType": "text/javascript; charset=utf-8"
     },
     {
+      "url": "https://clayjs.com/v1/src/core/boot-phase.js",
+      "path": "src/core/boot-phase.js",
+      "sha256": "f7ffb20ed15fedd6af4cb2e78da2caa6a1a2fd67776521b6c87e25049af6aa02",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
       "url": "https://clayjs.com/v1/src/core/conflict-download.js",
       "path": "src/core/conflict-download.js",
-      "sha256": "f049375784fb99ac26f551b2d4e7cd42102b3b46ee8607c5f09af0fc0e114be8",
+      "sha256": "d1dd31eb5882e0be7c2b6dc22f80c614522ca9e32c0ae445ad968ffc8557e782",
       "contentType": "text/javascript; charset=utf-8"
     },
     {
@@ -214,13 +220,13 @@
     {
       "url": "https://clayjs.com/v1/src/core/save.js",
       "path": "src/core/save.js",
-      "sha256": "948b86d30f3cad6710f898514733443b51e6380fbffa3aa60c66945fcffa1e9f",
+      "sha256": "e0d4e15c2028776d39471bcc6cb0533c435d70436baf5ae8b3fdde0c13f5351d",
       "contentType": "text/javascript; charset=utf-8"
     },
     {
       "url": "https://clayjs.com/v1/src/core/snapshot.js",
       "path": "src/core/snapshot.js",
-      "sha256": "42475dd254dad92c10608447ef822f854d5467bb310a93381fbdb91a211c289e",
+      "sha256": "44f6b15206debbec7eb636fbb0d7f5c423f6162a2f034baf4c2343b70842ccf9",
       "contentType": "text/javascript; charset=utf-8"
     },
     {
@@ -362,6 +368,12 @@
       "contentType": "text/javascript; charset=utf-8"
     },
     {
+      "url": "https://clayjs.com/v1/src/lib/derived.js",
+      "path": "src/lib/derived.js",
+      "sha256": "a92bbafb9c3bfa86e3e2ba3f8cd00f69fa440fc5535d02ef819731d8fd9d4798",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
       "url": "https://clayjs.com/v1/src/lib/dirty-gate.js",
       "path": "src/lib/dirty-gate.js",
       "sha256": "372f0eb0235eeb32c1f5dcd5ff31de42e3127369dd63c35902914c63e4d90d83",
@@ -400,7 +412,7 @@
     {
       "url": "https://clayjs.com/v1/src/lib/mutation.js",
       "path": "src/lib/mutation.js",
-      "sha256": "f5703b37fc252bc33e2d1ca2c0126c307fddeb758b38aff41276cb9d58217bf8",
+      "sha256": "2d1e67a30a192234cefdaa677bc5103c51d34b1e790af693f69072ffae23c8f6",
       "contentType": "text/javascript; charset=utf-8"
     },
     {
@@ -448,7 +460,7 @@
     {
       "url": "https://clayjs.com/v1/src/lib/style.js",
       "path": "src/lib/style.js",
-      "sha256": "fa08969adc551b8d17bedaa7f8f2483b2cd4aef1d6b6611c41a41ff01420f7c8",
+      "sha256": "09657c0e5f726e5b2e9f81e98b77ad62e3d990b433c0affa774874ed2b97cb22",
       "contentType": "text/javascript; charset=utf-8"
     },
     {
@@ -532,13 +544,13 @@
     {
       "url": "https://clayjs.com/v1/src/loader-logic.js",
       "path": "src/loader-logic.js",
-      "sha256": "70f59c693736106e21b9629a5a909b707a4f3b729e85d22198fada6c45bb6fb7",
+      "sha256": "eb0b6217cd8605c07cf6f1bc6d700583f838f69f912e42688a3387db8832b275",
       "contentType": "text/javascript; charset=utf-8"
     },
     {
       "url": "https://clayjs.com/v1/src/loader.js",
       "path": "src/loader.js",
-      "sha256": "2808abcd89e2a9778a6802011d562baa28f3031b390d40afaa325e83ddc28b7d",
+      "sha256": "2697a99892f8747bc9b33f134308ee067a30ae14ced0f42333d188dc4866eb50",
       "contentType": "text/javascript; charset=utf-8"
     },
     {
@@ -580,7 +592,7 @@
     {
       "url": "https://clayjs.com/v1/src/page/blocks.js",
       "path": "src/page/blocks.js",
-      "sha256": "9791f151aa53bf078735cedf6e8d041e3dd807881ff72b6048e85ab520541e35",
+      "sha256": "887466847063f7729a6c4fd7b6b0a27223ad58d4a58b71547946750238404a17",
       "contentType": "text/javascript; charset=utf-8"
     },
     {
@@ -658,7 +670,7 @@
     {
       "url": "https://clayjs.com/v1/src/page/editor.js",
       "path": "src/page/editor.js",
-      "sha256": "7929d4cc9afccab8ff6f4b22818f56e7ecc1749b02dbb5a66a8f6729b2987588",
+      "sha256": "ca5c29ffb5eab4d8975ecb93b2b2b774a2b4363502139bbe5b183c02dd9b156f",
       "contentType": "text/javascript; charset=utf-8"
     },
     {
@@ -1066,13 +1078,13 @@
     {
       "url": "https://clayjs.com/v1/src/sync/conflict-revert.js",
       "path": "src/sync/conflict-revert.js",
-      "sha256": "a14e28315998866ee70d8941b7a75c7fccb7471c434341c1d24d19dc71f72515",
+      "sha256": "d30ec3871c111439972bda3dd42ec7ceb38f388b00d264e1a9ce855ec755fb74",
       "contentType": "text/javascript; charset=utf-8"
     },
     {
       "url": "https://clayjs.com/v1/src/sync/conflicts.js",
       "path": "src/sync/conflicts.js",
-      "sha256": "96c1d767d731f3c2c4c55996acfd29e502d6a0fe21977966dbd2118b19cae069",
+      "sha256": "f46f57f29dc74128f7f7c91b1269a4616c237d787f3d623a0a1a5a85593de7de",
       "contentType": "text/javascript; charset=utf-8"
     },
     {
@@ -1096,7 +1108,7 @@
     {
       "url": "https://clayjs.com/v1/src/sync/live-sync.js",
       "path": "src/sync/live-sync.js",
-      "sha256": "3a789e7f744cbeddab4c2333ebf76a3aa792205ddfd7b13afd8e915753c078c1",
+      "sha256": "f1ae65eabc8981448806b5e56f8a76d927ebc5a471a7d82ea95ae8fb991a66d9",
       "contentType": "text/javascript; charset=utf-8"
     },
     {
@@ -1223,6 +1235,12 @@
       "url": "https://clayjs.com/v1/src/vendor/richclay.vendor.js",
       "path": "src/vendor/richclay.vendor.js",
       "sha256": "6d5acda587d11f230f91060d3ee8f93931f6a25137bc9b894d02c1884ac0baad",
+      "contentType": "text/javascript; charset=utf-8"
+    },
+    {
+      "url": "https://clayjs.com/v1/src/vendor/sap-ownership.vendor.js",
+      "path": "src/vendor/sap-ownership.vendor.js",
+      "sha256": "15efd73c90552c9290dc9734ca088ee0a6ab30829c80a7d3c3c984c695b6dffd",
       "contentType": "text/javascript; charset=utf-8"
     },
     {

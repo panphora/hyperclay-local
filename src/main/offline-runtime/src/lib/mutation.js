@@ -71,6 +71,7 @@ import { resolveRegionPolicy, isInert, strictestPolicy, skipForPolicy } from './
 import { isPolicyAttribute } from './region-capabilities.js';
 import { ROOT_LIBRARY_ATTRS, ROUTE_ROOT_PREFIX, ROUTE_ACTIVE_ATTR } from './root-attrs.js';
 import { isEphemeralAttr } from './ephemeral.js';
+import { isDerivedChange } from './derived.js';
 
 import { isUserDrivenNow, markUserDriven } from './user-gesture.js';
 
@@ -215,6 +216,7 @@ const localMutation = {
       // and their legacy equivalents), resolved against the callback's `require`.
       let filteredChanges = changes.filter(
         change => {
+          if (require !== 'observed' && isDerivedChange(change)) return false;
           const currentSkipped = skipForPolicy(this._policyForChange(change), require, skip);
           if (!change.policyTransition) return !currentSkipped;
           const previousSkipped = skipForPolicy(change.previousPolicy, require, skip);
@@ -647,7 +649,7 @@ const localMutation = {
       // Runs synchronously in the MO callback; skipped during paused-morph drains.
       if (!onlyNonPausable && isUserDrivenNow()) {
         for (const change of changes) {
-          if (!skipForPolicy(this._policyForChange(change), 'dirty')) {
+          if (!isDerivedChange(change) && !skipForPolicy(this._policyForChange(change), 'dirty')) {
             markUserDriven();
             break;
           }

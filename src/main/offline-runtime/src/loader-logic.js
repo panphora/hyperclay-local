@@ -60,6 +60,9 @@ export const PLUGIN_PATHS = {
   // it replaces. `exclude=source` turns it off.
   source:    { path: "plugins/source.js",          editOnly: true,  default: true },
   "visitor-drafts": { path: "plugins/visitor-drafts.js", editOnly: false, default: false },
+  // The sapjs core. Loaded for any page with a [sap] root at boot (resolveModules'
+  // hasSap), in view mode too: a reader's tab paints the same totals.
+  derive:    { path: "plugins/derive.js",          editOnly: false, default: false },
 };
 
 // One literal import per module the loader can ask for, so a bundler can see the
@@ -110,11 +113,12 @@ export const MODULES = {
   "plugins/demo.js":            () => import("./plugins/demo.js"),
   "plugins/visitor-drafts.js": () => import("./plugins/visitor-drafts.js"),
   "plugins/source.js":          () => import("./plugins/source.js"),
+  "plugins/derive.js":          () => import("./plugins/derive.js"),
 };
 
 // `source` is last on purpose: its install captures a save clone, so it wants every
 // plugin that registers a document transform to have registered it first.
-const PLUGIN_ORDER = ["visitor-drafts", "richclay", "indicator", "sortable", "undo", "quickcrop", "upload", "people", "cms", "sync", "live", "page", "message", "wire", "ai-edit", "demo", "source"];
+const PLUGIN_ORDER = ["visitor-drafts", "richclay", "indicator", "sortable", "undo", "quickcrop", "upload", "people", "cms", "sync", "live", "page", "message", "wire", "ai-edit", "demo", "derive", "source"];
 
 // A plugin that cannot do its whole job alone. hypercms reads the cropper through
 // a capability lookup (`clay.quickcrop`) and silently uploads the raw file when it
@@ -137,8 +141,11 @@ const PLUGIN_ORDER = ["visitor-drafts", "richclay", "indicator", "sortable", "un
 // It does not bring undo: hyper-undo takes Cmd+Z for the whole window, text fields
 // included, which a page that never asked for it should not get by default.
 // A page's peers reach it through live sync's stream (live/stream-bridge.js), so
-// a Document without sync saves whole files and never sees another tab type.
-const IMPLIES = { cms: ["quickcrop", "upload"], "ai-edit": ["wire"], page: ["live", "sync"] };
+// a Document without sync saves whole files and never sees another tab type. Its
+// image and file blocks send through `clay.upload`: without the plugin every drop
+// ends in "File uploads are not available", while with it a host that stores no
+// files answers `unsupported` and the editor offers to embed the file instead.
+const IMPLIES = { cms: ["quickcrop", "upload"], "ai-edit": ["wire"], page: ["live", "sync", "upload"] };
 
 function parseCsv(params, key, enabled, apply) {
   const raw = params.get(key);
@@ -162,7 +169,7 @@ const DRAFT_DROPS = ["sync", "live", "page", "upload", "quickcrop", "cms", "peop
 // save, which on a visitor's own draft is a request to the host.
 const DRAFT_DROPS_CORE = ["attrs/refetch-on-save.js"];
 
-export function resolveModules(params, isEditMode, { isDraftMode = false } = {}) {
+export function resolveModules(params, isEditMode, { isDraftMode = false, hasSap = false } = {}) {
   const core = [...CORE_WAVES.always];
   if (isEditMode) core.push(...CORE_WAVES.editOnly);
 
@@ -175,6 +182,7 @@ export function resolveModules(params, isEditMode, { isDraftMode = false } = {})
   for (const [name, spec] of Object.entries(PLUGIN_PATHS)) {
     if (spec.default) enabled.add(name);
   }
+  if (hasSap) enabled.add("derive");
   // ai-edit cannot run without the wire, so excluding the wire excludes it too.
   if (excluded.has("wire")) enabled.delete("ai-edit");
   // A default-on plugin that this mode drops brings nothing with it. An explicitly

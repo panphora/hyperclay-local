@@ -556,16 +556,64 @@ export function deleteAtCollapsedEnd(st, dispatch) {
   return true;
 }
 
-// Backspace at the start of a paragraph, heading or code block inside a toggle
-// body moves it out of the toggle, as Shift-Tab does, instead of joining it to
-// the line above. A list item there loses its list format first
-// (backspaceListItem), then leaves on the next Backspace.
+// Delete at the end of a line just above a toggle. A plain paragraph's text
+// moves onto the front of the summary, so the toggle keeps its body and open
+// state; the default join would turn the toggle into a paragraph and release
+// its body. Any other line (heading, list item, callout) would lose its format
+// in that merge, so the caret steps into the summary instead.
+export function deleteBeforeToggle(st, dispatch) {
+  const { $from, empty } = st.selection;
+  if (!empty || $from.depth !== 1) return false;
+  const n = $from.parent, i = $from.index(0);
+  if (!n.isTextblock || n.type.spec.code || isToggle(n) || !n.content.size || $from.parentOffset !== n.content.size) return false;
+  if (i + 1 >= st.doc.childCount || !isToggle(st.doc.child(i + 1))) return false;
+  if (dispatch && n.type !== N.paragraph) dispatch(st.tr.setSelection(TextSelection.create(st.doc, $from.after() + 1)).scrollIntoView());
+  else if (dispatch) {
+    const at = $from.before();
+    const tr = st.tr.insert($from.after() + 1, n.content).delete(at, $from.after());
+    dispatch(tr.setSelection(TextSelection.create(tr.doc, at + 1 + n.content.size)).scrollIntoView());
+  }
+  return true;
+}
+
+// Backspace and Delete at the edge of a code block never merge text into or
+// out of it. An empty line on the other side is removed; otherwise the caret
+// steps across to the neighbouring line.
+const codeEdge = (dir) => (st, dispatch) => {
+  const { $from, empty } = st.selection;
+  if (!empty || $from.depth !== 1 || !$from.parent.isTextblock) return false;
+  const n = $from.parent, i = $from.index(0);
+  if ($from.parentOffset !== (dir < 0 ? 0 : n.content.size)) return false;
+  const ents = outline(st.doc);
+  const ti = dir < 0 ? collapsedBefore(ents, i) : -1;
+  const j = ti >= 0 ? ti : i + dir;
+  if (j < 0 || j >= ents.length) return false;
+  const o = ents[j].node;
+  if (!o.isTextblock || (!n.type.spec.code && !o.type.spec.code)) return false;
+  if (!dispatch) return true;
+  const tr = st.tr, mine = ents[i], other = ents[j];
+  const target = dir < 0 ? other.end - 1 : other.at + 1;
+  if (!n.content.size && !n.type.spec.code) tr.delete(mine.at, mine.end).setSelection(TextSelection.create(tr.doc, tr.mapping.map(target)));
+  else if (!o.content.size && !o.type.spec.code) tr.delete(other.at, other.end);
+  else tr.setSelection(TextSelection.create(tr.doc, target));
+  dispatch(tr.scrollIntoView());
+  return true;
+};
+export const backspaceCodeEdge = codeEdge(-1);
+export const deleteCodeEdge = codeEdge(1);
+
+// Backspace at the start of the first paragraph, heading or code block of a
+// toggle body joins it onto the summary line, which the default join cannot
+// do. Later body blocks are left to the default join with the line above.
 export function backspaceBodyBlock(st, dispatch) {
   const { $from, empty } = st.selection;
   if (!empty || $from.depth !== 1 || $from.parentOffset !== 0 || !$from.parent.isTextblock) return false;
   const n = $from.parent;
   if (isList(n) || isToggle(n) || parentOf(n) === null) return false;
-  return outdentBlocks(st, dispatch);
+  const i = $from.index(0);
+  if (st.doc.child(i - 1).attrs.id !== parentOf(n)) return false;
+  if (dispatch) dispatch(joinIntoSummary(st, outline(st.doc), i - 1, i).scrollIntoView());
+  return true;
 }
 
 // ---- open / closed ----------------------------------------------------------
@@ -1095,7 +1143,8 @@ export function pastePlugin() {
 
 // ---- keymap -----------------------------------------------------------------
 
-const backspace = commands.chainCommands(backspaceListItem, backspaceToggle, backspaceBodyBlock, backspaceAfterCollapsed);
+const backspace = commands.chainCommands(backspaceListItem, backspaceToggle, backspaceCodeEdge, backspaceBodyBlock, backspaceAfterCollapsed);
+const del = commands.chainCommands(deleteAtCollapsedEnd, deleteBeforeToggle, deleteCodeEdge);
 
 // Modified Backspace and Delete get the same guards as the plain keys, so none
 // of them can reach baseKeymap's joins into a hidden body. Where no guard
@@ -1107,12 +1156,12 @@ export const blockKeys = {
   "Mod-Backspace": backspace,
   "Alt-Backspace": backspace,
   "Ctrl-h": backspace,
-  Delete: deleteAtCollapsedEnd,
-  "Shift-Delete": deleteAtCollapsedEnd,
-  "Mod-Delete": deleteAtCollapsedEnd,
-  "Alt-Delete": deleteAtCollapsedEnd,
-  "Ctrl-d": deleteAtCollapsedEnd,
-  "Ctrl-Alt-Backspace": deleteAtCollapsedEnd,
+  Delete: del,
+  "Shift-Delete": del,
+  "Mod-Delete": del,
+  "Alt-Delete": del,
+  "Ctrl-d": del,
+  "Ctrl-Alt-Backspace": del,
   Tab: indentBlocks,
   "Shift-Tab": outdentBlocks,
   "Mod-Shift-ArrowUp": moveBlock(-1),

@@ -4,6 +4,8 @@ import { initTheme } from "./ui/theme.js";
 import { ephemeral } from "./lib/ephemeral.js";
 import { effect } from "./lib/effect.js";
 import { style } from "./lib/style.js";
+import { derived } from "./lib/derived.js";
+import { bootPhase } from "./core/boot-phase.js";
 
 function domReady() {
   return new Promise((resolve) => onDomReady(resolve));
@@ -36,7 +38,9 @@ export async function boot(base, params, readyResolve) {
 
   const { isDraftMode } = editMode;
 
-  const plan = resolveModules(params, isEditMode, { isDraftMode });
+  const hasSap = Boolean(document.querySelector("[sap]"));
+  bootPhase.holdSettle = hasSap && isEditMode;
+  const plan = resolveModules(params, isEditMode, { isDraftMode, hasSap });
   const loaded = {};
 
   for (const path of plan.core) {
@@ -70,9 +74,34 @@ export async function boot(base, params, readyResolve) {
   // clay.ready until they finish. allSettled: a failed plugin degrades, never blocks boot.
   await Promise.allSettled(plan.plugins.map((path) => loaded[path]?.ready).filter(Boolean));
 
+  if (hasSap) mountDerivedEngine(loaded);
+
   installViewModeNotice(isEditMode);
   readyResolve(window.clay);
   document.dispatchEvent(new CustomEvent("clay:ready", { detail: { clay: window.clay } }));
+}
+
+// The explicit mount phase for a derive engine (sapjs or its core). It runs after
+// frozen regions recorded their authored markup (save-freeze, core wave) and
+// visitor drafts were restored (plugins), so the first pass paints the page those
+// produced, and the held boot baseline settles on that painted page. Sap.mount()
+// skips roots already mounted, so sapjs's own later mount at clay.ready is a no-op.
+export function mountDerivedEngine(loaded) {
+  const save = loaded["core/save.js"];
+  let fileSignature = null;
+  try {
+    fileSignature = save ? save.currentPaintSignature() : null;
+  } catch (err) {
+    console.error("clayjs: could not read the page's painted values:", err);
+  }
+  try {
+    if (window.Sap && typeof window.Sap.mount === "function") window.Sap.mount();
+  } catch (err) {
+    console.error("clayjs: the derive engine failed to mount:", err);
+  } finally {
+    save?.releaseBootSettle();
+  }
+  if (save && fileSignature != null) save.schedulePaintHeal(fileSignature);
 }
 
 function assembleCore(loaded, { isDraftMode, isEditMode, isOwner, siteVisibility }, regionPolicy) {
@@ -100,6 +129,7 @@ function assembleCore(loaded, { isDraftMode, isEditMode, isOwner, siteVisibility
   clay.readData = pageData.readData;
   clay.writeData = pageData.writeData;
   clay.ephemeral = ephemeral;
+  clay.derived = derived;
   clay.effect = effect;
   clay.style = style;
 

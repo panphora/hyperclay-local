@@ -4,6 +4,7 @@ import { protectionOf, protectionGeneration, captureFootprintWitnesses, footprin
 import { SYNC_IGNORE_SELECTOR, REMOTE_WINS_SELECTOR } from "./live-sync.js";
 import { savePage } from "../core/save.js";
 import { gateMarkDirty } from "../lib/dirty-gate.js";
+import { repaintDerived } from "../lib/derived.js";
 import Mutation from "../lib/mutation.js";
 import { markExplicitSave } from "../lib/user-gesture.js";
 import { enableContentEditable } from "../core/admin-contenteditable.js";
@@ -1136,6 +1137,7 @@ export async function revertConflicts(ids) {
   await Promise.resolve();
   const plan = prepareRevert(ids);
   const revertedIds = applyRevert(plan);
+  repaintDerived();
   let saveResult = null;
   if (revertedIds.length) {
     gateMarkDirty();
