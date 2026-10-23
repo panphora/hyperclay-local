@@ -1493,7 +1493,7 @@ describe('D1 alias routes', () => {
 
   test('a dirty external room refuses for an alias root and leaves disk and every binding untouched', async () => {
     const h = structureHarness();
-    const external = path.join(fs.realpathSync(os.tmpdir()), `zz-d1d-peer-${process.pid}`);
+    const external = path.join(fs.realpathSync.native(os.tmpdir()), `zz-d1d-peer-${process.pid}`);
     fs.mkdirSync(external, { recursive: true });
     dirs.push(external);
     const content = path.join(external, 'doc.html');

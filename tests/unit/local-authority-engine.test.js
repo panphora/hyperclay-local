@@ -1,6 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('upath');
+const { testPosix } = require('../helpers/platform');
 const { createRooms, serializeLive, stampOf, splitPage } = require('@panphora/clayjs/server/rooms');
 const { readPageState } = require('../../src/main/page-state-store');
 const { createLocalAuthority } = require('../../src/main/local-authority');
@@ -1105,7 +1106,7 @@ describe('D2c1: the engine claims a document before it queues', () => {
     expect(await readPageState(dir, 'page.html')).toEqual(splitPage(page).state);
   });
 
-  test('a write the disk refuses before confirmation leaves no identity, binding or room', async () => {
+  testPosix('a write the disk refuses before confirmation leaves no identity, binding or room', async () => {
     const sub = path.join(dir, 'locked');
     const filePath = path.join(sub, 'new.html');
     fs.mkdirSync(sub);
@@ -1326,7 +1327,7 @@ describe('D2c2: the engine confirms a directory before it admits it', () => {
     expect(live.calls).toHaveLength(0);
   });
 
-  test('a refused mkdir leaves the retirement in force and writes no repo entry', async () => {
+  testPosix('a refused mkdir leaves the retirement in force and writes no repo entry', async () => {
     const locked = path.join(dir, 'locked');
     const folderPath = path.join(locked, 'projects');
     const location = { rootId: 'root-a', logicalPath: 'locked/projects', canonicalPath: folderPath };
