@@ -13,7 +13,7 @@ const { documentEtag } = require('../../src/main/spec-wire');
 
 const dirs = [];
 function tempRoot() {
-  const dir = path.resolve(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'authority-admission-'))));
+  const dir = path.resolve(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'authority-admission-'))));
   dirs.push(dir);
   return dir;
 }

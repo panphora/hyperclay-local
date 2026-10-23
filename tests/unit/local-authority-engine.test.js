@@ -341,7 +341,7 @@ let dir;
 let engine;
 
 beforeEach(() => {
-  dir = path.resolve(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'local-engine-boundary-'))));
+  dir = path.resolve(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'local-engine-boundary-'))));
   fs.writeFileSync(path.join(dir, 'a.html'), '<html>a</html>');
   fs.writeFileSync(path.join(dir, 'b.html'), '<html>b</html>');
   const authority = createLocalAuthority({ rooms: createRooms({}), withDocument: withDocumentWrite });
