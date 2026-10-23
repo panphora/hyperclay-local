@@ -147,6 +147,33 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
     return req.headers['x-workspace-bootstrap'] === bootstrapSecret || cookieOf(req, sessionCookie()) === sessionSecret;
   }
 
+  let starting = null;
+
+  async function listen() {
+    const manifestPath = require.resolve('@panphora/hyperclay-workspace/local-app/manifest.json');
+    manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    assetDir = path.dirname(manifestPath);
+    server = http.createServer((req, res) => {
+      handle(req, res).catch(error => {
+        if (res.headersSent) { res.destroy(); return; }
+        const reason = error.reason || (error.status === 403 ? 'forbidden' : error.status === 404 ? 'missing'
+          : error.status === 409 ? 'conflict' : error.code === 'ENOENT' ? 'missing'
+          : error.code === 'destination-exists' ? 'conflict'
+            : error.code === 'peers-editing' ? 'conflict' : 'unknown');
+        sendJson(res, error.status || (reason === 'missing' ? 404 : reason === 'conflict' ? 409 : 500),
+          { error: error.message || 'Request failed', reason, ...(error.code ? { code: error.code } : {}) });
+      });
+    });
+    try {
+      await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', resolve);
+      });
+      origin = `http://127.0.0.1:${server.address().port}`;
+      return { origin };
+    } catch (error) { server = null; throw error; }
+  }
+
   async function handle(req, res) {
     const url = new URL(req.url, origin);
     if (req.headers.host !== new URL(origin).host) return sendJson(res, 403, { error: 'Forbidden', reason: 'forbidden' });
@@ -247,7 +274,7 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
       if (!entry || entry.expires < Date.now()) return sendJson(res, 403, { error: 'Forbidden', reason: 'forbidden' });
       res.writeHead(302, {
         Location: `/roots/${encodeURIComponent(entry.rootId)}/files`,
-        'Set-Cookie': `${sessionCookie()}=${sessionSecret}; Path=/; HttpOnly; SameSite=Lax`,
+        'Set-Cookie': `${sessionCookie()}=${sessionSecret}; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax`,
         'Cache-Control': 'no-store',
       });
       return res.end();
@@ -256,7 +283,12 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
       if (!browserAdmitted(req)) return sendJson(res, 403, { error: 'Forbidden', reason: 'forbidden' });
       const css = manifest.entry.css.map(file => `<link rel="stylesheet" href="/${file}">`).join('');
       const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="workspace-token" content="${token}">${css}</head><body><div id="workspace-root"></div><script type="module" src="/${manifest.entry.javascript}"></script></body></html>`;
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+      // The cookie is sent to every 127.0.0.1 port, so a page served from any of them could
+      // otherwise frame the workspace and steer clicks into another root.
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "frame-ancestors 'none'", 'X-Frame-Options': 'DENY',
+      });
       return res.end(html);
     }
     const asset = manifest.assets.find(item => `/${item.path}` === url.pathname);
@@ -296,32 +328,14 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
     },
     connectionChanged(online) { emit({ type: 'connection', online }); },
     syncChanged(rootId, state) { emit({ type: 'sync', rootId, state }); },
-    async start() {
-      if (server) return { origin };
-      const manifestPath = require.resolve('@panphora/hyperclay-workspace/local-app/manifest.json');
-      manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
-      assetDir = path.dirname(manifestPath);
-      server = http.createServer((req, res) => {
-        handle(req, res).catch(error => {
-          if (res.headersSent) { res.destroy(); return; }
-          const reason = error.reason || (error.status === 403 ? 'forbidden' : error.status === 404 ? 'missing'
-            : error.status === 409 ? 'conflict' : error.code === 'ENOENT' ? 'missing'
-            : error.code === 'destination-exists' ? 'conflict'
-              : error.code === 'peers-editing' ? 'conflict' : 'unknown');
-          sendJson(res, error.status || (reason === 'missing' ? 404 : reason === 'conflict' ? 409 : 500),
-            { error: error.message || 'Request failed', reason, ...(error.code ? { code: error.code } : {}) });
-        });
-      });
-      try {
-        await new Promise((resolve, reject) => {
-          server.once('error', reject);
-          server.listen(0, '127.0.0.1', resolve);
-        });
-        origin = `http://127.0.0.1:${server.address().port}`;
-        return { origin };
-      } catch (error) { server = null; throw error; }
+    // Browser visits to a root's `/` start the server too, so concurrent callers share one start.
+    start() {
+      if (origin) return Promise.resolve({ origin });
+      return listen();
+      return starting;
     },
     async stop() {
+      if (starting) await starting.catch(() => {});
       if (changedTimer) clearTimeout(changedTimer);
       changedPaths.clear();
       for (const tree of trees.values()) { tree.unsubscribeAutoName?.(); tree.unsubscribeSearch?.(); tree.close(); }

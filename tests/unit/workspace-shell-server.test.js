@@ -107,11 +107,12 @@ test('a ticket enters the workspace, sets the session cookie, and is spent once'
   expect(cookie).toContain('HttpOnly');
   expect(cookie).toContain('SameSite=Lax');
   expect(cookie).toContain('Path=/');
+  expect(cookie).toContain('Max-Age=86400');
 
   expect((await fetch(entry, { redirect: 'manual' })).status).toBe(403);
   expect((await fetch(`${h.shell.origin}/enter?ticket=made-up`, { redirect: 'manual' })).status).toBe(403);
 
-  const spent = await h.shell.entryUrl('root-a');
+  const spent = h.shell.entryUrl('root-a');
   const now = Date.now();
   const clock = jest.spyOn(Date, 'now').mockReturnValue(now + 60_001);
   try {
@@ -131,4 +132,26 @@ test('the session cookie serves the workspace page with the token and only for t
   expect((await fetch(`${h.shell.origin}/roots/root-a/files`,
     { headers: { Cookie: `hyperclay-workspace-${port}=wrong` } })).status).toBe(403);
   expect((await fetch(`${h.shell.origin}/roots/root-a/files`)).status).toBe(403);
+});
+
+test('the browser page refuses to be framed, and the session cookie alone opens no API', async () => {
+  h = await fixture();
+  await h.start();
+  const entry = await fetch(h.shell.entryUrl('root-a'), { redirect: 'manual' });
+  const cookie = entry.headers.get('set-cookie').split(';')[0];
+  const page = await fetch(`${h.shell.origin}/roots/root-a/files`, { headers: { Cookie: cookie } });
+  expect(page.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+  expect(page.headers.get('x-frame-options')).toBe('DENY');
+  expect((await fetch(`${h.shell.origin}/api/roots`, { headers: { Cookie: cookie } })).status).toBe(403);
+});
+
+test('concurrent starts share one server, and stop closes it', async () => {
+  h = await fixture();
+  const started = await Promise.all([h.shell.start(), h.shell.start(), h.shell.start()]);
+  expect(new Set(started.map(result => result.origin))).toEqual(new Set([h.shell.origin]));
+  const origin = h.shell.origin;
+  const tickets = [h.shell.entryUrl('root-a'), h.shell.entryUrl('root-a')];
+  for (const ticket of tickets) expect((await fetch(ticket, { redirect: 'manual' })).status).toBe(302);
+  await h.shell.stop();
+  await expect(fetch(origin)).rejects.toThrow();
 });
