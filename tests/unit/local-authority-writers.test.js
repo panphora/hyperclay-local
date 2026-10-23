@@ -30,6 +30,10 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
+
+// A request still in flight when a test fails is destroyed by closeLoopback; owning its
+// rejection keeps that from becoming an uncaught error that ends the whole jest run.
+const inFlight = (promise) => { promise.catch(() => {}); return promise; };
 const request = require('supertest');
 const { createRooms } = require('@panphora/clayjs/server/rooms');
 const { liveSync } = require('livesync-hyperclay');
@@ -48,7 +52,7 @@ const doc = (value) => `<!doctype html><html><body>${tag('count', value)}</body>
 
 const dirs = [];
 function tempDir() {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'auth-writers-')));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'auth-writers-')));
   dirs.push(dir);
   return dir;
 }
@@ -320,6 +324,7 @@ describe('B4: the root data API through the shared boundary', () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     const pending = request(a.server).get('/_/api/doc.html').then((res) => res);
+    pending.catch(() => {});
     await new Promise((resolve) => setImmediate(resolve));
 
     // Held: the refresh has not read or extracted anything yet.
@@ -358,6 +363,7 @@ describe('B4: the root data API through the shared boundary', () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     const pending = dataPost(a.server, 'doc.html', { n: 1 }).then((res) => res);
+    pending.catch(() => {});
     await waitFor(() => claims.length >= 1, 'the write to capture its claim');
     release();
     await holder;
@@ -530,6 +536,7 @@ describe('B5: the authority Restore and data-loss writeBack', () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     const pending = request(a.server).post(`/_/restore/doc.html/${VERSION}`).then((res) => res);
+    pending.catch(() => {});
     await waitFor(() => claims.length >= 1, 'the restore to capture its claim');
     release();
     await holder;
@@ -849,6 +856,8 @@ describe('B6: the authority upload and standalone Tailwind cache miss', () => {
       });
       req.on('error', reject);
     });
+    started.catch(() => {});
+    response.catch(() => {});
     req.write(head);
     req.write(body.slice(0, half));
     sent += half;
@@ -911,8 +920,8 @@ describe('B6: the authority upload and standalone Tailwind cache miss', () => {
       return realMkdir.call(fsp, p, opts);
     });
 
-    const uploading = uploadRequest(a.server, { origin: a.origin, docName: 'doc.html', filename: 'photo.png', bytes: Buffer.from('PNGDATA') })
-      .then((r) => r);
+    const uploading = inFlight(uploadRequest(a.server, { origin: a.origin, docName: 'doc.html', filename: 'photo.png', bytes: Buffer.from('PNGDATA') })
+      .then((r) => r));
 
     await waitFor(() => mkdirReached, 'the upload to reach its mkdir');
     const assetsDir = path.join(h.dir, 'uploads', 'assets-doc');
@@ -959,8 +968,8 @@ describe('B6: the authority upload and standalone Tailwind cache miss', () => {
     });
     await started;
 
-    const uploading = uploadRequest(a.server, { origin: a.origin, docName: 'doc.html', filename: 'photo.png', bytes: Buffer.from('PNGDATA') })
-      .then((r) => r);
+    const uploading = inFlight(uploadRequest(a.server, { origin: a.origin, docName: 'doc.html', filename: 'photo.png', bytes: Buffer.from('PNGDATA') })
+      .then((r) => r));
     await waitFor(() => claims.length >= 1, 'the upload to capture its admission claim');
     release();
     await holder;
@@ -1159,8 +1168,8 @@ describe('B6: the authority upload and standalone Tailwind cache miss', () => {
     });
     await started;
 
-    const uploading = uploadRequest(a.server, { origin: a.origin, docName: 'doc.html', filename: 'photo.png', bytes: Buffer.from('PNGDATA') })
-      .then((r) => r);
+    const uploading = inFlight(uploadRequest(a.server, { origin: a.origin, docName: 'doc.html', filename: 'photo.png', bytes: Buffer.from('PNGDATA') })
+      .then((r) => r));
     await waitFor(() => claims.length >= 2, 'the upload to capture its directory claim');
     expect(claims[1]).toEqual(location);
 
@@ -1419,6 +1428,7 @@ describe('B6: the authority upload and standalone Tailwind cache miss', () => {
     });
 
     const pending = request(a.server).get('/tailwindcss/page.css').then((r) => r);
+    pending.catch(() => {});
     await settle(100);
     publishCss();
     await holder;
