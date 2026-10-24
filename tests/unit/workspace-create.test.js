@@ -53,20 +53,17 @@ test('each template creates its exact bytes in the selected folder without a bac
   expect(await fs.stat(path.join(h.dir, '.hyperclay', 'versions')).catch(() => null)).toBeNull();
 });
 
-test('create of a page body stores a clean file and keeps its merge state in the sidecar', async () => {
+test('create of a page body stores the template byte for byte and keeps no page state', async () => {
   h = await fixture();
   const request = await h.start();
 
   expect(await command(request, { command: 'create', parent: '', name: 'page.html', template: 'page' }))
     .toEqual({ status: 200, body: { path: 'page.html' } });
 
-  const stored = await fs.readFile(path.join(h.dir, 'page.html'), 'utf8');
-  expect(stored).not.toContain('merge="page"');
-  expect(stored).toContain('data-page="1"');
-  const template = await fs.readFile(path.join(__dirname, '../../src/main/document-templates/page.html'), 'utf8');
-  const { state } = splitPage(template);
-  expect(await readPageState(h.dir, 'page.html')).toEqual(state);
-  expect(state.tag).toContain('merge="page"');
+  const template = path.join(__dirname, '../../src/main/document-templates/page.html');
+  expect(await fs.readFile(path.join(h.dir, 'page.html'))).toEqual(await fs.readFile(template));
+  expect(await readPageState(h.dir, 'page.html')).toBeNull();
+  expect((await fs.readFile(path.join(h.dir, 'page.html'), 'utf8'))).toContain('data-page="1"');
 });
 
 test('create refuses occupied, unknown-template and unsafe names without changing files', async () => {
@@ -105,7 +102,7 @@ describe('an untagged page template', () => {
   const fixtureFile = path.join(__dirname, '../fixtures/untagged-page-template.html');
 
   const templateTag = async () => splitPage(
-    await fs.readFile(path.join(__dirname, '../../src/main/document-templates/page.html'), 'utf8')
+    await fs.readFile(path.join(__dirname, '../fixtures/ypage-template.html'), 'utf8')
   ).state.tag;
 
   // The host's own creation step, given the untagged bytes: split out the merge state

@@ -75,7 +75,7 @@ const {
 } = require('../../src/main/page-state-store');
 const { sendPageState } = require('../../src/sync-engine/page-state');
 
-const TEMPLATE = fsSync.readFileSync(nodePath.join(__dirname, '../../src/main/document-templates/page.html'), 'utf8');
+const TEMPLATE = fsSync.readFileSync(nodePath.join(__dirname, '../fixtures/ypage-template.html'), 'utf8');
 const { state: TEMPLATE_STATE } = splitPage(TEMPLATE);
 const TAG = 'merge="page"';
 
