@@ -32,7 +32,7 @@ const DRY_RUN_REASON = 'Local dry-run record; no publication evidence';
 const SECRET = 'SENTINEL-DO-NOT-LEAK-9f3c';
 
 const WIRE_KEYS = ['schema', 'repoKey', 'currentVersion', 'publish', 'siteReceipt', 'dryRun', 'readError'];
-const STAGES = ['artifacts', 'sizes', 'site', 'docs.hyperclay', 'docs.hyperclay-website'];
+const STAGES = ['artifacts', 'sizes', 'site', 'docs.hyperclay'];
 
 const MESSAGES = {
   RELEASE_HOST_UNSUPPORTED: 'Desktop release status requires a POSIX host',

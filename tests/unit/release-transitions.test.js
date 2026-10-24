@@ -44,7 +44,6 @@ const SIZE_COMMIT = 'c'.repeat(40);
 const SITE_COMMIT = 'd'.repeat(40);
 const SITE_TREE = 'e'.repeat(40);
 const DOCS_COMMIT = '1'.repeat(40);
-const DOCS_SITE_COMMIT = '2'.repeat(40);
 const DIGEST = 'f'.repeat(64);
 const RUN_ID = 456;
 const REPAIR_RUN_ID = 789;
@@ -67,7 +66,6 @@ const TIMES = {
   sizes: at(8),
   site: at(9),
   docs: at(10),
-  docsSite: at(11),
   complete: at(12),
   later: at(30),
   earlier: at(-5)
@@ -288,7 +286,6 @@ function completeRecord() {
   let state = advance(tailRecord(), { type: 'target-observed', at: TIMES.sizes, target: 'sizes', result: target('sizes/journal.json') });
   state = advance(state, { type: 'target-observed', at: TIMES.site, target: 'site', result: completeSite() });
   state = advance(state, { type: 'target-observed', at: TIMES.docs, target: 'docs.hyperclay', result: docsTarget('docs/hyperclay.json', DOCS_COMMIT) });
-  state = advance(state, { type: 'target-observed', at: TIMES.docsSite, target: 'docs.hyperclay-website', result: docsTarget('docs/hyperclay-website.json', DOCS_SITE_COMMIT) });
   return advance(state, { type: 'tail-complete', at: TIMES.complete });
 }
 
@@ -346,7 +343,7 @@ describe('release construction', () => {
     expect(record.artifacts).toEqual({ state: 'pending' });
     expect(record.sizes).toEqual(pendingTarget());
     expect(record.site).toEqual(pendingSite());
-    expect(record.docs).toEqual({ hyperclay: pendingTarget(), 'hyperclay-website': pendingTarget() });
+    expect(record.docs).toEqual({ hyperclay: pendingTarget() });
     expect(record.install).toEqual({ state: 'not-attempted', error: null });
     expect(record.lastError).toBeNull();
     expect(record.schema).toBe(1);
@@ -473,7 +470,7 @@ describe('legacy publication construction', () => {
     expect(record.artifacts).toEqual({ state: 'pending' });
     expect(record.sizes).toEqual(pendingTarget());
     expect(record.site).toEqual(pendingSite());
-    expect(record.docs).toEqual({ hyperclay: pendingTarget(), 'hyperclay-website': pendingTarget() });
+    expect(record.docs).toEqual({ hyperclay: pendingTarget() });
     expect(record.install).toEqual({ state: 'not-attempted', error: null });
     expect(record.lastError).toBeNull();
     expect(record.schema).toBe(1);
@@ -630,18 +627,14 @@ describe('a full publish release', () => {
     const sizes = advance(artifacts, { type: 'target-observed', at: TIMES.sizes, target: 'sizes', result: target('sizes/journal.json') });
     const site = advance(sizes, { type: 'target-observed', at: TIMES.site, target: 'site', result: completeSite() });
     const docs = advance(site, { type: 'target-observed', at: TIMES.docs, target: 'docs.hyperclay', result: docsTarget('docs/hyperclay.json', DOCS_COMMIT) });
-    const docsSite = advance(docs, {
-      type: 'target-observed', at: TIMES.docsSite, target: 'docs.hyperclay-website',
-      result: docsTarget('docs/hyperclay-website.json', DOCS_SITE_COMMIT)
-    });
-    const complete = advance(docsSite, { type: 'tail-complete', at: TIMES.complete });
+    const complete = advance(docs, { type: 'tail-complete', at: TIMES.complete });
 
     expect(complete.phase).toBe('complete');
     expect(complete.attempts[0].requestedAt).toBe(TIMES.requested);
     expect(complete.attempts[0].watchDeadlineAt).toBe(WATCH_DEADLINE);
     expect(complete.attempts[0].error).toEqual(DISPATCH_ERROR);
 
-    const records = [created, bound, ready, requested, unresolved, running, succeeded, artifacts, sizes, site, docs, docsSite, complete];
+    const records = [created, bound, ready, requested, unresolved, running, succeeded, artifacts, sizes, site, docs, complete];
     records.forEach((record, index) => {
       expect(record.revision).toBe(index);
       expect(record.schema).toBe(1);
@@ -654,7 +647,7 @@ describe('a full publish release', () => {
     });
     expect(records.map((record) => record.updatedAt)).toEqual([
       TIMES.created, TIMES.bound, TIMES.ready, TIMES.requested, TIMES.unknown, TIMES.running,
-      TIMES.completed, TIMES.artifacts, TIMES.sizes, TIMES.site, TIMES.docs, TIMES.docsSite, TIMES.complete
+      TIMES.completed, TIMES.artifacts, TIMES.sizes, TIMES.site, TIMES.docs, TIMES.complete
     ]);
     expect(complete.lastError).toEqual(DISPATCH_ERROR);
   });
@@ -728,11 +721,7 @@ describe('an unresolved dispatch', () => {
     const sizes = advance(legacy, { type: 'target-observed', at: TIMES.sizes, target: 'sizes', result: target('sizes/journal.json') });
     const site = advance(sizes, { type: 'target-observed', at: TIMES.site, target: 'site', result: completeSite() });
     const docs = advance(site, { type: 'target-observed', at: TIMES.docs, target: 'docs.hyperclay', result: docsTarget('docs/hyperclay.json', DOCS_COMMIT) });
-    const docsSite = advance(docs, {
-      type: 'target-observed', at: TIMES.docsSite, target: 'docs.hyperclay-website',
-      result: docsTarget('docs/hyperclay-website.json', DOCS_SITE_COMMIT)
-    });
-    expect(advance(docsSite, { type: 'tail-complete', at: TIMES.complete }).phase).toBe('complete');
+    expect(advance(docs, { type: 'tail-complete', at: TIMES.complete }).phase).toBe('complete');
   });
 });
 
@@ -765,7 +754,7 @@ describe('a failed CI run', () => {
     expect(repaired.artifacts).toEqual({ state: 'pending' });
     expect(repaired.sizes).toEqual(pendingTarget());
     expect(repaired.site).toEqual(pendingSite());
-    expect(repaired.docs).toEqual({ hyperclay: pendingTarget(), 'hyperclay-website': pendingTarget() });
+    expect(repaired.docs).toEqual({ hyperclay: pendingTarget() });
     expect(repaired.install).toEqual({ state: 'not-attempted', error: null });
     expect(validateReleaseState(repaired, IDENTITY, OPTIONS)).toBe(repaired);
 
@@ -866,7 +855,7 @@ describe('a dry run', () => {
     expect(complete.artifacts).toEqual({ state: 'pending' });
     expect(complete.sizes).toEqual(pendingTarget());
     expect(complete.site).toEqual(pendingSite());
-    expect(complete.docs).toEqual({ hyperclay: pendingTarget(), 'hyperclay-website': pendingTarget() });
+    expect(complete.docs).toEqual({ hyperclay: pendingTarget() });
     expect(complete.install).toEqual({ state: 'not-attempted', error: null });
     expect(validateReleaseState(complete, IDENTITY, OPTIONS)).toBe(complete);
   });
@@ -899,14 +888,9 @@ describe('the required tail', () => {
     expect(site.site.state).toBe('unknown');
 
     const docs = advance(site, { type: 'target-observed', at: TIMES.docs, target: 'docs.hyperclay', result: docsTarget('docs/hyperclay.json', DOCS_COMMIT) });
-    const docsSite = advance(docs, {
-      type: 'target-observed', at: TIMES.docsSite, target: 'docs.hyperclay-website',
-      result: docsTarget('docs/hyperclay-website.json', DOCS_SITE_COMMIT)
-    });
-    expect(docsSite.docs.hyperclay.state).toBe('complete');
-    expect(docsSite.docs['hyperclay-website'].state).toBe('complete');
+    expect(docs.docs.hyperclay.state).toBe('complete');
 
-    const sizes = advance(docsSite, { type: 'target-observed', at: TIMES.complete, target: 'sizes', result: target('sizes/journal.json') });
+    const sizes = advance(docs, { type: 'target-observed', at: TIMES.complete, target: 'sizes', result: target('sizes/journal.json') });
     expectRefusal(() => advance(sizes, { type: 'tail-complete', at: at(20) }), 'STATE_TRANSITION_INVALID');
 
     const certified = advance(sizes, { type: 'target-observed', at: at(21), target: 'site', result: completeSite() });
@@ -916,18 +900,17 @@ describe('the required tail', () => {
   test('a pending push keeps the release incomplete until the push lands', () => {
     let state = advance(tailRecord(), { type: 'target-observed', at: TIMES.sizes, target: 'sizes', result: target('sizes/journal.json') });
     state = advance(state, { type: 'target-observed', at: TIMES.site, target: 'site', result: completeSite() });
-    state = advance(state, { type: 'target-observed', at: TIMES.docs, target: 'docs.hyperclay', result: docsTarget('docs/hyperclay.json', DOCS_COMMIT) });
     state = advance(state, {
-      type: 'target-observed', at: TIMES.docsSite, target: 'docs.hyperclay-website',
-      result: docsTarget('docs.hyperclay-website.json', DOCS_SITE_COMMIT, { state: 'pending-push' })
+      type: 'target-observed', at: TIMES.docs, target: 'docs.hyperclay',
+      result: docsTarget('docs/hyperclay.json', DOCS_COMMIT, { state: 'pending-push' })
     });
-    expect(state.docs['hyperclay-website'].state).toBe('pending-push');
+    expect(state.docs.hyperclay.state).toBe('pending-push');
     expect(state.phase).toBe('tail');
     expectRefusal(() => advance(state, { type: 'tail-complete', at: at(20) }), 'STATE_TRANSITION_INVALID');
 
     state = advance(state, {
-      type: 'target-observed', at: at(21), target: 'docs.hyperclay-website',
-      result: docsTarget('docs.hyperclay-website.json', DOCS_SITE_COMMIT)
+      type: 'target-observed', at: at(21), target: 'docs.hyperclay',
+      result: docsTarget('docs/hyperclay.json', DOCS_COMMIT)
     });
     expect(advance(state, { type: 'tail-complete', at: at(22) }).phase).toBe('complete');
   });
@@ -940,10 +923,6 @@ describe('the required tail', () => {
     state = advance(state, { type: 'target-observed', at: at(14), target: 'sizes', result: target('sizes/journal.json') });
     state = advance(state, { type: 'target-observed', at: at(15), target: 'site', result: completeSite() });
     state = advance(state, { type: 'target-observed', at: at(16), target: 'docs.hyperclay', result: docsTarget('docs/hyperclay.json', DOCS_COMMIT) });
-    state = advance(state, {
-      type: 'target-observed', at: at(17), target: 'docs.hyperclay-website',
-      result: docsTarget('docs.hyperclay-website.json', DOCS_SITE_COMMIT)
-    });
     const complete = advance(state, { type: 'tail-complete', at: at(18) });
     expect(complete.phase).toBe('complete');
     expect(complete.install.state).toBe('failed');
@@ -957,11 +936,10 @@ describe('the required tail', () => {
   test('a complete publish release validates after every tail step', () => {
     const complete = completeRecord();
     expect(complete.phase).toBe('complete');
-    expect(complete.revision).toBe(10);
+    expect(complete.revision).toBe(9);
     expect(complete.sizes.state).toBe('complete');
     expect(complete.site.state).toBe('complete');
     expect(complete.docs.hyperclay.state).toBe('complete');
-    expect(complete.docs['hyperclay-website'].state).toBe('complete');
     expectRefusal(() => advance(complete, { type: 'tail-complete', at: at(30) }), 'STATE_TRANSITION_INVALID');
     expectRefusal(() => advance(complete, { type: 'target-observed', at: at(30), target: 'sizes', result: target('sizes/journal.json') }), 'STATE_TRANSITION_INVALID');
   });
@@ -1732,7 +1710,7 @@ describe('legacy failed repair', () => {
     expect(record.artifacts).toEqual({ state: 'pending' });
     expect(record.sizes).toEqual(pendingTarget());
     expect(record.site).toEqual(pendingSite());
-    expect(record.docs).toEqual({ hyperclay: pendingTarget(), 'hyperclay-website': pendingTarget() });
+    expect(record.docs).toEqual({ hyperclay: pendingTarget() });
     expect(record.install).toEqual({ state: 'not-attempted', error: null });
     expect(record.lastError).toEqual(HISTORICAL_ERROR);
     expect(validateReleaseState(record, IDENTITY, OPTIONS)).toBe(record);

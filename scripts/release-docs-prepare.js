@@ -20,26 +20,19 @@ const DOWNLOAD_REFERENCE_SOURCE = 'HyperclayLocal-(?:Setup-)?(\\d+\\.\\d+\\.\\d+
 const NODE_MODULES = 'node_modules';
 
 const HYPERCLAY_REPO = 'hyperclay';
-const WEBSITE_REPO = 'hyperclay-website';
 const HYPERCLAY_EDGE = 'server-pages/hyperclay-local.edge';
-const VAULT_DOCS = 'vault/DOCS';
-const CONTENT_DOCS = 'content/docs';
-const LLMS_TXT = 'public/llms.txt';
 const DESKTOP_REPO = 'hyperclay-local';
 const SIZE_PATHS = ['README.md', 'website/index.html'];
 const VERSION_PATHS = ['README.md', 'package.json', 'website/index.html'];
 
-const NPM_INSTALL = ['ci', '--ignore-scripts', '--no-audit', '--no-fund', '--include=dev'];
-const WEBSITE_GENERATORS = [['run', 'sync-docs'], ['run', 'build:llms-txt']];
-
-const targetNames = [HYPERCLAY_REPO, WEBSITE_REPO];
+const targetNames = [HYPERCLAY_REPO];
 
 function requestedTargets(targets) {
   if (targets === undefined) return targetNames;
   if (!Array.isArray(targets) || !targets.length ||
       targets.some((name) => !targetNames.includes(name)) ||
       new Set(targets).size !== targets.length) {
-    throw new Error('targets must be a nonempty unique subset of hyperclay and hyperclay-website');
+    throw new Error('targets must be a nonempty unique subset of hyperclay');
   }
   return targetNames.filter((name) => targets.includes(name));
 }
@@ -214,17 +207,6 @@ function downloadVersions(content) {
   return versions;
 }
 
-// Same rules as hyperclay-website scripts/sync-docs.js cleanFileName.
-function cleanFileName(filename) {
-  return filename
-    .replace(/^\d+\s+/, '')
-    .replace(/\.md$/, '')
-    .replace(/\s+-\s+/g, '-')
-    .replace(/\s+/g, '-')
-    .replace(/[^\w-]/g, '')
-    .toLowerCase();
-}
-
 function prepareVersion(content, version) {
   requireVersion(version, 'prepareVersion version');
   const oldVersion = detectOldVersion(content);
@@ -287,34 +269,12 @@ function snapshotRepo(run, repo, repoRoot, runRoot, { recordSymlinks = false } =
   };
 }
 
-function selectTargets(hyperclay, website) {
+function selectTargets(hyperclay) {
   if (hyperclay) {
     hyperclay.allowed = [HYPERCLAY_EDGE];
     hyperclay.sourcePath = HYPERCLAY_EDGE;
     requireRegularFile(path.join(hyperclay.beforeDir, HYPERCLAY_EDGE), 'hyperclay target');
   }
-  if (!website) return;
-
-  const vaultDir = path.join(website.beforeDir, VAULT_DOCS);
-  const names = fs.existsSync(vaultDir)
-    ? fs.readdirSync(vaultDir).filter((name) => name.endsWith('.md') && /hyperclay local/i.test(name))
-    : [];
-  const candidates = names.filter((name) => {
-    const file = path.join(vaultDir, name);
-    if (!fs.lstatSync(file).isFile()) return false;
-    return detectOldVersion(fs.readFileSync(file, 'utf8')) !== null;
-  });
-  if (candidates.length !== 1) {
-    throw new Error(
-      `${WEBSITE_REPO} needs exactly one ${VAULT_DOCS} doc for Hyperclay Local with a download version, found ${candidates.length}: ${candidates.join(', ')}`
-    );
-  }
-
-  website.sourcePath = `${VAULT_DOCS}/${candidates[0]}`;
-  const mdxPath = `${CONTENT_DOCS}/${cleanFileName(candidates[0])}.mdx`;
-  website.allowed = [website.sourcePath, mdxPath, LLMS_TXT];
-  requireRegularFile(path.join(website.beforeDir, mdxPath), 'generated doc target');
-  requireRegularFile(path.join(website.beforeDir, LLMS_TXT), 'llms.txt target');
 }
 
 function readLiveState(run, snapshot) {
@@ -368,12 +328,6 @@ function requireLiveUnchanged(snapshot, before, after) {
     if (!now || now.sha256 !== preimage.sha256 || now.mode !== preimage.mode) {
       throw new Error(`${snapshot.repo} ${rel} changed on disk during preparation`);
     }
-  }
-}
-
-function runWebsiteGenerators(run, website) {
-  for (const args of WEBSITE_GENERATORS) {
-    run('npm', args, { cwd: website.sourceDir, stdio: 'inherit' });
   }
 }
 
@@ -445,12 +399,10 @@ function prepareExternalDocs({ version, parentDir, runDir, targets }, { run = de
   const runRoot = createRunRoot(runDir, parentRoot, roots);
 
   // No code runs in the hyperclay snapshot, only a rewrite of its one target file, so its tracked
-  // symlinks are recorded by link text and never followed. The website snapshot runs npm and its
-  // generators, where a symlink could reach outside the snapshot, so it still refuses them.
+  // symlinks are recorded by link text and never followed.
   const snapshots = roots.map(([repo, repoRoot]) => snapshotRepo(run, repo, repoRoot, runRoot, { recordSymlinks: repo === HYPERCLAY_REPO }));
   const hyperclay = snapshots.find((snapshot) => snapshot.repo === HYPERCLAY_REPO);
-  const website = snapshots.find((snapshot) => snapshot.repo === WEBSITE_REPO);
-  selectTargets(hyperclay, website);
+  selectTargets(hyperclay);
 
   for (const snapshot of snapshots) {
     const live = readLiveState(run, snapshot);
@@ -458,23 +410,7 @@ function prepareExternalDocs({ version, parentDir, runDir, targets }, { run = de
     snapshot.liveState = live;
   }
 
-  if (website) {
-    run('npm', NPM_INSTALL, { cwd: website.sourceDir, stdio: 'inherit' });
-    const installed = treeManifest(website.sourceDir, website.treeOptions);
-    const installChanges = manifestDiff(website.manifest, installed);
-    if (installChanges.length > 0) {
-      throw new Error(`npm ci modified the ${WEBSITE_REPO} snapshot: ${describeChanges(installChanges)}`);
-    }
-
-    runWebsiteGenerators(run, website);
-  }
   for (const snapshot of snapshots) snapshot.baselineManifest = treeManifest(snapshot.sourceDir, snapshot.treeOptions);
-  if (website) {
-    const baselineChanges = manifestDiff(website.manifest, website.baselineManifest);
-    if (baselineChanges.length > 0) {
-      throw new Error(`generator baseline mismatch in ${WEBSITE_REPO}: ${describeChanges(baselineChanges)}`);
-    }
-  }
 
   for (const snapshot of snapshots) {
     const beforeContent = fs.readFileSync(path.join(snapshot.beforeDir, snapshot.sourcePath), 'utf8');
@@ -483,8 +419,6 @@ function prepareExternalDocs({ version, parentDir, runDir, targets }, { run = de
       fs.writeFileSync(path.join(snapshot.sourceDir, snapshot.sourcePath), snapshot.prepared.updated);
     }
   }
-
-  if (website) runWebsiteGenerators(run, website);
 
   for (const snapshot of snapshots) {
     const finalManifest = treeManifest(snapshot.sourceDir, snapshot.treeOptions);

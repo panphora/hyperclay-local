@@ -16,7 +16,7 @@ const {
 
 jest.setTimeout(900000);
 
-const STAGES = ['artifacts', 'sizes', 'site', 'docs.hyperclay', 'docs.hyperclay-website'];
+const STAGES = ['artifacts', 'sizes', 'site', 'docs.hyperclay'];
 const NEXT_VERSION = '1.30.0';
 
 function siteDescriptorFile(bundle) {
@@ -137,8 +137,7 @@ describe('desktop status retained evidence', () => {
       artifacts: completedState.artifacts.manifestFile,
       sizes: completedState.sizes.journalFile,
       site: siteDescriptorFile(bundle),
-      'docs.hyperclay': completedState.docs.hyperclay.journalFile,
-      'docs.hyperclay-website': completedState.docs['hyperclay-website'].journalFile
+      'docs.hyperclay': completedState.docs.hyperclay.journalFile
     };
     const completeStamps = verifiedObservations(completedState, bundle.repoDir, deps);
     expect([...completeStamps.keys()]).toEqual(STAGES);
@@ -194,8 +193,7 @@ describe('desktop status retained evidence', () => {
     fs.rmSync(receiptFile, { force: true });
 
     const siblingRoots = {
-      hyperclay: bundle.hyperclayRoot,
-      'hyperclay-website': bundle.websiteRoot
+      hyperclay: bundle.hyperclayRoot
     };
     const altRemotes = new Map();
     for (const repo of DOC_REPOS) {

@@ -254,7 +254,7 @@ function siteState(fixture) {
     artifacts: { state: 'pending' },
     sizes: pendingTarget(),
     site: pendingSite(),
-    docs: { hyperclay: pendingTarget(), 'hyperclay-website': pendingTarget() },
+    docs: { hyperclay: pendingTarget() },
     install: { state: 'not-attempted', error: null },
     lastError: null
   };

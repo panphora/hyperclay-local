@@ -225,7 +225,7 @@ function historyState(fixture) {
       state: 'pending', sourceSha: null, treeSha: null, attemptId: null,
       receiptSha: null, verifiedAt: null, error: null
     },
-    docs: { hyperclay: pendingTarget(), 'hyperclay-website': pendingTarget() },
+    docs: { hyperclay: pendingTarget() },
     install: { state: 'not-attempted', error: null },
     lastError: null
   };

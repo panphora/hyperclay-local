@@ -168,7 +168,7 @@ const TARGET_KEYS = ['state', 'journalFile', 'commit', 'reason'];
 const SITE_KEYS = ['state', 'sourceSha', 'treeSha', 'attemptId', 'receiptSha', 'verifiedAt', 'error'];
 const INSTALL_KEYS = ['state', 'error'];
 const ERROR_KEYS = ['code', 'message'];
-const DOC_KEYS = ['hyperclay', 'hyperclay-website'];
+const DOC_KEYS = ['hyperclay'];
 const ARTIFACT_COMPLETE_KEYS = ['state', 'sourceSha', 'runId', 'manifestFile', 'manifestSha256', 'verifiedAt'];
 const ARTIFACT_INCOMPLETE_KEYS = ['state'];
 
@@ -538,7 +538,6 @@ function validateReleaseState(value, identity, options) {
   validateSite(value.site, identity);
   requireExactKeys(value.docs, DOC_KEYS, 'docs');
   validateTarget(value.docs.hyperclay, 'docs.hyperclay', identity, releaseDir);
-  validateTarget(value.docs['hyperclay-website'], 'docs.hyperclay-website', identity, releaseDir);
   validateInstall(value.install);
   validateError(value.lastError, 'lastError');
 
@@ -546,7 +545,6 @@ function validateReleaseState(value, identity, options) {
     ['sizes', value.sizes],
     ['site', value.site],
     ['docs.hyperclay', value.docs.hyperclay],
-    ['docs.hyperclay-website', value.docs['hyperclay-website']],
   ];
 
   if (value.mode === 'dry-run') {
@@ -565,8 +563,7 @@ function validateReleaseState(value, identity, options) {
       if (value.artifacts.state !== 'complete') invalid('artifacts');
       if (value.sizes.state !== 'complete') invalid('sizes');
       if (value.site.state !== 'complete') invalid('site');
-      if (value.docs.hyperclay.state !== 'complete' ||
-          value.docs['hyperclay-website'].state !== 'complete') invalid('docs');
+      if (value.docs.hyperclay.state !== 'complete') invalid('docs');
     }
   }
 

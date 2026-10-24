@@ -1168,14 +1168,12 @@ import(process.argv[1]).then(async lock => {
 });
 
 // Publication, tail and history fixture. This selection owns its own scratch
-// checkouts, bare remotes and release cache; the desktop repo and both documentation
-// repositories are ordinary repositories, the provider answers are raw envelopes
+// checkouts, bare remotes and release cache; the desktop repo and the documentation
+// repository are ordinary repositories, the provider answers are raw envelopes
 // through the accepted read policy and the size/site/docs producers are the real
 // modules. The Ferry lock is the pinned native snapshot held by an IPC child.
-const DOC_REPOS = ['hyperclay', 'hyperclay-website'];
+const DOC_REPOS = ['hyperclay'];
 const EDGE_PATH = 'server-pages/hyperclay-local.edge';
-const VAULT_PATH = 'vault/DOCS/15 Hyperclay Local App.md';
-const LLMS_PATH = 'public/llms.txt';
 const SIZE_NAMES = installerNames(VERSION);
 const SIZE_LABELS = ['macOS (Apple Silicon)', 'macOS (Intel)', 'Windows', 'Linux (x86_64)', 'Linux (ARM64)'];
 const SIZE_OS_KEYS = ['mac-arm', 'mac-intel', 'windows', 'linux', 'linux-arm'];
@@ -1207,8 +1205,6 @@ const WEBSITE_IGNORE = [
 ].join('\n');
 const BINARY_PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0xff, 0xfe, 0x00, 0x7f, 0x80, 0xc3, 0x28]);
 const BINARY_FONT = Buffer.from([0x77, 0x4f, 0x46, 0x32, 0x00, 0x00, 0x00, 0x00, 0xff, 0x00, 0x01, 0x02]);
-const PLATFORM_VAULT = ['---', 'title: Platform', '---', '', 'Platform notes.', ''].join('\n');
-
 const DEPLOY_CHILD = path.join(OWNER, 'tail-deploy-child.js');
 fs.writeFileSync(DEPLOY_CHILD, [
   "'use strict';",
@@ -1237,24 +1233,6 @@ function edgeBody(version) {
     `    var version = '${version}';`,
     '  </script>',
     '@end',
-    ''
-  ].join('\n');
-}
-
-function vaultBody(version) {
-  return [
-    '---',
-    'title: Hyperclay Local App',
-    '---',
-    '',
-    'Download Hyperclay Local:',
-    '',
-    `   - **macOS**: [HyperclayLocal-${version}-arm64.dmg](https://local.hyperclay.com/HyperclayLocal-${version}-arm64.dmg)`,
-    `   - **Windows**: [HyperclayLocal-Setup-${version}.exe](https://local.hyperclay.com/HyperclayLocal-Setup-${version}.exe)`,
-    '',
-    `Install with \`chmod +x HyperclayLocal-${version}.AppImage\` after downloading.`,
-    '',
-    `This release is ${version}.`,
     ''
   ].join('\n');
 }
@@ -1297,39 +1275,6 @@ function releaseInfoManifest(sourceSha, mb = MB_NEW) {
   };
 }
 
-function cleanTailName(name) {
-  return name
-    .replace(/^\d+\s+/, '')
-    .replace(/\.md$/, '')
-    .replace(/\s+-\s+/g, '-')
-    .replace(/\s+/g, '-')
-    .replace(/[^\w-]/g, '')
-    .toLowerCase();
-}
-
-function tailBodyOf(markdown) {
-  return markdown.replace(/^---\n[\s\S]*?\n---\n\n?/, '');
-}
-
-function tailSyncDocs(root) {
-  const vaultDir = path.join(root, 'vault/DOCS');
-  for (const name of fs.readdirSync(vaultDir).sort()) {
-    if (!name.endsWith('.md')) continue;
-    const title = name.replace(/^\d+\s+/, '').replace(/\.md$/, '');
-    writeWithMode(root, `content/docs/${cleanTailName(name)}.mdx`,
-      `---\ntitle: ${title}\npublish: true\n---\n\n${tailBodyOf(fs.readFileSync(path.join(vaultDir, name), 'utf8'))}`);
-  }
-}
-
-function tailLlmsTxt(root) {
-  const docsDir = path.join(root, 'content/docs');
-  const blocks = fs.readdirSync(docsDir)
-    .filter(name => name.endsWith('.mdx'))
-    .sort()
-    .map(name => `## ${name.replace(/\.mdx$/, '')}\n\n${tailBodyOf(fs.readFileSync(path.join(docsDir, name), 'utf8'))}`);
-  writeWithMode(root, LLMS_PATH, blocks.join('\n---\n\n'));
-}
-
 function writeWithMode(root, rel, body, mode) {
   const file = path.join(root, rel);
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -1340,16 +1285,6 @@ function writeWithMode(root, rel, body, mode) {
 
 function tailOwned(fixture, value) {
   return typeof value === 'string' && path.isAbsolute(value) && value.startsWith(fixture.dir + path.sep);
-}
-
-function tailNpm(fixture, cwd, args) {
-  if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) throw new Error('npm needs an absolute snapshot cwd');
-  if (!tailOwned(fixture, cwd)) throw new Error(`npm cwd escaped the owned fixture: ${cwd}`);
-  const [sub, script] = args;
-  if (sub === 'ci') return '';
-  if (sub === 'run' && script === 'sync-docs') { tailSyncDocs(cwd); return ''; }
-  if (sub === 'run' && script === 'build:llms-txt') { tailLlmsTxt(cwd); return ''; }
-  throw new Error(`unexpected npm command: ${args.join(' ')}`);
 }
 
 let tailSeq = 0;
@@ -1395,20 +1330,8 @@ function makeTailFixture({ version = VERSION } = {}) {
     fs.mkdirSync(root, { recursive: true });
     git(root, ['init', '-q', '-b', 'main']);
     git(root, ['remote', 'add', 'origin', siblingBares.get(repo)]);
-    if (repo === 'hyperclay') {
-      writeWithMode(root, 'README.md', 'hyperclay readme\n');
-      writeWithMode(root, EDGE_PATH, edgeBody(OLD_VERSION));
-    } else {
-      writeWithMode(root, VAULT_PATH, vaultBody(OLD_VERSION));
-      writeWithMode(root, 'vault/DOCS/07 Platform.md', PLATFORM_VAULT);
-      writeWithMode(root, 'package.json', `${JSON.stringify({
-        name: 'hyperclay-website',
-        version: '0.0.0',
-        scripts: { 'sync-docs': 'node scripts/sync-docs.js', 'build:llms-txt': 'node scripts/build-llms-txt.js' }
-      }, null, 2)}\n`);
-      tailSyncDocs(root);
-      tailLlmsTxt(root);
-    }
+    writeWithMode(root, 'README.md', 'hyperclay readme\n');
+    writeWithMode(root, EDGE_PATH, edgeBody(OLD_VERSION));
     git(root, ['add', '-A']);
     git(root, ['commit', '-q', '-m', 'fixture']);
     git(root, ['push', '-q', 'origin', 'main']);
@@ -1464,7 +1387,7 @@ function tailRun(fixture, log, overrides) {
       const injected = overrides.onRun(command, args, options);
       if (injected !== undefined) return injected;
     }
-    if (command === 'npm') return tailNpm(fixture, options.cwd, args);
+    if (command === 'npm') throw new Error('docs preparation must not run npm');
     if (command !== 'git' && command !== 'tar') {
       throw new Error(`acting must not run ${command}`);
     }
@@ -1794,7 +1717,7 @@ function assertNoHistoricalActions(harness) {
 }
 
 describePosix('caller publication and history', () => {
-  testPosix('caller publication and history: one actual publish run completes through publication, sizes, site and both documentation producers', async () => {
+  testPosix('caller publication and history: one actual publish run completes through publication, sizes, site and the documentation producer', async () => {
     const { fixture, harness, result } = await getCompletedTailBaseline();
 
     expect(result.outcome).toBe('complete');
@@ -1804,7 +1727,6 @@ describePosix('caller publication and history', () => {
     expect(lane.sizes.state).toBe('complete');
     expect(lane.site.state).toBe('complete');
     expect(lane.docs.hyperclay.state).toBe('complete');
-    expect(lane.docs['hyperclay-website'].state).toBe('complete');
     expect(harness.log.deploy).toHaveLength(1);
     expect(harness.log.installs).toEqual([VERSION]);
   }, 900000);

@@ -608,7 +608,7 @@ describePosix('desktop size target', () => {
     fs.writeFileSync(descriptorPath(fixture), pristine);
 
     const unknownRepo = planAttempt(fixture, { repo: 'not-a-repo' });
-    expectPlanRefusal(unknownRepo, /repo must be hyperclay or hyperclay-website/);
+    expectPlanRefusal(unknownRepo, /repo must be hyperclay or hyperclay-local/);
     fs.writeFileSync(descriptorPath(fixture), pristine);
 
     const desktopOnly = planAttempt(fixture);
@@ -818,7 +818,7 @@ function historyState(fixture) {
       state: 'pending', sourceSha: null, treeSha: null, attemptId: null,
       receiptSha: null, verifiedAt: null, error: null
     },
-    docs: { hyperclay: pendingTarget(), 'hyperclay-website': pendingTarget() },
+    docs: { hyperclay: pendingTarget() },
     install: { state: 'not-attempted', error: null },
     lastError: null
   };

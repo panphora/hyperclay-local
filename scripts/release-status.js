@@ -19,8 +19,8 @@ const { readCompletedTargetEvidence, readTargetEvidence } = require('./release-t
 
 const SCHEMA = 1;
 const DESKTOP_REPO = 'hyperclay-local';
-const STAGES = ['artifacts', 'sizes', 'site', 'docs.hyperclay', 'docs.hyperclay-website'];
-const DOC_REPOS = ['hyperclay', 'hyperclay-website'];
+const STAGES = ['artifacts', 'sizes', 'site', 'docs.hyperclay'];
+const DOC_REPOS = ['hyperclay'];
 const VERSION_PATTERN = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const VERSION_COMPONENT_MAX = 65535;
 const PACKAGE_MAX_BYTES = 1024 * 1024;

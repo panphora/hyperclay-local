@@ -670,7 +670,7 @@ describe('historical target evidence', () => {
     const reader = recordingReader();
     const deps = { run: reader.run, spawn: reader.spawn, fs };
 
-    const wrongRepo = readFailure(ctx, deps, { repo: 'hyperclay-website' });
+    const wrongRepo = readFailure(ctx, deps, { repo: 'hyperclay-local' });
     expect(wrongRepo.code).toBe('DOCS_JOURNAL_INVALID');
     expect(wrongRepo.message).toMatch(/repo does not match/);
 

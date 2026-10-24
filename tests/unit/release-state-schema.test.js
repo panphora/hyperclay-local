@@ -199,7 +199,7 @@ function newState() {
     artifacts: { state: 'pending' },
     sizes: pendingTarget(),
     site: pendingSite(),
-    docs: { hyperclay: pendingTarget(), 'hyperclay-website': pendingTarget() },
+    docs: { hyperclay: pendingTarget() },
     install: { state: 'not-attempted', error: null },
     lastError: null
   };
@@ -241,7 +241,7 @@ function partialTailRecord() {
     attempts: [dispatchAttempt()],
     artifacts: completeArtifacts(),
     sizes: completeTarget('sizes/journal.json'),
-    docs: { hyperclay: completeTarget('docs/hyperclay.json'), 'hyperclay-website': pendingTarget() }
+    docs: { hyperclay: completeTarget('docs/hyperclay.json') }
   });
 }
 
@@ -253,8 +253,7 @@ function completedTailRecord() {
     sizes: completeTarget('sizes/journal.json'),
     site: completeSite(),
     docs: {
-      hyperclay: completeTarget('docs/hyperclay.json'),
-      'hyperclay-website': completeTarget('docs/hyperclay-website.json')
+      hyperclay: completeTarget('docs/hyperclay.json')
     },
     install: { state: 'failed', error: { code: 'INSTALL_FAILED', message: 'Installer exited nonzero' } }
   });
@@ -422,12 +421,12 @@ const INVALID_CASES = [
   ['unknown field on a target', 'tail-partial', s => { s.sizes.verifiedAt = OBSERVED_AT; }],
   ['unknown target state', 'tail-partial', s => { s.sizes.state = 'done'; }],
   ['pending push without a commit', 'tail-partial', s => {
-    s.docs['hyperclay-website'] = {
-      state: 'pending-push', journalFile: evidence('docs/hyperclay-website.json'), commit: null, reason: null
+    s.docs.hyperclay = {
+      state: 'pending-push', journalFile: evidence('docs/hyperclay.json'), commit: null, reason: null
     };
   }],
   ['pending push without a journal', 'tail-partial', s => {
-    s.docs['hyperclay-website'] = {
+    s.docs.hyperclay = {
       state: 'pending-push', journalFile: null, commit: SIZE_COMMIT, reason: null
     };
   }],
@@ -445,9 +444,9 @@ const INVALID_CASES = [
   ['target journal path unnormalized', 'tail-partial', s => { s.sizes.journalFile = `${RECORDS_DIR}/sizes/../journal.json`; }],
   ['target journal path with a trailing separator', 'tail-partial', s => { s.sizes.journalFile = `${RECORDS_DIR}/journal.json/`; }],
   ['target reason not a typed error', 'tail-partial', s => { s.sizes.reason = 'failed to push'; }],
-  ['docs target missing', 'tail-partial', s => { delete s.docs['hyperclay-website']; }],
+  ['docs target missing', 'tail-partial', s => { delete s.docs.hyperclay; }],
   ['docs unknown target', 'tail-partial', s => { s.docs['hyperclay-blog'] = pendingTarget(); }],
-  ['complete release missing website docs', 'tail-complete', s => { s.docs['hyperclay-website'] = pendingTarget(); }],
+  ['complete release missing docs', 'tail-complete', s => { s.docs.hyperclay = pendingTarget(); }],
   ['complete release missing sizes', 'tail-complete', s => { s.sizes = pendingTarget(); }],
   ['complete release missing the site receipt', 'tail-complete', s => { s.site = pendingSite(); }],
   ['complete site receipt different source', 'tail-complete', s => { s.site.receiptSha = '3'.repeat(40); }],

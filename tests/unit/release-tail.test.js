@@ -35,10 +35,8 @@ const DATE = '2026-01-02T03:04:05.678Z';
 const DESKTOP_REPO = 'hyperclay-local';
 const ORIGIN = 'git@github.com:fixture-owner/hyperclay-local.git';
 const REMOTE_REPO = 'fixture-owner/hyperclay-local';
-const DOC_REPOS = ['hyperclay', 'hyperclay-website'];
+const DOC_REPOS = ['hyperclay'];
 const EDGE_PATH = 'server-pages/hyperclay-local.edge';
-const VAULT_PATH = 'vault/DOCS/15 Hyperclay Local App.md';
-const LLMS_PATH = 'public/llms.txt';
 const REMOTE_VERBS = ['ls-remote', 'fetch', 'push'];
 const OWNED_COMMANDS = ['git', 'tar'];
 const CLOCK_START = '2026-02-03T04:05:06.000Z';
@@ -89,8 +87,6 @@ const WEBSITE_IGNORE = [
 const BINARY_PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0xff, 0xfe, 0x00, 0x7f, 0x80, 0xc3, 0x28]);
 const BINARY_FONT = Buffer.from([0x77, 0x4f, 0x46, 0x32, 0x00, 0x00, 0x00, 0x00, 0xff, 0x00, 0x01, 0x02]);
 
-const PLATFORM_VAULT = ['---', 'title: Platform', '---', '', 'Platform notes.', ''].join('\n');
-
 function edgeBody(version) {
   return [
     "@component('components/layout/app', { title: 'Hyperclay Local' })",
@@ -102,24 +98,6 @@ function edgeBody(version) {
     `    var version = '${version}';`,
     '  </script>',
     '@end',
-    ''
-  ].join('\n');
-}
-
-function vaultBody(version) {
-  return [
-    '---',
-    'title: Hyperclay Local App',
-    '---',
-    '',
-    'Download Hyperclay Local:',
-    '',
-    `   - **macOS**: [HyperclayLocal-${version}-arm64.dmg](https://local.hyperclay.com/HyperclayLocal-${version}-arm64.dmg)`,
-    `   - **Windows**: [HyperclayLocal-Setup-${version}.exe](https://local.hyperclay.com/HyperclayLocal-Setup-${version}.exe)`,
-    '',
-    `Install with \`chmod +x HyperclayLocal-${version}.AppImage\` after downloading.`,
-    '',
-    `This release is ${version}.`,
     ''
   ].join('\n');
 }
@@ -330,65 +308,10 @@ function workflowState(fixture) {
     artifacts: { state: 'pending' },
     sizes: pendingTarget(),
     site: pendingSite(),
-    docs: { hyperclay: pendingTarget(), 'hyperclay-website': pendingTarget() },
+    docs: { hyperclay: pendingTarget() },
     install: { state: 'not-attempted', error: null },
     lastError: null
   };
-}
-
-function cleanName(name) {
-  return name
-    .replace(/^\d+\s+/, '')
-    .replace(/\.md$/, '')
-    .replace(/\s+-\s+/g, '-')
-    .replace(/\s+/g, '-')
-    .replace(/[^\w-]/g, '')
-    .toLowerCase();
-}
-
-function bodyOf(markdown) {
-  return markdown.replace(/^---\n[\s\S]*?\n---\n\n?/, '');
-}
-
-function canonicalSyncDocs(cwd) {
-  const vaultDir = path.join(cwd, 'vault/DOCS');
-  for (const name of fs.readdirSync(vaultDir).sort()) {
-    if (!name.endsWith('.md')) continue;
-    const title = name.replace(/^\d+\s+/, '').replace(/\.md$/, '');
-    write(cwd, `content/docs/${cleanName(name)}.mdx`,
-      `---\ntitle: ${title}\npublish: true\n---\n\n${bodyOf(fs.readFileSync(path.join(vaultDir, name), 'utf8'))}`);
-  }
-}
-
-function canonicalLlmsTxt(cwd) {
-  const docsDir = path.join(cwd, 'content/docs');
-  const blocks = fs
-    .readdirSync(docsDir)
-    .filter((name) => name.endsWith('.mdx'))
-    .sort()
-    .map((name) => `## ${name.replace(/\.mdx$/, '')}\n\n${bodyOf(fs.readFileSync(path.join(docsDir, name), 'utf8'))}`);
-  write(cwd, LLMS_PATH, blocks.join('\n---\n\n'));
-}
-
-function fakeNpm(fixture, cwd, args) {
-  if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) throw new Error('npm needs an absolute snapshot cwd');
-  if (!owned(fixture, cwd)) throw new Error('npm cwd escaped the owned fixture');
-  for (const root of fixture.siblingRoots.values()) {
-    if (cwd === root || cwd.startsWith(`${root}${path.sep}`)) {
-      throw new Error('npm was pointed at a live sibling checkout');
-    }
-  }
-  const [sub, script] = args;
-  if (sub === 'ci') return '';
-  if (sub === 'run' && script === 'sync-docs') {
-    canonicalSyncDocs(cwd);
-    return '';
-  }
-  if (sub === 'run' && script === 'build:llms-txt') {
-    canonicalLlmsTxt(cwd);
-    return '';
-  }
-  throw new Error(`unexpected npm command: ${args.join(' ')}`);
 }
 
 function owned(fixture, value) {
@@ -447,20 +370,8 @@ function makeFixture() {
     fs.mkdirSync(root, { recursive: true });
     git(root, ['init', '-q', '-b', 'main']);
     git(root, ['remote', 'add', 'origin', siblingRemotes.get(repo)]);
-    if (repo === 'hyperclay') {
-      write(root, 'README.md', 'hyperclay readme\n');
-      write(root, EDGE_PATH, edgeBody(OLD_VERSION));
-    } else {
-      write(root, VAULT_PATH, vaultBody(OLD_VERSION));
-      write(root, 'vault/DOCS/07 Platform.md', PLATFORM_VAULT);
-      write(root, 'package.json', `${JSON.stringify({
-        name: 'hyperclay-website',
-        version: '0.0.0',
-        scripts: { 'sync-docs': 'node scripts/sync-docs.js', 'build:llms-txt': 'node scripts/build-llms-txt.js' }
-      }, null, 2)}\n`);
-      canonicalSyncDocs(root);
-      canonicalLlmsTxt(root);
-    }
+    write(root, 'README.md', 'hyperclay readme\n');
+    write(root, EDGE_PATH, edgeBody(OLD_VERSION));
     git(root, ['add', '-A']);
     git(root, ['commit', '-q', '-m', 'fixture']);
     git(root, ['push', '-q', 'origin', 'main']);
@@ -552,7 +463,7 @@ function actingRun(fixture, log, hooks = {}) {
       const injected = hooks.onRun(command, args, options);
       if (injected !== undefined) return injected;
     }
-    if (command === 'npm') return fakeNpm(fixture, options.cwd, args);
+    if (command === 'npm') throw new Error('docs preparation must not run npm');
     confine(fixture, command, args, options);
     const { echoStdout, ...rest } = options;
     return childProcess.execFileSync(command, args, {
@@ -636,7 +547,7 @@ function deployAdapter(fixture, log) {
 
 function harness(fixture, overrides = {}) {
   const log = {
-    run: [], spawn: [], remote: [], ferry: [], guard: [], deploy: [], deployChecks: [], laneAtWebsite: []
+    run: [], spawn: [], remote: [], ferry: [], guard: [], deploy: [], deployChecks: [], laneAtDocs: []
   };
   const deps = {
     run: overrides.run === undefined ? actingRun(fixture, log, overrides) : overrides.run,
@@ -710,12 +621,12 @@ describePosix('desktop tail native composition', () => {
     expect(laterHead).not.toBe(sourceSha);
     seedRemote(fixture, laterHead);
 
-    const websiteRoot = fixture.siblingRoots.get('hyperclay-website');
+    const docsRoot = fixture.siblingRoots.get('hyperclay');
     const h = harness(fixture, {
       onRun: (command, args, options) => {
-        if (command === 'git' && args[0] === 'commit-tree' && options.cwd === websiteRoot
-          && h.log.laneAtWebsite.length === 0) {
-          h.log.laneAtWebsite.push(loadState(fixture));
+        if (command === 'git' && args[0] === 'commit-tree' && options.cwd === docsRoot
+          && h.log.laneAtDocs.length === 0) {
+          h.log.laneAtDocs.push(loadState(fixture));
         }
         return undefined;
       }
@@ -768,9 +679,9 @@ describePosix('desktop tail native composition', () => {
     }
     readPublicationEvidence({ state: result.state, repoDir: fixture.repoDir }, localDeps());
 
-    expect(h.log.laneAtWebsite.length).toBe(1);
-    expect(h.log.laneAtWebsite[0].docs.hyperclay.state).toBe('complete');
-    expect(h.log.laneAtWebsite[0].docs['hyperclay-website'].state).toBe('pending');
+    expect(h.log.laneAtDocs.length).toBe(1);
+    expect(h.log.laneAtDocs[0].docs.hyperclay.state).toBe('pending');
+    expect(h.log.laneAtDocs[0].site.state).toBe('complete');
 
     expect(h.log.run.length).toBeGreaterThan(0);
     expect(h.log.remote.length).toBeGreaterThan(0);
@@ -785,8 +696,7 @@ describePosix('desktop tail native composition', () => {
     const revision = complete.revision;
     const historical = {
       sizes: complete.sizes.commit,
-      hyperclay: complete.docs.hyperclay.commit,
-      'hyperclay-website': complete.docs['hyperclay-website'].commit
+      hyperclay: complete.docs.hyperclay.commit
     };
 
     write(fixture.repoRoot, 'src/app.js', 'module.exports = { replay: true };\n');
@@ -798,7 +708,7 @@ describePosix('desktop tail native composition', () => {
       const root = fixture.siblingRoots.get(repo);
       const elsewhere = path.join(fixture.remoteDir, `${repo}-elsewhere.git`);
       git(fixture.remoteDir, ['init', '-q', '--bare', '-b', 'main', elsewhere]);
-      fs.appendFileSync(path.join(root, repo === 'hyperclay' ? EDGE_PATH : VAULT_PATH), '\nDirty replay sibling\n');
+      fs.appendFileSync(path.join(root, EDGE_PATH), '\nDirty replay sibling\n');
       git(root, ['add', '-A']);
       git(root, ['commit', '-q', '-m', 'later sibling change']);
       git(root, ['remote', 'set-url', 'origin', elsewhere]);
@@ -814,7 +724,6 @@ describePosix('desktop tail native composition', () => {
     expect(replay.state.revision).toBe(revision);
     expect(replay.state.sizes.commit).toBe(historical.sizes);
     expect(replay.state.docs.hyperclay.commit).toBe(historical.hyperclay);
-    expect(replay.state.docs['hyperclay-website'].commit).toBe(historical['hyperclay-website']);
     expect(replayLog.calls).toEqual([]);
 
     const snapshotFile = path.join(attemptDir, 'snapshot', 'index.html');
@@ -832,10 +741,6 @@ describePosix('desktop tail native composition', () => {
 
   testPosix('keeps ordinary pending sizes separate from independently completed docs', async () => {
     const fixture = makeFixture();
-    expect(() => fakeNpm(fixture, path.dirname(OWNER), ['run', 'sync-docs']))
-      .toThrow(/escaped the owned fixture/);
-    expect(() => fakeNpm(fixture, fixture.siblingRoots.get('hyperclay-website'), ['run', 'sync-docs']))
-      .toThrow(/live sibling checkout/);
     await publish(fixture);
     const before = loadState(fixture);
     seedRemote(fixture, fixture.sourceSha);
@@ -888,7 +793,7 @@ describePosix('desktop tail native composition', () => {
 
     for (const repo of DOC_REPOS) {
       const root = fixture.siblingRoots.get(repo);
-      fs.appendFileSync(path.join(root, repo === 'hyperclay' ? EDGE_PATH : VAULT_PATH), '\nDirty completed sibling\n');
+      fs.appendFileSync(path.join(root, EDGE_PATH), '\nDirty completed sibling\n');
     }
 
     const resume = harness(fixture);
@@ -910,7 +815,6 @@ describePosix('desktop tail native composition', () => {
     expect(fs.readFileSync(docsRun).equals(runBytes)).toBe(true);
     expect(fs.readFileSync(docsResult).equals(resultBytes)).toBe(true);
     expect(completed.state.docs.hyperclay).toEqual(result.state.docs.hyperclay);
-    expect(completed.state.docs['hyperclay-website']).toEqual(result.state.docs['hyperclay-website']);
     expect(fs.readFileSync(path.join(fixture.repoRoot, '.deploy'), 'utf8')).toBe(`${sizeCommit}\n`);
     expect(readSizeEvidence({ state: completed.state, repoDir: fixture.repoDir }, localDeps()).commit).toBe(sizeCommit);
   });
@@ -1213,7 +1117,6 @@ describePosix('desktop tail recovery boundaries', () => {
     expect(h.log.run.some((call) => call.command === 'npm')).toBe(false);
     expect(verbs(h.log.run, ['commit-tree', 'update-ref', 'push'])).toEqual([]);
     expect(siblingCalls(h.log, fixture, 'hyperclay')).toEqual([]);
-    expect(siblingCalls(h.log, fixture, 'hyperclay-website')).toEqual([]);
   });
 
   testPosix('rejects a fatal site checkpoint and a nested fatal deploy cause without starting docs', async () => {
@@ -1241,7 +1144,6 @@ describePosix('desktop tail recovery boundaries', () => {
     expect(fs.existsSync(fixture.docsRunDir)).toBe(false);
     expect(h.log.run.some((call) => call.command === 'npm')).toBe(false);
     expect(siblingCalls(h.log, fixture, 'hyperclay')).toEqual([]);
-    expect(siblingCalls(h.log, fixture, 'hyperclay-website')).toEqual([]);
     expect(readSizeEvidence({ state: before, repoDir: fixture.repoDir }, localDeps()).commit)
       .toBe(before.sizes.commit);
 
@@ -1278,10 +1180,9 @@ describePosix('desktop tail recovery boundaries', () => {
     expect(fs.existsSync(second.docsRunDir)).toBe(false);
     expect(h2.log.run.some((call) => call.command === 'npm')).toBe(false);
     expect(siblingCalls(h2.log, second, 'hyperclay')).toEqual([]);
-    expect(siblingCalls(h2.log, second, 'hyperclay-website')).toEqual([]);
   });
 
-  testPosix('rejects actual preparation refusals without starting the website target', async () => {
+  testPosix('rejects actual preparation refusals before the docs actor runs', async () => {
     const fixture = makeFixture();
     await publish(fixture);
     seedRemote(fixture, fixture.sourceSha);
@@ -1302,10 +1203,6 @@ describePosix('desktop tail recovery boundaries', () => {
     expect(error.message).toMatch(/pending changes/);
     expect(resultReason(fixture, 'hyperclay')).toMatchObject({ code: 'DOCS_PREPARE_FAILED' });
     expect(resultReason(fixture, 'hyperclay').message).toMatch(/pending changes/);
-    expect(resultReason(fixture, 'hyperclay-website').code).toBe('DOCS_NOT_ATTEMPTED');
-    const websiteReads = siblingStartupReads(h.log, fixture, 'hyperclay-website');
-    expect(websiteReads.length).toBe(1);
-    expect(siblingCalls(h.log, fixture, 'hyperclay-website')).toEqual(websiteReads);
     expect(h.log.run.some((call) => call.command === 'npm')).toBe(false);
     expect(h.log.remote).toEqual([]);
     expect(h.log.deploy).toEqual([]);
@@ -1321,9 +1218,6 @@ describePosix('desktop tail recovery boundaries', () => {
     expect(error2.message).toMatch(/main is required/);
     expect(resultReason(fixture, 'hyperclay')).toMatchObject({ code: 'DOCS_PREPARE_FAILED' });
     expect(resultReason(fixture, 'hyperclay').message).toMatch(/main is required/);
-    const websiteReads2 = siblingStartupReads(h2.log, fixture, 'hyperclay-website');
-    expect(websiteReads2.length).toBe(1);
-    expect(siblingCalls(h2.log, fixture, 'hyperclay-website')).toEqual(websiteReads2);
     expect(h2.log.run.some((call) => call.command === 'npm')).toBe(false);
     expect(h2.log.remote).toEqual([]);
     expect(h2.log.deploy).toEqual([]);
@@ -1354,7 +1248,6 @@ describePosix('desktop tail recovery boundaries', () => {
     const run = readJson(runFile);
     const attemptId = run.targets[0].attemptId;
     expect(attemptId).not.toBeNull();
-    expect(run.targets[1].attemptId).toBeNull();
     const journalFile = attemptPaths(fixture.docsRunDir, 'hyperclay', attemptId).journalFile;
     const journal = readJson(journalFile);
     expect(journal.state).toBe('complete');
@@ -1422,13 +1315,7 @@ describePosix('desktop tail recovery boundaries', () => {
       const attemptId = run.targets[0].attemptId;
       expect(attemptId).not.toBeNull();
       expect(run.targets[0].journalOperationId).not.toBeNull();
-      expect(run.targets[1].attemptId).toBeNull();
-      expect(fs.existsSync(path.join(fixture.docsRunDir, 'attempts', 'hyperclay-website'))).toBe(false);
-      expect(h.log.run.some((call) => call.command === 'npm')).toBe(false);
-      const websiteReads = siblingStartupReads(h.log, fixture, 'hyperclay-website');
-      expect(websiteReads.length).toBe(1);
-      expect(siblingCalls(h.log, fixture, 'hyperclay-website')).toEqual(websiteReads);
-      expect(siblingCalls(h.log, fixture, 'hyperclay').length).toBeGreaterThan(0);
+        expect(siblingCalls(h.log, fixture, 'hyperclay').length).toBeGreaterThan(0);
 
       const journalFile = attemptPaths(fixture.docsRunDir, 'hyperclay', attemptId).journalFile;
       const journal = readJson(journalFile);
@@ -1457,11 +1344,8 @@ describePosix('desktop tail recovery boundaries', () => {
       expect(renamed.docs.hyperclay.state).toBe('complete');
       expect(renamed.docs.hyperclay.journalFile).toBe(journalFile);
       expect(renamed.docs.hyperclay.commit).toBe(oldCommit);
-      expect(renamed.docs['hyperclay-website']).toEqual(before.docs['hyperclay-website']);
       expect(h2.log.deploy).toEqual([]);
       expect(h2.log.run.some((call) => call.command === 'npm')).toBe(false);
-      expect(siblingCalls(h2.log, fixture, 'hyperclay-website')).toEqual([]);
-      expect(fs.existsSync(path.join(fixture.docsRunDir, 'attempts', 'hyperclay-website'))).toBe(false);
 
       const h3 = harness(fixture);
       const refusal = hyperclayRefusal(fixture, h3.log);
@@ -1483,16 +1367,10 @@ describePosix('desktop tail recovery boundaries', () => {
       expect(h3.log.deploy).toEqual([]);
 
       const hyperclayCalls = siblingCalls(h3.log, fixture, 'hyperclay');
-      expect(hyperclayCalls.length).toBeGreaterThan(0);
-      expect(hyperclayCalls.every((call) => call.command === 'git' && call.args[0] === 'rev-parse'
-        && call.args[1] === '--git-common-dir')).toBe(true);
+      expect(hyperclayCalls).toEqual([]);
       expect(h3.log.remote.some((entry) => entry.args.includes(hyperclayRemote))).toBe(false);
-      expect(h3.log.run.some((call) => call.command === 'npm')).toBe(true);
+      expect(h3.log.run.some((call) => call.command === 'npm')).toBe(false);
 
-      const website = completeEvidence(fixture, result.state, 'hyperclay-website');
-      expect(website.observedHead).toBe(result.state.docs['hyperclay-website'].commit);
-      expect(remoteMain(fixture, fixture.siblingRemotes.get('hyperclay-website')))
-        .toBe(result.state.docs['hyperclay-website'].commit);
       completeEvidence(fixture, result.state, 'hyperclay');
       expect(loadState(fixture)).toEqual(result.state);
     });

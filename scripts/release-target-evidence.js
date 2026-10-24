@@ -27,7 +27,7 @@ const HASH_PATTERN = /^[0-9a-f]{64}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
 const GIT_MODE_PATTERN = /^[0-7]{6}$/;
-const REPO_NAMES = ['hyperclay', 'hyperclay-website', 'hyperclay-local'];
+const REPO_NAMES = ['hyperclay', 'hyperclay-local'];
 const OBJECT_FORMATS = ['sha1', 'sha256'];
 const UNFINISHED_PHASES = ['prepared', 'apply-intent', 'applied', 'ref-intent'];
 const COMMITTED_PHASES = ['committed', 'push-intent'];
@@ -211,7 +211,7 @@ function requireJournalShape(record, journalFile) {
     throw journalInvalid('target journal version must look like 1.2.3');
   }
   if (!REPO_NAMES.includes(record.repo)) {
-    throw journalInvalid('target journal repo must be hyperclay or hyperclay-website');
+    throw journalInvalid('target journal repo must be hyperclay or hyperclay-local');
   }
   if (typeof record.repoRoot !== 'string' || !path.isAbsolute(record.repoRoot)) {
     throw journalInvalid('target journal repoRoot must be absolute');

@@ -130,7 +130,7 @@ function createReleaseState(input, identity, options) {
     artifacts: { state: 'pending' },
     sizes: pendingTarget(),
     site: pendingSite(),
-    docs: { hyperclay: pendingTarget(), 'hyperclay-website': pendingTarget() },
+    docs: { hyperclay: pendingTarget() },
     install: { state: 'not-attempted', error: null },
     lastError: null,
   };
@@ -373,8 +373,7 @@ function transitionRelease(state, event, identity, options) {
         case 'sizes': next.sizes = structuredClone(event.result); break;
         case 'site': next.site = structuredClone(event.result); break;
         case 'docs.hyperclay': next.docs.hyperclay = structuredClone(event.result); break;
-        case 'docs.hyperclay-website': next.docs['hyperclay-website'] = structuredClone(event.result); break;
-        default: refuse('target-observed requires one of the four required release targets');
+        default: refuse('target-observed requires one of the three required release targets');
       }
       break;
     }
@@ -392,7 +391,7 @@ function transitionRelease(state, event, identity, options) {
       if (next.mode !== 'publish') refuse('tail-complete requires a publish release');
       if (next.phase !== 'tail') refuse('tail-complete requires a tail release phase');
       if (next.artifacts.state !== 'complete') refuse('tail-complete requires verified publish artifacts');
-      const targets = [next.sizes, next.site, next.docs.hyperclay, next.docs['hyperclay-website']];
+      const targets = [next.sizes, next.site, next.docs.hyperclay];
       if (!targets.every((target) => isObject(target) && target.state === 'complete')) {
         refuse('tail-complete requires every required tail target to be complete');
       }
@@ -414,7 +413,7 @@ function transitionRelease(state, event, identity, options) {
         refuse('begin-rejected-attempt cannot replace a bound run');
       }
       if (next.artifacts.state !== 'pending' ||
-          [next.sizes, next.site, next.docs.hyperclay, next.docs['hyperclay-website']]
+          [next.sizes, next.site, next.docs.hyperclay]
             .some(target => target.state !== 'pending') || next.install.state !== 'not-attempted') {
         refuse('begin-rejected-attempt requires an untouched release tail');
       }
@@ -466,7 +465,7 @@ function transitionRelease(state, event, identity, options) {
       next.artifacts = { state: 'pending' };
       next.sizes = pendingTarget();
       next.site = pendingSite();
-      next.docs = { hyperclay: pendingTarget(), 'hyperclay-website': pendingTarget() };
+      next.docs = { hyperclay: pendingTarget() };
       next.install = { state: 'not-attempted', error: null };
       next.lastError = null;
       break;

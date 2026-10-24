@@ -1,6 +1,6 @@
 // One real, complete desktop release bundle built by the accepted producers: a
-// retained publication, a completed size target, a completed site attempt and two
-// completed documentation targets, all under one owned temp root with an isolated
+// retained publication, a completed size target, a completed site attempt and a
+// completed documentation target, all under one owned temp root with an isolated
 // Git config and local bare push destinations. Nothing here is a stub of a reader
 // or a hand-written journal: the state records and the retained evidence are what
 // the real writers actually produced, so `readStatus` is asked to verify them.
@@ -29,7 +29,7 @@ const VERSION = '1.29.0';
 const OLD_VERSION = '1.28.0';
 const DATE = '2026-01-02T03:04:05.678Z';
 const DESKTOP_REPO = 'hyperclay-local';
-const DOC_REPOS = ['hyperclay', 'hyperclay-website'];
+const DOC_REPOS = ['hyperclay'];
 const SIZE_MESSAGE = `Update desktop download sizes for v${VERSION}`;
 const DOCS_MESSAGE = `chore: update Hyperclay Local download links to v${VERSION}`;
 const ORIGIN = 'git@github.com:fixture-owner/hyperclay-local.git';
@@ -64,11 +64,6 @@ const MB_OLD = [102.3, 108.8, 90.1, 123.7, 123.4];
 const MB_NEW = [103.0, 109.7, 90.6, 124.0, 123.5];
 
 const EDGE_PATH = 'server-pages/hyperclay-local.edge';
-const VAULT_NAME = '15 Hyperclay Local App.md';
-const VAULT_PATH = `vault/DOCS/${VAULT_NAME}`;
-const LLMS_PATH = 'public/llms.txt';
-const PLATFORM_VAULT = ['---', 'title: Platform', '---', '', 'Platform notes.', ''].join('\n');
-
 const WEBSITE_CONFIG = [
   '{',
   '  "name": "hyperclaylocal",',
@@ -143,38 +138,6 @@ function edgeBody(version) {
     '@end',
     ''
   ].join('\n');
-}
-
-function vaultBody(version) {
-  return [
-    '---',
-    'title: Hyperclay Local App',
-    '---',
-    '',
-    'Download Hyperclay Local:',
-    '',
-    `   - **macOS**: [HyperclayLocal-${version}-arm64.dmg](https://local.hyperclay.com/HyperclayLocal-${version}-arm64.dmg)`,
-    `   - **Windows**: [HyperclayLocal-Setup-${version}.exe](https://local.hyperclay.com/HyperclayLocal-Setup-${version}.exe)`,
-    '',
-    `Install with \`chmod +x HyperclayLocal-${version}.AppImage\` after downloading.`,
-    '',
-    `This release is ${version}.`,
-    ''
-  ].join('\n');
-}
-
-function bodyOf(markdown) {
-  return markdown.replace(/^---\n[\s\S]*?\n---\n\n?/, '');
-}
-
-function cleanName(name) {
-  return name
-    .replace(/^\d+\s+/, '')
-    .replace(/\.md$/, '')
-    .replace(/\s+-\s+/g, '-')
-    .replace(/\s+/g, '-')
-    .replace(/[^\w-]/g, '')
-    .toLowerCase();
 }
 
 function createBundle() {
@@ -264,41 +227,6 @@ function createBundle() {
   git(hyperclayRoot, ['commit', '-q', '-m', 'fixture']);
   git(hyperclayRoot, ['push', '-q', 'origin', 'main']);
 
-  const websiteRoot = path.join(parentDir, 'hyperclay-website');
-  fs.mkdirSync(websiteRoot, { recursive: true });
-  git(websiteRoot, ['init', '-q', '-b', 'main']);
-  git(websiteRoot, ['remote', 'add', 'origin', remotes.get('hyperclay-website').fetch]);
-  git(websiteRoot, ['remote', 'set-url', '--push', 'origin', remotes.get('hyperclay-website').push]);
-  write(websiteRoot, VAULT_PATH, vaultBody(OLD_VERSION));
-  write(websiteRoot, 'vault/DOCS/07 Platform.md', PLATFORM_VAULT);
-  write(websiteRoot, 'package.json', `${JSON.stringify({
-    name: 'hyperclay-website',
-    version: '0.0.0',
-    scripts: { 'sync-docs': 'node scripts/sync-docs.js', 'build:llms-txt': 'node scripts/build-llms-txt.js' }
-  }, null, 2)}\n`);
-  const canonicalSyncDocs = (cwd) => {
-    const vaultDir = path.join(cwd, 'vault/DOCS');
-    for (const name of fs.readdirSync(vaultDir).sort()) {
-      if (!name.endsWith('.md')) continue;
-      const title = name.replace(/^\d+\s+/, '').replace(/\.md$/, '');
-      write(cwd, `content/docs/${cleanName(name)}.mdx`,
-        `---\ntitle: ${title}\npublish: true\n---\n\n${bodyOf(fs.readFileSync(path.join(vaultDir, name), 'utf8'))}`);
-    }
-  };
-  const canonicalLlmsTxt = (cwd) => {
-    const docsDir = path.join(cwd, 'content/docs');
-    const blocks = fs.readdirSync(docsDir)
-      .filter((name) => name.endsWith('.mdx'))
-      .sort()
-      .map((name) => `## ${name.replace(/\.mdx$/, '')}\n\n${bodyOf(fs.readFileSync(path.join(docsDir, name), 'utf8'))}`);
-    write(cwd, LLMS_PATH, blocks.join('\n---\n\n'));
-  };
-  canonicalSyncDocs(websiteRoot);
-  canonicalLlmsTxt(websiteRoot);
-  git(websiteRoot, ['add', '-A']);
-  git(websiteRoot, ['commit', '-q', '-m', 'fixture']);
-  git(websiteRoot, ['push', '-q', 'origin', 'main']);
-
   const identity = resolveRepoIdentity(desktopRoot, { readGit: createLocalGitReader().readGit, fs });
   const cacheBase = fs.realpathSync.native(fs.mkdtempSync(path.join(owner, 'cache-')));
   const cacheRoot = path.join(cacheBase, 'releases');
@@ -346,7 +274,7 @@ function createBundle() {
       state: 'pending', sourceSha: null, treeSha: null, attemptId: null,
       receiptSha: null, verifiedAt: null, error: null
     },
-    docs: { hyperclay: pendingTarget(), 'hyperclay-website': pendingTarget() },
+    docs: { hyperclay: pendingTarget() },
     install: { state: 'not-attempted', error: null },
     lastError: null
   };
@@ -361,7 +289,6 @@ function createBundle() {
     remotes,
     desktopRoot,
     hyperclayRoot,
-    websiteRoot,
     identity,
     cacheBase,
     cacheRoot,
@@ -379,7 +306,7 @@ module.exports = {
   ORIGIN, REMOTE_REPO, RELEASE_ID, ATTEMPT_ID, RUN_ID, WORKFLOW_ID, UPLOAD_JOB_ID,
   REQUESTED_AT, DEADLINE_AT, OBSERVED_AT, CREATED_AT, VERIFIED_AT,
   NOW, NOW_2, NOW_3, NOW_4, NOW_5,
-  NAMES, LABELS, OS_KEYS, MB_OLD, MB_NEW, EDGE_PATH, VAULT_PATH, LLMS_PATH,
+  NAMES, LABELS, OS_KEYS, MB_OLD, MB_NEW, EDGE_PATH,
   sha256, createBundle, manifestFor, readmeFixture, websiteFixture
 };
 
@@ -444,42 +371,6 @@ function siteDeps(bundle, options = {}) {
   };
   if (options.deploy !== undefined) deps.deploy = options.deploy;
   return deps;
-}
-
-function makeNpmRun(liveWebsite) {
-  const canonicalSyncDocs = (cwd) => {
-    const vaultDir = path.join(cwd, 'vault/DOCS');
-    for (const name of fs.readdirSync(vaultDir).sort()) {
-      if (!name.endsWith('.md')) continue;
-      const title = name.replace(/^\d+\s+/, '').replace(/\.md$/, '');
-      const file = path.join(cwd, `content/docs/${cleanName(name)}.mdx`);
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file,
-        `---\ntitle: ${title}\npublish: true\n---\n\n${bodyOf(fs.readFileSync(path.join(vaultDir, name), 'utf8'))}`);
-    }
-  };
-  const canonicalLlmsTxt = (cwd) => {
-    const docsDir = path.join(cwd, 'content/docs');
-    const blocks = fs.readdirSync(docsDir)
-      .filter((name) => name.endsWith('.mdx'))
-      .sort()
-      .map((name) => `## ${name.replace(/\.mdx$/, '')}\n\n${bodyOf(fs.readFileSync(path.join(docsDir, name), 'utf8'))}`);
-    fs.mkdirSync(path.dirname(path.join(cwd, LLMS_PATH)), { recursive: true });
-    fs.writeFileSync(path.join(cwd, LLMS_PATH), blocks.join('\n---\n\n'));
-  };
-  return (command, args, options = {}) => {
-    if (command !== 'npm') return execFileCaptured(command, args, options);
-    const cwd = options.cwd;
-    if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) throw new Error('npm needs an absolute snapshot cwd');
-    if (cwd === liveWebsite || cwd.startsWith(`${liveWebsite}${path.sep}`)) {
-      throw new Error('npm was pointed at the live website');
-    }
-    const [sub, script] = args;
-    if (sub === 'ci') return '';
-    if (sub === 'run' && script === 'sync-docs') { canonicalSyncDocs(cwd); return ''; }
-    if (sub === 'run' && script === 'build:llms-txt') { canonicalLlmsTxt(cwd); return ''; }
-    throw new Error(`unexpected npm command: ${args.join(' ')}`);
-  };
 }
 
 function prepareSizesTarget(bundle, publication) {
@@ -576,12 +467,9 @@ async function completeBundle(bundle) {
 
   const docsRunDir = path.join(bundle.repoDir, 'records', RELEASE_ID, 'docs', 'run');
   fs.mkdirSync(path.dirname(docsRunDir), { recursive: true });
-  prepareExternalDocs(
-    { version: VERSION, parentDir: bundle.parentDir, runDir: docsRunDir },
-    { run: makeNpmRun(bundle.websiteRoot) }
-  );
+  prepareExternalDocs({ version: VERSION, parentDir: bundle.parentDir, runDir: docsRunDir });
 
-  const docs = { hyperclay: null, 'hyperclay-website': null };
+  const docs = { hyperclay: null };
   let current = completedSite;
   let updatedAt = NOW_3;
   const stamps = [NOW_4, NOW_5];
@@ -639,4 +527,3 @@ async function completeBundle(bundle) {
 module.exports.completeBundle = completeBundle;
 module.exports.actingDeps = actingDeps;
 module.exports.siteDeps = siteDeps;
-module.exports.makeNpmRun = makeNpmRun;

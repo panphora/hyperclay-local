@@ -226,6 +226,11 @@ function decodeRecord(bytes, identity, paths) {
   } catch {
     throw stateError('STATE_INVALID', 'Release state record is not valid JSON');
   }
+  if (parsed && typeof parsed === 'object' && parsed.docs && typeof parsed.docs === 'object' &&
+      Object.hasOwn(parsed.docs, 'hyperclay-website')) {
+    const { 'hyperclay-website': _retired, ...docs } = parsed.docs;
+    parsed = { ...parsed, docs };
+  }
   return validateReleaseState(parsed, identity, { repoDir: paths.repoDir });
 }
 

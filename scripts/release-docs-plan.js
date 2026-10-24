@@ -11,7 +11,6 @@ const { spawnSync } = require('child_process');
 
 const { execFileCaptured, writeOutput } = require('./release-command');
 const { readBoundedOrdinaryFile } = require('./release-local-read');
-const { detectOldVersion } = require('./update-external-docs');
 const { prepareVersion, readSizeManifest } = require('./release-docs-prepare');
 
 const SCHEMA = 1;
@@ -34,13 +33,9 @@ const PATCH_FILE = 'candidate.patch';
 const PRIVATE_INDEX_FILE = 'index';
 
 const HYPERCLAY_REPO = 'hyperclay';
-const WEBSITE_REPO = 'hyperclay-website';
 const DESKTOP_REPO = 'hyperclay-local';
-const REPO_NAMES = [HYPERCLAY_REPO, WEBSITE_REPO, DESKTOP_REPO];
+const REPO_NAMES = [HYPERCLAY_REPO, DESKTOP_REPO];
 const HYPERCLAY_EDGE = 'server-pages/hyperclay-local.edge';
-const VAULT_DOCS = 'vault/DOCS';
-const CONTENT_DOCS = 'content/docs';
-const LLMS_TXT = 'public/llms.txt';
 const SIZE_PATHS = ['README.md', 'website/index.html'];
 const VERSION_PATHS = ['README.md', 'package.json', 'website/index.html'];
 
@@ -221,17 +216,6 @@ function requireGitRegularMode(gitMode, permission, label) {
   }
 }
 
-// Same rules as hyperclay-website scripts/sync-docs.js cleanFileName.
-function cleanFileName(filename) {
-  return filename
-    .replace(/^\d+\s+/, '')
-    .replace(/\.md$/, '')
-    .replace(/\s+-\s+/g, '-')
-    .replace(/\s+/g, '-')
-    .replace(/[^\w-]/g, '')
-    .toLowerCase();
-}
-
 function readDescriptor(preparedFile) {
   if (typeof preparedFile !== 'string' || !path.isAbsolute(preparedFile)) {
     throw new Error('preparedFile must be an absolute path');
@@ -300,7 +284,7 @@ function selectTarget(prepared, repo, version) {
     throw new Error('prepared targets must be a nonempty array');
   }
   if (!REPO_NAMES.includes(repo)) {
-    throw new Error(`repo must be hyperclay or hyperclay-website or hyperclay-local, received ${JSON.stringify(repo)}`);
+    throw new Error(`repo must be hyperclay or hyperclay-local, received ${JSON.stringify(repo)}`);
   }
   const names = prepared.targets.map((target) => target && target.repo);
   for (const name of names) {
@@ -370,36 +354,6 @@ function requireEntries(target, repo) {
   return entries;
 }
 
-function websiteSourceName(sourcePath) {
-  const parts = sourcePath.split('/');
-  if (parts.length !== 3 || parts[0] !== 'vault' || parts[1] !== 'DOCS') {
-    throw new Error(`${WEBSITE_REPO} sourcePath must be a direct ${VAULT_DOCS} document: ${sourcePath}`);
-  }
-  const name = parts[2];
-  if (!name.endsWith('.md') || !/hyperclay local/i.test(name)) {
-    throw new Error(`${WEBSITE_REPO} sourcePath must be a Hyperclay Local markdown document: ${sourcePath}`);
-  }
-  return name;
-}
-
-function vaultCandidates(run, repoRoot, beforeHead, env) {
-  const listing = git(run, repoRoot, env, ['ls-tree', '-z', beforeHead, '--', `${VAULT_DOCS}/`]);
-  const candidates = [];
-  for (const line of listing.split('\0')) {
-    if (line.length === 0) continue;
-    const tab = line.indexOf('\t');
-    if (tab < 0) continue;
-    const [mode, type, oid] = line.slice(0, tab).split(' ');
-    const name = line.slice(tab + 1);
-    if (type !== 'blob') continue;
-    if (mode !== '100644' && mode !== '100755') continue;
-    const base = name.slice(name.lastIndexOf('/') + 1);
-    if (!base.endsWith('.md') || !/hyperclay local/i.test(base)) continue;
-    if (detectOldVersion(blobBytes(run, repoRoot, env, oid).toString('utf8')) !== null) candidates.push(name);
-  }
-  return candidates;
-}
-
 function expectedPathSet(target, repo, run, repoRoot) {
   if (typeof target.sourcePath !== 'string') throw new Error(`${repo} sourcePath must be a string`);
   requireRelativePath(target.sourcePath, `${repo} sourcePath`);
@@ -415,16 +369,7 @@ function expectedPathSet(target, repo, run, repoRoot) {
     if (target.sourcePath !== sourcePath) throw new Error(`hyperclay-local sourcePath must be ${sourcePath}`);
     return { required: variant === 'sizes' ? [...SIZE_PATHS] : [...VERSION_PATHS] };
   }
-  const name = websiteSourceName(target.sourcePath);
-  const candidates = vaultCandidates(run, repoRoot, target.beforeHead, observeEnv());
-  if (candidates.length !== 1 || candidates[0] !== target.sourcePath) {
-    throw new Error(
-      `${WEBSITE_REPO} needs exactly one ${VAULT_DOCS} doc for Hyperclay Local, found ${candidates.length}: ${candidates.join(', ')}`
-    );
-  }
-  return {
-    required: [target.sourcePath, `${CONTENT_DOCS}/${cleanFileName(name)}.mdx`, LLMS_TXT]
-  };
+  throw new Error(`${repo} sourcePath is not a supported release target`);
 }
 
 function requirePathSet(entries, required, repo) {
@@ -845,7 +790,7 @@ function requireApplicationShape(record) {
     throw docsInvalid('application version must look like 1.2.3');
   }
   if (!REPO_NAMES.includes(record.repo)) {
-    throw docsInvalid('application repo must be hyperclay or hyperclay-website');
+    throw docsInvalid('application repo must be hyperclay or hyperclay-local');
   }
   if (typeof record.repoRoot !== 'string' || !path.isAbsolute(record.repoRoot)) {
     throw docsInvalid('application repoRoot must be absolute');

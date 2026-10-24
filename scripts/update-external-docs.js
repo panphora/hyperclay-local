@@ -27,7 +27,7 @@ const path = require('path');
 const ROOT_DIR = path.join(__dirname, '..');
 const PARENT_DIR = path.join(ROOT_DIR, '..');
 
-const TARGET_REPOS = ['hyperclay', 'hyperclay-website'];
+const TARGET_REPOS = ['hyperclay'];
 const VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
 const OID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const RESULT_SCHEMA = 1;
@@ -648,12 +648,6 @@ async function updateExternalDocs(input, deps) {
       throw docsError('DOCS_RUN_CONFLICT',
         `the ${repo} sibling shares the desktop repository common directory; nested docs locks are not allowed`);
     }
-  }
-  const first = siblingInfo.get(TARGET_REPOS[0]);
-  const second = siblingInfo.get(TARGET_REPOS[1]);
-  if (first && second && first.commonDir && second.commonDir && first.commonDir === second.commonDir) {
-    throw docsError('DOCS_RUN_CONFLICT',
-      'the two sibling checkouts share one common directory; nested docs locks are not allowed');
   }
 
   const requestedRunDir = provided.runDir === undefined

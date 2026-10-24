@@ -236,7 +236,7 @@ function releaseState(attempt, patch = {}) {
       state: 'pending', sourceSha: null, treeSha: null, attemptId: null,
       receiptSha: null, verifiedAt: null, error: null
     },
-    docs: { hyperclay: pendingTarget(), 'hyperclay-website': pendingTarget() },
+    docs: { hyperclay: pendingTarget() },
     install: { state: 'not-attempted', error: null },
     lastError: null
   }, patch);
@@ -1930,7 +1930,7 @@ describe('publication observation', () => {
       expect(state.artifacts.manifestSha256).toBe(sha256(fixture.manifestBytes));
       expect(state.sizes).toEqual(pendingTarget());
       expect(state.site.state).toBe('pending');
-      expect(state.docs).toEqual({ hyperclay: pendingTarget(), 'hyperclay-website': pendingTarget() });
+      expect(state.docs).toEqual({ hyperclay: pendingTarget() });
       expect(state.install).toEqual({ state: 'not-attempted', error: null });
       expect(storedState(fixture)).toEqual(state);
 
@@ -2298,7 +2298,7 @@ describe('publication observation', () => {
       });
       expect(saved.artifacts).toEqual({ state: 'pending' });
       expect([saved.sizes, saved.site, ...Object.values(saved.docs)].map(value => value.state))
-        .toEqual(['pending', 'pending', 'pending', 'pending']);
+        .toEqual(['pending', 'pending', 'pending']);
       expect(saved.install).toEqual({ state: 'not-attempted', error: null });
       expect(context.uuid).toHaveBeenCalledTimes(1);
       expect(context.gh.calls.map(call => call.endpoint)).toEqual([

@@ -156,7 +156,7 @@ function baseRecord(fixture, releaseId, patch) {
     artifacts: { state: 'pending' },
     sizes: pendingTarget(),
     site: { state: 'pending', sourceSha: null, treeSha: null, attemptId: null, receiptSha: null, verifiedAt: null, error: null },
-    docs: { hyperclay: pendingTarget(), 'hyperclay-website': pendingTarget() },
+    docs: { hyperclay: pendingTarget() },
     install: { state: 'not-attempted', error: null },
     lastError: null
   }, patch);
@@ -185,7 +185,7 @@ function completedRecord(fixture, releaseId, patch = {}) {
       state: 'complete', sourceSha: SITE_SHA, treeSha: SITE_TREE, attemptId: uuidFor(2),
       receiptSha: SITE_SHA, verifiedAt: UPDATED_AT, error: null
     },
-    docs: { hyperclay: completeTarget('docs/hyperclay.json'), 'hyperclay-website': completeTarget('docs/website.json') }
+    docs: { hyperclay: completeTarget('docs/hyperclay.json') }
   }, patch));
 }
 
@@ -465,6 +465,30 @@ describe('release state storage', () => {
     expect(fs.readdirSync(fixture.paths.historyDir)).toEqual([`${firstId}.json`]);
     expect(fs.readFileSync(fixture.paths.stateFile, 'utf8')).toBe(`${JSON.stringify(second)}\n`);
     expect(read(fixture)).toEqual(second);
+  });
+
+  testPosix('a schema 1 record holding the retired website docs target reads back without it and archives its original bytes', () => {
+    const fixture = makeFixture();
+    const releaseId = uuidFor(151);
+    const legacy = completedRecord(fixture, releaseId);
+    legacy.docs['hyperclay-website'] = {
+      state: 'complete',
+      journalFile: path.join(recordsDir(fixture, releaseId), 'docs/website.json'),
+      commit: COMMIT_SHA,
+      reason: null
+    };
+    const legacyBytes = Buffer.from(`${JSON.stringify(legacy)}\n`);
+    fs.mkdirSync(fixture.paths.repoDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(fixture.paths.stateFile, legacyBytes, { mode: 0o600 });
+
+    const { 'hyperclay-website': _retired, ...docs } = legacy.docs;
+    expect(read(fixture)).toEqual({ ...legacy, docs });
+    expect(Object.keys(read(fixture).docs)).toEqual(['hyperclay']);
+
+    const replacement = sourceReadyRecord(fixture, uuidFor(152));
+    write(fixture, replacement, 0);
+    expect(fs.readFileSync(path.join(fixture.paths.historyDir, `${releaseId}.json`))).toEqual(legacyBytes);
+    expect(read(fixture)).toEqual(replacement);
   });
 
   testPosix('a replacement retry after a failed lane write accepts the archived bytes', () => {

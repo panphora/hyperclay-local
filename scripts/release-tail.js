@@ -22,7 +22,7 @@ const { updateExternalDocs } = require('./update-external-docs');
 const { withFerryRepoLock } = require('./release-ferry');
 
 const reader = createLocalGitReader();
-const DOC_REPOS = ['hyperclay', 'hyperclay-website'];
+const DOC_REPOS = ['hyperclay'];
 const IDENTITY_KEYS = ['key', 'root', 'commonDir', 'branch', 'remote', 'remoteRepo', 'pushUrlSha256', 'objectFormat'];
 const DOC_OUTCOMES = new Map([
   ['DOCS_REPO_MISSING', 'missing'],
@@ -402,7 +402,7 @@ async function finishDoc(state, repoDir, repo, d) {
   });
   current(state, repoDir, d);
   need(object(aggregate) && aggregate.schema === 1 && aggregate.version === state.version
-    && Array.isArray(aggregate.targets) && aggregate.targets.length === 2
+    && Array.isArray(aggregate.targets) && aggregate.targets.length === DOC_REPOS.length
     && aggregate.targets.every((entry, index) => object(entry) && entry.repo === DOC_REPOS[index]),
     'Docs updater returned a mismatched aggregate');
   const entry = aggregate.targets[DOC_REPOS.indexOf(repo)];

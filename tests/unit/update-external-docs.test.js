@@ -25,11 +25,7 @@ jest.setTimeout(300000);
 const OLD = '1.28.0';
 const NEW = '1.29.0';
 const EDGE_PATH = 'server-pages/hyperclay-local.edge';
-const VAULT_NAME = '15 Hyperclay Local App.md';
-const VAULT_PATH = `vault/DOCS/${VAULT_NAME}`;
-const MDX_PATH = 'content/docs/hyperclay-local-app.mdx';
-const LLMS_PATH = 'public/llms.txt';
-const REPOS = ['hyperclay', 'hyperclay-website'];
+const REPOS = ['hyperclay'];
 const OID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 const TMP_BASE = fs.realpathSync(os.tmpdir());
@@ -76,8 +72,6 @@ afterAll(() => {
   fs.rmSync(OWNER, { recursive: true, force: true });
 });
 
-const PLATFORM_VAULT = ['---', 'title: Platform', '---', '', 'Platform notes.', ''].join('\n');
-
 function edgeBody(version) {
   return [
     "@component('components/layout/app', { title: 'Hyperclay Local' })",
@@ -89,24 +83,6 @@ function edgeBody(version) {
     `    var version = '${version}';`,
     '  </script>',
     '@end',
-    ''
-  ].join('\n');
-}
-
-function vaultBody(version) {
-  return [
-    '---',
-    'title: Hyperclay Local App',
-    '---',
-    '',
-    'Download Hyperclay Local:',
-    '',
-    `   - **macOS**: [HyperclayLocal-${version}-arm64.dmg](https://local.hyperclay.com/HyperclayLocal-${version}-arm64.dmg)`,
-    `   - **Windows**: [HyperclayLocal-Setup-${version}.exe](https://local.hyperclay.com/HyperclayLocal-Setup-${version}.exe)`,
-    '',
-    `Install with \`chmod +x HyperclayLocal-${version}.AppImage\` after downloading.`,
-    '',
-    `This release is ${version}.`,
     ''
   ].join('\n');
 }
@@ -139,40 +115,6 @@ function write(root, rel, body) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, body);
   return file;
-}
-
-function bodyOf(markdown) {
-  return markdown.replace(/^---\n[\s\S]*?\n---\n\n?/, '');
-}
-
-function cleanName(name) {
-  return name
-    .replace(/^\d+\s+/, '')
-    .replace(/\.md$/, '')
-    .replace(/\s+-\s+/g, '-')
-    .replace(/\s+/g, '-')
-    .replace(/[^\w-]/g, '')
-    .toLowerCase();
-}
-
-function canonicalSyncDocs(cwd) {
-  const vaultDir = path.join(cwd, 'vault/DOCS');
-  for (const name of fs.readdirSync(vaultDir).sort()) {
-    if (!name.endsWith('.md')) continue;
-    const title = name.replace(/^\d+\s+/, '').replace(/\.md$/, '');
-    write(cwd, `content/docs/${cleanName(name)}.mdx`,
-      `---\ntitle: ${title}\npublish: true\n---\n\n${bodyOf(fs.readFileSync(path.join(vaultDir, name), 'utf8'))}`);
-  }
-}
-
-function canonicalLlmsTxt(cwd) {
-  const docsDir = path.join(cwd, 'content/docs');
-  const blocks = fs
-    .readdirSync(docsDir)
-    .filter((name) => name.endsWith('.mdx'))
-    .sort()
-    .map((name) => `## ${name.replace(/\.mdx$/, '')}\n\n${bodyOf(fs.readFileSync(path.join(docsDir, name), 'utf8'))}`);
-  write(cwd, LLMS_PATH, blocks.join('\n---\n\n'));
 }
 
 function makeDesktop({ withModules = false } = {}) {
@@ -216,20 +158,8 @@ function makeFixture({ repos = REPOS, docsVersion = OLD } = {}) {
     git(root, ['init', '-q', '-b', 'main']);
     git(root, ['remote', 'add', 'origin', remotes.get(repo).fetch]);
     git(root, ['remote', 'set-url', '--push', 'origin', remotes.get(repo).push]);
-    if (repo === 'hyperclay') {
-      write(root, 'README.md', 'hyperclay readme\n');
-      write(root, EDGE_PATH, edgeBody(docsVersion));
-    } else {
-      write(root, VAULT_PATH, vaultBody(docsVersion));
-      write(root, 'vault/DOCS/07 Platform.md', PLATFORM_VAULT);
-      write(root, 'package.json', `${JSON.stringify({
-        name: 'hyperclay-website',
-        version: '0.0.0',
-        scripts: { 'sync-docs': 'node scripts/sync-docs.js', 'build:llms-txt': 'node scripts/build-llms-txt.js' }
-      }, null, 2)}\n`);
-      canonicalSyncDocs(root);
-      canonicalLlmsTxt(root);
-    }
+    write(root, 'README.md', 'hyperclay readme\n');
+    write(root, EDGE_PATH, edgeBody(docsVersion));
     git(root, ['add', '-A']);
     git(root, ['commit', '-q', '-m', 'fixture']);
     git(root, ['push', '-q', 'origin', 'main']);
@@ -270,24 +200,6 @@ function newCache() {
   return path.join(CACHES, `cache-${++cacheSeq}`);
 }
 
-function fakeNpm(liveWebsite, cwd, args) {
-  if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) throw new Error('npm needs an absolute snapshot cwd');
-  if (liveWebsite && (cwd === liveWebsite || cwd.startsWith(`${liveWebsite}${path.sep}`))) {
-    throw new Error('npm was pointed at the live website');
-  }
-  const [sub, script] = args;
-  if (sub === 'ci') return '';
-  if (sub === 'run' && script === 'sync-docs') {
-    canonicalSyncDocs(cwd);
-    return '';
-  }
-  if (sub === 'run' && script === 'build:llms-txt') {
-    canonicalLlmsTxt(cwd);
-    return '';
-  }
-  throw new Error(`unexpected npm command: ${args.join(' ')}`);
-}
-
 function depsFor(options = {}) {
   const calls = [];
   const spawnCalls = [];
@@ -298,7 +210,7 @@ function depsFor(options = {}) {
       const injected = options.hook(command, args, opts);
       if (injected !== undefined) return injected;
     }
-    if (command === 'npm') return fakeNpm(options.liveWebsite, opts.cwd, args);
+    if (command === 'npm') throw new Error('docs preparation must not run npm');
     if (command !== 'git' && command !== 'tar') {
       throw new Error(`unexpected production command: ${command} ${args.join(' ')}`);
     }
@@ -493,12 +405,11 @@ function completeEntries(result) {
 }
 
 describe('documentation updater', () => {
-  testPosix('completes both independent targets with exact paths and fresh local bare remote proof', async () => {
+  testPosix('completes the docs target with exact paths and fresh local bare remote proof', async () => {
     const fixture = makeFixture();
-    const deps = depsFor({ liveWebsite: fixture.roots.get('hyperclay-website') });
+    const deps = depsFor();
     write(fixture.roots.get('hyperclay'), 'notes.txt', 'unrelated work\n');
     write(fixture.roots.get('hyperclay'), 'README.md', 'hyperclay readme with local edit\n');
-    write(fixture.roots.get('hyperclay-website'), 'scratch.txt', 'unrelated website work\n');
     const before = new Map(REPOS.map((repo) => [repo, liveSnapshot(fixture.roots.get(repo))]));
 
     const result = await runUpdater(fixture, deps);
@@ -506,7 +417,7 @@ describe('documentation updater', () => {
     expect(result.schema).toBe(1);
     expect(result.version).toBe(NEW);
     expect(result.targets.map((entry) => entry.repo)).toEqual(REPOS);
-    expect(completeEntries(result)).toBe(2);
+    expect(completeEntries(result)).toBe(1);
 
     const record = readRun(fixture);
     expect(readResult(fixture)).toEqual(result);
@@ -541,8 +452,8 @@ describe('documentation updater', () => {
       expect(archiveCalls(deps, root)).toBe(1);
     }
 
-    expect(npmCalls(deps)).toBe(5);
-    expect(pushes(deps)).toBe(2);
+    expect(npmCalls(deps)).toBe(0);
+    expect(pushes(deps)).toBe(1);
     for (const repo of REPOS) {
       const root = fixture.roots.get(repo);
       const after = liveSnapshot(root);
@@ -555,8 +466,6 @@ describe('documentation updater', () => {
     }
     expect(fs.readFileSync(path.join(fixture.roots.get('hyperclay'), 'README.md'), 'utf8'))
       .toBe('hyperclay readme with local edit\n');
-    expect(fs.readFileSync(path.join(fixture.roots.get('hyperclay-website'), 'scratch.txt'), 'utf8'))
-      .toBe('unrelated website work\n');
     expect(git(fixture.roots.get('hyperclay'), ['status', '--porcelain=v1', '-z']))
       .toContain('README.md');
     expect(fs.existsSync(path.join(fixture.roots.get('hyperclay'), 'notes.txt'))).toBe(true);
@@ -629,41 +538,38 @@ function runCli(desktop, args, home) {
   });
 }
 
-testPosix('keeps a durably complete target when the independent sibling is missing', async () => {
+testPosix('keeps a durably complete target without the retired website checkout', async () => {
   const fixture = makeFixture({ repos: ['hyperclay'] });
   const deps = depsFor();
   const result = await runUpdater(fixture, deps);
 
+  expect(result.targets.map((entry) => entry.repo)).toEqual(['hyperclay']);
   expect(result.targets[0].state).toBe('complete');
-  expect(result.targets[1].state).toBe('missing');
-  expect(result.targets[1].reason.code).toBe('DOCS_REPO_MISSING');
   expect(readResult(fixture)).toEqual(result);
   const journal = readJournalFor(fixture, 'hyperclay');
   expect(journal.state).toBe('complete');
   expect(remoteMain(fixture.remotes.get('hyperclay').push)).toBe(journal.commit);
-  expect(readRun(fixture).targets[1].attemptId).toBeNull();
 });
 
-testPosix('keeps the website complete when the hyperclay sibling is missing', async () => {
-  const fixture = makeFixture({ repos: ['hyperclay-website'] });
+testPosix('records a missing hyperclay checkout without acting', async () => {
+  const fixture = makeFixture({ repos: [] });
   const deps = depsFor();
   const result = await runUpdater(fixture, deps);
 
+  expect(result.targets.map((entry) => entry.repo)).toEqual(['hyperclay']);
   expect(result.targets[0].state).toBe('missing');
   expect(result.targets[0].reason.code).toBe('DOCS_REPO_MISSING');
-  expect(result.targets[1].state).toBe('complete');
   expect(readResult(fixture)).toEqual(result);
-  expect(remoteMain(fixture.remotes.get('hyperclay-website').push)).toBe(result.targets[1].commit);
   expect(readRun(fixture).targets[0].attemptId).toBeNull();
+  expect(npmCalls(deps)).toBe(0);
 });
 
-testPosix('records both preparation failures without touching either live repository', async () => {
+testPosix('records a preparation failure without touching the live repository', async () => {
   const fixture = makeFixture();
   const hyperclayRoot = fixture.roots.get('hyperclay');
   const before = new Map(REPOS.map((repo) => [repo, headOf(fixture.roots.get(repo))]));
   const deps = depsFor({
     hook: (command, args, opts) => {
-      if (command === 'npm') throw new Error('injected website generator failure');
       if (command === 'git' && opts.cwd === hyperclayRoot && args[0] === 'rev-parse') {
         throw new Error('injected hyperclay preparation failure');
       }
@@ -673,11 +579,9 @@ testPosix('records both preparation failures without touching either live reposi
   const result = await runUpdater(fixture, deps);
 
   expect(completeEntries(result)).toBe(0);
-  expect(result.targets.map((entry) => entry.state)).toEqual(['failed', 'failed']);
+  expect(result.targets.map((entry) => entry.state)).toEqual(['failed']);
   expect(result.targets[0].reason.code).toBe('DOCS_PREPARE_FAILED');
   expect(result.targets[0].reason.message).toBe('injected hyperclay preparation failure');
-  expect(result.targets[1].reason.code).toBe('DOCS_PREPARE_FAILED');
-  expect(result.targets[1].reason.message).toBe('injected website generator failure');
   expect(pushes(deps)).toBe(0);
   for (const repo of REPOS) expect(headOf(fixture.roots.get(repo))).toBe(before.get(repo));
   expect(readResult(fixture)).toEqual(result);
@@ -1044,8 +948,8 @@ testPosix('stops before target work when the run record or initial result cannot
   const resultDeps = depsFor({ fs: failRenameAt(resultFailure.resultFile, 1) });
   await expectCode(runUpdater(resultFailure, resultDeps), 'DOCS_RESULT_WRITE_FAILED');
   const durable = readRun(resultFailure);
-  expect(durable.targets.map((slot) => slot.attemptId)).toEqual([null, null]);
-  expect(durable.targets.map((slot) => slot.journalOperationId)).toEqual([null, null]);
+  expect(durable.targets.map((slot) => slot.attemptId)).toEqual([null]);
+  expect(durable.targets.map((slot) => slot.journalOperationId)).toEqual([null]);
   expect(fs.existsSync(resultFailure.resultFile)).toBe(false);
   expect(fs.existsSync(path.join(resultFailure.runDir, 'attempts'))).toBe(false);
   expect(npmCalls(resultDeps)).toBe(0);
@@ -1096,7 +1000,7 @@ testPosix('stops after a parent-directory fsync failure and preserves retained e
   const visible = fs.readFileSync(runFile);
   const retained = JSON.parse(visible.toString());
   expect(retained).toMatchObject({ schema: 1, version: NEW });
-  expect(retained.targets.map((slot) => slot.attemptId)).toEqual([null, null]);
+  expect(retained.targets.map((slot) => slot.attemptId)).toEqual([null]);
   expect(fs.readdirSync(fixture.runDir).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   expect(openRun(fixture, depsFor({ desktop })).snapshotRun()).toEqual(retained);
 
@@ -1135,12 +1039,12 @@ testPosix('updater ordering and resume: persists the initial run record for a no
   const firstDeps = depsFor({ desktop });
   const first = await runUpdater(fixture, firstDeps);
 
-  expect(first.targets.map((entry) => entry.state)).toEqual(['missing', 'missing']);
+  expect(first.targets.map((entry) => entry.state)).toEqual(['missing']);
   const runFile = path.join(fixture.runDir, RUN_FILE);
   const persisted = fs.readFileSync(runFile);
   const record = JSON.parse(persisted.toString());
-  expect(record.targets.map((slot) => slot.attemptId)).toEqual([null, null]);
-  expect(record.targets.map((slot) => slot.journalOperationId)).toEqual([null, null]);
+  expect(record.targets.map((slot) => slot.attemptId)).toEqual([null]);
+  expect(record.targets.map((slot) => slot.journalOperationId)).toEqual([null]);
   expect(readResult(fixture)).toEqual(first);
   expect(fs.readFileSync(retained, 'utf8')).toBe('interrupted initial publish bytes\n');
   expect(npmCalls(firstDeps)).toBe(0);
@@ -1168,7 +1072,7 @@ testPosix('updater ordering and resume: reopens an existing result regular file 
   expect(fs.statSync(reopen.resultFile).isFile()).toBe(true);
   const reopened = openRun(reopen, reopenDeps);
   expect(reopened.snapshotResult()).toEqual(first);
-  expect(reopened.snapshotRun().targets.map((slot) => slot.attemptId)).toEqual([null, null]);
+  expect(reopened.snapshotRun().targets.map((slot) => slot.attemptId)).toEqual([null]);
 
   const symlinkRun = makeFixture({ repos: [] });
   const linkTarget = fs.mkdtempSync(path.join(OWNER, `resume-link-target-${++fixtureSeq}-`));
@@ -1285,13 +1189,12 @@ testPosix('updater ordering and resume: awaits a delayed lock-backed journal ope
     expect(pushes(deps)).toBe(1);
     expect(ferryCalls).toBe(2);
     expect(checkpoints.map((entry) => entry.result.targets.map((target) => target.state))).toEqual([
-      ['pending', 'pending'],
-      ['failed', 'pending'],
-      ['pending-push', 'pending'],
-      ['complete', 'pending'],
-      ['complete', 'missing']
+      ['pending'],
+      ['failed'],
+      ['pending-push'],
+      ['complete']
     ]);
-    expect(checkpoints.map((entry) => entry.reconcileClosed)).toEqual([false, false, true, true, true]);
+    expect(checkpoints.map((entry) => entry.reconcileClosed)).toEqual([false, false, true, true]);
     expect(checkpoints[3].result.targets[0].commit).toBe(headOf(root));
     expect(remoteMain(fixture.remotes.get('hyperclay').push)).toBe(headOf(root));
   } finally {
@@ -1306,7 +1209,7 @@ testPosix('composes with the release lock and refuses a busy docs lock without t
   const identity = resolveRepoIdentity(freeDeps.repoRoot, { readGit });
   await withReleaseLock(identity, async () => {
     const result = await runUpdater(free, freeDeps);
-    expect(result.targets.map((entry) => entry.state)).toEqual(['missing', 'missing']);
+    expect(result.targets.map((entry) => entry.state)).toEqual(['missing']);
   }, { cacheRoot: freeDeps.cacheRoot });
 
   const busy = makeFixture({ repos: [] });
@@ -1322,15 +1225,14 @@ testPosix('composes with the release lock and refuses a busy docs lock without t
 
   const sibling = makeFixture();
   const siblingDeps = depsFor();
-  const websiteIdentity = siblingLockIdentity(sibling.roots.get('hyperclay-website'));
+  const hyperclayIdentity = siblingLockIdentity(sibling.roots.get('hyperclay'));
   let releaseSibling;
-  const heldSibling = withDocsLock(websiteIdentity, () => new Promise((resolve) => { releaseSibling = resolve; }), { cacheRoot: siblingDeps.cacheRoot });
+  const heldSibling = withDocsLock(hyperclayIdentity, () => new Promise((resolve) => { releaseSibling = resolve; }), { cacheRoot: siblingDeps.cacheRoot });
   const siblingResult = await runUpdater(sibling, siblingDeps);
   releaseSibling();
   await heldSibling;
-  expect(siblingResult.targets[0].state).toBe('complete');
-  expect(siblingResult.targets[1].state).toBe('conflict');
-  expect(siblingResult.targets[1].reason.code).toBe('DOCS_LOCK_BUSY');
+  expect(siblingResult.targets[0].state).toBe('conflict');
+  expect(siblingResult.targets[0].reason.code).toBe('DOCS_LOCK_BUSY');
 });
 
 testPosix('rejects conflicting run records, unowned paths and a nested desktop identity', async () => {
@@ -1493,7 +1395,7 @@ testPosix('parses CLI options, falls back to the package version and exits nonze
   expect(fallback.stderr).toBe('');
   const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
   expect(result.version).toBe(NEW);
-  expect(result.targets.map((entry) => entry.state)).toEqual(['missing', 'missing']);
+  expect(result.targets.map((entry) => entry.state)).toEqual(['missing']);
 
   const positionalRun = path.join(OWNER, `cli-run-${++runSeq}`);
   const positionalResult = path.join(positionalRun, 'result.json');
@@ -1568,7 +1470,7 @@ function expectArtifactsUnchanged(before, after) {
 
 test('docs target subset: rejects invalid selections before dependencies', async () => {
   const selections = [null, [], Array(1), [undefined], 'hyperclay',
-    ['hyperclay', 'hyperclay'], ['hyperclay-website', 'hyperclay-website'],
+    ['hyperclay', 'hyperclay'],
     ['hyperclay-local'], ['hyperclay', 'hyperclay-local'], ['nope'], [1]];
   for (const targets of selections) {
     const deps = new Proxy({}, {
@@ -1579,31 +1481,21 @@ test('docs target subset: rejects invalid selections before dependencies', async
   }
 });
 
-testPosix('docs target subset: completes selected targets and preserves an unselected historical result', async () => {
+testPosix('docs target subset: completes the selected target', async () => {
   const fixture = makeFixture();
-  const hyperclayRoot = fixture.roots.get('hyperclay');
-  const websiteRoot = fixture.roots.get('hyperclay-website');
   const desktop = makeDesktop();
   const deps = subsetDepsFor(fixture, { desktop });
   const first = await runUpdater(fixture, deps, { targets: ['hyperclay'] });
 
+  expect(first.targets.map((entry) => entry.repo)).toEqual(['hyperclay']);
   expect(first.targets[0].state).toBe('complete');
-  expect(first.targets[1].state).toBe('pending');
-  expect(first.targets[1].reason.code).toBe('DOCS_NOT_ATTEMPTED');
-  expect(first.targets[1].journalFile).toBeNull();
-  expect(first.targets[1].commit).toBeNull();
-  expect(readRun(fixture).targets[1].attemptId).toBeNull();
-  expect(fs.existsSync(path.join(fixture.runDir, 'attempts', 'hyperclay-website'))).toBe(false);
   expect(npmCalls(deps)).toBe(0);
   expect(pushes(deps)).toBe(1);
   expect(readResult(fixture)).toEqual(first);
 
   const retainedEntry = JSON.parse(JSON.stringify(first.targets[0]));
-  const retainedSlot = JSON.parse(JSON.stringify(readRun(fixture).targets[0]));
   const retained = attemptArtifacts(fixture, 'hyperclay');
-  const retainedPush = remoteMain(fixture.remotes.get('hyperclay').push);
-  const retainedFetch = remoteMain(fixture.remotes.get('hyperclay').fetch);
-  expect(retainedPush).toBe(retainedEntry.commit);
+  expect(remoteMain(fixture.remotes.get('hyperclay').push)).toBe(retainedEntry.commit);
 
   const proofDeps = { run: deps.run, spawn: deps.spawn, fs };
   const proof = readCompletedTargetEvidence({
@@ -1615,65 +1507,14 @@ testPosix('docs target subset: completes selected targets and preserves an unsel
   }, proofDeps);
   expect(proof.commit).toBe(retainedEntry.commit);
   expect(proof.verifiedAt).toBe(retainedEntry.verifiedAt);
-
-  write(hyperclayRoot, 'later.txt', 'later unrelated work\n');
-  git(hyperclayRoot, ['add', '-A']);
-  git(hyperclayRoot, ['commit', '-q', '-m', 'later unrelated work']);
-  git(hyperclayRoot, ['checkout', '-q', '--detach']);
-  const laterHead = headOf(hyperclayRoot);
-  fs.appendFileSync(path.join(hyperclayRoot, EDGE_PATH), '\nlocal edit after completion\n');
-  git(hyperclayRoot, ['remote', 'set-url', '--push', 'origin', fixture.remotes.get('hyperclay').fetch]);
-
-  const ferryRoots = [];
-  const secondDeps = subsetDepsFor(fixture, {
-    desktop,
-    withFerryRepoLock: async (root, callback) => { ferryRoots.push(root); return callback(); }
-  });
-  const second = await runUpdater(fixture, secondDeps, { targets: ['hyperclay-website'] });
-
-  expect(second.targets[0]).toEqual(retainedEntry);
-  expect(second.targets[1].state).toBe('complete');
-  expect(readResult(fixture)).toEqual(second);
-  expect(JSON.parse(JSON.stringify(readRun(fixture).targets[0]))).toEqual(retainedSlot);
-  expectArtifactsUnchanged(retained, attemptArtifacts(fixture, 'hyperclay'));
-
-  expect(gitProbe(hyperclayRoot, ['symbolic-ref', '-q', 'HEAD']).status).not.toBe(0);
-  expect(headOf(hyperclayRoot)).toBe(laterHead);
-  expect(fs.readFileSync(path.join(hyperclayRoot, EDGE_PATH), 'utf8')).toContain('local edit after completion');
-  expect(remoteMain(fixture.remotes.get('hyperclay').push)).toBe(retainedPush);
-  expect(remoteMain(fixture.remotes.get('hyperclay').fetch)).toBe(retainedFetch);
-
-  const startupReads = secondDeps.run.calls.filter((call) => call.command === 'git'
-    && call.args[0] === 'rev-parse' && call.args[1] === '--git-common-dir'
-    && call.cwd === fs.realpathSync(hyperclayRoot));
-  expect(startupReads.length).toBe(1);
-  expect(npmCalls(secondDeps)).toBe(5);
-  expect(archiveCalls(secondDeps, hyperclayRoot)).toBe(0);
-  expect(secondDeps.run.calls.filter((call) => call.command === 'npm' && call.cwd
-    && call.cwd.startsWith(fs.realpathSync(hyperclayRoot)))).toEqual([]);
-  expect(secondDeps.spawnRemote.calls.filter((call) => call.some((arg) => String(arg).includes(fixture.remotes.get('hyperclay').push)))).toEqual([]);
-  expect(secondDeps.spawnRemote.calls.filter((call) => call.some((arg) => String(arg).includes(fixture.remotes.get('hyperclay').fetch)))).toEqual([]);
-  expect(pushes(secondDeps)).toBe(1);
-  expect(ferryRoots.length).toBeGreaterThan(0);
-  expect([...new Set(ferryRoots)]).toEqual([fs.realpathSync(websiteRoot)]);
-
-  const reproof = readCompletedTargetEvidence({
-    journalFile: retained.paths.journalFile,
-    evidenceRoot: fixture.runDir,
-    repo: 'hyperclay',
-    version: NEW,
-    commit: retainedEntry.commit
-  }, proofDeps);
-  expect(reproof.commit).toBe(retainedEntry.commit);
-  expect(reproof.verifiedAt).toBe(retainedEntry.verifiedAt);
 });
 
-testPosix('docs target subset: preserves default aggregate bytes for an explicit reversed pair', async () => {
+testPosix('docs target subset: preserves default aggregate bytes for an explicit selection', async () => {
   const fixture = makeFixture({ repos: [] });
   const desktop = makeDesktop();
   const firstDeps = subsetDepsFor(fixture, { desktop });
   const first = await runUpdater(fixture, firstDeps);
-  expect(first.targets.map((entry) => entry.state)).toEqual(['missing', 'missing']);
+  expect(first.targets.map((entry) => entry.state)).toEqual(['missing']);
   expect(npmCalls(firstDeps)).toBe(0);
   expect(pushes(firstDeps)).toBe(0);
 
@@ -1686,22 +1527,22 @@ testPosix('docs target subset: preserves default aggregate bytes for an explicit
 
   const explicit = resultPayloads(fixture.resultFile);
   const thirdDeps = subsetDepsFor(fixture, { desktop, fs: explicit.fsHook });
-  const third = await runUpdater(fixture, thirdDeps, { targets: ['hyperclay-website', 'hyperclay'] });
+  const third = await runUpdater(fixture, thirdDeps, { targets: ['hyperclay'] });
 
   expect(third).toEqual(second);
   expect(third.targets.map((entry) => entry.repo)).toEqual(REPOS);
-  expect(third.targets.map((entry) => entry.state)).toEqual(['missing', 'missing']);
+  expect(third.targets.map((entry) => entry.state)).toEqual(['missing']);
   expect(explicit.payloads).toEqual(baseline.payloads);
   expect(fs.readFileSync(fixture.resultFile)).toEqual(baselineResult);
   expect(fs.readFileSync(path.join(fixture.runDir, RUN_FILE))).toEqual(baselineRun);
-  expect(readRun(fixture).targets.map((slot) => slot.attemptId)).toEqual([null, null]);
+  expect(readRun(fixture).targets.map((slot) => slot.attemptId)).toEqual([null]);
   expect(npmCalls(secondDeps)).toBe(0);
   expect(npmCalls(thirdDeps)).toBe(0);
   expect(pushes(secondDeps)).toBe(0);
   expect(pushes(thirdDeps)).toBe(0);
 });
 
-testPosix('docs target subset: resets a selected completion and preserves the unselected entry', async () => {
+testPosix('docs target subset: resets a selected completion and reproofs it', async () => {
   const fixture = makeFixture({ repos: ['hyperclay'] });
   const desktop = makeDesktop();
   let clock = Date.parse('2026-01-02T03:04:05.000Z');
@@ -1709,8 +1550,7 @@ testPosix('docs target subset: resets a selected completion and preserves the un
   const firstDeps = subsetDepsFor(fixture, { desktop, now: tick });
   const first = await runUpdater(fixture, firstDeps);
   expect(first.targets[0].state).toBe('complete');
-  expect(first.targets[1].state).toBe('missing');
-  const retained = JSON.parse(JSON.stringify(first.targets[1]));
+  expect(first.targets.map((entry) => entry.repo)).toEqual(['hyperclay']);
 
   const captured = resultPayloads(fixture.resultFile);
   const secondDeps = subsetDepsFor(fixture, { desktop, now: tick, fs: captured.fsHook });
@@ -1719,7 +1559,6 @@ testPosix('docs target subset: resets a selected completion and preserves the un
   expect(second.targets[0].state).toBe('complete');
   expect(second.targets[0].commit).toBe(first.targets[0].commit);
   expect(second.targets[0].verifiedAt).not.toBe(first.targets[0].verifiedAt);
-  expect(second.targets[1]).toEqual(retained);
   expect(pushes(secondDeps)).toBe(0);
   expect(readResult(fixture)).toEqual(second);
 
@@ -1729,9 +1568,6 @@ testPosix('docs target subset: resets a selected completion and preserves the un
   expect(captured.payloads[0].targets[0].commit).toBe(first.targets[0].commit);
   expect(captured.payloads[0].targets[0].journalFile).toBe(first.targets[0].journalFile);
   expect(captured.payloads[captured.payloads.length - 1].targets[0].state).toBe('complete');
-  for (const payload of captured.payloads) {
-    expect(payload.targets[1]).toEqual(retained);
-  }
 });
 
 test('docs target subset: remote guard refuses destinations before native spawn', () => {

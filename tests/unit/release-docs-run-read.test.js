@@ -196,7 +196,6 @@ describePosix('docs run read-only record', () => {
     expect(record).toEqual(expected);
     expect(record.targets[0].attemptId).toBe(attemptId);
     expect(record.targets[0].journalOperationId).toBe(operationId);
-    expect(record.targets[1].attemptId).toBeNull();
     expect(inventory(runDir)).toEqual(before);
 
     record.targets[0].attemptId = null;

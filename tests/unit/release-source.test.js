@@ -374,12 +374,6 @@ function completeState(fixture) {
         journalFile: path.join(releaseDir, 'docs', 'hyperclay', 'target.json'),
         commit: SOURCE_SHA,
         reason: null
-      },
-      'hyperclay-website': {
-        state: 'complete',
-        journalFile: path.join(releaseDir, 'docs', 'hyperclay-website', 'target.json'),
-        commit: SOURCE_SHA,
-        reason: null
       }
     },
     install: { state: 'not-attempted', error: null },

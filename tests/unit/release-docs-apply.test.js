@@ -61,12 +61,6 @@ afterAll(() => {
 });
 
 const EDGE_PATH = 'server-pages/hyperclay-local.edge';
-const VAULT_NAME = '15 Hyperclay Local App.md';
-const VAULT_PATH = `vault/DOCS/${VAULT_NAME}`;
-const LLMS_PATH = 'public/llms.txt';
-
-const PLATFORM_VAULT = ['---', 'title: Platform', '---', '', 'Platform notes.', ''].join('\n');
-
 function edgeBody(version) {
   return [
     "@component('components/layout/app', { title: 'Hyperclay Local' })",
@@ -78,24 +72,6 @@ function edgeBody(version) {
     `    var version = '${version}';`,
     '  </script>',
     '@end',
-    ''
-  ].join('\n');
-}
-
-function vaultBody(version) {
-  return [
-    '---',
-    'title: Hyperclay Local App',
-    '---',
-    '',
-    'Download Hyperclay Local:',
-    '',
-    `   - **macOS**: [HyperclayLocal-${version}-arm64.dmg](https://local.hyperclay.com/HyperclayLocal-${version}-arm64.dmg)`,
-    `   - **Windows**: [HyperclayLocal-Setup-${version}.exe](https://local.hyperclay.com/HyperclayLocal-Setup-${version}.exe)`,
-    '',
-    `Install with \`chmod +x HyperclayLocal-${version}.AppImage\` after downloading.`,
-    '',
-    `This release is ${version}.`,
     ''
   ].join('\n');
 }
@@ -126,39 +102,6 @@ function write(root, rel, body) {
   return file;
 }
 
-function bodyOf(markdown) {
-  return markdown.replace(/^---\n[\s\S]*?\n---\n\n?/, '');
-}
-
-function cleanName(name) {
-  return name
-    .replace(/^\d+\s+/, '')
-    .replace(/\.md$/, '')
-    .replace(/\s+-\s+/g, '-')
-    .replace(/\s+/g, '-')
-    .replace(/[^\w-]/g, '')
-    .toLowerCase();
-}
-
-function canonicalSyncDocs(cwd) {
-  const vaultDir = path.join(cwd, 'vault/DOCS');
-  for (const name of fs.readdirSync(vaultDir).sort()) {
-    if (!name.endsWith('.md')) continue;
-    const title = name.replace(/^\d+\s+/, '').replace(/\.md$/, '');
-    write(cwd, `content/docs/${cleanName(name)}.mdx`, `---\ntitle: ${title}\npublish: true\n---\n\n${bodyOf(fs.readFileSync(path.join(vaultDir, name), 'utf8'))}`);
-  }
-}
-
-function canonicalLlmsTxt(cwd) {
-  const docsDir = path.join(cwd, 'content/docs');
-  const blocks = fs
-    .readdirSync(docsDir)
-    .filter((name) => name.endsWith('.mdx'))
-    .sort()
-    .map((name) => `## ${name.replace(/\.mdx$/, '')}\n\n${bodyOf(fs.readFileSync(path.join(docsDir, name), 'utf8'))}`);
-  write(cwd, LLMS_PATH, blocks.join('\n---\n\n'));
-}
-
 function addOrigin(repoRoot, name) {
   git(repoRoot, ['remote', 'add', 'origin', `https://fetch.invalid/${name}.git`]);
   git(repoRoot, ['remote', 'set-url', '--push', 'origin', `https://push.invalid/${name}.git`]);
@@ -167,7 +110,6 @@ function addOrigin(repoRoot, name) {
 function makeFixture({ docsVersion = OLD } = {}) {
   const parentDir = fs.mkdtempSync(path.join(OWNER, `parent-${++fixtureSeq}-`));
   const hyperclay = path.join(parentDir, 'hyperclay');
-  const website = path.join(parentDir, 'hyperclay-website');
 
   fs.mkdirSync(hyperclay, { recursive: true });
   git(hyperclay, ['init', '-q', '-b', 'main']);
@@ -178,47 +120,11 @@ function makeFixture({ docsVersion = OLD } = {}) {
   git(hyperclay, ['add', '-A']);
   git(hyperclay, ['commit', '-q', '-m', 'fixture']);
 
-  fs.mkdirSync(website, { recursive: true });
-  git(website, ['init', '-q', '-b', 'main']);
-  addOrigin(website, 'hyperclay-website');
-  write(website, VAULT_PATH, vaultBody(docsVersion));
-  write(website, 'vault/DOCS/07 Platform.md', PLATFORM_VAULT);
-  write(website, 'package.json', `${JSON.stringify({
-    name: 'hyperclay-website',
-    version: '0.0.0',
-    scripts: { 'sync-docs': 'node scripts/sync-docs.js', 'build:llms-txt': 'node scripts/build-llms-txt.js' }
-  }, null, 2)}\n`);
-  canonicalSyncDocs(website);
-  canonicalLlmsTxt(website);
-  git(website, ['add', '-A']);
-  git(website, ['commit', '-q', '-m', 'fixture']);
-
   return {
     parentDir,
     hyperclay,
-    website,
     runDir: path.join(RUNS, `run-${++runSeq}`),
     outDir: path.join(OUTS, `out-${++outSeq}`)
-  };
-}
-
-function makeRun(liveWebsite) {
-  return (command, args, options = {}) => {
-    if (command !== 'npm') return childProcess.execFileSync(command, args, { encoding: 'utf8', env: GIT_ENV, ...options });
-    const cwd = options.cwd;
-    if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) throw new Error('npm needs an absolute snapshot cwd');
-    if (cwd === liveWebsite || cwd.startsWith(`${liveWebsite}${path.sep}`)) throw new Error('npm was pointed at the live website');
-    const [sub, script] = args;
-    if (sub === 'ci') return '';
-    if (sub === 'run' && script === 'sync-docs') {
-      canonicalSyncDocs(cwd);
-      return '';
-    }
-    if (sub === 'run' && script === 'build:llms-txt') {
-      canonicalLlmsTxt(cwd);
-      return '';
-    }
-    throw new Error(`unexpected npm command: ${args.join(' ')}`);
   };
 }
 
@@ -227,10 +133,7 @@ function descriptorPath(fixture) {
 }
 
 function prepareFixture(fixture, version) {
-  prepareExternalDocs(
-    { version, parentDir: fixture.parentDir, runDir: fixture.runDir },
-    { run: makeRun(fixture.website) }
-  );
+  prepareExternalDocs({ version, parentDir: fixture.parentDir, runDir: fixture.runDir });
 }
 
 function planRun() {
@@ -255,8 +158,8 @@ function journalFileFor(record) {
   return path.join(path.dirname(record.applicationFile), 'target.json');
 }
 
-function repoRootOf(fixture, repo) {
-  return repo === 'hyperclay' ? fixture.hyperclay : fixture.website;
+function repoRootOf(fixture) {
+  return fixture.hyperclay;
 }
 
 function newCache() {
@@ -402,12 +305,12 @@ function freshTarget(fixture, repo) {
 }
 
 describe('release docs apply', () => {
-  testPosix('prepares and applies the exact expected tree for both docs targets', async () => {
+  testPosix('prepares and applies the exact expected tree for the docs target', async () => {
     const fixture = makeFixture();
     prepareFixture(fixture, NEW);
     const deps = depsFor({});
 
-    for (const repo of ['hyperclay', 'hyperclay-website']) {
+    for (const repo of ['hyperclay']) {
       const repoRoot = repoRootOf(fixture, repo);
       const record = planTarget(fixture, repo, NEW);
       const journalFile = journalFileFor(record);
@@ -1007,7 +910,7 @@ describe('release docs apply', () => {
     expect(readRefusal(foreign, { run: deps.run }).error.code).toBe('DOCS_JOURNAL_INVALID');
 
     const wrongRoot = JSON.parse(pristine);
-    wrongRoot.repoRoot = fixture.website;
+    wrongRoot.repoRoot = path.join(fixture.parentDir, 'other-repo');
     fs.writeFileSync(journalFile, `${JSON.stringify(wrongRoot, null, 2)}\n`);
     expect(readRefusal(journalFile, { run: deps.run }).error.code).toBe('DOCS_JOURNAL_INVALID');
 
