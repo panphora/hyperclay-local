@@ -62,8 +62,9 @@ test('folder, rename, move, duplicate, Trash, restore, and empty Trash change on
 
 test('renaming a page moves its merge state beside it and it composes at the new path', async () => {
   h = await fixture();
-  const template = await fs.readFile(path.join(__dirname, '../../src/main/document-templates/page.html'), 'utf8');
+  const template = await fs.readFile(path.join(__dirname, '../fixtures/ypage-template.html'), 'utf8');
   const { state } = splitPage(template);
+  expect(state).not.toBeNull();
   await fs.writeFile(path.join(h.dir, 'A.html'), await storePageState(h.dir, 'A.html', template));
   const request = await h.start();
 
@@ -79,8 +80,9 @@ test('renaming a page moves its merge state beside it and it composes at the new
 
 test('renaming a folder takes its documents\u2019 merge state with it', async () => {
   h = await fixture();
-  const template = await fs.readFile(path.join(__dirname, '../../src/main/document-templates/page.html'), 'utf8');
+  const template = await fs.readFile(path.join(__dirname, '../fixtures/ypage-template.html'), 'utf8');
   const { state } = splitPage(template);
+  expect(state).not.toBeNull();
   await fs.mkdir(path.join(h.dir, 'Notes'), { recursive: true });
   await fs.writeFile(path.join(h.dir, 'Notes/A.html'), await storePageState(h.dir, 'Notes/A.html', template));
   const request = await h.start();
@@ -96,7 +98,9 @@ test('renaming a folder takes its documents\u2019 merge state with it', async ()
 
 test('Trashing a page drops its merge state, and Trashing a folder drops the whole mirror', async () => {
   h = await fixture();
-  const template = await fs.readFile(path.join(__dirname, '../../src/main/document-templates/page.html'), 'utf8');
+  const template = await fs.readFile(path.join(__dirname, '../fixtures/ypage-template.html'), 'utf8');
+  const { state } = splitPage(template);
+  expect(state).not.toBeNull();
   await fs.writeFile(path.join(h.dir, 'A.html'), await storePageState(h.dir, 'A.html', template));
   await fs.mkdir(path.join(h.dir, 'Notes'), { recursive: true });
   await fs.writeFile(path.join(h.dir, 'Notes/A.html'), await storePageState(h.dir, 'Notes/A.html', template));

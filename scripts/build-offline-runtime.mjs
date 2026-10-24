@@ -39,7 +39,7 @@ for (const id of ids) {
     const url = new URL(value);
     urls.add(url.href);
     add(packagePath(url.pathname));
-    if (url.pathname.endsWith('/clay.js')) plans.push(resolveModules(url.searchParams, true));
+    if (url.pathname.endsWith('/clay.js')) plans.push(resolveModules(url.searchParams, true), resolveModules(url.searchParams, false));
   });
 }
 
