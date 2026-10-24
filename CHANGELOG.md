@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+## [1.32.0] - 2026-10-23
+
+### Added
+- Live data works in Local. With an authority, a root app serves live-data saves, state reads, room streams and per-client receipts, and advertises `live-data` and `live-provenance`.
+- Live values up to 5 MB are accepted. A value larger than a frame arrives in a request of its own.
+- The workspace opens in its own window with native navigation, permissions and lifecycle, and checks Host, Origin and Fetch Metadata on every API call behind a per-launch token.
+- Opening `localhost:<port>/` in a browser opens the workspace, through a one-time ticket valid for 60 seconds and a session cookie named for the port.
+- Browser tabs take part in save before quit. Quit, stop, port change and folder removal wait for every tab to answer.
+- The workspace shows an observer-backed tree, paged listings, name search and document frames, and streams changes as NDJSON events.
+- Folder, rename, move, duplicate and Trash commands run from the workspace through the write authority.
+- New document creates a file from a bundled template: Document, Blank document, DevLog, Kanban or Landing, byte for byte the hosted copies.
+- An Untitled Document renames itself to its first heading after its last editor leaves.
+- Search finds documents by the text inside them, from a per-root index built in a worker thread that never runs a document.
+- Documents load their editor offline from a runtime bundled with the workspace window.
+- Conflicts offer Keep both, which writes a conflicted copy beside the file.
+- The data API reads and writes page documents. A write names both the file and page revisions, and a stale page revision is refused with the file, room and backups unchanged.
+- Workspace source reads and saves exact bytes with their stamp, restore takes an opt-in `If-Match` checked before its safety backup, uploads and downloads use the root's stored bytes, and conflicts resolve as mine or theirs.
+- The workspace bridge's `showInFolder` reveals a file inside a registered root.
+- When another program replaces or removes a document that has unsaved live edits, the file on disk wins and the edits are saved as a recovered copy, listed in Versions as `recovered` and restorable like any other version. Recovered copies are never pruned.
+
+### Changed
+- Browser saves, the data API, Restore, uploads, the Tailwind cache, the sync engine, reconcile and the root observer write through one shared/exclusive gate, together with moves, renames and deletes from the server, the sync engine and initial sync. A queued write whose path moved, was renamed or closed is refused instead of writing to a retired path, and open live rooms follow their documents through folder moves and renames.
+- When the last editor leaves a room, Local saves its accepted state to the file, retrying transient failures and never recreating a document that was removed meanwhile. A root flushes before it closes.
+- Code-view and API saves based on an older version, and older copies written to disk, merge into the stored page, so open windows merge them instead of stopping. Restore keeps the room.
+- A save whose article no longer matches the open room keeps the room's unsaved edits as a version, then restarts the room on the new document.
+- The page editor's merge state lives in `.hyperclay/page-state`, one record per file name, instead of inside the document. Saved files, downloads and version history hold the clean file, while served pages, the room seed, the observer, `If-Match` and every ETag use the composed document.
+- Merge state travels over device sync: uploads send the record before the content, downloads fetch it before writing the file, and renames move it with the file or folder. Deleting a document or folder removes its merge state, and an old platform without the route syncs content as before.
+- Restore skips the rendered backup only for documents without a page article. A page document whose room cannot render refuses with `invalid-document`, and a replaced page whose unsaved edits cannot be written as a version refuses with `unsaved-edits`.
+- If publishing a recovered copy fails, the room stays held and saves stay refused until a retry succeeds.
+- The workspace server serves on localhost, so framed documents are same-site and receive their owner cookie in a browser.
+- Only a top-level GET of `/` opens the workspace. HEAD requests and framed loads get the directory listing.
+
+### Fixed
+- Quit no longer hangs when no workspace is mounted.
+- Restoring a non-page live document no longer writes a rendered backup.
+- A UTF-8 BOM stays ahead of the injected bridge, so the doctype still applies in the workspace frame.
+- The workspace window reports only refused permission requests, so documents that ask for nothing no longer show a device permission notice.
+- The app no longer ignores typing and scrolling for about half a second on a page's first save.
+- Uploads into a folder with no document land in that folder's assets directory, keeping `uploads/assets-<stem>/` and its `/_/uploads/` link.
+- On Linux, workspace tree diffs and document identity behave correctly.
+
 ## [1.31.1] - 2026-10-17
 
 ### Changed
