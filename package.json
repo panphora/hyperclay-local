@@ -39,7 +39,8 @@
     "screenshot:setup": "playwright install chromium",
     "screenshot:popover": "npm run build-css && npm run build-react && node scripts/screenshot-popover.js --scenario all",
     "test:app": "cross-env HCL_TESTS=app jest",
-    "test:full": "npm test && npm run test:node"
+    "test:full": "npm test && npm run test:node",
+    "build:offline-runtime": "node scripts/build-offline-runtime.mjs"
   },
   "build": {
     "appId": "com.hyperclay.local-server",
