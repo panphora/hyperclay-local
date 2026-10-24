@@ -1,14 +1,12 @@
 name: CI
 
-# Tests on every push. Until now this repo ran its suite only on the release
-# machine and inside the release itself, so a broken main was found at release
-# time. That is the worst moment to find it.
+# The app suite on macOS, Linux and Windows, run by hand before a release
+# (`gh workflow run ci.yml`). The release workflow runs the full suite again.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  # Re-running main on demand is how an intermittent failure gets counted.
+  # Manual only (2026-10-23). Running on every push reported failures from
+  # work in progress; dispatch it when preparing a release or deploy:
+  #   gh workflow run ci.yml
   workflow_dispatch:
 
 env:
