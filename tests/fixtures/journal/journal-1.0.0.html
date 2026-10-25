@@ -1,0 +1,2016 @@
+<!DOCTYPE html>
+<!--
+  Journal: a private notebook that is one self-saving HTML file. Graphite ink on cool ruled paper, a vermilion margin rule, each entry headed by a drafting title block.
+  - The file is the database. Each entry is an <article class="entry"> inside #entries, holding its Markdown as plain text in <pre class="entry-source"><code class="entry-body">. That is the only content ClayJS writes back to disk.
+  - The page chrome is ordinary saved markup that sap.js paints from the entries; a value computed only from the entries (the entry count) saves and syncs like any content. What differs per tab (search results, the open entry, shortcut labels for this OS, open menus, a dismissed banner) sits in clay="freeze" scratchpads, whose contents never save or sync. The list and the tag chips are sap each= projections, never saved. The open entry is the URL hash (#entry=<id>): clay-router marks it route-active, and the editor in #writer shows its text. Search and tag are sap transient state. Opening, searching or scrolling never changes the saved bytes.
+  - One OverType editor for the life of the tab, with persist: true, in the #writer mount beside the reader and outside the saved records. ClayJS's bind-text writes every keystroke into the open entry's <code>, so nothing the editor does reaches the file or a peer.
+  - Monospace writing (IBM Plex Mono) on a 28px line keeps the ruled lines under the text; the sheet is always at least as tall as the window. Three inks: graphite, blueprint blue for links, vermilion for the margin, cursor and deleting.
+-->
+<html lang="en" autosave>
+<head>
+<meta charset="utf-8">
+<meta name="hyper-source" content="https://hyperclay.com/templates/journal/owned/latest.html">
+<meta name="hyper-version" content="1.0.0">
+<meta name="clay-template" content="journal owned">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Journal</title>
+<meta name="application-name" content="Journal">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;0,600;1,400;1,500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/overtype@2.6.1/dist/overtype.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<style>
+:root {
+  color-scheme: light dark;
+  --paper: #eef1ec;
+  --sheet: #f7f8f3;
+  --ink: #22282b;
+  --ink-2: #566064;
+  --ink-3: #8b9396;
+  --line: #d3d9d2;
+  --line-2: #c3cbc3;
+  --rule: rgba(52, 96, 132, 0.12);
+  --margin: rgba(204, 70, 32, 0.42);
+  --accent: #c4431d;
+  --accent-soft: rgba(196, 67, 29, 0.10);
+  --blue: #2c5d87;
+  --blue-soft: rgba(44, 93, 135, 0.09);
+  --hover: rgba(34, 40, 43, 0.05);
+  --select: rgba(44, 93, 135, 0.18);
+  --fp-code-bg: color-mix(in oklab, var(--sheet), var(--ink) 7%);
+  --tok-string: #3f7d4e; --tok-number: #9a6a12; --tok-fn: #6b4f9e;
+  --fp-syntax: rgba(34, 40, 43, 0.38);
+  --mark: rgba(236, 196, 60, 0.45);
+  --shadow: 0 1px 0 rgba(34, 40, 43, 0.04), 0 10px 30px -18px rgba(34, 40, 43, 0.35);
+  --pop-shadow: 0 12px 32px -12px rgba(34, 40, 43, 0.35);
+  --ok: #3d7a52;
+  --bar: 52px;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: "IBM Plex Sans", -apple-system, "Helvetica Neue", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #171b1f; --sheet: #1c2126; --ink: #d9ddd5; --ink-2: #9ba4a6; --ink-3: #6b7477;
+    --line: #2a3137; --line-2: #353d44; --rule: rgba(140, 180, 210, 0.075); --margin: rgba(239, 111, 71, 0.40);
+    --accent: #ef7650; --accent-soft: rgba(239, 118, 80, 0.13); --blue: #86b4da; --blue-soft: rgba(134, 180, 218, 0.10);
+    --hover: rgba(217, 221, 213, 0.05); --select: rgba(134, 180, 218, 0.22); --fp-code-bg: color-mix(in oklab, var(--sheet), var(--ink) 9%); --tok-string: #9fcf9b; --tok-number: #e0b86a; --tok-fn: #c4a8e8;
+    --fp-syntax: rgba(217, 221, 213, 0.34); --mark: rgba(230, 190, 70, 0.30); --ok: #7dbb8f;
+    --shadow: 0 14px 34px -20px rgba(4, 6, 8, 0.8); --pop-shadow: 0 14px 34px -12px rgba(4, 6, 8, 0.85);
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #171b1f; --sheet: #1c2126; --ink: #d9ddd5; --ink-2: #9ba4a6; --ink-3: #6b7477;
+  --line: #2a3137; --line-2: #353d44; --rule: rgba(140, 180, 210, 0.075); --margin: rgba(239, 111, 71, 0.40);
+  --accent: #ef7650; --accent-soft: rgba(239, 118, 80, 0.13); --blue: #86b4da; --blue-soft: rgba(134, 180, 218, 0.10);
+  --hover: rgba(217, 221, 213, 0.05); --select: rgba(134, 180, 218, 0.22); --fp-code-bg: color-mix(in oklab, var(--sheet), var(--ink) 9%); --tok-string: #9fcf9b; --tok-number: #e0b86a; --tok-fn: #c4a8e8;
+  --fp-syntax: rgba(217, 221, 213, 0.34); --mark: rgba(230, 190, 70, 0.30); --ok: #7dbb8f;
+  --shadow: 0 14px 34px -20px rgba(4, 6, 8, 0.8); --pop-shadow: 0 14px 34px -12px rgba(4, 6, 8, 0.85);
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font: 14px/1.45 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; background: none; border: 0; padding: 0; }
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 3px; }
+::selection { background: var(--select); }
+mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1px; }
+[hidden] { display: none !important; }
+.tb-slot, .pop-slot, .banner-slot { display: contents; }
+::highlight(jhit) { background-color: var(--mark); }
+::highlight(jtag) { color: var(--blue); }
+kbd {
+  font: 500 10.5px/1 var(--mono);
+  color: var(--ink-2);
+  border: 1px solid var(--line-2);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 2px 4px 1px;
+  background: var(--sheet);
+  white-space: nowrap;
+}
+.caps {
+  font: 500 10px/1 var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+svg.i { width: 15px; height: 15px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+.app {
+  display: grid;
+  grid-template-columns: minmax(320px, 360px) minmax(0, 1fr);
+  grid-template-rows: var(--bar) minmax(0, 1fr);
+  height: 100vh;
+}
+@media (min-width: 1500px) { .app { grid-template-columns: 400px minmax(0, 1fr); } }
+
+/* ------------------------------------------------ top bar */
+.topbar {
+  display: contents;
+}
+.topbar > * { border-bottom: 1px solid var(--line); }
+.brand { display: flex; align-items: center; gap: 11px; padding: 0 20px; border-right: 1px solid var(--line); }
+.brand-mark {
+  width: 20px; height: 25px; flex: none;
+  background:
+    linear-gradient(90deg, transparent 5px, var(--margin) 5px, var(--margin) 6px, transparent 6px),
+    repeating-linear-gradient(180deg, transparent 0 4px, var(--rule) 4px 5px),
+    var(--sheet);
+  border: 1px solid var(--line-2);
+  border-radius: 2px 2px 3px 3px;
+}
+.brand-name { font: 600 15px/1 var(--mono); letter-spacing: -0.01em; }
+.brand-count { font: 400 11.5px/1 var(--mono); color: var(--ink-3); margin-left: auto; }
+
+.bar-right { display: flex; align-items: center; gap: 18px; padding: 0 20px 0 24px; min-width: 0; }
+.bar-right .spacer { flex: 1; }
+.save { display: inline-flex; align-items: center; gap: 7px; font: 500 11.5px/1 var(--mono); color: var(--ink-3); white-space: nowrap; }
+.save .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); transition: background .2s; }
+.save .label > span { display: none; }
+:root:not([savestatus]) .save [data-s="starting"],
+:root[savestatus="saving"] .save [data-s="saving"],
+:root[savestatus="saved"] .save [data-s="saved"],
+:root[savestatus="saved"][draftmode="true"] .save [data-s="draft-saved"],
+:root[savestatus="error"] .save [data-s="error"],
+:root[savestatus="conflict"] .save [data-s="conflict"],
+:root[savestatus="offline"] .save [data-s="offline"] { display: inline; }
+:root[draftmode="true"][savestatus="saved"] .save [data-s="saved"] { display: none; }
+:root[unsaved="true"]:not([savestatus="error"]):not([savestatus="offline"]):not([savestatus="conflict"]) .save [data-s] { display: none; }
+:root[unsaved="true"]:not([savestatus="error"]):not([savestatus="offline"]):not([savestatus="conflict"]) .save [data-s="unsaved"] { display: inline; }
+:root[savestatus="saving"] .save .dot { background: var(--ink-3); animation: pulse 0.9s ease-in-out infinite; }
+:root[unsaved="true"]:not([savestatus="error"]):not([savestatus="offline"]):not([savestatus="conflict"]) .save .dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-3); animation: none; }
+:root:is([savestatus="error"], [savestatus="conflict"]) .save { color: var(--accent); }
+:root:is([savestatus="error"], [savestatus="conflict"]) .save .dot { background: var(--accent); }
+.save .copy, .save .download-journal { display: none; }
+:root:is([savestatus="error"], [savestatus="conflict"]) .save .copy { display: inline-flex; }
+:root:is([savestatus="error"], [savestatus="offline"]) .save .download-journal { display: inline-flex; }
+@keyframes pulse { 50% { opacity: .3; } }
+
+.search { position: relative; width: 300px; flex: none; }
+.search > svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--ink-3); pointer-events: none; }
+.search input {
+  width: 100%;
+  padding: 7px 56px 7px 32px;
+  background: var(--sheet);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  outline: none;
+  font-size: 13px;
+}
+.search input::-webkit-search-cancel-button { display: none; }
+.search input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+.search input::placeholder { color: var(--ink-3); }
+.search .hint { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); pointer-events: none; }
+.search .clear { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); color: var(--ink-3); padding: 3px; display: none; border-radius: 4px; }
+.search .clear:hover { color: var(--ink); background: var(--hover); }
+.search:has(input:not(:placeholder-shown)) .clear { display: flex; }
+.search:has(input:not(:placeholder-shown)) .hint, .search:focus-within .hint { display: none; }
+
+.chip-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; color: var(--ink-2);
+  padding: 4px 8px; border-radius: 5px; border: 1px solid var(--line-2);
+  white-space: nowrap;
+}
+.chip-btn:hover { color: var(--ink); border-color: var(--ink-3); }
+
+/* ------------------------------------------------ index (entry list) */
+.index { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
+.index-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 12px 20px; border-bottom: 1px solid var(--line); }
+.index-head h2 { margin: 0; font: 600 15px/1.2 var(--sans); letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.index-head .count { font: 400 11.5px/1 var(--mono); color: var(--ink-3); white-space: nowrap; }
+.index-head .spacer { flex: 1; }
+.new-btn, .today-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 8px 6px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: var(--sheet);
+  color: var(--ink);
+  font-size: 13px; font-weight: 500;
+  white-space: nowrap;
+  transition: border-color .15s, background .15s;
+}
+.new-btn:hover, .today-btn:hover { border-color: var(--ink-3); background: color-mix(in oklab, var(--sheet) 70%, var(--paper)); }
+.new-btn svg.i, .today-btn svg.i { color: var(--ink-2); width: 14px; height: 14px; }
+.new-btn kbd { background: transparent; }
+
+.list { overflow-y: auto; flex: 1; min-height: 0; padding-bottom: 24px; scrollbar-width: thin; }
+.month {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 20px 7px;
+  background: color-mix(in oklab, var(--paper) 92%, transparent);
+  backdrop-filter: blur(6px);
+}
+.month .caps { color: var(--ink-2); }
+.month::after { content: ""; flex: 1; border-top: 1px solid var(--line-2); }
+.month .n { order: 2; font: 400 10px/1 var(--mono); color: var(--ink-3); }
+
+.row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 28px;
+  gap: 2px 12px;
+  padding: 11px 12px 12px 20px;
+  cursor: pointer;
+  border-bottom: 1px solid color-mix(in oklab, var(--line) 60%, transparent);
+  outline: none;
+}
+.row:hover { background: var(--hover); }
+.row:focus-visible { background: var(--hover); box-shadow: inset 0 0 0 2px var(--blue); }
+.row[route-active] { background: var(--sheet); }
+.row[route-active]::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--margin); }
+.day { padding-top: 1px; }
+.day b { display: block; font: 300 25px/1 var(--mono); letter-spacing: -0.04em; color: var(--ink); }
+.day i { display: block; font: 500 9.5px/1 var(--mono); font-style: normal; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); margin-top: 5px; }
+.row-body { min-width: 0; }
+.row h3 { margin: 0 0 3px; font: 600 14px/1.3 var(--sans); color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: -0.005em; }
+.row h3.untitled { color: var(--ink-3); font-weight: 500; font-style: italic; }
+.row p {
+  margin: 0; font-size: 12.75px; line-height: 1.45; color: var(--ink-2);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.row .del {
+  align-self: start;
+  width: 28px; height: 28px; margin-top: -3px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 6px; color: var(--ink-3);
+  opacity: 0;
+  transition: opacity .12s;
+}
+.row:hover .del, .row:focus-within .del, .row[route-active] .del, .row .del.armed { opacity: 1; }
+.row .del:hover, .row .del.armed { color: var(--accent); background: var(--accent-soft); }
+.row.trashed { grid-template-columns: 44px minmax(0, 1fr) auto; }
+.row-acts { display: inline-flex; align-items: center; gap: 6px; align-self: start; }
+.row-acts button {
+  display: inline-flex; align-items: center;
+  padding: 4px 9px; border: 1px solid var(--line-2); border-radius: 6px;
+  font-size: 12px; font-weight: 500; color: var(--ink-2); background: var(--sheet); white-space: nowrap;
+}
+.row-acts button:hover, .row-acts button:focus-visible { color: var(--ink); border-color: var(--ink-3); }
+.row-acts .forever { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 35%, var(--line-2)); }
+.row-acts .forever:hover, .row-acts .forever:focus-visible { background: var(--accent-soft); }
+.app:has(#trashHead:not([hidden])) .tags { display: none; }
+.trash-head { display: grid; gap: 9px; padding: 14px 20px 12px; border-bottom: 1px solid var(--line); background: var(--paper); }
+.trash-head[hidden] { display: none; }
+.trash-note { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--ink-2); }
+.trash-empty {
+  justify-self: start; display: inline-flex; align-items: center;
+  padding: 6px 11px; border-radius: 6px; font-size: 13px; font-weight: 500;
+  color: var(--accent); background: var(--accent-soft);
+  border: 1px solid color-mix(in oklab, var(--accent) 35%, var(--line-2));
+}
+.trash-empty:hover, .trash-empty:focus-visible { background: color-mix(in oklab, var(--accent) 20%, transparent); }
+.menu-pop button[hidden] { display: none; }
+.empty-list { padding: 48px 26px; color: var(--ink-3); text-align: center; font-size: 13px; line-height: 1.6; }
+.empty-list b { display: block; font: 500 13px/1.4 var(--mono); color: var(--ink-2); margin-bottom: 4px; }
+.list-empty { display: contents; }
+
+.keys {
+  display: flex; flex-wrap: wrap; gap: 6px 14px;
+  padding: 10px 20px 12px;
+  border-top: 1px dashed var(--line-2);
+  font-size: 11.5px; color: var(--ink-3);
+}
+.keys span { display: inline-flex; align-items: center; gap: 6px; }
+.feedback { margin: 0; padding: 0 20px 14px; font-size: 11.5px; color: var(--ink-3); }
+.feedback a { display: inline-flex; align-items: center; gap: 6px; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.feedback-icon { width: 1.15em; height: 1.15em; flex: none; }
+
+/* ------------------------------------------------ desk */
+.desk-scroll { min-height: 0; overflow-y: auto; padding: 26px 28px; scrollbar-width: thin; }
+.sheet {
+  max-width: 780px;
+  min-height: calc(100vh - var(--bar) - 52px);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  box-shadow: var(--shadow);
+}
+
+.titleblock {
+  flex: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 112px 112px;
+  border-bottom: 1px solid var(--line-2);
+}
+.tb-cell { position: relative; padding: 9px 14px 11px; border-right: 1px solid var(--line); min-width: 0; }
+.tb-cell:last-child { border-right: 0; }
+.tb-cell > .caps { display: block; margin-bottom: 6px; font-size: 9px; }
+.tb-value {
+  display: block; width: 100%; text-align: left;
+  font: 400 15px/1.25 var(--mono); color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  border-radius: 3px;
+}
+button.tb-value:hover { color: var(--blue); }
+.tb-value .dim { color: var(--ink-3); }
+.tb-date .tb-value { font-weight: 500; }
+.tb-edit { display: none; gap: 6px; align-items: center; }
+.tb-cell.editing .tb-value { display: none; }
+.tb-cell.editing .tb-edit { display: flex; }
+.tb-edit input {
+  font: 400 13px/1 var(--mono); padding: 3px 5px; min-width: 0;
+  border: 1px solid var(--blue); border-radius: 4px; background: var(--paper); outline: none;
+}
+
+.entries { flex: 0 0 auto; display: flex; flex-direction: column; }
+.entries > .entry { display: none; }
+.sheet:not(:has(> .entries > .entry[route-active])) > .sheet-empty { display: flex; }
+.sheet:not(:has(> .entries > .entry[route-active])) > .reader { display: none !important; }
+.sheet-empty {
+  flex: 1 0 auto;
+  display: none; flex-direction: column; align-items: flex-start;
+  padding: 56px 40px 40px 72px;
+  background:
+    linear-gradient(90deg, transparent 51px, var(--margin) 51px, var(--margin) 52px, transparent 52px),
+    repeating-linear-gradient(180deg, transparent 0 27px, var(--rule) 27px 28px);
+  font: 400 15px/28px var(--mono); color: var(--ink-3);
+}
+.sheet-empty b { color: var(--ink-2); font-weight: 500; }
+.sheet-empty .lead { color: var(--ink-2); font-weight: 500; }
+.sheet-empty .new-btn, .sheet-empty .today-btn { margin-top: 28px; }
+:root:is(:not([savestatus]), [savestatus="offline"]) .save .dot { background: var(--ink-3); }
+
+/* ---------------- the editor in #writer, dressed as the pad. The container and wrapper grow to fill the sheet;
+   OverType's auto-resize sets the text layers to the content height. */
+.writer { flex: 1 0 auto; display: flex; flex-direction: column; }
+.sheet:not(:has(> .entries > .entry[route-active])) > .writer { display: none; }
+:root:not([editmode="true"]) .writer { display: none !important; }
+.writer .overtype-container { flex: 1 0 auto !important; height: auto !important; }
+.writer .overtype-container .overtype-wrapper {
+  flex: 1 0 auto !important;
+  cursor: text;
+  background-color: var(--sheet) !important;
+  background-image:
+    linear-gradient(90deg, transparent 51px, var(--margin) 51px, var(--margin) 52px, transparent 52px),
+    repeating-linear-gradient(180deg, transparent 0 27px, var(--rule) 27px 28px) !important;
+  background-repeat: no-repeat, repeat !important;
+}
+.writer .overtype-toolbar {
+  position: sticky !important; top: -26px !important;
+  display: flex !important; gap: 2px !important;
+  padding: 6px 12px 6px 60px !important;
+  background: var(--sheet) !important;
+  border-bottom: 1px dashed var(--line-2) !important;
+  z-index: 4 !important;
+}
+.writer .overtype-toolbar-button {
+  width: 30px !important; height: 28px !important;
+  border-radius: 5px !important;
+  color: var(--ink-3) !important;
+  display: inline-flex !important; align-items: center !important; justify-content: center !important;
+}
+.writer .overtype-toolbar-button:hover { color: var(--ink) !important; background: var(--hover) !important; }
+.writer .overtype-toolbar-button.active { color: var(--blue) !important; background: var(--blue-soft) !important; }
+.writer .overtype-toolbar-button svg { width: 16px !important; height: 16px !important; }
+.writer .overtype-toolbar-separator { height: 16px !important; width: 1px !important; background: var(--line-2) !important; margin: 0 6px !important; align-self: center !important; }
+.writer .overtype-wrapper .overtype-preview :is(h1, h2, h3) { color: var(--ink) !important; font-weight: 600 !important; }
+.writer .overtype-wrapper .overtype-preview :is(h1, h2, h3) .syntax-marker { color: var(--accent) !important; font-weight: 400 !important; }
+.writer .overtype-wrapper .overtype-preview li > .syntax-marker { color: var(--ink-3) !important; }
+.writer .overtype-wrapper .overtype-preview a { color: var(--blue) !important; text-decoration: none !important; }
+.writer .overtype-wrapper .overtype-preview pre.code-block { background: var(--fp-code-bg) !important; border-radius: 0 !important; }
+.writer .overtype-wrapper .overtype-preview div:has(> .code-fence) { background: var(--fp-code-bg) !important; }
+.writer .overtype-wrapper .overtype-preview .code-fence { background: transparent !important; color: var(--ink-3) !important; }
+.writer .overtype-wrapper .overtype-preview pre code :is(.hljs-keyword, .hljs-built_in, .hljs-literal, .hljs-type) { color: var(--blue) !important; }
+.writer .overtype-wrapper .overtype-preview pre code :is(.hljs-string, .hljs-regexp, .hljs-template-tag) { color: var(--tok-string) !important; }
+.writer .overtype-wrapper .overtype-preview pre code :is(.hljs-number, .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-params) { color: var(--tok-number) !important; }
+.writer .overtype-wrapper .overtype-preview pre code :is(.hljs-title, .hljs-function, .hljs-property, .hljs-tag, .hljs-name, .hljs-selector-class) { color: var(--tok-fn) !important; }
+.writer .overtype-wrapper .overtype-preview pre code :is(.hljs-comment, .hljs-quote, .hljs-meta, .hljs-punctuation) { color: var(--ink-3) !important; }
+.writer .overtype-wrapper .overtype-preview a .url-part { color: var(--ink-2) !important; }
+.writer .overtype-wrapper .overtype-preview .blockquote { color: var(--ink-2) !important; font-style: italic !important; }
+.writer .overtype-wrapper .overtype-preview em { font-style: italic !important; }
+.writer .overtype-wrapper .overtype-placeholder { color: var(--ink-3) !important; font-style: italic !important; }
+.writer .overtype-wrapper .overtype-input::placeholder { color: transparent !important; }
+.writer .overtype-wrapper .overtype-input { caret-color: var(--accent) !important; }
+
+/* ------------------------------------------------ the editor's one-line note: a conflict or a deletion elsewhere (never saved) */
+.note {
+  flex: none;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px 10px 72px;
+  border-top: 1px solid var(--line-2);
+  background: var(--accent-soft);
+  font-size: 13px; color: var(--ink);
+}
+.note span { flex: 1; min-width: 0; }
+.note button { flex: none; padding: 5px 11px; border-radius: 5px; font-size: 12.5px; font-weight: 500; color: var(--accent); white-space: nowrap; }
+.note button:hover { background: color-mix(in oklab, var(--accent) 16%, transparent); }
+.note .note-close { color: var(--ink-3); }
+
+.peer-bar {
+  flex: none;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px 10px 72px;
+  border-bottom: 1px solid var(--line-2);
+  background: var(--accent-soft);
+  font-size: 13px; color: var(--ink);
+}
+.peer-bar[hidden] { display: none; }
+.peer-bar span { flex: 1; min-width: 0; }
+.peer-bar button { flex: none; padding: 5px 11px; border-radius: 5px; font-size: 12.5px; font-weight: 500; color: var(--accent); white-space: nowrap; }
+.peer-bar button:hover, .peer-bar button:focus-visible { background: color-mix(in oklab, var(--accent) 16%, transparent); }
+
+/* ------------------------------------------------ the undo toast: one polite live region, gone in six seconds (never saved) */
+.toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+  z-index: 80; display: flex; align-items: center; gap: 12px;
+  max-width: calc(100vw - 32px); padding: 10px 10px 10px 16px;
+  border-radius: 8px; background: var(--ink); color: var(--sheet);
+  box-shadow: var(--pop-shadow); font-size: 13px;
+}
+.toast span { flex: 1; min-width: 0; }
+.toast button {
+  flex: none; padding: 5px 11px; border-radius: 5px;
+  font-size: 12.5px; font-weight: 600; color: var(--sheet);
+  background: color-mix(in oklab, var(--sheet) 16%, transparent);
+}
+.toast button:hover, .toast button:focus-visible { background: color-mix(in oklab, var(--sheet) 28%, transparent); }
+
+/* ------------------------------------------------ delete popover */
+.pop {
+  position: fixed; z-index: 60;
+  width: 216px;
+  padding: 12px 12px 10px;
+  background: var(--sheet);
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  box-shadow: var(--pop-shadow);
+  display: none;
+}
+.pop.show { display: block; }
+.pop::before {
+  content: ""; position: absolute; top: var(--arrow-y, 16px); left: -6px;
+  width: 10px; height: 10px; transform: rotate(45deg);
+  background: var(--sheet); border-left: 1px solid var(--line-2); border-bottom: 1px solid var(--line-2);
+}
+.pop.left::before { left: auto; right: -6px; border: 0; border-right: 1px solid var(--line-2); border-top: 1px solid var(--line-2); }
+.pop p { margin: 0 0 3px; font-weight: 600; font-size: 13.5px; }
+.pop small { display: block; color: var(--ink-3); font-size: 12px; line-height: 1.4; margin-bottom: 11px; }
+.pop .acts { display: flex; justify-content: flex-end; gap: 6px; }
+.pop .acts button { padding: 5px 11px; border-radius: 5px; font-size: 12.5px; font-weight: 500; }
+.pop .cancel { color: var(--ink-2); }
+.pop .cancel:hover { background: var(--hover); color: var(--ink); }
+.pop .confirm { color: var(--accent); background: var(--accent-soft); }
+.pop .confirm:hover { background: color-mix(in oklab, var(--accent) 20%, transparent); }
+/* ------------------------------------------------ export / import menu */
+.menu { position: relative; flex: none; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 6px; color: var(--ink-2); }
+.icon-btn:hover, .icon-btn[aria-expanded="true"] { color: var(--ink); background: var(--hover); }
+.icon-btn circle { fill: currentColor; stroke: none; }
+.menu-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 60; min-width: 220px; padding: 5px; background: var(--sheet); border: 1px solid var(--line-2); border-radius: 8px; box-shadow: var(--pop-shadow); display: none; }
+.menu-pop.show { display: block; }
+.menu-pop button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 9px; border-radius: 5px; font-size: 13px; text-align: left; color: var(--ink); white-space: nowrap; }
+.menu-pop button:hover, .menu-pop button:focus-visible { background: var(--hover); }
+.menu-pop button svg.i { color: var(--ink-2); }
+
+/* ------------------------------------------------ tag chips (derived from entry text, never saved) */
+.tags { display: flex; gap: 6px; overflow-x: auto; padding: 8px 16px 10px 20px; border-bottom: 1px solid var(--line); scrollbar-width: none; }
+.tags:not(:has(> .tag)) { display: none; }
+.tag { flex: none; display: inline-flex; align-items: baseline; gap: 5px; padding: 3px 8px; border: 1px solid var(--line-2); border-radius: 999px; font: 500 12px/1.2 var(--mono); color: var(--blue); background: var(--sheet); }
+.tag .n { font-weight: 400; font-size: 10.5px; color: var(--ink-3); }
+.tag:hover { border-color: var(--blue); }
+.tag.on { background: var(--blue); border-color: var(--blue); color: var(--sheet); }
+.tag.on .n { color: color-mix(in oklab, var(--sheet) 75%, transparent); }
+
+/* ------------------------------------------------ reading view (not editable) */
+.reader {
+  display: none;
+  flex: 1 0 auto;
+  padding: 28px 44px 56px 72px;
+  background:
+    linear-gradient(90deg, transparent 51px, var(--margin) 51px, var(--margin) 52px, transparent 52px),
+    repeating-linear-gradient(180deg, transparent 0 27px, var(--rule) 27px 28px);
+  font: 400 16px/28px var(--mono);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.reader > :first-child { margin-top: 0; }
+.reader :is(p, ul, ol, pre, blockquote, h1, h2, h3, h4, h5, h6) { margin: 0 0 28px; }
+.reader :is(h1, h2, h3, h4, h5, h6) { font: 600 16px/28px var(--mono); color: var(--ink); }
+.reader h1 { font-size: 18px; }
+.reader :is(ul, ol) { padding-left: 24px; }
+.reader ul.tasks { list-style: none; padding-left: 0; }
+.reader li.task input { margin: 0 10px 0 0; vertical-align: -1px; accent-color: var(--accent); }
+.reader li.task.done { color: var(--ink-3); text-decoration: line-through; }
+.reader a { color: var(--blue); text-decoration: none; }
+.reader a:hover { text-decoration: underline; }
+.reader code { font: inherit; background: var(--fp-code-bg); padding: 0 3px; border-radius: 2px; }
+.reader pre { background: var(--fp-code-bg); padding: 0 12px; margin-left: -12px; margin-right: -12px; overflow-x: auto; }
+.reader pre code { background: none; padding: 0; }
+.reader pre code :is(.hljs-keyword, .hljs-built_in, .hljs-literal, .hljs-type) { color: var(--blue); }
+.reader pre code :is(.hljs-string, .hljs-regexp, .hljs-template-tag) { color: var(--tok-string); }
+.reader pre code :is(.hljs-number, .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-params) { color: var(--tok-number); }
+.reader pre code :is(.hljs-title, .hljs-function, .hljs-property, .hljs-tag, .hljs-name, .hljs-selector-class) { color: var(--tok-fn); }
+.reader pre code :is(.hljs-comment, .hljs-quote, .hljs-meta, .hljs-punctuation) { color: var(--ink-3); }
+.reader blockquote { margin-left: 0; padding-left: 16px; border-left: 2px solid var(--line-2); color: var(--ink-2); font-style: italic; }
+.reader hr { border: 0; border-top: 1px dashed var(--line-2); margin: 13px 0 14px; }
+
+/* ------------------------------------------------ privacy banner (owner, public site) */
+.privacy-banner {
+  grid-column: 1 / -1; grid-row: 2;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px 8px 20px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid color-mix(in oklab, var(--accent) 25%, var(--line));
+  font-size: 13px; line-height: 1.4;
+}
+.privacy-banner { display: none; }
+:root:not([draftmode="true"])[editmode="true"][sitevisibility="public"] .privacy-banner { display: flex; }
+.privacy-banner > svg.i { color: var(--accent); }
+.privacy-banner .msg { flex: 1; min-width: 0; }
+.privacy-banner .msg b { font-weight: 600; }
+.privacy-banner .make-private { color: var(--accent); font-weight: 500; text-decoration: none; white-space: nowrap; padding: 4px 8px; border-radius: 5px; }
+.privacy-banner .make-private:hover { background: color-mix(in oklab, var(--accent) 14%, transparent); }
+.privacy-banner .dismiss { display: inline-flex; padding: 5px; border-radius: 5px; color: var(--ink-3); }
+.privacy-banner .dismiss:hover { color: var(--ink); background: var(--hover); }
+:root:not([draftmode="true"])[editmode="true"][sitevisibility="public"] .app:has(.privacy-banner) { grid-template-rows: var(--bar) auto minmax(0, 1fr); }
+:root:not([draftmode="true"])[editmode="true"][sitevisibility="public"] .app:has(.privacy-banner) > :is(.index, .desk-scroll) { grid-row: 3; }
+
+/* ------------------------------------------------ phone: one pane at a time, the list or the open entry (the URL hash decides) */
+.back-btn { display: none; align-items: center; gap: 2px; margin-left: -6px; padding: 6px 6px 6px 2px; border-radius: 5px; font: 500 13.5px/1 var(--sans); color: var(--blue); }
+.back-btn:hover { background: var(--blue-soft); }
+@media (max-width: 759px) {
+  .app { grid-template-columns: auto minmax(0, 1fr); height: 100dvh; position: relative; }
+  .index, .desk-scroll { grid-column: 1 / -1; grid-row: 2; }
+  .index { border-right: 0; }
+  .brand { padding: 0 12px 0 16px; border-right: 0; }
+  .brand-count, .keys, .new-btn kbd, .search .hint { display: none; }
+  .bar-right { gap: 12px; padding: 0 12px 0 4px; }
+  .search { width: 36px; }
+  .search input { height: 34px; padding: 0 0 0 34px; color: transparent; cursor: pointer; }
+  .search input::placeholder { color: transparent; }
+  .search:focus-within, .search:has(input:not(:placeholder-shown)) { position: absolute; left: 12px; right: 12px; top: 9px; width: auto; z-index: 10; }
+  .search:focus-within input, .search:has(input:not(:placeholder-shown)) input { color: var(--ink); cursor: text; padding: 0 36px 0 32px; }
+  .search:focus-within input::placeholder, .search:has(input:not(:placeholder-shown)) input::placeholder { color: var(--ink-3); }
+  .index-head { padding: 12px 12px 10px 16px; }
+  .month { padding: 14px 16px 7px; }
+  .row { padding: 12px 8px 12px 16px; }
+  .row .del { opacity: .55; }
+  .desk-scroll { padding: 0; }
+  .sheet { min-height: calc(100dvh - var(--bar)); border: 0; border-radius: 0; box-shadow: none; }
+  .titleblock { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .titleblock .tb-date { grid-column: 1 / -1; border-right: 0; border-bottom: 1px solid var(--line); }
+  .writer .overtype-container .overtype-wrapper {
+    background-image:
+      linear-gradient(90deg, transparent 31px, var(--margin) 31px, var(--margin) 32px, transparent 32px),
+      repeating-linear-gradient(180deg, transparent 0 27px, var(--rule) 27px 28px) !important;
+  }
+  .writer .overtype-toolbar { top: 0 !important; padding: 6px 8px !important; overflow-x: auto !important; flex-wrap: nowrap !important; scrollbar-width: none; }
+  .writer .overtype-toolbar-button { flex: none !important; }
+  .sheet-empty {
+    padding: 40px 16px 32px 44px;
+    background:
+      linear-gradient(90deg, transparent 31px, var(--margin) 31px, var(--margin) 32px, transparent 32px),
+      repeating-linear-gradient(180deg, transparent 0 27px, var(--rule) 27px 28px);
+  }
+  .reader {
+    padding: 28px 16px 56px 44px;
+    background:
+      linear-gradient(90deg, transparent 31px, var(--margin) 31px, var(--margin) 32px, transparent 32px),
+      repeating-linear-gradient(180deg, transparent 0 27px, var(--rule) 27px 28px);
+  }
+  .privacy-banner { padding-left: 16px; }
+  .tags { padding-left: 16px; }
+}
+@media (max-width: 759px) {
+  :root[route-entry] :is(.index, .brand-mark, .brand-name, .search) { display: none; }
+  :root[route-entry] .back-btn { display: inline-flex; }
+  :root:not([route-entry]) .desk-scroll { display: none; }
+  :root .app:has(#trashHead:not([hidden])) .index { display: flex !important; }
+  :root .app:has(#trashHead:not([hidden])) .desk-scroll { display: none !important; }
+  :root .app:has(#trashHead:not([hidden])) .back-btn { display: inline-flex; }
+  .row-acts { flex-direction: column; align-items: stretch; }
+  .row-acts button, .trash-empty, .toast button, .peer-bar button, .note button, .save .chip-btn { min-height: 44px; justify-content: center; }
+}
+
+/* ------------------------------------------------ reading view: no edit rights, or ClayJS not loaded */
+:root:not([editmode="true"]) :is(.new-btn, .today-btn, .row .del, .row-acts, .trash-empty, .keys, .save, .write-hint, [data-menu="import"], [data-menu="trash"]) { display: none !important; }
+:root:not([editmode="true"]) #entries { display: none; }
+:root:not([editmode="true"]) .reader { display: block; }
+:root:not([editmode="true"]) #dateValue { pointer-events: none; }
+.no-clay #entries { display: flex !important; }
+.no-clay .desk-scroll { display: block !important; }
+.no-clay .entries > .entry { display: block; padding: 20px 28px; border-bottom: 1px solid var(--line); white-space: pre-wrap; font-family: var(--mono); }
+.no-clay .entries > .entry::before { content: attr(data-date); display: block; margin-bottom: 8px; font: 500 11px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); }
+.no-clay .entry-source { margin: 0; white-space: pre-wrap; font: inherit; }
+.no-clay .entries > .entry[data-deleted-at]:not([data-deleted-at=""]) { display: none !important; }
+.no-clay :is(.reader, .tb-slot, .sheet-empty, .writer) { display: none !important; }
+</style>
+<noscript><style>#entries { display: flex !important; } .entries > .entry { display: block; padding: 20px 28px; border-bottom: 1px solid var(--line); white-space: pre-wrap; font-family: var(--mono); } .entries > .entry::before { content: attr(data-date); display: block; margin-bottom: 8px; font: 500 11px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); } .entry-source { margin: 0; white-space: pre-wrap; font: inherit; } .entries > .entry[data-deleted-at]:not([data-deleted-at=""]) { display: none !important; } .desk-scroll { display: block !important; } :is(.reader, .tb-slot, .sheet-empty, .writer) { display: none !important; }</style></noscript>
+<script type="application/json" data-rules-name="api" data-rules-version="1">{"entries":["#entries > article.entry",{"id":"@data-id","date":"@data-date","created":"@data-created","updated":"@data-updated","body":".entry-body@textContent","deletedAt":"@data-deleted-at"}]}</script>
+<style>[cms-template]{display:none!important}</style>
+</head>
+<body>
+<div class="app" sap state="tag:transient view:transient" calc:live="fmt.live(state.entries)">
+  <header class="topbar">
+    <div class="brand">
+      <button class="back-btn" id="backBtn" type="button" aria-label="Back to entries"><svg class="i" viewBox="0 0 16 16"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg>Entries</button>
+      <div class="brand-mark" aria-hidden="true"></div>
+      <span class="brand-name">Journal</span>
+      <span class="brand-count" id="brandCount" text="state.live.length ? fmt.count(state.live.length, 'entry', 'entries') : ''">3 entries</span>
+    </div>
+    <div class="bar-right">
+      <span class="save" id="save" role="status" aria-live="polite">
+        <span class="dot"></span><span class="label"><span data-s="starting">Starting…</span><span data-s="saving">Saving…</span><span data-s="saved">Saved</span><span data-s="draft-saved">Saved in this browser</span><span data-s="unsaved">Unsaved</span><span data-s="error">Couldn’t save</span><span data-s="conflict">Changed elsewhere</span><span data-s="offline">Offline, will retry</span></span>
+        <button class="chip-btn copy" id="copyText" type="button">Copy text</button>
+        <button class="chip-btn download-journal" id="downloadJournal" type="button">Download journal</button>
+      </span>
+      <span class="spacer"></span>
+      <div class="search" id="searchBox" clay="no-dirty">
+        <svg class="i" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>
+        <input id="q" type="search" bind="q" transient placeholder="Search entries" autocomplete="off" spellcheck="false" aria-label="Search entries">
+        <kbd class="hint">/</kbd>
+        <button class="clear" id="qClear" type="button" set:q="''" aria-label="Clear search"><svg class="i" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+      </div>
+      <div class="menu" id="fileMenu" clay="freeze">
+        <button class="icon-btn" id="menuBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Export and import" title="Export and import"><svg class="i" viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.1"/><circle cx="8" cy="8" r="1.1"/><circle cx="12.5" cy="8" r="1.1"/></svg></button>
+        <div class="menu-pop" id="menuPop" role="menu">
+          <button role="menuitem" type="button" data-menu="export"><svg class="i" viewBox="0 0 16 16"><path d="M8 2.5v8M4.5 7 8 10.5 11.5 7M3 13.5h10"/></svg>Download as Markdown</button>
+          <button role="menuitem" type="button" data-menu="import"><svg class="i" viewBox="0 0 16 16"><path d="M8 10.5v-8M4.5 6 8 2.5 11.5 6M3 13.5h10"/></svg>Import a file…</button>
+          <button role="menuitem" type="button" data-menu="trash" id="trashItem" hidden><svg class="i" viewBox="0 0 16 16"><path d="M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.7 9h6.6l.7-9M6.7 7v4M9.3 7v4"/></svg><span id="trashLabel">Trash</span></button>
+          <input type="file" id="importInput" accept=".md,.markdown,.txt,.html,.htm,text/markdown,text/plain,text/html" multiple hidden>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="banner-slot" clay="freeze">
+    <div class="privacy-banner" id="privacyBanner" role="status">
+      <svg class="i" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c1.8 1.7 2.6 3.7 2.6 6S9.8 12.3 8 14M8 2C6.2 3.7 5.4 5.7 5.4 8S6.2 12.3 8 14"/></svg>
+      <span class="msg"><b>This journal is public.</b> Anyone with the link can read it.</span>
+      <a class="make-private" id="makePrivate" href="https://hyperclay.com/_/dashboard/files" target="_blank" rel="noopener">Make private</a>
+      <button class="dismiss" id="privacyDismiss" type="button" aria-label="Dismiss"><svg class="i" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+    </div>
+  </div>
+
+  <section class="index" aria-label="Entries">
+    <div class="index-head" clay="freeze">
+      <h2 id="viewTitle" text="fmt.viewTitle(state.q, state.tag, state.view)">All entries</h2>
+      <span class="count" id="viewCount" show="state.filtered && state.view !== 'trash'" text="state.filtered && state.view !== 'trash' ? fmt.count(state.visible.filter(r => !r.month).length, 'match', 'matches') : ''" hidden></span>
+      <span class="spacer"></span>
+      <button class="today-btn" type="button" data-act="today" title="Open today’s entry">
+        <svg class="i" viewBox="0 0 16 16"><rect x="2.5" y="3.5" width="11" height="10" rx="1.5"/><path d="M2.5 6.5h11M5.5 2.5v2M10.5 2.5v2"/></svg>Today
+      </button>
+      <button class="new-btn" type="button" data-act="new">
+        <svg class="i" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>New entry<kbd data-mod="N">⌥⌘N</kbd>
+      </button>
+    </div>
+    <div class="tags" id="tags" role="toolbar" aria-label="Tags" each="fmt.tags(state.live, state.tag)">
+      <template><button class="tag" type="button" class:on="item.on" attr:aria-pressed="item.on ? 'true' : 'false'" set:tag="item.on ? '' : item.name"><span text="'#' + item.name"></span><span class="n" text="item.n"></span></button></template>
+    </div>
+    <div class="list-empty" clay="freeze">
+      <div class="empty-list" show="state.filtered && !state.visible.length && state.view !== 'trash'" hidden><b>No matches.</b>Every word has to appear somewhere in the entry. Try fewer words.</div>
+      <div class="empty-list" show="!state.filtered && !state.live.length && state.view !== 'trash'" hidden><b>No entries yet.</b><span class="write-hint">Press <span data-mod="N">⌥⌘N</span> to write the first one.</span></div>
+    </div>
+    <div clay="freeze">
+      <div class="trash-head" id="trashHead" hidden>
+        <p class="trash-note">Entries in Trash are still in this file until you delete them forever.</p>
+        <button class="trash-empty" id="trashEmpty" type="button" data-act="empty-trash">Empty Trash</button>
+      </div>
+    </div>
+    <div class="list" id="list" role="list" route="entry by data-key"
+         calc:filteredbytext="!!String(state.q || '').trim()"
+         calc:filtered="state.filteredbytext || !!state.tag"
+         calc:visible="state.view === 'trash' ? fmt.trash(state.entries) : fmt.index(state.live, state.q, state.tag)"
+         each="state.visible">
+      <template><div class:month="item.month" class:row="!item.month" class:trashed="item.trashed" attr:role="item.month ? 'presentation' : 'listitem'" attr:tabindex="item.month ? '-1' : '0'"><span class="caps" show="item.month" text="item.month"></span><span class="n" show="item.month" text="item.monthN"></span><div class="day" show="!item.month"><b text="item.day"></b><i text="item.dow"></i></div><div class="row-body" show="!item.month"><h3 class:untitled="item.untitled" text="item.title"></h3><p show="item.snippet" text="item.snippet"></p></div><button class="del" type="button" data-act="delete" show="!item.month && !item.trashed" aria-label="Delete entry" aria-haspopup="dialog" attr:title="'Delete entry (' + fmt.mod() + '⌫)'"><svg class="i" viewBox="0 0 16 16"><path d="M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.7 9h6.6l.7-9M6.7 7v4M9.3 7v4"/></svg></button><span class="row-acts" show="item.trashed"><button class="restore" type="button" data-act="restore">Restore</button><button class="forever" type="button" data-act="purge">Delete forever</button></span></div></template>
+    </div>
+    <div class="keys" id="keys" clay="freeze"><span><kbd data-mod="N">⌥⌘N</kbd>New entry</span><span><kbd data-mod="⌫">⌥⌘⌫</kbd>Delete entry</span><span><kbd>/</kbd>Search</span></div>
+    <p class="feedback"><a href="mailto:david@hyperclay.com?subject=Journal"><svg class="feedback-icon" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M224,48H32a8,8,0,0,0-8,8V192a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V56A8,8,0,0,0,224,48Zm-96,85.15L52.57,64H203.43ZM98.71,128,40,181.81V74.19Zm11.84,10.85,12,11.05a8,8,0,0,0,10.82,0l12-11.05,58,53.15H52.57ZM157.29,128,216,74.18V181.82Z"/></svg>Send an appreciation email to the creator of this file</a></p>
+  </section>
+
+  <main class="desk-scroll" id="deskScroll">
+    <div class="sheet" id="sheet">
+      <div class="tb-slot" clay="freeze">
+        <header class="titleblock" id="titleblock" detail="entries by fmt.route('entry')">
+          <div class="tb-cell tb-date" id="cellDate">
+            <span class="caps">Date</span>
+            <button class="tb-value" id="dateValue" type="button" title="Change the day this entry belongs to"><span show="item.date" text="fmt.longDate(item.date)"></span> <span class="dim" show="item.date" text="'· ' + fmt.dow(item.date)"></span><span class="dim" show="!item.date">No date</span></button>
+            <div class="tb-edit"><input type="date" id="dateInput" bind="date" aria-label="Entry date"></div>
+          </div>
+          <div class="tb-cell">
+            <span class="caps">Sheet</span>
+            <span class="tb-value" id="sheetNo" text="fmt.sheetNo(root.live, item.$key)"></span>
+          </div>
+          <div class="tb-cell">
+            <span class="caps">Words</span>
+            <span class="tb-value" id="wordCount" text="fmt.words(item.body)"></span>
+          </div>
+        </header>
+      </div>
+      <section class="entries" id="entries" items="entries" route="entry">
+<article class="entry" item cms-template data-id="" state="data-date data-created data-updated data-deleted-at"><pre class="entry-source"><code class="entry-body" bind="body"></code></pre></article>
+<article class="entry" item data-id="welcm1" state="data-date data-created data-updated data-deleted-at" data-date="2026-10-07" data-created="2026-10-07T09:00:00" data-updated="2026-10-07T09:00:00"><pre class="entry-source"><code class="entry-body" bind="body"># Welcome to Journal
+
+This journal is one file, and everything you write is saved into it as you type. The first line of an entry becomes its heading.
+
+- Press ⌥⌘N for a new entry, / to search.
+- Click the date above to move an entry to another day.
+- Tag an entry by writing a word with a hash, like #ideas, then click the tag above the list to filter.
+- Delete these sample entries whenever you like.</code></pre></article>
+<article class="entry" item data-id="plan01" state="data-date data-created data-updated data-deleted-at" data-date="2026-10-06" data-created="2026-10-06T08:30:00" data-updated="2026-10-06T08:30:00"><pre class="entry-source"><code class="entry-body" bind="body"># Plan for the week
+
+- [x] Pick one thing to finish by Friday
+- [ ] Call the plumber about the kitchen tap
+- [ ] Book train tickets for the 14th
+
+Thought: mornings work better for writing than evenings. Try it all week. #habits</code></pre></article>
+<article class="entry" item data-id="notes1" state="data-date data-created data-updated data-deleted-at" data-date="2026-09-30" data-created="2026-09-30T16:00:00" data-updated="2026-09-30T16:00:00"><pre class="entry-source"><code class="entry-body" bind="body"># Notes from the workshop
+
+The best tip: write the summary first, then the details. #ideas #work A small script from the session:
+
+```js
+const words = text.trim().split(/\s+/).length;
+```
+
+&gt; Done is a feature.</code></pre></article>
+</section>
+      <div class="reader" id="reader" clay="freeze"></div>
+      <div class="writer" id="writer" clay="freeze"></div>
+      <div class="sheet-empty" id="sheetEmpty">
+        <div class="lead" id="emptyLead"><span show="state.live.length">Nothing open.</span><span show="!state.live.length" hidden>A clean sheet.</span></div>
+        <div id="emptyHint"><span show="state.live.length">Pick an entry from the list, or start a new one.</span><span show="!state.live.length" hidden>Nothing written yet. The first line of an entry becomes its heading.</span></div>
+        <button class="today-btn" type="button" data-act="today" show="!state.live.length" hidden>
+          <svg class="i" viewBox="0 0 16 16"><rect x="2.5" y="3.5" width="11" height="10" rx="1.5"/><path d="M2.5 6.5h11M5.5 2.5v2M10.5 2.5v2"/></svg>Write today’s entry
+        </button>
+        <button class="new-btn" type="button" data-act="new" show="state.live.length">
+          <svg class="i" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>New entry<kbd data-mod="N" clay="freeze">⌥⌘N</kbd>
+        </button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="pop-slot" clay="freeze">
+  <div class="pop" id="delPop" role="dialog" aria-modal="false" aria-labelledby="delPopTitle">
+    <p id="delPopTitle">Delete this entry?</p>
+    <small id="delPopWhat"></small>
+    <div class="acts">
+      <button class="cancel" id="delCancel" type="button">Cancel</button>
+      <button class="confirm" id="delConfirm" type="button">Delete</button>
+    </div>
+  </div>
+  <div class="pop" id="importPop" role="dialog" aria-modal="false" aria-labelledby="importPopTitle">
+    <p id="importPopTitle">Import this file?</p>
+    <small id="importPopWhat"></small>
+    <div class="acts">
+      <button class="cancel" id="importCancel" type="button">Cancel</button>
+      <button class="confirm" id="importConfirm" type="button">Import</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+  if (window.Journal) return;
+  document.documentElement.classList.remove('no-editor');
+
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const store = $('#entries');
+  const app = $('.app');
+  const desk = $('#deskScroll');
+  const list = $('#list');
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  const MOD = isMac ? '⌥⌘' : 'Ctrl+Alt+';
+  const LINE = 28;
+  const FONT = '"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace';
+  const PHONE = matchMedia('(max-width: 759px)');
+  const route = () => window.clay && window.clay.route;
+  const currentEntry = () => document.documentElement.getAttribute('route-entry');
+
+  /* ---------------------------------------------------------------- code highlighting */
+  // highlight.js spans can cross lines; OverType splits the result per line, so close and reopen them at each break
+  function balanceLines(html) {
+    const open = [];
+    return html.split('\n').map(line => {
+      const prefix = open.join('');
+      line.replace(/<span[^>]*>|<\/span>/g, tag => { if (tag === '</span>') open.pop(); else open.push(tag); return tag; });
+      return prefix + line + '</span>'.repeat(open.length);
+    }).join('\n');
+  }
+  function highlightCode(code, lang) {
+    if (!window.hljs) return '';
+    try {
+      const html = lang && hljs.getLanguage(lang)
+        ? hljs.highlight(code, { language: lang, ignoreIllegals: true }).value
+        : hljs.highlightAuto(code).value;
+      return balanceLines(html);
+    } catch { return ''; }
+  }
+
+  const THEME = {
+    name: 'journal',
+    colors: {
+      bgPrimary: 'var(--sheet)', bgSecondary: 'var(--sheet)',
+      text: 'var(--ink)', textPrimary: 'var(--ink)', textSecondary: 'var(--ink-2)',
+      h1: 'var(--ink)', h2: 'var(--ink)', h3: 'var(--ink)',
+      strong: 'var(--ink)', em: 'var(--ink)', del: 'var(--ink-3)',
+      link: 'var(--blue)', code: 'var(--ink)', codeBg: 'var(--fp-code-bg)',
+      blockquote: 'var(--ink-2)', hr: 'var(--ink-3)',
+      syntaxMarker: 'var(--fp-syntax)', syntax: 'var(--fp-syntax)',
+      cursor: 'var(--accent)', selection: 'var(--select)',
+      listMarker: 'var(--accent)', rawLine: 'var(--ink-2)',
+      border: 'var(--line)', hoverBg: 'var(--hover)', primary: 'var(--blue)',
+      toolbarBg: 'var(--sheet)', toolbarIcon: 'var(--ink-2)', toolbarHover: 'var(--hover)',
+      toolbarActive: 'var(--blue-soft)', placeholder: 'var(--ink-3)'
+    }
+  };
+
+  /* ---------------------------------------------------------------- entry model: the <article> elements are the data */
+  const Entries = {
+    all: () => $$('article.entry:not([cms-template])', store),
+    live: () => Entries.all().filter(a => !a.getAttribute('data-deleted-at')),
+    byId: id => store.querySelector(`article.entry[data-id="${CSS.escape(id)}"]`),
+    body(a) {
+      const code = a.querySelector('.entry-body');
+      return code ? code.textContent : '';
+    },
+    sortKey: a => `${a.dataset.date || ''}|${a.dataset.created || ''}`
+  };
+  const pad = n => String(n).padStart(2, '0');
+  const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const nowISO = () => { const d = new Date(); return `${ymd(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; };
+  const touch = a => { a.dataset.updated = nowISO(); };
+  const isTrashed = a => !!a.getAttribute('data-deleted-at');
+  const createdHere = new Set();
+  let openDate = null;
+  const clipTitle = t => (t.length > 60 ? t.slice(0, 58) + '…' : t);
+  const parseDay = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+  const isDay = s => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+    const [y, m, d] = s.split('-').map(Number);
+    const t = new Date(Date.UTC(y, m - 1, d));
+    return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+  };
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const DOW = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const newId = () => {
+    let id;
+    do {
+      const n = crypto.getRandomValues(new Uint32Array(2));
+      id = n[0].toString(36) + n[1].toString(36);
+    } while (id.length < 6 || Entries.byId(id));
+    return id;
+  };
+  const words = md => (md.match(/[\p{L}\p{N}'’]+/gu) || []).length;
+
+  function firstLine(md) {
+    const line = md.split('\n').find(l => l.trim()) || '';
+    return inlinePlain(line.replace(/^\s*#{1,6}\s+/, '').replace(/^\s*>\s?/, '').replace(/^\s*([-*+]|\d+\.)\s+(\[[ xX]\]\s+)?/, '')).trim();
+  }
+  function inlinePlain(s) {
+    return s
+      .replace(/!?\[([^\]]*)\]\(([^)]*)\)/g, '$1')
+      .replace(/https?:\/\/([^\s/)]+)[^\s)]*/g, '$1')
+      .replace(/`([^`]*)`/g, '$1')
+      .replace(/(\*\*|__)(.+?)\1/g, '$2')
+      .replace(/(\*|_)(.+?)\1/g, '$2')
+      .replace(/~~(.+?)~~/g, '$1');
+  }
+  function plainBody(md) {
+    const lines = md.split('\n');
+    const i = lines.findIndex(l => l.trim());
+    let inCode = false;
+    return lines.slice(i + 1).map(l => {
+      if (/^\s*```/.test(l)) { inCode = !inCode; return ''; }
+      if (inCode) return l.trim();
+      if (/^\s*(-{3,}|\*{3,})\s*$/.test(l)) return '';
+      return inlinePlain(l
+        .replace(/^\s*#{1,6}\s+/, '')
+        .replace(/^\s*>\s?/, '')
+        .replace(/^\s*[-*+]\s+\[[xX]\]\s+/, '☑ ')
+        .replace(/^\s*[-*+]\s+\[ \]\s+/, '☐ ')
+        .replace(/^\s*([-*+]|\d+\.)\s+/, ''));
+    }).filter(l => l.trim()).join('  ·  ').replace(/\s+/g, ' ').trim();
+  }
+
+  /* ---------------------------------------------------------------- markdown for the reading view: the subset an entry uses, escaped first */
+  function mdEmphasis(s) {
+    return s
+      .replace(/(^|[^\w*])\*\*(?=\S)(.+?)\*\*(?![\w*])/g, '$1<strong>$2</strong>')
+      .replace(/(^|[^\w_])__(?=\S)(.+?)__(?![\w_])/g, '$1<strong>$2</strong>')
+      .replace(/(^|[^\w*])\*(?=\S)(.+?)\*(?!\w)/g, '$1<em>$2</em>')
+      .replace(/(^|[^\w_])_(?=\S)(.+?)_(?!\w)/g, '$1<em>$2</em>')
+      .replace(/~~(.+?)~~/g, '<del>$1</del>');
+  }
+  // Code spans and links are cut out first, so emphasis never reaches a URL or code.
+  function mdInline(s) {
+    return s.split(/(`[^`]+`|\[[^\]]+\]\((?:https?:|mailto:)[^\s)]+\))/).map((part, i) => {
+      if (i % 2 === 0) return mdEmphasis(esc(part));
+      if (part[0] === '`') return `<code>${esc(part.slice(1, -1))}</code>`;
+      const link = part.match(/^\[([^\]]+)\]\((.+)\)$/);
+      return `<a href="${esc(link[2])}" target="_blank" rel="noopener noreferrer">${mdEmphasis(esc(link[1]))}</a>`;
+    }).join('');
+  }
+  function renderMarkdown(md) {
+    const out = [];
+    const lines = md.replace(/\r\n?/g, '\n').split('\n');
+    let para = [], list = null, quote = [];
+    const flushPara = () => { if (para.length) out.push(`<p>${para.map(mdInline).join('<br>')}</p>`); para = []; };
+    const flushList = () => { if (list) out.push(`<${list.tag}${list.tasks ? ' class="tasks"' : ''}>${list.items.join('')}</${list.tag}>`); list = null; };
+    const flushQuote = () => { if (quote.length) out.push(`<blockquote>${renderMarkdown(quote.join('\n'))}</blockquote>`); quote = []; };
+    const flush = () => { flushPara(); flushList(); flushQuote(); };
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const fence = line.match(/^\s*```\s*([\w+-]*)/);
+      if (fence) {
+        flush();
+        const code = [];
+        while (++i < lines.length && !/^\s*```\s*$/.test(lines[i])) code.push(lines[i]);
+        const body = code.join('\n');
+        out.push(`<pre><code>${highlightCode(body, fence[1]) || esc(body)}</code></pre>`);
+        continue;
+      }
+      if (!line.trim()) { flush(); continue; }
+      const q = line.match(/^\s*>\s?(.*)$/);
+      if (q) { flushPara(); flushList(); quote.push(q[1]); continue; }
+      flushQuote();
+      const h = line.match(/^\s*(#{1,6})\s+(.*)$/);
+      if (h) { flush(); out.push(`<h${h[1].length}>${mdInline(h[2])}</h${h[1].length}>`); continue; }
+      if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { flush(); out.push('<hr>'); continue; }
+      const li = line.match(/^\s*([-*+]|\d+[.)])\s+(.*)$/);
+      if (li) {
+        flushPara();
+        const tag = /\d/.test(li[1]) ? 'ol' : 'ul';
+        if (!list || list.tag !== tag) { flushList(); list = { tag, items: [], tasks: false }; }
+        const task = li[2].match(/^\[([ xX])\]\s+(.*)$/);
+        if (task) {
+          const done = task[1] !== ' ';
+          list.tasks = true;
+          list.items.push(`<li class="task${done ? ' done' : ''}"><input type="checkbox" disabled${done ? ' checked' : ''}>${mdInline(task[2])}</li>`);
+        } else {
+          list.items.push(`<li>${mdInline(li[2])}</li>`);
+        }
+        continue;
+      }
+      if (list && /^\s/.test(line)) { list.items[list.items.length - 1] = list.items[list.items.length - 1].replace(/<\/li>$/, ` ${mdInline(line.trim())}</li>`); continue; }
+      flushList();
+      para.push(line.trim());
+    }
+    flush();
+    return out.join('');
+  }
+
+  /* ---------------------------------------------------------------- search: every word must appear, "quoted phrases" match exactly */
+  function parseQuery(q) {
+    const terms = [];
+    String(q).replace(/"([^"]+)"|(\S+)/g, (m, phrase, word) => { terms.push((phrase || word).toLowerCase()); });
+    return terms.filter(Boolean);
+  }
+
+  /* ---------------------------------------------------------------- tags: #word in the text, outside code */
+  const TAG_RE = /(^|[^\p{L}\p{N}_&#/])#([\p{L}\p{N}_-]*\p{L}[\p{L}\p{N}_-]*)/gu;
+  function tagsOf(md) {
+    const text = md.replace(/^\s*```[\s\S]*?^\s*```\s*$/gm, '').replace(/`[^`\n]*`/g, '');
+    const out = new Set();
+    for (const m of text.matchAll(TAG_RE)) out.add(m[2].toLowerCase());
+    return [...out];
+  }
+
+  /* ---------------------------------------------------------------- the list, tags and title block are sap paints over these formats.
+     They compute data, never HTML. Summaries are cached by body text, since sap re-evaluates on every pass. */
+  const sorted = list => list.sort((x, y) => Entries.sortKey(y).localeCompare(Entries.sortKey(x)));
+  const sortKey = e => `${e.date || ''}|${e.created || ''}`;
+  const summaries = new Map();
+  function summary(body) {
+    const md = String(body || '');
+    let s = summaries.get(md);
+    if (!s) {
+      if (summaries.size > 5000) summaries.clear();
+      s = { title: firstLine(md), plain: plainBody(md), tags: tagsOf(md), lower: md.toLowerCase() };
+      summaries.set(md, s);
+    }
+    return s;
+  }
+
+  function indexRows(entries, q, tag) {
+    const terms = parseQuery(String(q || '').trim());
+    const rows = entries
+      .filter(e => { const s = summary(e.body); return terms.every(t => s.lower.includes(t)) && (!tag || s.tags.includes(tag)); })
+      .sort((x, y) => sortKey(y).localeCompare(sortKey(x)));
+    const counts = new Map();
+    for (const e of rows) { const m = (e.date || '').slice(0, 7); counts.set(m, (counts.get(m) || 0) + 1); }
+    const out = [];
+    let month = null;
+    for (const e of rows) {
+      const m = (e.date || '').slice(0, 7);
+      if (m !== month) {
+        month = m;
+        const d = m ? parseDay(m + '-01') : null;
+        out.push({ $key: `m:${m}`, month: d ? `${MONTHS[d.getMonth()].slice(0, 3)} ${d.getFullYear()}` : 'Undated', monthN: counts.get(m) });
+      }
+      const s = summary(e.body);
+      let snippet = s.plain;
+      if (terms.length && snippet) {
+        const low = snippet.toLowerCase();
+        const hits = terms.map(t => low.indexOf(t)).filter(i => i >= 0);
+        const at = hits.length ? Math.min(...hits) : -1;
+        if (at > 60) snippet = '…' + snippet.slice(at - 40);
+      }
+      const d = e.date ? parseDay(e.date) : null;
+      out.push({
+        $key: e.$key, $el: e.$el, month: '',
+        day: d ? pad(d.getDate()) : '--', dow: d ? DOW[d.getDay()].slice(0, 3) : '',
+        title: s.title || 'New entry', untitled: !s.title, snippet: snippet.slice(0, 320)
+      });
+    }
+    return out;
+  }
+
+  // The Trash view's rows: the trashed records, the one deleted last at the top.
+  function trashRows(entries) {
+    return entries
+      .filter(e => e.deletedAt)
+      .sort((x, y) => String(y.deletedAt).localeCompare(String(x.deletedAt)) || sortKey(y).localeCompare(sortKey(x)))
+      .map(e => {
+        const s = summary(e.body);
+        const d = e.date ? parseDay(e.date) : null;
+        return {
+          $key: e.$key, $el: e.$el, month: '', trashed: true,
+          day: d ? pad(d.getDate()) : '--', dow: d ? DOW[d.getDay()].slice(0, 3) : '',
+          title: s.title || 'New entry', untitled: !s.title, snippet: s.plain.slice(0, 320)
+        };
+      });
+  }
+
+  function tagChips(entries, tag) {
+    const counts = new Map();
+    for (const e of entries) for (const t of summary(e.body).tags) counts.set(t, (counts.get(t) || 0) + 1);
+    if (tag && !counts.has(tag)) counts.set(tag, 0);
+    return [...counts].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))
+      .map(([t, n]) => ({ $key: `t:${t}`, name: t, n, on: t === tag }));
+  }
+
+  const formats = {
+    index: indexRows,
+    live: entries => entries.filter(e => !e.deletedAt),
+    trash: trashRows,
+    tags: tagChips,
+    viewTitle: (q, tag, view) => {
+      if (view === 'trash') return 'Trash';
+      const s = String(q || '').trim();
+      return [s && `“${s}”`, tag && `#${tag}`].filter(Boolean).join(' in ') || 'All entries';
+    },
+    count: (n, one, many) => `${n} ${n === 1 ? one : many}`,
+    route: name => document.documentElement.getAttribute(`route-${name}`) || '',
+    longDate: s => { if (!s) return ''; const d = parseDay(s); return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`; },
+    dow: s => (s ? DOW[parseDay(s).getDay()] : ''),
+    sheetNo: (entries, key) => {
+      const chrono = [...entries].sort((x, y) => sortKey(x).localeCompare(sortKey(y)));
+      const at = chrono.findIndex(e => e.$key === key);
+      return at < 0 ? '' : String(at + 1).padStart(3, '0');
+    },
+    words: body => String(words(String(body || ''))),
+    mod: () => MOD
+  };
+
+  /* ---------------------------------------------------------------- UI state: the open entry is the URL hash (#entry=<id>) and kept per document in session storage, search and tag are sap transient state */
+  let readOnly = false;
+  let booted = false;
+  const UI_KEY = 'ui';
+  const loadUI = () => { try { return window.clay.storage.session.get(UI_KEY) || {}; } catch { return {}; } };
+  const saveUI = () => { if (!booted) return; try { window.clay.storage.session.set(UI_KEY, { openId: currentEntry() }); } catch {} };
+
+  function openEntry(id, { focus = false, replace = false } = {}) {
+    const r = route();
+    if (!r || !id) return;
+    if (currentEntry() === id) { if (focus) Editor.focus(); return; }
+    pendingFocus = focus ? id : null;
+    r.set({ entry: id }, { replace });
+  }
+
+  function clearFilters() {
+    const q = $('#q');
+    if (q.value) { q.value = ''; q.dispatchEvent(new Event('input', { bubbles: true })); }
+    try { if (window.Sap) Sap(app).tag = ''; } catch {}
+  }
+
+  /* ---------------------------------------------------------------- the open entry's editor: one textarea in #writer, outside the saved records,
+     with OverType on it. ClayJS's bind-text keeps it and the open entry's <code> in step. */
+  const Editor = (() => {
+    const mount = $('#writer');
+    const ta = () => mount.querySelector('textarea');
+    let binding = null;
+    let overtype = null;
+    function start(options) {
+      mount.innerHTML = '<div class="overtype-container" data-theme="journal"><div class="overtype-wrapper"><textarea class="overtype-input" autocomplete="off" spellcheck="true" placeholder="Start writing. The first line becomes the heading."></textarea></div></div>';
+      binding = window.clay.bindText(ta(), {
+        onWrite: (code) => {
+          touch(code.closest('article.entry'));
+          if (code.textContent.trim()) createdHere.delete(code.closest('article.entry').dataset.id);
+        },
+        onShow: () => overtype?.updatePreview(),
+        onConflict: (typed) => note('Someone changed the same words while you were typing.', typed),
+        onGone: (typed) => {
+          const date = openDate;
+          note('This entry was deleted somewhere else.', typed, { label: 'Keep it', run: () => keepNote(typed, date) });
+        },
+      });
+      [overtype] = new OverType(mount, options);
+    }
+    function open(article) {
+      const id = article.dataset.id;
+      binding.open(article.querySelector('.entry-body'), {
+        key: id,
+        resolve: () => Entries.byId(id)?.querySelector('.entry-body') ?? null,
+      });
+    }
+    return {
+      start, open,
+      close: () => binding?.close(),
+      current: () => binding?.current()?.closest('article.entry') ?? null,
+      focus: () => ta()?.focus(),
+      text: () => ta()?.value ?? '',
+      reconfigure: (options) => overtype?.reinit(options),
+    };
+  })();
+
+  // One line under the sheet for a conflict or a deletion elsewhere, with the text this tab typed. It is
+  // editor-ui chrome, so it never reaches the file, and it goes when dismissed or when the entry changes.
+  let noteEl = null;
+  function clearNote() { if (noteEl) { noteEl.remove(); noteEl = null; } }
+  function note(message, text, action) {
+    clearNote();
+    const el = document.createElement('div');
+    el.className = 'note';
+    el.setAttribute('clay', 'editor-ui');
+    const msg = document.createElement('span');
+    msg.textContent = message;
+    el.append(msg);
+    if (action) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = action.label;
+      button.addEventListener('click', () => { const run = action.run; clearNote(); run(); });
+      el.append(button);
+    }
+    if (text) {
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.textContent = 'Copy your version';
+      copy.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(text); copy.textContent = 'Copied'; } catch {}
+      });
+      el.append(copy);
+    }
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'note-close';
+    dismiss.textContent = 'Dismiss';
+    dismiss.addEventListener('click', clearNote);
+    el.append(dismiss);
+    $('#sheet').append(el);
+    noteEl = el;
+  }
+
+  function keepNote(text, date) {
+    const a = makeEntry(date || ymd(new Date()), nowISO(), text);
+    store.prepend(a);
+    clearNote();
+    openEntry(a.dataset.id, { focus: true });
+  }
+
+  let peerBarEl = null;
+  function peerBar() {
+    if (peerBarEl) return peerBarEl;
+    const el = document.createElement('div');
+    el.className = 'peer-bar';
+    el.setAttribute('clay', 'editor-ui');
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    el.hidden = true;
+    const msg = document.createElement('span');
+    msg.textContent = 'Moved to Trash by someone else';
+    el.append(msg);
+    const restore = document.createElement('button');
+    restore.type = 'button';
+    restore.textContent = 'Restore';
+    restore.addEventListener('click', () => {
+      const open = Editor.current();
+      const id = open && open.dataset.id;
+      el.hidden = true;
+      if (id) restoreEntry(id);
+    });
+    el.append(restore);
+    $('#writer').before(el);
+    peerBarEl = el;
+    return el;
+  }
+  function showPeerBar(article) {
+    if (!article || !isTrashed(article)) {
+      if (peerBarEl) peerBarEl.hidden = true;
+      return;
+    }
+    peerBar().hidden = false;
+  }
+
+  let pendingFocus = null;
+
+  function syncEditor() {
+    if (!booted) return;
+    const a = store.querySelector(':scope > .entry[route-active]');
+    if (readOnly) { renderReader(a && !isTrashed(a) ? a : null); refreshHighlights(); return; }
+    const left = Editor.current();
+    const leftId = left ? left.dataset.id : null;
+    const nextId = a ? a.dataset.id : null;
+    if (leftId !== nextId) { clearNote(); desk.scrollTop = 0; }
+    if (a) Editor.open(a); else Editor.close();
+    openDate = a ? a.dataset.date || '' : null;
+    showPeerBar(a);
+    if (left && left !== a && left.isConnected && createdHere.has(left.dataset.id) && !Entries.body(left).trim()) left.remove();
+    focusIfPending();
+    refreshHighlights();
+  }
+
+  function focusIfPending() {
+    const open = Editor.current();
+    if (open && pendingFocus === open.dataset.id) {
+      Editor.focus();
+      requestAnimationFrame(() => { if (Editor.current() === open && document.activeElement !== $('#writer textarea')) Editor.focus(); });
+    }
+    pendingFocus = null;
+  }
+
+  function renderReader(a) {
+    $('#reader').innerHTML = a ? renderMarkdown(Entries.body(a)) : '';
+    if (a) desk.scrollTop = 0;
+  }
+
+  // The editor's padding is fixed when it opens, so crossing the phone breakpoint reconfigures it
+  PHONE.addEventListener('change', () => {
+    Editor.reconfigure({ padding: PHONE.matches ? `${LINE}px 16px ${LINE * 2}px 44px` : `${LINE}px 44px ${LINE * 2}px 72px` });
+  });
+
+  function toolbarButtons() {
+    const tb = window.toolbarButtons || OverType.toolbarButtons;
+    if (!tb) return undefined;
+    const pick = ['bold', 'italic', 'code', 'separator', 'link', 'separator', 'bulletList', 'orderedList', 'taskList', 'separator', 'quote'];
+    const out = pick.map(n => tb[n]).filter(Boolean);
+    return out.length ? out : undefined;
+  }
+
+  // Web fonts can arrive after an entry opened and re-wrap its lines; OverType re-measures on input and resize only
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => Editor.reconfigure({}));
+
+  $('#writer').addEventListener('mousedown', e => {
+    if (e.target !== $('#writer .overtype-wrapper')) return;
+    e.preventDefault();
+    const ta = $('#writer textarea');
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  });
+
+  /* ---------------------------------------------------------------- search highlights in the list and the open entry (CSS Custom Highlight API: no DOM changes) */
+  const highlightsSupported = typeof CSS !== 'undefined' && CSS.highlights && typeof Highlight === 'function';
+  function refreshHighlights() {
+    if (!highlightsSupported) return;
+    requestAnimationFrame(() => {
+      CSS.highlights.delete('jhit');
+      CSS.highlights.delete('jtag');
+      const terms = parseQuery($('#q').value.trim());
+      const hits = [], tags = [];
+      const scan = (root, withTags) => {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) {
+          const raw = node.nodeValue;
+          const text = raw.toLowerCase();
+          for (const w of terms) {
+            let i = text.indexOf(w);
+            while (i !== -1) {
+              const r = new Range();
+              r.setStart(node, i); r.setEnd(node, i + w.length);
+              hits.push(r);
+              i = text.indexOf(w, i + w.length);
+            }
+          }
+          if (!withTags || (node.parentElement && node.parentElement.closest('code, pre'))) continue;
+          for (const m of raw.matchAll(TAG_RE)) {
+            const start = m.index + m[1].length;
+            const r = new Range();
+            r.setStart(node, start); r.setEnd(node, start + 1 + m[2].length);
+            tags.push(r);
+          }
+        }
+      };
+      const open = readOnly ? $('#reader') : $('#writer .overtype-preview');
+      if (open) scan(open, true);
+      if (terms.length) for (const el of $$('#list .row-body')) scan(el, false);
+      if (hits.length) CSS.highlights.set('jhit', new Highlight(...hits));
+      if (tags.length) CSS.highlights.set('jtag', new Highlight(...tags));
+    });
+  }
+
+  /* ---------------------------------------------------------------- actions */
+  function makeEntry(date, stamp, body) {
+    const seed = store.querySelector(':scope > article.entry[cms-template]');
+    const a = seed.cloneNode(true);
+    a.removeAttribute('cms-template');
+    a.dataset.id = newId();
+    a.setAttribute('state', 'data-date data-created data-updated data-deleted-at');
+    a.dataset.date = date;
+    a.dataset.created = stamp;
+    a.dataset.updated = stamp;
+    a.querySelector('.entry-body').textContent = body;
+    return a;
+  }
+
+  function newEntry() {
+    if (readOnly) return;
+    if (trashView()) setView('');
+    closeDeletePopover();
+    clearFilters();
+    const a = makeEntry(ymd(new Date()), nowISO(), '');
+    createdHere.add(a.dataset.id);
+    store.prepend(a);
+    openEntry(a.dataset.id, { focus: true });
+    list.scrollTop = 0;
+  }
+
+  function filterOn() {
+    if ($('#q').value.trim()) return true;
+    try { return !!(window.Sap && Sap(app).tag); } catch { return false; }
+  }
+
+  function openToday() {
+    if (readOnly) return;
+    if (trashView()) setView('');
+    if (filterOn()) clearFilters();
+    const today = ymd(new Date());
+    const found = Entries.live()
+      .filter(a => a.dataset.date === today)
+      .sort((x, y) => Entries.sortKey(y).localeCompare(Entries.sortKey(x)))[0];
+    if (found) openEntry(found.dataset.id, { focus: true });
+    else newEntry();
+  }
+
+  function deleteEntry(id) {
+    if (readOnly) return;
+    const a = Entries.byId(id);
+    if (!a) return;
+    const order = $$('#list > .row').map(r => r.dataset.key);
+    const idx = order.indexOf(id);
+    const wasOpen = currentEntry() === id;
+    if (createdHere.has(id) && !Entries.body(a).trim()) a.remove();
+    else {
+      createdHere.delete(id);
+      window.clay.trash(a, { at: nowISO() });
+      refreshTrash();
+      showToast('Moved to Trash', { label: 'Undo', run: () => restoreEntry(id) });
+    }
+    if (!wasOpen) return;
+    const live = new Set(Entries.live().map(e => e.dataset.id));
+    const next = [order[idx + 1], order[idx - 1]].find(k => k && live.has(k));
+    const r = route();
+    if (r) r.set({ entry: next || null }, { replace: true });
+  }
+
+  function restoreEntry(id) {
+    const a = Entries.byId(id);
+    if (!a) return;
+    window.clay.trash.restore(a);
+    setView('');
+    refreshTrash();
+    openEntry(id, { focus: true });
+  }
+
+  // The entry to open after a purge: the next live entry below it, else the one above, and none when nothing live is left.
+  function neighborOf(a) {
+    const order = sorted(Entries.live().concat(a)).map(e => e.dataset.id);
+    const live = new Set(Entries.live().map(e => e.dataset.id));
+    const at = order.indexOf(a.dataset.id);
+    return [order[at + 1], order[at - 1]].find(k => k && live.has(k)) || null;
+  }
+
+  // Delete forever only ever removes what is in Trash right now: a peer may have restored it meanwhile.
+  function purgeEntry(id) {
+    const a = Entries.byId(id);
+    if (!a || !isTrashed(a)) {
+      closeDeletePopover();
+      showToast('Restored somewhere else');
+      return;
+    }
+    const wasOpen = currentEntry() === id;
+    const next = wasOpen ? neighborOf(a) : null;
+    if (wasOpen) Editor.close();
+    window.clay.trash.purge(a);
+    refreshTrash();
+    if (!wasOpen) return;
+    const r = route();
+    if (r) r.set({ entry: next || null }, { replace: true });
+  }
+
+  function emptyTrash() {
+    const doomed = Entries.all().filter(isTrashed);
+    const open = doomed.find(a => a.dataset.id === currentEntry());
+    const next = open ? neighborOf(open) : null;
+    if (open) Editor.close();
+    for (const a of doomed) window.clay.trash.purge(a);
+    setView('');
+    refreshTrash();
+    if (!open) return;
+    const r = route();
+    if (r) r.set({ entry: next || null }, { replace: true });
+  }
+
+  /* ---------------------------------------------------------------- Trash: the view switch, its chrome and the undo toast (per-tab, never saved) */
+  const trashHead = $('#trashHead');
+  const trashItem = $('#trashItem');
+  const trashLabel = $('#trashLabel');
+
+  const trashView = () => { try { return (window.Sap && Sap(app).view) === 'trash'; } catch { return false; } };
+
+  function setView(view) {
+    try { if (window.Sap) Sap(app).view = view || ''; } catch {}
+    const on = trashView();
+    trashHead.hidden = !on;
+    list.scrollTop = 0;
+    refreshTrash();
+  }
+
+  // "Trash (N)" exists only while something is in it, and it is chrome, so it never writes.
+  function refreshTrash() {
+    const n = Entries.all().filter(isTrashed).length;
+    const label = `Trash (${n})`;
+    if (trashLabel.textContent !== label) trashLabel.textContent = label;
+    if (trashItem.hidden !== !n) trashItem.hidden = !n;
+  }
+
+  let toastEl = null, toastTimer = 0;
+  function clearToast() {
+    clearTimeout(toastTimer);
+    toastTimer = 0;
+    if (toastEl) { toastEl.remove(); toastEl = null; }
+  }
+  function showToast(message, action) {
+    clearToast();
+    const el = document.createElement('div');
+    el.className = 'toast';
+    el.setAttribute('clay', 'editor-ui');
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    const msg = document.createElement('span');
+    msg.textContent = message;
+    el.append(msg);
+    if (action) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = action.label;
+      button.addEventListener('click', () => { const run = action.run; clearToast(); run(); });
+      el.append(button);
+    }
+    document.body.append(el);
+    toastEl = el;
+    toastTimer = setTimeout(clearToast, 6000);
+  }
+
+  /* ---------------------------------------------------------------- delete popover, anchored beside the row's trash icon */
+  const pop = $('#delPop');
+  let popFor = null, popAnchor = null, popDo = null;
+
+  function openDeletePopover(id, anchor) {
+    const a = Entries.byId(id);
+    if (!a) return;
+    closeDeletePopover();
+    popFor = id;
+    popAnchor = anchor || $('#dateValue');
+    popAnchor.classList.add('armed');
+    const title = firstLine(Entries.body(a)) || 'Untitled entry';
+    $('#delPopWhat').textContent = `“${clipTitle(title)}” moves to Trash.`;
+    $('#delConfirm').textContent = 'Delete';
+    popDo = () => deleteEntry(id);
+    pop.classList.add('show');
+    placePopover();
+    $('#delConfirm').focus();
+  }
+
+  // Delete forever and Empty Trash ask first, in the same popover.
+  function openPurgePopover(id, anchor) {
+    const a = Entries.byId(id);
+    if (!a) return;
+    closeDeletePopover();
+    popFor = id;
+    popAnchor = anchor || $('#trashEmpty');
+    popAnchor.classList.add('armed');
+    const title = firstLine(Entries.body(a)) || 'Untitled entry';
+    $('#delPopWhat').textContent = `“${clipTitle(title)}” is deleted forever. This cannot be undone.`;
+    $('#delConfirm').textContent = 'Delete forever';
+    popDo = () => purgeEntry(id);
+    pop.classList.add('show');
+    placePopover();
+    $('#delConfirm').focus();
+  }
+
+  function openEmptyTrashPopover(anchor) {
+    const n = Entries.all().filter(isTrashed).length;
+    if (!n) return;
+    closeDeletePopover();
+    popFor = 'trash';
+    popAnchor = anchor || $('#trashEmpty');
+    popAnchor.classList.add('armed');
+    $('#delPopWhat').textContent = `All ${n} ${n === 1 ? 'entry' : 'entries'} in Trash ${n === 1 ? 'is' : 'are'} deleted forever. This cannot be undone.`;
+    $('#delConfirm').textContent = 'Empty Trash';
+    popDo = emptyTrash;
+    pop.classList.add('show');
+    placePopover();
+    $('#delConfirm').focus();
+  }
+  function placePopover(el = pop, anchor = popAnchor) {
+    if (!el || !anchor) return;
+    const r = anchor.getBoundingClientRect();
+    const pw = el.offsetWidth, ph = el.offsetHeight;
+    const gap = 10;
+    let left = r.right + gap, side = 'right';
+    if (left + pw > innerWidth - 8) { left = r.left - gap - pw; side = 'left'; }
+    let top = r.top + r.height / 2 - 20;
+    top = Math.max(8, Math.min(top, innerHeight - ph - 8));
+    el.style.left = `${Math.max(8, left)}px`;
+    el.style.top = `${top}px`;
+    el.style.setProperty('--arrow-y', `${Math.max(10, Math.min(ph - 20, r.top + r.height / 2 - top - 5))}px`);
+    el.classList.toggle('left', side === 'left');
+  }
+  function closeDeletePopover({ refocus = false } = {}) {
+    if (!popFor) return;
+    pop.classList.remove('show');
+    if (popAnchor) popAnchor.classList.remove('armed');
+    const anchor = popAnchor;
+    popFor = null; popAnchor = null; popDo = null;
+    if (refocus && anchor && anchor.isConnected) anchor.focus();
+  }
+  $('#delCancel').addEventListener('click', () => closeDeletePopover({ refocus: true }));
+  $('#delConfirm').addEventListener('click', () => { const run = popDo; closeDeletePopover(); if (run) run(); });
+  document.addEventListener('mousedown', e => {
+    if (popFor && !pop.contains(e.target) && !(popAnchor && popAnchor.contains(e.target))) closeDeletePopover();
+    if (importRecords && !importPop.contains(e.target) && !(importAnchor && importAnchor.contains(e.target))) closeImportPopover();
+  }, true);
+  $('#list').addEventListener('scroll', () => closeDeletePopover());
+  window.addEventListener('resize', () => closeDeletePopover());
+
+  /* ---------------------------------------------------------------- a Field Pad file: every article read by an inert parser, never run */
+  function readFieldPad(text) {
+    const doc = new DOMParser().parseFromString(text, 'text/html');
+    return [...doc.querySelectorAll('#entries > article.entry:not([cms-template])')].map(a => {
+      const body = a.querySelector('.entry-body');
+      const old = a.querySelector('textarea.overtype-input');
+      return {
+        id: a.dataset.id || '',
+        date: a.dataset.date || '',
+        created: a.dataset.created || '',
+        updated: a.dataset.updated || '',
+        deletedAt: a.dataset.deletedAt || '',
+        body: body ? body.textContent : old ? (old.getAttribute('data-value') ?? old.value) : '',
+      };
+    });
+  }
+
+  // An entry the file and this journal both have, with the same text, is skipped; the same id with
+  // different text is added under a new id. Nothing is written here: this only counts.
+  function planFieldPad(records) {
+    const here = new Map(Entries.all().map(a => [a.dataset.id, a]));
+    const taken = new Set(here.keys());
+    const plan = { add: [], restore: [], same: 0, conflicts: 0 };
+    for (const r of records) {
+      if (r.id && here.has(r.id)) {
+        const a = here.get(r.id);
+        if (Entries.body(a) === r.body) {
+          if (isTrashed(a) && !r.deletedAt) plan.restore.push(r.id);
+          else plan.same += 1;
+          continue;
+        }
+        plan.conflicts += 1;
+        plan.add.push({ ...r, id: '' });
+        continue;
+      }
+      if (r.id && taken.has(r.id)) { plan.conflicts += 1; plan.add.push({ ...r, id: '' }); continue; }
+      if (r.id) taken.add(r.id);
+      plan.add.push(r);
+    }
+    return plan;
+  }
+
+  function offerFieldPad(records) {
+    if (readOnly) return;
+    const bad = records.find(r => !isDay(r.date));
+    if (bad) { note(`“${bad.date || 'That'}” is not a real date, so nothing was imported.`); return; }
+    if (!records.length) { note('That file has no entries in it.'); return; }
+    openImportPopover(records, $('#menuBtn'));
+  }
+
+  function applyFieldPad(plan) {
+    let first = null;
+    for (const r of plan.add) {
+      const a = makeEntry(r.date, r.created || nowISO(), r.body);
+      if (r.id && !Entries.byId(r.id)) a.dataset.id = r.id;
+      if (r.updated) a.dataset.updated = r.updated;
+      store.append(a);
+      if (r.deletedAt) window.clay.trash(a, { at: r.deletedAt });
+      else first = first || a.dataset.id;
+    }
+    for (const id of plan.restore) {
+      const a = Entries.byId(id);
+      if (a && isTrashed(a)) { window.clay.trash.restore(a); first = first || id; }
+    }
+    if (plan.add.length || plan.restore.length) refreshTrash();
+    if (!first) { note(plan.add.length ? 'The new entries from that file are in Trash, as they were in the file.' : 'Every entry in that file is already here.'); return; }
+    setView('');
+    clearFilters();
+    openEntry(first);
+  }
+
+  const importPop = $('#importPop');
+  let importRecords = null, importAnchor = null;
+
+  function openImportPopover(records, anchor) {
+    closeDeletePopover();
+    closeImportPopover();
+    importRecords = records;
+    importAnchor = anchor || $('#menuBtn');
+    const plan = planFieldPad(records);
+    const fresh = plan.add.length - plan.conflicts;
+    const trashed = plan.add.filter(r => r.deletedAt).length;
+    const parts = [`${fresh} new`, `${plan.same} already here`, `${plan.conflicts} with a different text`];
+    if (plan.restore.length) parts.push(`${plan.restore.length} back from Trash`);
+    $('#importPopWhat').textContent = `${parts.join(', ')}.${trashed ? ` ${trashed} of the new ones go to Trash, as in the file.` : ''} The file you picked is not changed.`;
+    importPop.classList.add('show');
+    placePopover(importPop, importAnchor);
+    $('#importConfirm').focus();
+  }
+  function closeImportPopover({ refocus = false } = {}) {
+    if (!importRecords) return;
+    importPop.classList.remove('show');
+    const anchor = importAnchor;
+    importRecords = null; importAnchor = null;
+    if (refocus && anchor && anchor.isConnected) anchor.focus();
+  }
+  $('#importCancel').addEventListener('click', () => closeImportPopover({ refocus: true }));
+  $('#importConfirm').addEventListener('click', () => { const records = importRecords; closeImportPopover(); applyFieldPad(planFieldPad(records)); });
+
+  function requestDeleteOpen() {
+    if (readOnly) return;
+    const open = Editor.current();
+    if (!open) return;
+    const id = open.dataset.id;
+    const row = $(`#list > .row[data-key="${CSS.escape(id)}"]`);
+    if (row && row.offsetParent) {
+      row.scrollIntoView({ block: 'nearest' });
+      openDeletePopover(id, $('.del', row));
+    } else {
+      openDeletePopover(id, $('#dateValue'));
+    }
+  }
+
+  /* ---------------------------------------------------------------- events */
+  document.addEventListener('click', e => {
+    if (e.target.closest('[data-act="new"]')) newEntry();
+    if (e.target.closest('[data-act="today"]')) openToday();
+  });
+
+  list.addEventListener('click', e => {
+    const row = e.target.closest('.row');
+    if (!row) return;
+    const id = row.dataset.key;
+    const act = e.target.closest('[data-act="delete"]');
+    if (act) {
+      e.stopPropagation();
+      if (popFor === id) closeDeletePopover(); else openDeletePopover(id, act);
+      return;
+    }
+    const restore = e.target.closest('[data-act="restore"]');
+    if (restore) { e.stopPropagation(); restoreEntry(id); return; }
+    const purge = e.target.closest('[data-act="purge"]');
+    if (purge) {
+      e.stopPropagation();
+      if (popFor === id) closeDeletePopover(); else openPurgePopover(id, purge);
+      return;
+    }
+    if (row.classList.contains('trashed')) return;
+    openEntry(id);
+  });
+  list.addEventListener('keydown', e => {
+    const row = e.target.closest('.row');
+    if (!row || e.target.closest('.del') || e.target.closest('.row-acts') || row.classList.contains('trashed')) return;
+    if (e.key === 'Enter') { e.preventDefault(); openEntry(row.dataset.key, { focus: true }); }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const rows = $$('.row', list);
+      const next = rows[rows.indexOf(row) + (e.key === 'ArrowDown' ? 1 : -1)];
+      if (next) { openEntry(next.dataset.key, { replace: true }); next.focus(); }
+    }
+  });
+
+  $('#q').addEventListener('input', refreshHighlights);
+  $('#q').addEventListener('keydown', e => {
+    if (e.key === 'Escape') { $('#qClear').click(); e.target.blur(); }
+    const first = trashView() ? null : $('#list > .row:not(.trashed)');
+    if (e.key === 'Enter') { if (first) openEntry(first.dataset.key); }
+    if (e.key === 'ArrowDown') { if (first) { e.preventDefault(); first.focus(); } }
+  });
+
+  $('#dateValue').addEventListener('click', () => {
+    if (readOnly) return;
+    $('#cellDate').classList.add('editing');
+    const input = $('#dateInput');
+    input.focus();
+    try { input.showPicker && input.showPicker(); } catch {}
+  });
+  // bind="date" writes the entry's data-date; a day that is not real is put back, never rolled over
+  function refuseDate(a) {
+    const input = $('#dateInput');
+    const bad = input.value;
+    input.value = a ? a.dataset.date || '' : '';
+    note(`“${bad || 'That'}” is not a real date.`);
+  }
+  $('#dateInput').addEventListener('change', () => {
+    const a = Editor.current();
+    if (!a) return;
+    if (!isDay($('#dateInput').value)) { refuseDate(a); return; }
+    touch(a);
+  });
+  window.addEventListener('input', e => {
+    if (e.target === $('#dateInput') && !isDay(e.target.value)) e.stopImmediatePropagation();
+  }, true);
+  $('#dateInput').addEventListener('blur', () => setTimeout(() => $('#cellDate').classList.remove('editing'), 120));
+  $('#dateInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === 'Escape') {
+      e.preventDefault();
+      if (e.key === 'Enter' && !isDay($('#dateInput').value)) refuseDate(Editor.current());
+      $('#cellDate').classList.remove('editing');
+      Editor.focus();
+    }
+  });
+
+  $('#copyText').addEventListener('click', async () => {
+    const text = Editor.text();
+    try { await navigator.clipboard.writeText(text); $('#copyText').textContent = 'Copied'; } catch {}
+  });
+
+  $('#downloadJournal').addEventListener('click', () => {
+    if (!window.clay || typeof window.clay.getHTML !== 'function') return;
+    const url = URL.createObjectURL(new Blob([window.clay.getHTML()], { type: 'text/html' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${document.title || 'journal'}.html`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  $('#tags').addEventListener('click', e => { if (e.target.closest('.tag')) list.scrollTop = 0; });
+
+  $('#trashEmpty').addEventListener('click', e => { e.stopPropagation(); openEmptyTrashPopover($('#trashEmpty')); });
+
+  $('#backBtn').addEventListener('click', () => {
+    if (trashView()) { setView(''); return; }
+    const r = route(); if (r) r.set({ entry: null });
+  });
+
+  document.addEventListener('clay:route', () => {
+    try { if (window.Sap) Sap.refresh(); } catch {}
+    syncEditor();
+    saveUI();
+  });
+  // A merge can replace the open entry's element; the router re-marks the new one, then the editor follows
+  document.addEventListener('clay:sync-applied', () => setTimeout(syncEditor, 0));
+  app.addEventListener('sap:views-updated', () => { refreshHighlights(); refreshTrash(); });
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && popFor) { e.preventDefault(); e.stopPropagation(); closeDeletePopover({ refocus: true }); return; }
+    if (e.key === 'Escape' && importRecords) { e.preventDefault(); e.stopPropagation(); closeImportPopover({ refocus: true }); return; }
+    if (e.key === 'Escape' && !popFor && trashView()) { e.preventDefault(); e.stopPropagation(); setView(''); return; }
+    const combo = (e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey;
+    if (combo && e.code === 'KeyN') { e.preventDefault(); newEntry(); return; }
+    if (combo && (e.code === 'Backspace' || e.code === 'Delete')) { e.preventDefault(); requestDeleteOpen(); return; }
+    if (combo && e.code === 'KeyF') { e.preventDefault(); $('#q').focus(); $('#q').select(); return; }
+    const typing = e.target.closest && e.target.closest('input, textarea, [contenteditable]');
+    if (!typing && e.key === '/' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); $('#q').focus(); }
+  }, true);
+
+  /* ---------------------------------------------------------------- Markdown export and import: "## YYYY-MM-DD", blank line, text */
+  // A body line that looks like an entry boundary is escaped with one more backslash, and unescaped on import.
+  const DATE_LINE = /^(\\*)(## \d{4}-\d{2}-\d{2}[ \t]*)$/gm;
+  function exportMarkdown() {
+    return sorted(Entries.live())
+      .map(a => ({ date: a.dataset.date || (a.dataset.created || '').slice(0, 10) || ymd(new Date()), body: Entries.body(a) }))
+      .filter(e => e.body.trim())
+      .map(e => `## ${e.date}\n\n${e.body.replace(DATE_LINE, '\\$1$2')}\n`)
+      .join('\n');
+  }
+
+  function downloadMarkdown() {
+    const url = URL.createObjectURL(new Blob([exportMarkdown()], { type: 'text/markdown' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `journal-${ymd(new Date())}.md`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // The export writes "## date", one blank line, the body, then one newline of its own (and one more
+  // between entries). Import removes exactly those and nothing else, so a body keeps every blank line.
+  function markdownBody(lines, headed) {
+    const out = lines.slice();
+    if (!headed) return out.join('\n');
+    if (out[0] === '') out.shift();
+    if (out[out.length - 1] === '') out.pop();
+    return out.join('\n');
+  }
+
+  function parseMarkdownFile(text) {
+    const today = ymd(new Date());
+    const chunks = [{ date: today, lines: [], headed: false }];
+    let fence = null;
+    for (const line of String(text).replace(/\r\n?/g, '\n').split('\n')) {
+      const marker = line.match(/^\s*(`{3,}|~{3,})/);
+      if (marker) {
+        if (!fence) fence = marker[1];
+        else if (marker[1][0] === fence[0] && marker[1].length >= fence.length) fence = null;
+      } else if (!fence) {
+        const h = line.match(/^## (\d{4}-\d{2}-\d{2})[ \t]*$/);
+        if (h) { chunks.push({ date: h[1], lines: [], headed: true }); continue; }
+      }
+      chunks[chunks.length - 1].lines.push(line.replace(DATE_LINE, (m, slashes, rest) => slashes ? slashes.slice(1) + rest : m));
+    }
+    return chunks
+      .map(c => ({ date: c.date, body: markdownBody(c.lines, c.headed) }))
+      .filter(e => e.body.trim());
+  }
+
+  function importMarkdown(text) {
+    if (readOnly) return [];
+    const parsed = parseMarkdownFile(text);
+    const bad = parsed.find(e => !isDay(e.date));
+    if (bad) { note(`“${bad.date}” is not a real date, so nothing was imported.`); return []; }
+    const ids = [];
+    const stamp = nowISO();
+    for (const { date, body } of parsed) {
+      const a = makeEntry(date, stamp, body);
+      store.append(a);
+      ids.push(a.dataset.id);
+    }
+    if (ids.length) clearFilters();
+    return ids;
+  }
+
+  async function importFiles(files) {
+    let first = null;
+    const records = [];
+    let html = false;
+    for (const f of [...files]) {
+      if (/\.html?$/i.test(f.name) || /html/.test(f.type)) { html = true; records.push(...readFieldPad(await f.text())); continue; }
+      if (!/\.(md|markdown|txt)$/i.test(f.name) && !/^text\//.test(f.type)) continue;
+      const ids = importMarkdown(await f.text());
+      first = first || ids[0];
+    }
+    if (first) openEntry(first);
+    if (html) offerFieldPad(records);
+  }
+
+  const menuPop = $('#menuPop');
+  function setMenu(open) {
+    menuPop.classList.toggle('show', open);
+    $('#menuBtn').setAttribute('aria-expanded', String(open));
+  }
+  $('#menuBtn').addEventListener('click', () => setMenu(!menuPop.classList.contains('show')));
+  menuPop.addEventListener('click', e => {
+    const item = e.target.closest('[data-menu]');
+    if (!item) return;
+    setMenu(false);
+    if (item.dataset.menu === 'export') downloadMarkdown();
+    if (item.dataset.menu === 'import') $('#importInput').click();
+    if (item.dataset.menu === 'trash') setView('trash');
+  });
+  $('#importInput').addEventListener('change', e => { importFiles(e.target.files); e.target.value = ''; });
+  document.addEventListener('mousedown', e => { if (!e.target.closest('#fileMenu')) setMenu(false); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') setMenu(false); });
+  app.addEventListener('dragover', e => { if (!readOnly && e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault(); });
+  app.addEventListener('drop', e => {
+    if (readOnly || !e.dataTransfer || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    importFiles(e.dataTransfer.files);
+  });
+
+  /* ---------------------------------------------------------------- boot */
+  window.Journal = {
+    Entries,
+    formats,
+    renderMarkdown,
+    tagsOf,
+    exportMarkdown,
+    importMarkdown,
+    open: id => openEntry(id),
+    close: () => { const r = route(); if (r) r.set({ entry: null }); },
+    newEntry,
+    delete: deleteEntry,
+    requestDelete: requestDeleteOpen,
+    get state() {
+      let tag = null;
+      try { tag = (window.Sap && Sap(app).tag) || null; } catch {}
+      return { q: $('#q').value.trim(), tag, openId: currentEntry() };
+    },
+    get editor() { return readOnly ? null : $('#writer textarea'); },
+    get readOnly() { return readOnly; },
+    get pane() { return currentEntry() ? 'sheet' : 'list'; }
+  };
+
+  // Everything here writes per-tab chrome inside freeze scratchpads, so it waits until ClayJS has captured them.
+  const PRIVACY_KEY = `fieldpad.privacy-dismissed:${location.host}${location.pathname}`;
+  function boot(editable) {
+    if (booted) return;
+    booted = true;
+    readOnly = !editable;
+    refreshTrash();
+    $$('[data-mod]').forEach(k => { k.textContent = MOD + k.dataset.mod; });
+    const banner = $('#privacyBanner');
+    let dismissed = false;
+    try { dismissed = !!localStorage.getItem(PRIVACY_KEY); } catch {}
+    if (dismissed) banner.remove();
+    else $('#privacyDismiss').addEventListener('click', () => {
+      banner.remove();
+      try { localStorage.setItem(PRIVACY_KEY, '1'); } catch {}
+    });
+    if (editable) {
+      if (typeof OverType === 'undefined') {
+        document.body.insertAdjacentHTML('afterbegin', '<div clay="no-save no-watch" style="position:fixed;inset:auto 0 0 0;padding:10px;text-align:center;background:var(--accent-soft);color:var(--accent);z-index:99">The editor could not load (no network?). Your entries are safe in this file.</div>');
+        return;
+      }
+      if (typeof window.clay.bindText !== 'function') {
+        readOnly = true;
+        const style = document.createElement('style');
+        style.setAttribute('clay', 'editor-ui');
+        style.textContent = '.writer{display:none!important}.reader{display:block}';
+        document.head.append(style);
+        note('This journal needs a newer ClayJS to edit.');
+      } else {
+        OverType.setTheme(THEME);
+        const otStyles = document.querySelector('style.overtype-styles');
+        if (otStyles) otStyles.setAttribute('clay', 'editor-ui');
+        Editor.start({
+          persist: true,
+          toolbar: true,
+          toolbarButtons: toolbarButtons(),
+          codeHighlighter: highlightCode,
+          autoResize: true,
+          minHeight: `${LINE}px`,
+          fontFamily: FONT,
+          fontSize: '16px',
+          lineHeight: 1.75,
+          padding: PHONE.matches ? `${LINE}px 16px ${LINE * 2}px 44px` : `${LINE}px 44px ${LINE * 2}px 72px`,
+          spellcheck: true,
+          smartLists: true,
+          clickToToggleTasks: true,
+          placeholder: 'Start writing. The first line becomes the heading.'
+        });
+      }
+    }
+    const r = route();
+    const autoOpen = () => {
+      const asked = r && r.get().entry;
+      const askedEntry = asked ? Entries.byId(asked) : null;
+      if (!r || PHONE.matches || (askedEntry && !isTrashed(askedEntry))) return false;
+      const saved = loadUI().openId;
+      const remembered = saved && Entries.byId(saved);
+      const start = (remembered && !isTrashed(remembered) && remembered) || sorted(Entries.live())[0];
+      if (!start) return false;
+      r.set({ entry: start.dataset.id }, { replace: true });
+      return true;
+    };
+    if (autoOpen()) return;
+    syncEditor();
+  }
+  // Edit or read is ClayJS's answer, however long it takes. Without ClayJS every entry shows as plain text.
+  document.addEventListener('DOMContentLoaded', () => {
+    const clay = window.clay;
+    if (!clay || !clay.ready || typeof clay.ready.then !== 'function') {
+      readOnly = true;
+      document.documentElement.classList.add('no-clay');
+      return;
+    }
+    const router = clay.loaded && clay.loaded.router;
+    const decide = () => boot(clay.isEditMode !== false);
+    clay.ready.then(() => Promise.resolve(router).catch(() => {}), () => {}).then(decide);
+  });
+
+})();
+</script>
+<script src="https://clayjs.com/v1/clay.js?plugins=sync,bind-text"></script>
+<script src="https://clayjs.com/v1/sap.js"></script>
+<script src="https://clayjs.com/v1/clay-router.js"></script>
+<script>if (window.Sap && window.Journal) Object.assign(Sap.formats, Journal.formats);</script>
+
+</body>
+</html>
