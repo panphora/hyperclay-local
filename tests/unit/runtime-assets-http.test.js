@@ -199,6 +199,38 @@ describe('a served document points its runtime at this host', () => {
     expect(text(res)).toContain('id="clay-runtime-map"');
   });
 
+  // A release this host does not carry cannot be served offline. The document is still
+  // answered byte for byte, but the response says why it is not projected.
+  test('a document naming a release this host does not carry says why', async () => {
+    await fs.writeFile(file('index.html'), DOC('<script src="https://clayjs.com/9.0.0/clay.js"></script>'));
+
+    const res = await send('/index.html');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['clay-runtime-unavailable']).toMatch(/^release-missing/);
+    expect(text(res)).toContain('src="https://clayjs.com/9.0.0/clay.js"');
+    expect(text(res)).not.toContain('clay-runtime-map');
+  });
+
+  // Old Journals name a library by the URL it was published under (jsDelivr, Google
+  // Fonts). The release carries those files and their exact aliases, so such a
+  // document is projected even though it names no clayjs.com URL.
+  test('a document whose only runtime URL is a release alias is projected', async () => {
+    const aliasURL = Object.keys(index.aliases)[0];
+    const localURL = `/_/clayjs/${selected}/${index.aliases[aliasURL]}`;
+    const tag = aliasURL.endsWith('.js')
+      ? `<script src="${aliasURL}"></script>`
+      : `<link rel="stylesheet" href="${aliasURL}">`;
+    await fs.writeFile(file('index.html'), DOC(tag));
+
+    const res = await send('/index.html');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['clay-runtime-unavailable']).toBeUndefined();
+    expect(text(res)).toContain(aliasURL.endsWith('.js') ? `src="${localURL}"` : `href="${localURL}"`);
+    expect(text(res)).toContain('id="clay-runtime-map"');
+  });
+
   // A file that is not valid UTF-8 is never re-encoded, so it cannot be projected
   // either: the response has to be the bytes that are stored.
   test('a document that is not valid UTF-8 is served unprojected', async () => {

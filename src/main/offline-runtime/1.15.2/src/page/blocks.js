@@ -340,9 +340,12 @@ export function indentBlocks(st, dispatch) {
       const tr = st.tr;
       let end = b;
       for (let k = a; k <= end; k++) end = Math.max(end, ents[k].subEnd);
+      let deep = a - 1;
       for (let k = a; k <= end && sameRun(ents[k], first); k++) {
         tr.setNodeMarkup(ents[k].at, null, { ...ents[k].node.attrs, indent: ents[k].node.attrs.indent + 1 });
+        deep = k;
       }
+      tr.setMeta(MOVE, moveIntent(ents, a, deep, ents[a].at, (e) => (e.i >= a && e.i <= deep ? { indent: e.node.attrs.indent + 1 } : null)));
       dispatch(tr);
     }
     return true;
@@ -356,6 +359,8 @@ export function indentBlocks(st, dispatch) {
       if (parentOf(ents[k].node) === from) tr.setNodeMarkup(ents[k].at, null, { ...ents[k].node.attrs, parent: to });
     }
     if (!ents[s].node.attrs.open) tr.setNodeMarkup(ents[s].at, null, { ...ents[s].node.attrs, open: true });
+    const intent = moveIntent(ents, a, hi, ents[a].at, (e) => (e.i >= a && e.i <= hi && parentOf(e.node) === from ? { parent: to } : null));
+    tr.setMeta(MOVE, { ...intent, attrs: ents[s].node.attrs.open ? intent.attrs : { ...intent.attrs, [to]: { open: true } } });
     dispatch(tr);
   }
   return true;
@@ -369,16 +374,22 @@ export function outdentBlocks(st, dispatch) {
   const first = ents[a];
   if (isList(first.node) && first.node.attrs.indent > 0) {
     if (dispatch) {
+      const { lo, hi } = siblingSpan(ents, a, b);
       const tr = st.tr;
+      const lowered = new Set();
       for (let k = a; k <= b;) {
         const e = ents[k];
         if (isList(e.node) && e.node.attrs.indent > 0) {
           for (let m = k; m <= e.subEnd; m++) {
-            if (isList(ents[m].node)) tr.setNodeMarkup(ents[m].at, null, { ...ents[m].node.attrs, indent: ents[m].node.attrs.indent - 1 });
+            if (isList(ents[m].node)) {
+              tr.setNodeMarkup(ents[m].at, null, { ...ents[m].node.attrs, indent: ents[m].node.attrs.indent - 1 });
+              lowered.add(m);
+            }
           }
         }
         k = e.subEnd + 1;
       }
+      tr.setMeta(MOVE, moveIntent(ents, lo, hi, ents[lo].at, (e) => (lowered.has(e.i) ? { indent: e.node.attrs.indent - 1 } : null)));
       dispatch(tr);
     }
     return true;
@@ -395,6 +406,7 @@ export function outdentBlocks(st, dispatch) {
     if (hi === end) {
       const tr = st.tr;
       for (let k = lo; k <= hi; k++) { const c = attrs(ents[k]); if (c) tr.setNodeMarkup(ents[k].at, null, { ...ents[k].node.attrs, ...c }); }
+      tr.setMeta(MOVE, moveIntent(ents, lo, hi, ents[lo].at, attrs));
       dispatch(tr);
     } else dispatch(moveSpanTr(st, ents, lo, hi, ents[end].end, attrs).scrollIntoView());
   }

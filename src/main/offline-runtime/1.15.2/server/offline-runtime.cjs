@@ -4724,28 +4724,20 @@ function entriesOf(descriptor) {
   if (!Array.isArray(descriptor.entries)) return [];
   return descriptor.entries.filter((entry) => entry && typeof entry === "object");
 }
-function descriptorAliasesOf(descriptor) {
-  if (!descriptor || typeof descriptor !== "object") return null;
-  const aliases = descriptor.aliases;
-  if (!aliases || typeof aliases !== "object") return null;
-  return aliases;
-}
 function originalMatchesRelease(original, version, releases) {
   if (!releases) return true;
   const files = filesOf(releases, version);
   return Boolean(files && Object.hasOwn(files, original.path));
 }
-function canonicalizeRuntimeURL(value, { descriptor, releases, documentURL } = {}) {
+function canonicalizeRuntimeURL(value, { descriptor, releases, documentURL, aliases } = {}) {
   const local = parseRuntimeURL(value, { documentURL });
   if (!local || local.kind !== "local") return value;
   const entries = entriesOf(descriptor);
   const localMajor = majorOf(local.version);
   for (const entry of entries) {
     if (entry.local !== value || typeof entry.original !== "string") continue;
-    const aliases = releases?.[local.version]?.aliases;
-    if (aliases && Object.hasOwn(aliases, entry.original) && aliases[entry.original] === local.path && !local.search && !local.hash) return entry.original;
-    const declared = !releases && descriptorAliasesOf(descriptor);
-    if (declared && !local.search && !local.hash && entry.original.startsWith("https://") && Object.hasOwn(declared, entry.original) && declared[entry.original] === local.path) {
+    const trusted = releases?.[local.version]?.aliases ?? aliases;
+    if (trusted && typeof trusted === "object" && !local.search && !local.hash && Object.hasOwn(trusted, entry.original) && trusted[entry.original] === local.path) {
       return entry.original;
     }
     const original = parseRuntimeURL(entry.original);
@@ -4796,9 +4788,9 @@ function valueBounds(raw) {
   let index = eq + 1;
   while (index < raw.length && /\s/.test(raw[index])) index += 1;
   const quote = raw[index] === '"' || raw[index] === "'" ? raw[index] : "";
-  if (!quote) return { start: index, end: raw.length };
+  if (!quote) return { start: index, end: raw.length, quote };
   const close = raw.lastIndexOf(quote);
-  return { start: index + 1, end: close > index ? close : raw.length };
+  return { start: index + 1, end: close > index ? close : raw.length, quote };
 }
 function elements(doc) {
   const found = [];
@@ -4825,7 +4817,8 @@ function candidates(doc, html) {
       raw: html.slice(location.startOffset + bounds.start, location.startOffset + bounds.end),
       valueStart: location.startOffset + bounds.start,
       valueEnd: location.startOffset + bounds.end,
-      startOffset: node.sourceCodeLocation.startTag?.startOffset ?? node.sourceCodeLocation.startOffset
+      startOffset: node.sourceCodeLocation.startTag?.startOffset ?? node.sourceCodeLocation.startOffset,
+      quote: bounds.quote
     });
   }
   return found;
@@ -4838,13 +4831,27 @@ function applySplices(html, splices) {
   }
   return out;
 }
-function descriptorTag(version, entries, aliases) {
+function attributeText(value, quote) {
+  const text = value.replace(/&/g, "&amp;");
+  if (quote === "'") return text.replace(/'/g, "&#39;");
+  if (quote === '"') return text.replace(/"/g, "&quot;");
+  return /[\s"'<>=`]/.test(text) ? `"${text.replace(/"/g, "&quot;")}"` : text;
+}
+function respelled(raw, value, replacement, quote) {
+  let shared = 0;
+  while (shared < value.length && shared < replacement.length && value[value.length - 1 - shared] === replacement[replacement.length - 1 - shared]) shared += 1;
+  const head = value.slice(0, value.length - shared);
+  const newHead = replacement.slice(0, replacement.length - shared);
+  if (head.includes("&") || !raw.startsWith(head)) return attributeText(replacement, quote);
+  if (!quote && /[\s"'<>=`]/.test(newHead)) return attributeText(replacement, quote);
+  return attributeText(newHead, quote) + raw.slice(head.length);
+}
+function descriptorTag(version, entries) {
   const descriptor = { schema: 1, version, entries };
-  if (aliases) descriptor.aliases = aliases;
   const json = JSON.stringify(descriptor).replace(/</g, "\\u003c");
   return `<script type="application/json" id="${DESCRIPTOR_ID}" clay="no-save no-watch no-snapshot">${json}</script>`;
 }
-function projectRuntimeHTML(html, { releases, selectedVersion, documentURL } = {}) {
+function projectRuntimeHTML(html, { releases, selectedVersion, documentURL, descriptor = true } = {}) {
   const nodes = candidates(xa(html, { sourceCodeLocationInfo: true }), html);
   const resolved = nodes.map((node) => ({
     node,
@@ -4852,43 +4859,44 @@ function projectRuntimeHTML(html, { releases, selectedVersion, documentURL } = {
   }));
   const versions = /* @__PURE__ */ new Set();
   let missing = false;
-  for (const { result } of resolved) {
-    if (!result) continue;
+  let absent = false;
+  for (const { node, result } of resolved) {
+    if (!result) {
+      const parsed = parseRuntimeURL(node.value, { documentURL });
+      if (parsed && (parsed.kind === "rolling" || parsed.kind === "exact")) absent = true;
+      continue;
+    }
     if (result.available === false) missing = true;
     versions.add(result.version);
   }
-  if (missing || versions.size > 1) {
+  if (missing || absent || versions.size > 1) {
     return {
       html,
       mappings: [],
       skipped: [],
       unavailable: {
-        reason: missing ? "release-missing" : "mixed-versions",
+        reason: missing ? "release-missing" : absent ? "path-missing" : "mixed-versions",
         versions: [...versions].sort()
       }
     };
   }
   const mappings = [];
-  const skipped = [];
   const splices = [];
-  const aliases = {};
   const version = versions.size === 1 ? [...versions][0] : null;
   let insertAt = null;
   for (const { node, result } of resolved) {
     if (!result) continue;
-    if (node.raw !== node.value) {
-      skipped.push({ value: node.value, reason: "encoded" });
-      continue;
-    }
-    splices.push({ start: node.valueStart, end: node.valueEnd, text: result.localURL });
+    splices.push({
+      start: node.valueStart,
+      end: node.valueEnd,
+      text: respelled(node.raw, node.value, result.localURL, node.quote)
+    });
     mappings.push({ original: node.value, local: result.localURL });
-    if (result.kind === "alias") aliases[node.value] = result.path;
     if (insertAt === null) insertAt = node.startOffset;
   }
-  if (!mappings.length) return { html, mappings, skipped, unavailable: null };
-  const aliasMap = Object.keys(aliases).length ? aliases : null;
-  splices.push({ start: insertAt, end: insertAt, text: descriptorTag(version, mappings, aliasMap) });
-  return { html: applySplices(html, splices), mappings, skipped, unavailable: null };
+  if (!mappings.length) return { html, mappings, skipped: [], unavailable: null };
+  if (descriptor) splices.push({ start: insertAt, end: insertAt, text: descriptorTag(version, mappings) });
+  return { html: applySplices(html, splices), mappings, skipped: [], unavailable: null };
 }
 function descriptorSpan(node) {
   const location = node.sourceCodeLocation;
@@ -4930,7 +4938,7 @@ function canonicalizeRuntimeHTML(html, { releases, documentURL } = {}) {
     if (!parsed || parsed.kind !== "local") continue;
     const replacement = canonicalizeRuntimeURL(node.value, { descriptor, releases, documentURL });
     if (replacement === node.value) continue;
-    splices.push({ start: node.valueStart, end: node.valueEnd, text: replacement });
+    splices.push({ start: node.valueStart, end: node.valueEnd, text: respelled(node.raw, node.value, replacement, node.quote) });
     changed += 1;
   }
   return { html: applySplices(html, splices), changed, descriptorRemoved };

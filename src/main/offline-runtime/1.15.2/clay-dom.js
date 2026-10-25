@@ -33,14 +33,12 @@
     link.setAttribute("clay", "no-save");
     document.head.appendChild(link);
   });
-  function __clayLikelyEdit(search, cookie) {
-    return new URLSearchParams(search).get("editmode") === "true" || /(?:^|;\s*)isAdminOfCurrentResource=/.test(cookie);
+  // Only an explicit ?editmode=true asks for the supplement: the owner cookie is not
+  // an edit request, because an owner who opens a document in view resolves to view.
+  function __clayLikelyEdit(search) {
+    return new URLSearchParams(search).get("editmode") === "true";
   }
-  // A sandboxed document throws on document.cookie; no cookies readable is no cookie.
-  function __clayReadCookie() {
-    try { return document.cookie || ""; } catch (err) { return ""; }
-  }
-  var likelyEdit = __clayLikelyEdit(window.location.search, __clayReadCookie());
+  var likelyEdit = __clayLikelyEdit(window.location.search);
   if (!clay.__runtime) {
     clay.__runtime = Promise.all([
       import(dir + M.manifest),
@@ -48,14 +46,25 @@
     ]).then(function (r) {
       var manifest = r[0].default;
       manifest.base = dir;
-      return { chunks: true, dir: dir, manifest: manifest, edit: r[1] ? r[1].default : null };
+      var edit = r[1] ? r[1].default : null;
+      var hints = null;
+      // The cached hint fetch a resolved edit, draft or first entry uses. A failed one
+      // clears itself for retry and never selects another release.
+      function loadEditHints() {
+        if (!hints) {
+          hints = (edit ? Promise.resolve(edit) : import(dir + M.edit).then(function (m) { return m.default; }))
+            .catch(function (err) { hints = null; throw err; });
+        }
+        return hints;
+      }
+      return { chunks: true, dir: dir, manifest: manifest, edit: edit, loadEditHints: loadEditHints };
     }, function (err) {
       console.warn("clayjs: the bundled runtime did not load, loading the module tree instead:", err);
       return { chunks: false, tree: tree };
     });
   }
   return { tree: tree, runtime: clay.__runtime };
-})({"dir":"m/","manifest":"manifest-35623C00.js","edit":"manifest-edit-6B47A064.js","preload":["dom/dom-helpers-L7OSR6S4.js","c-XQXZAO7N.js","c-WRBKEJD4.js","c-VHNSBD2M.js","manifest-35623C00.js"]})
+})({"dir":"m/","manifest":"manifest-799F0940.js","edit":"manifest-edit-E04C2E9C.js","preload":["dom/dom-helpers-L7OSR6S4.js","c-XQXZAO7N.js","c-WRBKEJD4.js","c-VHNSBD2M.js","manifest-799F0940.js"]})
 
   clay.loaded.dom = __clayChunks.runtime.then(function (R) {
   if (!R.chunks) return import(__clayChunks.tree + "/src/dom/dom-helpers.js");

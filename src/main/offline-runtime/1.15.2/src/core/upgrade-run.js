@@ -1,6 +1,7 @@
 import { replace as replaceDocument } from "./save-replace.js";
 import { lastSeenEtag } from "./etag.js";
-import { upgrade, isNewerVersion, readMeta } from "../vendor/hyper-html-api-upgrade.vendor.js";
+import { isNewerVersion } from "./version.js";
+import { upgrade, readMeta } from "../vendor/hyper-html-api-upgrade.vendor.js";
 
 const MANIFEST_FAILED = "The new version could not be downloaded. Nothing was changed.";
 const SAVE_FAILED = "The upgrade could not be saved. Nothing was changed.";

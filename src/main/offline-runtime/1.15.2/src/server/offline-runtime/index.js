@@ -32,9 +32,9 @@ function valueBounds(raw) {
   let index = eq + 1;
   while (index < raw.length && /\s/.test(raw[index])) index += 1;
   const quote = raw[index] === '"' || raw[index] === "'" ? raw[index] : "";
-  if (!quote) return { start: index, end: raw.length };
+  if (!quote) return { start: index, end: raw.length, quote };
   const close = raw.lastIndexOf(quote);
-  return { start: index + 1, end: close > index ? close : raw.length };
+  return { start: index + 1, end: close > index ? close : raw.length, quote };
 }
 
 function elements(doc) {
@@ -64,6 +64,7 @@ function candidates(doc, html) {
       valueStart: location.startOffset + bounds.start,
       valueEnd: location.startOffset + bounds.end,
       startOffset: node.sourceCodeLocation.startTag?.startOffset ?? node.sourceCodeLocation.startOffset,
+      quote: bounds.quote,
     });
   }
   return found;
@@ -78,14 +79,37 @@ function applySplices(html, splices) {
   return out;
 }
 
-function descriptorTag(version, entries, aliases) {
+function attributeText(value, quote) {
+  const text = value.replace(/&/g, "&amp;");
+  if (quote === "'") return text.replace(/'/g, "&#39;");
+  if (quote === '"') return text.replace(/"/g, "&quot;");
+  return /[\s"'<>=`]/.test(text) ? `"${text.replace(/"/g, "&quot;")}"` : text;
+}
+
+// The attribute text for `replacement`, keeping the file's own spelling of the tail it shares with
+// `value`, so a query written with a bare `&` keeps it. `raw` is how `value` is written in the file.
+// A shared head that holds `&` could split a character reference, so that case escapes everything.
+function respelled(raw, value, replacement, quote) {
+  let shared = 0;
+  while (
+    shared < value.length &&
+    shared < replacement.length &&
+    value[value.length - 1 - shared] === replacement[replacement.length - 1 - shared]
+  ) shared += 1;
+  const head = value.slice(0, value.length - shared);
+  const newHead = replacement.slice(0, replacement.length - shared);
+  if (head.includes("&") || !raw.startsWith(head)) return attributeText(replacement, quote);
+  if (!quote && /[\s"'<>=`]/.test(newHead)) return attributeText(replacement, quote);
+  return attributeText(newHead, quote) + raw.slice(head.length);
+}
+
+function descriptorTag(version, entries) {
   const descriptor = { schema: 1, version, entries };
-  if (aliases) descriptor.aliases = aliases;
   const json = JSON.stringify(descriptor).replace(/</g, "\\u003c");
   return `<script type="application/json" id="${DESCRIPTOR_ID}" clay="no-save no-watch no-snapshot">${json}</script>`;
 }
 
-export function projectRuntimeHTML(html, { releases, selectedVersion, documentURL } = {}) {
+export function projectRuntimeHTML(html, { releases, selectedVersion, documentURL, descriptor = true } = {}) {
   const nodes = candidates(parse(html, { sourceCodeLocationInfo: true }), html);
   const resolved = nodes.map((node) => ({
     node,
@@ -94,47 +118,48 @@ export function projectRuntimeHTML(html, { releases, selectedVersion, documentUR
 
   const versions = new Set();
   let missing = false;
-  for (const { result } of resolved) {
-    if (!result) continue;
+  let absent = false;
+  for (const { node, result } of resolved) {
+    if (!result) {
+      const parsed = parseRuntimeURL(node.value, { documentURL });
+      if (parsed && (parsed.kind === "rolling" || parsed.kind === "exact")) absent = true;
+      continue;
+    }
     if (result.available === false) missing = true;
     versions.add(result.version);
   }
-  if (missing || versions.size > 1) {
+  if (missing || absent || versions.size > 1) {
     return {
       html,
       mappings: [],
       skipped: [],
       unavailable: {
-        reason: missing ? "release-missing" : "mixed-versions",
+        reason: missing ? "release-missing" : absent ? "path-missing" : "mixed-versions",
         versions: [...versions].sort(),
       },
     };
   }
 
   const mappings = [];
-  const skipped = [];
   const splices = [];
-  const aliases = {};
   const version = versions.size === 1 ? [...versions][0] : null;
   let insertAt = null;
 
   for (const { node, result } of resolved) {
     if (!result) continue;
-    if (node.raw !== node.value) {
-      skipped.push({ value: node.value, reason: "encoded" });
-      continue;
-    }
-    splices.push({ start: node.valueStart, end: node.valueEnd, text: result.localURL });
+    splices.push({
+      start: node.valueStart,
+      end: node.valueEnd,
+      text: respelled(node.raw, node.value, result.localURL, node.quote),
+    });
     mappings.push({ original: node.value, local: result.localURL });
-    if (result.kind === "alias") aliases[node.value] = result.path;
     if (insertAt === null) insertAt = node.startOffset;
   }
 
-  if (!mappings.length) return { html, mappings, skipped, unavailable: null };
+  if (!mappings.length) return { html, mappings, skipped: [], unavailable: null };
 
-  const aliasMap = Object.keys(aliases).length ? aliases : null;
-  splices.push({ start: insertAt, end: insertAt, text: descriptorTag(version, mappings, aliasMap) });
-  return { html: applySplices(html, splices), mappings, skipped, unavailable: null };
+  if (descriptor) splices.push({ start: insertAt, end: insertAt, text: descriptorTag(version, mappings) });
+  return { html: applySplices(html, splices), mappings, skipped: [], unavailable: null };
 }
 
 function descriptorSpan(node) {
@@ -181,7 +206,7 @@ export function canonicalizeRuntimeHTML(html, { releases, documentURL } = {}) {
     if (!parsed || parsed.kind !== "local") continue;
     const replacement = canonicalizeRuntimeURL(node.value, { descriptor, releases, documentURL });
     if (replacement === node.value) continue;
-    splices.push({ start: node.valueStart, end: node.valueEnd, text: replacement });
+    splices.push({ start: node.valueStart, end: node.valueEnd, text: respelled(node.raw, node.value, replacement, node.quote) });
     changed += 1;
   }
 

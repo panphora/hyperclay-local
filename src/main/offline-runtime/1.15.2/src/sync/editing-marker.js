@@ -14,18 +14,37 @@
 import { hostSupports } from '../core/host-meta.js';
 import { make, set } from '../lib/hostile-css.js';
 import { personColor } from '../lib/person-face.js';
-import { RUNTIME_ONLY } from '../ui/bevel-controls.js';
-import { FONT_MONO } from '../ui/bevel.js';
 import { EDITING_PATH, elementAt } from './editing-path.js';
 
 const FACE = '#FFFCF6';
 const RESET = ['all:initial', 'color-scheme:inherit', 'direction:ltr', 'unicode-bidi:isolate'];
 const CHIP_HEIGHT = 18;
 const GAP = 3;
-const CHIP_FONT = `600 11px/16px ${FONT_MONO}`;
+
+// The marking token and the chip face are the Bevel subset, a first-use download: a
+// reader with nobody else on the page never draws a marker, so it never fetches them.
+let ui = null;
+let uiLoad = null;
+
+function loadUI() {
+  uiLoad ??= Promise.all([import('../ui/bevel-controls.js'), import('../ui/bevel.js')])
+    .then(([controls, bevel]) => (ui = {
+      RUNTIME_ONLY: controls.RUNTIME_ONLY,
+      CHIP_FONT: `600 11px/16px ${bevel.FONT_MONO}`,
+    }))
+    .catch((error) => {
+      uiLoad = null;
+      throw error;
+    });
+  return uiLoad;
+}
+
+// A frame never rejects its way back to the stream: a chunk that failed to arrive
+// leaves the block unmarked and the next frame asks again.
+const uiReady = () => loadUI().then(() => true, () => false);
 
 function runtimeRoot(el) {
-  el.setAttribute('clay', RUNTIME_ONLY);
+  el.setAttribute('clay', ui.RUNTIME_ONLY);
   return el;
 }
 
@@ -59,7 +78,7 @@ class EditingMarker {
   async update(frame) {
     this.editors = editorsOf(frame);
     if (!(await this.supported())) return;
-    this.render();
+    await this.render();
   }
 
   clear() {
@@ -79,7 +98,19 @@ class EditingMarker {
     });
   }
 
+  // A synchronous draw while the chunk is here, as it always was, and one draw
+  // queued for when it arrives on the first frame that needs it.
   render() {
+    if (ui) {
+      this.paint();
+      return Promise.resolve();
+    }
+    return uiReady().then((ok) => {
+      if (ok) this.paint();
+    });
+  }
+
+  paint() {
     const groups = new Map();
     for (const editor of this.editors) {
       const element = elementAt(editor.path);
@@ -130,7 +161,7 @@ class EditingMarker {
       const chip = runtimeRoot(make('span', [
         ...RESET,
         'box-sizing:border-box', `height:${CHIP_HEIGHT}px`, 'padding:1px 6px',
-        `font:${CHIP_FONT}`, 'letter-spacing:.02em', 'white-space:nowrap',
+        `font:${ui.CHIP_FONT}`, 'letter-spacing:.02em', 'white-space:nowrap',
         'max-width:180px', 'overflow:hidden', 'text-overflow:ellipsis',
         `background-color:${personColor(editor.id)}`, `color:${FACE}`,
         `box-shadow:0 0 0 1px ${FACE}`,

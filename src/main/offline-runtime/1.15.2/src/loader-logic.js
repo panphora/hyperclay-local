@@ -1,6 +1,10 @@
 export const CORE_WAVES = {
   always: [
     "lib/mutation.js",     // first: everything hangs off the hub; cms/sync need it in view mode too
+    // Second: records what the served file wrote for the attributes edit mode rewrites,
+    // and the authored contents of [freeze] regions, while the page is still in view.
+    // Read-only, and the one thing a view to edit to view cycle has to hand back.
+    "core/preserve-authored.js",
     "core/edit-mode.js",   // both modes — matches today: 'edit-mode' is NOT in EDIT_MODE_ONLY
                            // (hyperclay.js:251-273 lists 'edit-mode-helpers', not 'edit-mode');
                            // toggleEditMode must exist in view mode, it's the way IN
@@ -104,6 +108,7 @@ export const MODULES = {
   "core/mode-key.js":           () => import("./core/mode-key.js"),
   "core/stale-host-notice.js":  () => import("./core/stale-host-notice.js"),
   "core/page-data.js":          () => import("./core/page-data.js"),
+  "core/preserve-authored.js":  () => import("./core/preserve-authored.js"),
   "core/snapshot.js":           () => import("./core/snapshot.js"),
   "core/save-core.js":          () => import("./core/save-core.js"),
   "core/save.js":               () => import("./core/save.js"),

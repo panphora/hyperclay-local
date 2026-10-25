@@ -70,7 +70,7 @@ async function exportDocumentZip(documentPath, outPath, { uploadsDir } = {}) {
   const decoded = linked.text === null ? documentBytes.toString('utf8') : linked.text;
   const exact = linked.text !== null || Buffer.from(decoded, 'utf8').equals(documentBytes);
   const packaged = exact ? canonicalForWrite(decoded) : null;
-  const keepFile = linked.text === null && packaged === decoded;
+  const keepFile = linked.text === null && (!exact || packaged === decoded);
 
   // A name only this call uses, so two exports to the same place never remove
   // each other's work, and a failure removes only what this call wrote.

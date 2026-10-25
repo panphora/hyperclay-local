@@ -13,9 +13,10 @@ import { blockKeys, structurePlugin, collapsePlugin, pastePlugin, BlockSelection
 import { chromePlugin, slashRangePlugin } from "./chrome.js";
 import { announcementPlugin } from "./announce.js";
 import { linkPlugin } from "./link.js";
-import { blockSelectionPlugin } from "./blocksel.js";
-import { markdownPlugin, markdownKeys, backspaceToParagraph } from "./markdown.js";
+import { blockSelectionPlugin, asStep } from "./blocksel.js";
+import { markdownPlugin, markdownKeys, backspaceToParagraph, composing } from "./markdown.js";
 import { placeholderPlugin } from "./placeholder.js";
+import { titlePlugin } from "./document-title-runtime.js";
 import { mediaPlugin } from "./media.js";
 import { highlightPlugin, CodeBlockView } from "./highlight.js";
 import { tableKeys, tablePlugin } from "./table.js";
@@ -157,6 +158,7 @@ ${INDENTS.map((n) => `:where(article[data-page], .page-editor) .page-li[data-ind
 .page-link-btn:hover { background: var(--page-pop-hover); }
 .page-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .ProseMirror-focused .page-placeholder::before { content: attr(data-placeholder); float: left; height: 0; color: var(--page-ink-faint); pointer-events: none; }
+.page-editor .page-title-placeholder::before { content: attr(data-placeholder); float: left; height: 0; color: var(--page-ink-faint); pointer-events: none; }
 .page-csv-error { margin: 8px 0; color: var(--page-danger); font-size: 14px; }
 .page-editor .page-table { max-width: 100%; min-width: 0; border: 1px solid var(--page-rule); border-radius: 8px; }
 .page-editor .page-chart { position: relative; max-width: 100%; min-width: 0; margin-inline: 0; color: var(--page-ink); }
@@ -230,8 +232,13 @@ const editKeys = ({ history: useHistory = true, undo, redo } = {}) => ({
   "Mod-i": commands.toggleMark(schema.marks.em),
 });
 
+const restoreShortcut = (st, dispatch, view) => {
+  if (composing(null, view)) return false;
+  return inputrules.undoInputRule(st, dispatch && ((tr) => dispatch(asStep(tr))));
+};
+
 const markKeys = {
-  Backspace: commands.chainCommands(inputrules.undoInputRule, backspaceToParagraph),
+  Backspace: commands.chainCommands(restoreShortcut, backspaceToParagraph),
   "Mod-e": commands.toggleMark(schema.marks.code),
   "Mod-Shift-s": commands.toggleMark(schema.marks.strike),
 };
@@ -351,6 +358,7 @@ export function pagePlugins({ upload = defaultUpload, highlight, history: useHis
     markdownPlugin(),
     markdownKeys(),
     placeholderPlugin(),
+    titlePlugin(),
     keymap.keymap(markKeys),
     tableKeys,
     checklistKeys,

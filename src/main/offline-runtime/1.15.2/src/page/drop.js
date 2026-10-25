@@ -1,4 +1,4 @@
-import { outline, structureFixes, moveSpanTr, BlockSelection, MAX_INDENT, MOVE } from "./blocks.js";
+import { outline, structureFixes, moveIntent, moveSpanTr, BlockSelection, MAX_INDENT, MOVE } from "./blocks.js";
 import { schema } from "./schema.js";
 
 const N = schema.nodes;
@@ -53,6 +53,7 @@ export function moveSpanTo(st, ents, lo, hi, target, sel = null) {
       if (c) tr.setNodeMarkup(ents[k].at, null, { ...ents[k].node.attrs, ...c });
     }
     tr.setSelection(pick.map(tr.doc, tr.mapping));
+    tr.setMeta(MOVE, moveIntent(ents, lo, hi, target.at, attrs));
   } else {
     tr = moveSpanTr(st, ents, lo, hi, target.at, attrs, pick);
   }

@@ -1,16 +1,12 @@
 import { isEditMode, isOwner } from "./is-edit-mode.js";
 import onDomReady from "../lib/dom-ready.js";
 import { addDocumentTransform, originalSnapshotNode } from "./snapshot.js";
+import { authoredAttr, captureAuthored, restoreAuthoredOrder } from "./preserve-authored.js";
 
 export const SELECTOR_DISABLED = '[viewmode\\:disabled]';
 export const SELECTOR_READONLY = '[viewmode\\:readonly]';
 
 const BOOLEANS = [[SELECTOR_DISABLED, 'disabled'], [SELECTOR_READONLY, 'readonly']];
-
-// What the author wrote for `disabled` / `readonly` on each live element, from before
-// edit mode removed it. A boolean attribute means the same whatever its value, so this
-// is only about handing the file back its own spelling (`disabled="disabled"`).
-const authored = new WeakMap();
 
 export function disableAdminInputsBeforeSave() {
   addDocumentTransform(docElem => {
@@ -18,8 +14,8 @@ export function disableAdminInputsBeforeSave() {
       docElem.querySelectorAll(selector).forEach(input => {
         if (input.hasAttribute(name)) return;
         const live = originalSnapshotNode(input);
-        const spelled = live && authored.get(live);
-        input.setAttribute(name, spelled && spelled[name] !== undefined ? spelled[name] : '');
+        const spelled = live ? authoredAttr(live, name) : null;
+        input.setAttribute(name, spelled === null ? '' : spelled);
       });
     }
   });
@@ -38,20 +34,23 @@ export function enableAdminInputsOnPageLoad() {
 export function enableAdminInputs(root = document) {
   for (const [selector, name] of BOOLEANS) {
     root.querySelectorAll(selector).forEach(input => {
-      const value = input.getAttribute(name);
-      if (value !== null) authored.set(input, { ...(authored.get(input) || {}), [name]: value });
+      captureAuthored(input);
       input.removeAttribute(name);
     });
   }
 }
 
+// A boolean attribute means the same whatever its value, so the point of putting it
+// back is handing the file its own spelling (`disabled="disabled"`) instead of `""`.
 export function disableAdminInputs() {
-  document.querySelectorAll(SELECTOR_DISABLED).forEach(input => {
-    input.setAttribute('disabled', '');
-  });
-  document.querySelectorAll(SELECTOR_READONLY).forEach(input => {
-    input.setAttribute('readonly', '');
-  });
+  for (const [selector, name] of BOOLEANS) {
+    document.querySelectorAll(selector).forEach(input => {
+      const spelled = authoredAttr(input, name);
+      if (spelled === null) input.removeAttribute(name);
+      else input.setAttribute(name, spelled);
+      restoreAuthoredOrder(input);
+    });
+  }
 }
 
 export function init() {

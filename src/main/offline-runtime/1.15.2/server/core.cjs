@@ -72014,8 +72014,19 @@ function classifyFile(article, tagValues) {
   return { kind: "adopt", base, parsed: parsed2, baseItems, A: A3 };
 }
 
+// src/page/document-title.js
+var UNTITLED = "Untitled";
+function documentTitle(items, { custom = false, currentTitle = "" } = {}) {
+  if (custom) return currentTitle;
+  const first2 = items.find(
+    (item) => item.t === "heading" && (item.level ?? 2) === 1 && item.parent == null
+  );
+  return String(first2?.c ?? "").replace(/[\s\uFFFC]+/gu, " ").trim() || UNTITLED;
+}
+
 // src/server/checkpoint/index.js
 var PAGE5 = /^page(\.[0-9]+)?$/;
+var TITLE_MODE = "clay-seo-title-mode";
 var NAME2 = /^[A-Za-z0-9_.:-]{1,64}$/;
 var attr3 = (node, name) => node.attrs.find((item) => item.name === name)?.value;
 var escapeAttr = (value) => value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
@@ -72039,12 +72050,22 @@ function inspect(html3) {
   const tags = /* @__PURE__ */ new Map();
   const duplicates = /* @__PURE__ */ new Set();
   const articles = [];
+  const titleModes = [];
+  let head = null;
+  let body = null;
+  let title = null;
   function visit(node, inert3 = false) {
     if (!node.tagName) {
       for (const child of node.childNodes ?? []) visit(child, inert3);
       return;
     }
     const blocked = inert3 || node.tagName === "template" || node.tagName === "noscript";
+    if (!blocked && node.tagName === "head") head = node;
+    if (!blocked && node.tagName === "body") body = node;
+    if (!blocked && node.parentNode === head && node.tagName === "title" && !title) title = node;
+    if (!blocked && node.parentNode === head && node.tagName === "meta" && (attr3(node, "name") ?? "").trim().toLowerCase() === TITLE_MODE) {
+      titleModes.push(attr3(node, "content"));
+    }
     if (!blocked && node.tagName === "article" && attr3(node, "data-page") !== void 0) articles.push(node);
     if (!blocked && node.tagName === "script" && attr3(node, "src") === void 0 && (attr3(node, "clay") ?? "").split(/\s+/).includes("live")) {
       const type = (attr3(node, "type") ?? "").split(";")[0].trim().toLowerCase();
@@ -72059,7 +72080,7 @@ function inspect(html3) {
   }
   visit(root2);
   for (const name of duplicates) tags.delete(name);
-  return { article: articles.length === 1 ? articles[0] : null, tags };
+  return { article: articles.length === 1 ? articles[0] : null, tags, head, body, title, titleModes };
 }
 function startTag(html3, node, store) {
   const loc = node.sourceCodeLocation.startTag;
@@ -72086,7 +72107,7 @@ function projection(capture) {
   }
 }
 function placements(html3, capture) {
-  const { article, tags } = inspect(html3);
+  const { article, tags, head, body, title, titleModes } = inspect(html3);
   if (!article?.sourceCodeLocation?.startTag || !article.sourceCodeLocation.endTag || capture.stores.some((store) => !tags.get(store.name)?.sourceCodeLocation?.endTag || (attr3(tags.get(store.name), "clay") ?? "").split(/\s+/).includes("ephemeral"))) return null;
   const articleStart = article.sourceCodeLocation.startOffset;
   const articleEnd = article.sourceCodeLocation.endOffset;
@@ -72094,10 +72115,42 @@ function placements(html3, capture) {
     const tag = tags.get(store.name).sourceCodeLocation;
     return tag.startOffset < articleEnd && tag.endOffset > articleStart;
   })) return null;
-  return { article, tags };
+  return { article, tags, head, body, title, titleModes };
 }
 function replace(html3, edits) {
   return edits.sort((a, b2) => b2.start - a.start).reduce((out, edit) => out.slice(0, edit.start) + edit.text + out.slice(edit.end), html3);
+}
+var customTitleOf = (titleModes) => titleModes.some((content) => String(content ?? "").trim().toLowerCase() === "custom");
+var escapeTitle = (value) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function titleTextOf(node) {
+  let out = "";
+  const walk2 = (current) => {
+    for (const child of current.childNodes ?? []) {
+      if (child.nodeName === "#text") out += child.value;
+      else walk2(child);
+    }
+  };
+  if (node) walk2(node);
+  return out;
+}
+function titleAt(placement) {
+  const head = placement.head?.sourceCodeLocation;
+  if (head?.startTag) return head.startTag.endOffset;
+  const inside = (placement.head?.childNodes ?? []).find((node) => node.sourceCodeLocation);
+  if (inside) return inside.sourceCodeLocation.startOffset;
+  const body = placement.body?.sourceCodeLocation;
+  if (body?.startTag) return body.startTag.startOffset;
+  const first2 = (placement.body?.childNodes ?? []).find((node) => node.sourceCodeLocation);
+  return first2 ? first2.sourceCodeLocation.startOffset : null;
+}
+function titleEdit(placement, title) {
+  if (placement.title) {
+    const loc = placement.title.sourceCodeLocation;
+    if (!loc?.startTag || !loc.endTag) return null;
+    return { start: loc.startTag.endOffset, end: loc.endTag.startOffset, text: escapeTitle(title) };
+  }
+  const at2 = titleAt(placement);
+  return at2 === null ? null : { start: at2, end: at2, text: `<title>${escapeTitle(title)}</title>` };
 }
 function holdsEdit(found, blocks, doc) {
   const current = readBack(blocks, doc);
@@ -72175,6 +72228,10 @@ function renderCheckpoint(currentHtml, capture, { createDocument, recovery = fal
   const articleStart = revLoc ? articleOpen.slice(0, revLoc.startOffset - articleLoc.startTag.startOffset) + articleOpen.slice(revLoc.endOffset - articleLoc.startTag.startOffset) : articleOpen;
   edits.push({ start: articleLoc.startTag.startOffset, end: articleLoc.startTag.endOffset, text: articleStart.slice(0, -1) + rev + ">" });
   edits.push({ start: articleLoc.startTag.endOffset, end: articleLoc.endTag.startOffset, text: rendered.html });
+  if (!customTitleOf(placement.titleModes)) {
+    const edit = titleEdit(placement, documentTitle(rendered.model));
+    if (edit) edits.push(edit);
+  }
   return { kind: "ok", html: replace(currentHtml, edits), revision: rendered.rev };
 }
 function isCheckpointCurrent(currentHtml, capture) {
@@ -72185,6 +72242,7 @@ function isCheckpointCurrent(currentHtml, capture) {
   const rendered = renderBlocks(decoded.blocks);
   const articleLoc = placement.article.sourceCodeLocation;
   if (attr3(placement.article, "data-rev") !== rendered.rev || currentHtml.slice(articleLoc.startTag.endOffset, articleLoc.endTag.startOffset) !== rendered.html) return false;
+  if (!customTitleOf(placement.titleModes) && titleTextOf(placement.title) !== documentTitle(rendered.model)) return false;
   return capture.stores.every((store) => {
     const node = placement.tags.get(store.name);
     const loc = node.sourceCodeLocation;

@@ -526,13 +526,42 @@
   var is_edit_mode_exports = {};
   __export(is_edit_mode_exports, {
     canEdit: () => canEdit,
+    commitModeFacts: () => commitModeFacts,
     isDraftMode: () => isDraftMode,
     isEditMode: () => isEditMode,
     isOwner: () => isOwner,
     mode: () => mode,
-    siteVisibility: () => siteVisibility
+    modeState: () => modeState,
+    registerModeParticipant: () => registerModeParticipant,
+    siteVisibility: () => siteVisibility,
+    takeModeParticipants: () => takeModeParticipants
   });
-  var forcedEditMode, isViewOnlyDocument, draftCandidate, ownerCookie, isDraftMode, receipt, opensInEdit, hostCanEdit, keptCanEdit, canEdit, startsEditing, isEditMode, mode, isOwner, siteVisibility;
+  function commitModeFacts(next) {
+    if (next.mode !== void 0) mode = next.mode;
+    if (next.isEditMode !== void 0) isEditMode = next.isEditMode;
+    if (next.canEdit !== void 0) canEdit = next.canEdit;
+    for (const key3 in lifecycle) if (next[key3] !== void 0) lifecycle[key3] = next[key3];
+  }
+  function takeModeParticipants() {
+    registered.clear();
+    return queue.splice(0);
+  }
+  function registerModeParticipant(participant) {
+    const id = participant && participant.id;
+    if (typeof id !== "string" || !id || typeof participant.prepare !== "function") refuse("a participant needs an id and a prepare()");
+    if (registered.has(id)) refuse(`duplicate participant id "${id}"`);
+    refuseUnlessIdleInView();
+    registered.add(id);
+    queue.push(participant);
+    return () => {
+      if (!registered.has(id)) return;
+      refuseUnlessIdleInView();
+      registered.delete(id);
+      const index = queue.indexOf(participant);
+      if (index !== -1) queue.splice(index, 1);
+    };
+  }
+  var forcedEditMode, isViewOnlyDocument, draftCandidate, ownerCookie, isDraftMode, receipt, opensInEdit, hostCanEdit, keptCanEdit, canEdit, startsEditing, isEditMode, mode, isOwner, lifecycle, modeState, queue, registered, refuse, refuseUnlessIdleInView, siteVisibility;
   var init_is_edit_mode = __esm({
     "src/core/is-edit-mode.js"() {
       init_cookie();
@@ -561,6 +590,21 @@
       isEditMode = isDraftMode ? true : canEdit && startsEditing;
       mode = isDraftMode ? "draft" : isEditMode ? "edit" : "view";
       isOwner = ownerCookie;
+      lifecycle = {
+        phase: "idle",
+        destination: isDraftMode ? "draft" : "host",
+        generation: 0,
+        reason: null
+      };
+      modeState = () => ({ mode, ...lifecycle });
+      queue = typeof window !== "undefined" && window.clay && window.clay.modeParticipants || [];
+      registered = /* @__PURE__ */ new Set();
+      refuse = (message2) => {
+        throw new TypeError(`clay.modeLifecycle: ${message2}`);
+      };
+      refuseUnlessIdleInView = () => {
+        if (lifecycle.phase !== "idle" || isEditMode) refuse("the page is not idle in view");
+      };
       siteVisibility = servedSiteVisibility;
     }
   });
@@ -1811,11 +1855,11 @@
   }
   function matchesWithin(node, selector, boundary3, inherit) {
     if (inherit) return !!node.closest?.(selector);
-    let current4 = node;
-    while (current4?.nodeType === 1) {
-      if (current4.matches(selector)) return true;
-      if (current4 === boundary3) break;
-      current4 = current4.parentElement;
+    let current5 = node;
+    while (current5?.nodeType === 1) {
+      if (current5.matches(selector)) return true;
+      if (current5 === boundary3) break;
+      current5 = current5.parentElement;
     }
     return false;
   }
@@ -2293,20 +2337,157 @@
     }
   });
 
+  // src/core/mode-lifecycle.js
+  var mode_lifecycle_exports = {};
+  __export(mode_lifecycle_exports, {
+    activateInitial: () => activateInitial,
+    requestMode: () => requestMode
+  });
+  function announceMode() {
+    document.dispatchEvent(new Event("clay:modechange"));
+  }
+  function refuse2(code, phase = "idle", extra = {}) {
+    commitModeFacts({ phase, reason: code });
+    return { ok: false, mode: current(), code, ...extra };
+  }
+  async function rosterOf() {
+    for (const entry of takeModeParticipants()) {
+      const participant = await entry;
+      if (typeof participant?.id !== "string" || typeof participant.prepare !== "function") {
+        throw fault("a participant needs an id and a prepare()", "unsupported-plugin");
+      }
+      if (roster.some(({ id }) => id === participant.id)) {
+        throw fault(`duplicate participant id "${participant.id}"`, "unsupported-plugin");
+      }
+      roster.push(participant);
+    }
+    return [...roster].sort((a2, b7) => (a2.order ?? 0) - (b7.order ?? 0));
+  }
+  async function enter() {
+    const before = current();
+    const controller2 = new AbortController();
+    const context = {
+      generation: ++generation,
+      destination: modeState().destination,
+      signal: controller2.signal,
+      isCurrent: () => context.generation === generation
+    };
+    commitModeFacts({ phase: "entering", generation: context.generation, reason: null });
+    const prepared = [];
+    try {
+      for (const participant of await rosterOf()) {
+        const lease = await participant.prepare(context);
+        if (!lease) continue;
+        prepared.push(lease);
+        if (!context.isCurrent()) throw fault(`"${participant.id}" prepared for a stale generation`, "stale-document");
+        if (lease.ready) await lease.ready;
+        if (!context.isCurrent()) throw fault(`"${participant.id}" became ready for a stale generation`, "stale-document");
+      }
+      for (const lease of prepared) lease.enable();
+    } catch (err) {
+      for (const lease of prepared.reverse()) {
+        try {
+          lease.dispose();
+        } catch {
+        }
+      }
+      controller2.abort();
+      return refuse2(err?.code || "load-failed", "blocked", { message: err?.message });
+    }
+    leases = prepared;
+    commitModeFacts({ mode: isDraftMode ? "draft" : "edit", isEditMode: true, phase: "idle", reason: null });
+    announceMode();
+    return { ok: true, mode: current(), changed: before !== current() };
+  }
+  async function leave() {
+    const held = leases;
+    commitModeFacts({ phase: "leaving" });
+    try {
+      for (const lease of [...held].reverse()) await lease.quiesce?.();
+      const result2 = await window.clay?.save?.flush?.();
+      if (result2 && result2.state && result2.state !== "saved" && result2.state !== "clean") {
+        throw fault(`save state "${result2.state}"`, "save-failed");
+      }
+    } catch (err) {
+      for (const lease of held) {
+        try {
+          lease.resume?.();
+        } catch {
+        }
+      }
+      commitModeFacts({ phase: "idle", reason: err?.code || "save-failed" });
+      return { ok: false, mode: current(), code: err?.code || "save-failed", state: err?.state };
+    }
+    for (const lease of [...held].reverse()) {
+      try {
+        lease.dispose?.();
+      } catch {
+      }
+    }
+    leases = [];
+    generation++;
+    commitModeFacts({ mode: "view", isEditMode: false, phase: "idle", generation, reason: null });
+    announceMode();
+    return { ok: true, mode: "view", changed: true };
+  }
+  function requestMode(target) {
+    if (target !== "edit" && target !== "view") throw new TypeError(`clay.modeLifecycle: unknown mode "${target}"`);
+    if (inFlight) return inFlight.target === target ? inFlight.promise : { ok: false, mode: current(), code: "busy" };
+    if (target === current()) return { ok: true, mode: current(), changed: false };
+    if (!canEdit || isDraftMode) return { ok: false, mode: current(), code: "not-allowed" };
+    const promise = (target === "edit" ? enter() : leave()).finally(() => {
+      inFlight = null;
+    });
+    inFlight = { target, promise };
+    return promise;
+  }
+  async function activateInitial() {
+    if (current() === "view") return { ok: true, mode: "view", changed: false };
+    if (inFlight) return inFlight.promise;
+    const promise = enter().finally(() => {
+      inFlight = null;
+    });
+    inFlight = { target: "edit", promise };
+    return promise;
+  }
+  var generation, leases, roster, inFlight, current, fault;
+  var init_mode_lifecycle = __esm({
+    "src/core/mode-lifecycle.js"() {
+      init_is_edit_mode();
+      generation = 0;
+      leases = [];
+      roster = [];
+      inFlight = null;
+      current = () => modeState().mode;
+      fault = (message2, code) => Object.assign(new Error(`clay.modeLifecycle: ${message2}`), { code });
+    }
+  });
+
   // src/core/edit-mode.js
   var edit_mode_exports = {};
   __export(edit_mode_exports, {
+    activateInitialMode: () => activateInitialMode,
     canEdit: () => canEdit,
     default: () => edit_mode_default,
     init: () => init,
     isEditMode: () => isEditMode,
     isOwner: () => isOwner,
     mode: () => mode,
+    modeLifecycle: () => modeLifecycle,
     setMode: () => setMode,
     setPageTypeOnPageLoad: () => setPageTypeOnPageLoad,
     setViewerPageTypeBeforeSave: () => setViewerPageTypeBeforeSave,
     toggleEditMode: () => toggleEditMode
   });
+  async function activateInitialMode() {
+    if (!isEditMode) return;
+    try {
+      controller ||= await Promise.resolve().then(() => (init_mode_lifecycle(), mode_lifecycle_exports));
+      await controller.activateInitial();
+    } catch (err) {
+      console.error("clayjs: the mode lifecycle failed to start:", err);
+    }
+  }
   async function setMode(next) {
     if (next !== "edit" && next !== "view") throw new TypeError(`clay.setMode: unknown mode "${next}"`);
     if (next === mode) return { ok: true, mode, changed: false };
@@ -2365,7 +2546,7 @@
     setPageTypeOnPageLoad();
     keepModeOnReload();
   }
-  var leaving, toggleEditMode, edit_mode_default;
+  var leaving, modeLifecycle, controller, toggleEditMode, edit_mode_default;
   var init_edit_mode = __esm({
     "src/core/edit-mode.js"() {
       init_is_edit_mode();
@@ -2373,6 +2554,14 @@
       init_dom_ready();
       init_snapshot();
       leaving = false;
+      modeLifecycle = {
+        register: registerModeParticipant,
+        canWrite: () => modeState().phase === "idle" && isEditMode,
+        get state() {
+          return Object.freeze(modeState());
+        }
+      };
+      controller = null;
       toggleEditMode = () => isDraftMode ? openEditParam() : setMode(mode === "edit" ? "view" : "edit");
       init();
       edit_mode_default = { init, setMode, toggleEditMode, isEditMode, isOwner, canEdit, mode };
@@ -3392,15 +3581,15 @@
   function hostMeta({ fresh = false } = {}) {
     if (isDraftMode) return Promise.resolve(bareHost());
     if (!fresh) {
-      if (!inFlight) inFlight = fetchMeta().catch(bareHost);
-      return inFlight;
+      if (!inFlight2) inFlight2 = fetchMeta().catch(bareHost);
+      return inFlight2;
     }
     if (!refreshing) {
-      const previous = inFlight;
+      const previous = inFlight2;
       refreshing = fetchMeta().catch(bareHost).finally(() => {
         refreshing = null;
       });
-      inFlight = refreshing.then(async (meta) => {
+      inFlight2 = refreshing.then(async (meta) => {
         if (hostMetaOutcome(meta) === "ok" || !previous) return meta;
         const last = await previous;
         return hostMetaOutcome(last) === "ok" ? last : meta;
@@ -3417,7 +3606,7 @@
     return meta.document?.versions === true;
   }
   function resetHostMeta() {
-    inFlight = null;
+    inFlight2 = null;
     refreshing = null;
   }
   async function querySaveOutcome({ saveId, requestHash, signal } = {}) {
@@ -3426,14 +3615,14 @@
     if (typeof requestHash !== "string" || !requestHash) return null;
     if (!/^https?:$/.test(window.location.protocol)) return null;
     if (signal?.aborted) return null;
-    const controller = new AbortController();
-    const abort = () => controller.abort();
+    const controller2 = new AbortController();
+    const abort = () => controller2.abort();
     const timeoutId = setTimeout(abort, META_TIMEOUT_MS);
     signal?.addEventListener("abort", abort);
     try {
       const meta = await hostMeta();
       if (hostMetaOutcome(meta) !== "ok" || !meta.extensions.includes("save-history")) return null;
-      if (controller.signal.aborted) return null;
+      if (controller2.signal.aborted) return null;
       const token2 = saveToken();
       const path = token2 ? `${META_PATH}/${token2}` : META_PATH;
       const res = await fetch(new URL(path, window.location.origin).href, {
@@ -3446,7 +3635,7 @@
         },
         cache: "no-store",
         redirect: "manual",
-        signal: controller.signal
+        signal: controller2.signal
       });
       if (!res.ok) return null;
       const text4 = await res.text();
@@ -3475,8 +3664,8 @@
     if (!/^https?:$/.test(window.location.protocol)) return settle("none");
     const token2 = saveToken();
     const path = token2 ? `${META_PATH}/${token2}` : META_PATH;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), META_TIMEOUT_MS);
+    const controller2 = new AbortController();
+    const timeoutId = setTimeout(() => controller2.abort(), META_TIMEOUT_MS);
     try {
       const res = await fetch(new URL(path, window.location.origin).href, {
         method: "GET",
@@ -3489,7 +3678,7 @@
         // A redirect is not an answer (§5), and following one would send the
         // Document-URL header somewhere this host did not choose.
         redirect: "manual",
-        signal: controller.signal
+        signal: controller2.signal
       });
       if (!res.ok) return settle(res.status >= 500 ? "failed" : "none");
       const text4 = await res.text();
@@ -3512,7 +3701,7 @@
       clearTimeout(timeoutId);
     }
   }
-  var META_PATH, META_TIMEOUT_MS, outcomes, inFlight, refreshing;
+  var META_PATH, META_TIMEOUT_MS, outcomes, inFlight2, refreshing;
   var init_host_meta = __esm({
     "src/core/host-meta.js"() {
       init_host_attrs();
@@ -3520,7 +3709,7 @@
       META_PATH = "/_/meta";
       META_TIMEOUT_MS = 6e3;
       outcomes = /* @__PURE__ */ new WeakMap();
-      inFlight = null;
+      inFlight2 = null;
       refreshing = null;
     }
   });
@@ -3600,7 +3789,7 @@
   }
   function recordEtag(value) {
     lastSeen = typeof value === "string" && value !== "" ? value : null;
-    generation++;
+    generation2++;
     represented = lastSeen;
   }
   function representedEtag() {
@@ -3613,22 +3802,22 @@
     recordEtag(null);
   }
   async function seedEtag({ fresh = false, clearIfMissing = fresh } = {}) {
-    const at8 = generation;
+    const at8 = generation2;
     const meta = await hostMeta({ fresh });
     if (typeof meta.spec === "number") conditional = meta.extensions.includes("conditional");
-    if (generation !== at8) return lastSeen;
+    if (generation2 !== at8) return lastSeen;
     if (servedDocumentEtag && !(fresh && clearIfMissing)) return lastSeen;
     const seed2 = meta.document?.etag;
     if (typeof seed2 === "string" && seed2 !== "") {
       lastSeen = seed2;
-      generation++;
+      generation2++;
     } else if (clearIfMissing) {
       lastSeen = null;
-      generation++;
+      generation2++;
     }
     return lastSeen;
   }
-  var lastSeen, represented, conditional, generation;
+  var lastSeen, represented, conditional, generation2;
   var init_etag = __esm({
     "src/core/etag.js"() {
       init_host_meta();
@@ -3637,7 +3826,7 @@
       lastSeen = servedDocumentEtag;
       represented = servedDocumentEtag;
       conditional = false;
-      generation = 0;
+      generation2 = 0;
       document.addEventListener("clay:sync-applied", (event) => {
         if (event.detail?.source !== "disk") return;
         if (typeof event.detail.etag === "string" && event.detail.etag) return;
@@ -3756,28 +3945,20 @@
     if (!Array.isArray(descriptor.entries)) return [];
     return descriptor.entries.filter((entry) => entry && typeof entry === "object");
   }
-  function descriptorAliasesOf(descriptor) {
-    if (!descriptor || typeof descriptor !== "object") return null;
-    const aliases = descriptor.aliases;
-    if (!aliases || typeof aliases !== "object") return null;
-    return aliases;
-  }
   function originalMatchesRelease(original, version, releases) {
     if (!releases) return true;
     const files = filesOf(releases, version);
     return Boolean(files && Object.hasOwn(files, original.path));
   }
-  function canonicalizeRuntimeURL(value, { descriptor, releases, documentURL } = {}) {
+  function canonicalizeRuntimeURL(value, { descriptor, releases, documentURL, aliases } = {}) {
     const local3 = parseRuntimeURL(value, { documentURL });
     if (!local3 || local3.kind !== "local") return value;
     const entries3 = entriesOf(descriptor);
     const localMajor = majorOf(local3.version);
     for (const entry of entries3) {
       if (entry.local !== value || typeof entry.original !== "string") continue;
-      const aliases = releases?.[local3.version]?.aliases;
-      if (aliases && Object.hasOwn(aliases, entry.original) && aliases[entry.original] === local3.path && !local3.search && !local3.hash) return entry.original;
-      const declared = !releases && descriptorAliasesOf(descriptor);
-      if (declared && !local3.search && !local3.hash && entry.original.startsWith("https://") && Object.hasOwn(declared, entry.original) && declared[entry.original] === local3.path) {
+      const trusted2 = releases?.[local3.version]?.aliases ?? aliases;
+      if (trusted2 && typeof trusted2 === "object" && !local3.search && !local3.hash && Object.hasOwn(trusted2, entry.original) && trusted2[entry.original] === local3.path) {
         return entry.original;
       }
       const original = parseRuntimeURL(entry.original);
@@ -3815,6 +3996,18 @@
       EXACT = /^https:\/\/clayjs\.com\/(\d+)\.(\d+)\.(\d+)\/([\s\S]*)$/;
       LOCAL = /^\/_\/clayjs\/(\d+)\.(\d+)\.(\d+)\/([\s\S]*)$/;
       SUSPECT = /%2e|%2f|%5c/i;
+    }
+  });
+
+  // src/core/runtime-aliases.js
+  var RUNTIME_ALIASES;
+  var init_runtime_aliases = __esm({
+    "src/core/runtime-aliases.js"() {
+      RUNTIME_ALIASES = Object.freeze({
+        "https://cdn.jsdelivr.net/npm/overtype@2.6.1/dist/overtype.min.js": "compat/overtype-2.6.1.min.js",
+        "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js": "compat/highlight-11.9.0.min.js",
+        "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;0,600;1,400;1,500&family=IBM+Plex+Sans:wght@400;500;600&display=swap": "fonts/ibm-plex.css"
+      });
     }
   });
 
@@ -3886,7 +4079,7 @@
       const value = element3.getAttribute(name);
       const parsed2 = parseRuntimeURL(value, { documentURL });
       if (!parsed2 || parsed2.kind !== "local") continue;
-      element3.setAttribute(name, canonicalizeRuntimeURL(value, { descriptor, documentURL }));
+      element3.setAttribute(name, canonicalizeRuntimeURL(value, { descriptor, documentURL, aliases: RUNTIME_ALIASES }));
     }
   }
   var RUNTIME_MAP_ID, RUNTIME_REL, cachedText, cachedDescriptor, RUNTIME_SELECTOR;
@@ -3894,6 +4087,7 @@
     "src/core/runtime-url.js"() {
       init_snapshot();
       init_offline_runtime();
+      init_runtime_aliases();
       RUNTIME_MAP_ID = "clay-runtime-map";
       RUNTIME_REL = /* @__PURE__ */ new Set(["stylesheet", "preload", "modulepreload"]);
       cachedText = null;
@@ -4141,14 +4335,14 @@
     });
   }
   function sendOnce(content, saveId, etag, { captureId = null, conversionHeader = null, attempts = [] } = {}) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), SAVE_TIMEOUT_MS);
+    const controller2 = new AbortController();
+    const timeoutId = setTimeout(() => controller2.abort(), SAVE_TIMEOUT_MS);
     const gestureDriven = consumeUserDriven();
     const explicitlyAsked = consumeExplicitSave();
     const userDriven = gestureDriven || explicitlyAsked;
     const keepalive = nextSaveKeepalive;
     nextSaveKeepalive = false;
-    const { url, options } = buildSaveRequest(content, userDriven, controller.signal, saveId, etag, keepalive, conversionHeader);
+    const { url, options } = buildSaveRequest(content, userDriven, controller2.signal, saveId, etag, keepalive, conversionHeader);
     rememberSentId(saveId);
     if (!isDraftMode) {
       if (!attempts.some((attempt) => attempt.saveId === saveId && attempt.etag === (etag ?? null))) {
@@ -4244,13 +4438,13 @@
       }
     }
   }
-  function runSave(html, captureId, callback, conversion, capture2 = null) {
+  function runSave(html, captureId, callback, conversion, capture = null) {
     return new Promise((resolve) => {
       const attempts = [];
-      const artifact = captureArtifact(capture2);
+      const artifact = captureArtifact(capture);
       const finished = (result2, accepted = false) => {
         if (accepted) notifySaveAccepted(html, captureId ?? null, artifact);
-        releaseCaptureArtifact(capture2);
+        releaseCaptureArtifact(capture);
         notifySaveOutcome({
           captureId: captureId ?? null,
           result: result2,
@@ -4290,8 +4484,8 @@
     return runSave(html, null, callback, null);
   }
   function saveCapturedHtml(html, captureId, callback = () => {
-  }, { conversion, capture: capture2 = null } = {}) {
-    return runSave(html, captureId, callback, conversion, capture2);
+  }, { conversion, capture = null } = {}) {
+    return runSave(html, captureId, callback, conversion, capture);
   }
   function saveConversion({ html, captureId, conversion }) {
     return runSave(html, captureId ?? null, void 0, conversion);
@@ -4697,9 +4891,9 @@
   function bytesUnsaved() {
     if (!isEditMode) return false;
     try {
-      const current4 = captureForDirtyCheck();
-      if (styleAdoptionPending(current4)) return false;
-      return current4 !== getLastSavedDirty();
+      const current5 = captureForDirtyCheck();
+      if (styleAdoptionPending(current5)) return false;
+      return current5 !== getLastSavedDirty();
     } catch {
       return true;
     }
@@ -5455,7 +5649,7 @@
       }
       return covered;
     }
-    function capture2(captureId, html) {
+    function capture(captureId, html) {
       if (captureId == null || typeof html !== "string") return;
       const covered = /* @__PURE__ */ new Map();
       for (const entry of channels.values()) {
@@ -5610,7 +5804,7 @@
       if (!channels.size) services.delete(handle);
       return flushed;
     }
-    const handle = { capture: capture2, settle: settle7 };
+    const handle = { capture, settle: settle7 };
     function channelApi(entry) {
       return {
         channel: entry.channel,
@@ -10589,11 +10783,11 @@
         setOfflineStateQuiet();
       }
       const startedAt = monotonic();
-      let capture2, forSave, forComparison, forDirty, captureId;
+      let capture, forSave, forComparison, forDirty, captureId;
       const gateToken = gateCaptureToken();
       try {
-        capture2 = captureForSaveAndComparison({ requestRefresh: true, forRequest: true });
-        ({ forSave, forComparison, forDirty, captureId } = capture2);
+        capture = captureForSaveAndComparison({ requestRefresh: true, forRequest: true });
+        ({ forSave, forComparison, forDirty, captureId } = capture);
       } catch (err) {
         console.error(`${explicit ? "savePage" : "savePageThrottled"}: captureForSaveAndComparison failed`, err);
         if (explicit) {
@@ -10618,7 +10812,7 @@
         if (!unsavedChanges) {
           clearExplicitSave();
           gateClearIfUnchanged(gateToken);
-          releaseCaptureArtifact(capture2);
+          releaseCaptureArtifact(capture);
           const skipped = skipped_("No changes to save");
           settleRecoveryCapture(captureId, skipped);
           callback(skipped);
@@ -10640,7 +10834,7 @@
           }
           if (clear) gateClearIfUnchanged(gateToken);
           autosaveScheduler.noteCost(preparedMs);
-          releaseCaptureArtifact(capture2);
+          releaseCaptureArtifact(capture);
           const skipped = skipped_("No changes to save");
           settleRecoveryCapture(captureId, skipped);
           callback(skipped);
@@ -10650,7 +10844,7 @@
         unsavedChanges = true;
         if (isSaveInProgress()) {
           pendingSave = true;
-          releaseCaptureArtifact(capture2);
+          releaseCaptureArtifact(capture);
           const skipped = skipped_("Save already in progress");
           settleRecoveryCapture(captureId, skipped);
           callback(skipped);
@@ -10674,7 +10868,7 @@
         resolve(result2);
         settleSoonQueued(result2);
         drainPendingSave();
-      }, { capture: capture2 });
+      }, { capture });
     });
   }
   function savePage(callback = () => {
@@ -10700,11 +10894,11 @@
       if (wasOffline) {
         setOfflineStateQuiet();
       }
-      let capture2, forSave, forComparison, forDirty, captureId;
+      let capture, forSave, forComparison, forDirty, captureId;
       const gateToken = gateCaptureToken();
       try {
-        capture2 = captureForSaveAndComparison({ requestRefresh: true, forRequest: true });
-        ({ forSave, forComparison, forDirty, captureId } = capture2);
+        capture = captureForSaveAndComparison({ requestRefresh: true, forRequest: true });
+        ({ forSave, forComparison, forDirty, captureId } = capture);
       } catch (err) {
         console.error("savePageForce: captureForSaveAndComparison failed", err);
         setSaveState("error", err.message, "", { sent: false, code: err.code ?? null });
@@ -10728,7 +10922,7 @@
         }
         resolve(result2);
         drainPendingSave();
-      }, { capture: capture2 });
+      }, { capture });
     });
   }
   function settled(deadline) {
@@ -10966,12 +11160,12 @@
   function styleAdoptionsSettled() {
     return adoptionQueue;
   }
-  function styleAdoptionPending(current4) {
+  function styleAdoptionPending(current5) {
     if (!adoptionsQueued) return false;
     if (editedSinceAdoption || hasUnsavedState()) return false;
     if (isSaveInProgress() || pendingSave || pendingAutosave) return false;
-    if (typeof current4 !== "string") return false;
-    return current4 === withoutOwnedStyles(lastSavedDirty, pendingStyles);
+    if (typeof current5 !== "string") return false;
+    return current5 === withoutOwnedStyles(lastSavedDirty, pendingStyles);
   }
   function releaseBootSettle() {
     bootPhase.holdSettle = false;
@@ -11198,13 +11392,10 @@
     }
   });
 
-  // src/core/page-data.js
-  var page_data_exports = {};
-  __export(page_data_exports, {
-    createPageDataApi: () => createPageDataApi,
-    readData: () => readData,
-    setPageDataLiveSync: () => setPageDataLiveSync,
-    writeData: () => writeData
+  // src/core/page-data-write.js
+  var page_data_write_exports = {};
+  __export(page_data_write_exports, {
+    createPageDataWrite: () => createPageDataWrite
   });
   function refusal(code, message2, details) {
     const error2 = new Error(message2);
@@ -11282,7 +11473,7 @@
     };
   }
   function httpDeadline(timeoutMs) {
-    const controller = new AbortController();
+    const controller2 = new AbortController();
     let rejectDeadline;
     const expired = new Promise((_7, reject) => {
       rejectDeadline = reject;
@@ -11290,11 +11481,11 @@
     const timer = setTimeout(() => {
       const error2 = new Error("The page data write timed out.");
       error2.name = "TimeoutError";
-      controller.abort(error2);
+      controller2.abort(error2);
       rejectDeadline(error2);
     }, timeoutMs);
     return {
-      signal: controller.signal,
+      signal: controller2.signal,
       waitFor(promise) {
         return Promise.race([promise, expired]);
       },
@@ -11318,42 +11509,19 @@
     if (!isDraftMode2) return null;
     return refusal("DataUnavailableInDraft", "Page data is kept in this browser for this visitor.");
   }
-  function createPageDataApi({
-    supports = hostSupports,
-    token: token2 = saveToken,
-    fetchImpl = (...args) => fetch(...args),
-    getLocation = () => window.location,
-    eventTarget = document,
+  function createPageDataWrite({
+    supports,
+    token: token2,
+    fetchImpl,
+    getLocation,
+    eventTarget,
+    getLiveSync,
     loadWriteModules = defaultWriteModules,
     syncTimeoutMs = SYNC_WAIT_MS,
     httpTimeoutMs = HTTP_WAIT_MS
-  } = {}) {
-    let liveSync2 = null;
+  }) {
     let writeRunning = false;
     let writeOutcomeUnknown = false;
-    function setLiveSync(sync) {
-      liveSync2 = sync;
-    }
-    async function readData2(rules) {
-      const draft = await draftRefusal();
-      if (draft) throw draft;
-      if (!await supports(DATA_READ)) {
-        throw refusal("DataReadUnsupported", "This host does not support reading page data.");
-      }
-      let response;
-      try {
-        response = await fetchImpl(dataUrl(rules, getLocation()), {
-          method: "GET",
-          credentials: "same-origin",
-          cache: "no-store",
-          redirect: "error"
-        });
-      } catch (cause) {
-        throw Object.assign(refusal("DataReadFailed", cause?.message || "Could not read page data."), { cause });
-      }
-      if (!response.ok) throw await responseError(response);
-      return { data: await responseBody(response), etag: responseEtag(response) };
-    }
     function assertWriteState(modules, { checkHold = true } = {}) {
       if (writeOutcomeUnknown) {
         throw refusal("DataWriteOutcomeUnknown", "A previous page data write has an unknown outcome. Reload before writing again.");
@@ -11373,7 +11541,7 @@
       if (modules.hasUnsavedChanges()) {
         throw refusal("UnsavedChanges", "Save or discard the page's unsaved changes before writing data.");
       }
-      if (!connected(liveSync2)) {
+      if (!connected(getLiveSync())) {
         throw refusal("SyncRequired", "Page data writes require the sync plugin to be connected.");
       }
     }
@@ -11415,7 +11583,7 @@
         if (modules.hasUnsavedChanges()) {
           throw refusal("UnsavedChanges", "Save or discard the page's unsaved changes before writing data.");
         }
-        if (!connected(liveSync2)) {
+        if (!connected(getLiveSync())) {
           throw refusal("SyncRequired", "Page data writes require the sync plugin to be connected.");
         }
         const headers = {
@@ -11482,22 +11650,236 @@
         modules.releaseAllSaves({ reason: WRITE_HOLD_REASON });
       }
     }
+    return { writeData: writeData2 };
+  }
+  var DATA_WRITE, WRITE_HOLD_REASON, SYNC_WAIT_MS, HTTP_WAIT_MS;
+  var init_page_data_write = __esm({
+    "src/core/page-data-write.js"() {
+      DATA_WRITE = "data-write";
+      WRITE_HOLD_REASON = "Waiting for the page data write to finish";
+      SYNC_WAIT_MS = 12e3;
+      HTTP_WAIT_MS = 3e4;
+    }
+  });
+
+  // src/core/page-data.js
+  var page_data_exports = {};
+  __export(page_data_exports, {
+    createPageDataApi: () => createPageDataApi,
+    readData: () => readData,
+    setPageDataLiveSync: () => setPageDataLiveSync,
+    writeData: () => writeData
+  });
+  function refusal2(code, message2, details) {
+    const error2 = new Error(message2);
+    error2.code = code;
+    error2.details = details;
+    return error2;
+  }
+  async function responseBody2(response) {
+    if (typeof response.json === "function") return response.json();
+    const text4 = await response.text();
+    return text4 ? JSON.parse(text4) : null;
+  }
+  async function responseError2(response) {
+    let body2 = {};
+    try {
+      body2 = await responseBody2(response) || {};
+    } catch {
+    }
+    const message2 = body2.message || body2.error || response.statusText || `Request failed (${response.status})`;
+    const error2 = new Error(message2);
+    error2.status = response.status;
+    error2.error = body2.error;
+    error2.details = body2.details;
+    return error2;
+  }
+  function responseEtag2(response) {
+    const value = response.headers?.get?.("ETag");
+    return typeof value === "string" && value ? value : null;
+  }
+  function dataUrl2(rules, location2) {
+    const base2 = `${location2.origin}${location2.pathname}`;
+    if (rules !== void 0) return `${base2}?data=${encodeURIComponent(JSON.stringify(rules))}`;
+    return `${location2.origin}/_/api${location2.pathname}`;
+  }
+  async function draftRefusal2() {
+    const { isDraftMode: isDraftMode2 } = await Promise.resolve().then(() => (init_is_edit_mode(), is_edit_mode_exports));
+    if (!isDraftMode2) return null;
+    return refusal2("DataUnavailableInDraft", "Page data is kept in this browser for this visitor.");
+  }
+  function createPageDataApi({
+    supports = hostSupports,
+    token: token2 = saveToken,
+    fetchImpl = (...args) => fetch(...args),
+    getLocation = () => window.location,
+    eventTarget = document,
+    loadWriteModules,
+    syncTimeoutMs,
+    httpTimeoutMs
+  } = {}) {
+    let liveSync2 = null;
+    let writeEngine = null;
+    function setLiveSync(sync) {
+      liveSync2 = sync;
+    }
+    async function readData2(rules) {
+      const draft = await draftRefusal2();
+      if (draft) throw draft;
+      if (!await supports(DATA_READ)) {
+        throw refusal2("DataReadUnsupported", "This host does not support reading page data.");
+      }
+      let response;
+      try {
+        response = await fetchImpl(dataUrl2(rules, getLocation()), {
+          method: "GET",
+          credentials: "same-origin",
+          cache: "no-store",
+          redirect: "error"
+        });
+      } catch (cause) {
+        throw Object.assign(refusal2("DataReadFailed", cause?.message || "Could not read page data."), { cause });
+      }
+      if (!response.ok) throw await responseError2(response);
+      return { data: await responseBody2(response), etag: responseEtag2(response) };
+    }
+    function loadWriteEngine() {
+      if (writeEngine) return writeEngine;
+      writeEngine = Promise.resolve().then(() => (init_page_data_write(), page_data_write_exports)).then(({ createPageDataWrite: createPageDataWrite2 }) => createPageDataWrite2({
+        supports,
+        token: token2,
+        fetchImpl,
+        getLocation,
+        eventTarget,
+        getLiveSync: () => liveSync2,
+        loadWriteModules,
+        syncTimeoutMs,
+        httpTimeoutMs
+      })).catch((error2) => {
+        writeEngine = null;
+        throw error2;
+      });
+      return writeEngine;
+    }
+    async function writeData2(values, options) {
+      const draft = await draftRefusal2();
+      if (draft) throw draft;
+      if (!await supports(DATA_WRITE2)) {
+        throw refusal2("DataWriteUnsupported", "This host does not support writing page data.");
+      }
+      const engine2 = await loadWriteEngine();
+      return engine2.writeData(values, options);
+    }
     return { readData: readData2, writeData: writeData2, setLiveSync };
   }
-  var DATA_READ, DATA_WRITE, WRITE_HOLD_REASON, SYNC_WAIT_MS, HTTP_WAIT_MS, pageData, readData, writeData, setPageDataLiveSync;
+  var DATA_READ, DATA_WRITE2, pageData, readData, writeData, setPageDataLiveSync;
   var init_page_data = __esm({
     "src/core/page-data.js"() {
       init_host_meta();
       init_host_attrs();
       DATA_READ = "data-read";
-      DATA_WRITE = "data-write";
-      WRITE_HOLD_REASON = "Waiting for the page data write to finish";
-      SYNC_WAIT_MS = 12e3;
-      HTTP_WAIT_MS = 3e4;
+      DATA_WRITE2 = "data-write";
       pageData = createPageDataApi();
       readData = pageData.readData;
       writeData = pageData.writeData;
       setPageDataLiveSync = pageData.setLiveSync;
+    }
+  });
+
+  // src/core/preserve-authored.js
+  var preserve_authored_exports = {};
+  __export(preserve_authored_exports, {
+    CONTROLLED_SELECTOR: () => CONTROLLED_SELECTOR,
+    authoredAttr: () => authoredAttr,
+    canonicalContentEditable: () => canonicalContentEditable,
+    canonicalContentEditableValue: () => canonicalContentEditableValue,
+    captureAll: () => captureAll,
+    captureAuthored: () => captureAuthored,
+    captureFrozen: () => captureFrozen,
+    frozenOriginal: () => frozenOriginal,
+    restoreAuthoredOrder: () => restoreAuthoredOrder
+  });
+  function captureAuthored(el10) {
+    let seen = authored.get(el10);
+    if (!seen) {
+      const order = el10.getAttributeNames();
+      const values = {};
+      for (const name of order) values[name] = el10.getAttribute(name);
+      seen = { order, values };
+      authored.set(el10, seen);
+    }
+    return seen;
+  }
+  function authoredAttr(el10, name) {
+    if (!el10) return null;
+    const { values } = captureAuthored(el10);
+    return name in values ? values[name] : null;
+  }
+  function restoreAuthoredOrder(el10) {
+    const seen = authored.get(el10);
+    if (!seen) return;
+    const current5 = el10.getAttributeNames();
+    const desired = [
+      ...seen.order.filter((name) => current5.includes(name)),
+      ...current5.filter((name) => !seen.order.includes(name))
+    ];
+    if (desired.every((name, i2) => name === current5[i2])) return;
+    const values = desired.map((name) => [name, el10.getAttribute(name)]);
+    for (const name of current5) el10.removeAttribute(name);
+    for (const [name, value] of values) el10.setAttribute(name, value);
+  }
+  function canonicalContentEditableValue(el10) {
+    return el10.getAttribute("contenteditable") ?? el10.getAttribute("inert-contenteditable") ?? authoredAttr(el10, "inert-contenteditable") ?? authoredAttr(el10, "contenteditable") ?? "true";
+  }
+  function canonicalContentEditable(el10) {
+    el10.setAttribute("inert-contenteditable", canonicalContentEditableValue(el10));
+    el10.removeAttribute("contenteditable");
+  }
+  function authoredInnerHTML(el10) {
+    const html = el10.innerHTML;
+    if (!el10.querySelector(`[${ROUTE_ACTIVE_ATTR}]`) && !html.includes("ephemeral") && !html.includes("<dialog")) return html;
+    const copy9 = el10.cloneNode(true);
+    for (const s3 of copy9.querySelectorAll(`[${ROUTE_ACTIVE_ATTR}]`)) s3.removeAttribute(ROUTE_ACTIVE_ATTR);
+    for (const child of copy9.children) stripEphemeral(child);
+    return copy9.innerHTML;
+  }
+  function captureFrozen(el10) {
+    if (!originals.has(el10)) originals.set(el10, authoredInnerHTML(el10));
+  }
+  function frozenOriginal(el10) {
+    return originals.get(el10);
+  }
+  function captureAll() {
+    for (const el10 of document.querySelectorAll(CONTROLLED_SELECTOR)) captureAuthored(el10);
+    for (const el10 of document.querySelectorAll(FREEZE_SELECTOR)) captureFrozen(el10);
+  }
+  var CONTROLLED_SELECTOR, authored, originals;
+  var init_preserve_authored = __esm({
+    "src/core/preserve-authored.js"() {
+      init_mutation();
+      init_region_policy();
+      init_root_attrs();
+      init_ephemeral();
+      CONTROLLED_SELECTOR = "[editmode\\:contenteditable], [viewmode\\:disabled], [viewmode\\:readonly]";
+      authored = /* @__PURE__ */ new WeakMap();
+      originals = /* @__PURE__ */ new WeakMap();
+      captureAll();
+      mutation_default.onAddElement({
+        selectorFilter: CONTROLLED_SELECTOR,
+        require: "observed",
+        pausable: false,
+        debounce: 0
+      }, (changes2) => {
+        changes2.forEach(({ element: element3 }) => captureAuthored(element3));
+      });
+      mutation_default.onAddElement({
+        selectorFilter: FREEZE_SELECTOR,
+        require: "observed",
+        pausable: false,
+        debounce: 0
+      }, (changes2) => {
+        changes2.forEach(({ element: element3 }) => captureFrozen(element3));
+      });
     }
   });
 
@@ -11987,16 +12369,16 @@
   function channel() {
     const service = recoveryService();
     if (!service || typeof service.register !== "function") return null;
-    if (registered?.service === service) return registered.channel;
+    if (registered2?.service === service) return registered2.channel;
     try {
-      registered = {
+      registered2 = {
         service,
         channel: service.register({ channel: CONFLICTS_CHANNEL, version: CONFLICTS_VERSION })
       };
     } catch (_7) {
       return null;
     }
-    return registered.channel;
+    return registered2.channel;
   }
   function pendingConflicts() {
     const stored = storage.local.get(HINT_KEY);
@@ -12158,7 +12540,7 @@
     globalThis.document?.dispatchEvent(new CustomEvent("clay:conflict-store-changed"));
     return { ok: true, removed };
   }
-  var CONFLICTS_CHANNEL, CONFLICTS_VERSION, CONFLICTS_KIND, HINT_KEY, CONTEXT_FIELDS, registered, DROPPED, textOf;
+  var CONFLICTS_CHANNEL, CONFLICTS_VERSION, CONFLICTS_KIND, HINT_KEY, CONTEXT_FIELDS, registered2, DROPPED, textOf;
   var init_conflicts = __esm({
     "src/recovery/conflicts.js"() {
       init_doc_storage();
@@ -12167,7 +12549,7 @@
       CONFLICTS_KIND = "conflict";
       HINT_KEY = "conflicts";
       CONTEXT_FIELDS = ["kind", "id", "label", "field"];
-      registered = null;
+      registered2 = null;
       DROPPED = /* @__PURE__ */ Symbol("dropped");
       textOf = (value) => typeof value === "string" ? value : value == null ? "" : String(value);
     }
@@ -12190,7 +12572,7 @@
         var ai5 = Object.getOwnPropertyDescriptor;
         var ci5 = Object.getOwnPropertyNames;
         var fi5 = Object.prototype.hasOwnProperty;
-        var ui6 = (e20, o3) => {
+        var ui8 = (e20, o3) => {
           for (var t2 in o3) ss4(e20, t2, { get: o3[t2], enumerable: true });
         }, di5 = (e20, o3, t2, n3) => {
           if (o3 && typeof o3 == "object" || typeof o3 == "function") for (let s3 of ci5(o3)) !fi5.call(e20, s3) && s3 !== t2 && ss4(e20, s3, { get: () => o3[s3], enumerable: !(n3 = ai5(o3, s3)) || n3.enumerable });
@@ -12198,7 +12580,7 @@
         };
         var hi5 = (e20) => di5(ss4({}, "__esModule", { value: true }), e20);
         var Vl2 = {};
-        ui6(Vl2, { createIdentityStore: () => Ks2, createParseCache: () => jo4, default: () => Ul3, diff: () => Hn4, findChangedRoots: () => Jr4, importMap: () => Do4, merge3: () => ri5, merge3Text: () => oo4, mergeDocument: () => po4, mergeJson: () => Is4, mergeScriptText: () => Yo4, morph: () => es3, morphDocument: () => ii4, morphElement: () => ts4, parseJsonRelaxed: () => zo4, parseRulesRelaxed: () => vr4, spliceProtected: () => Qr4, tieredIdentity: () => ls4 });
+        ui8(Vl2, { createIdentityStore: () => Ks2, createParseCache: () => jo4, default: () => Ul3, diff: () => Hn4, findChangedRoots: () => Jr4, importMap: () => Do4, merge3: () => ri5, merge3Text: () => oo4, mergeDocument: () => po4, mergeJson: () => Is4, mergeScriptText: () => Yo4, morph: () => es3, morphDocument: () => ii4, morphElement: () => ts4, parseJsonRelaxed: () => zo4, parseRulesRelaxed: () => vr4, spliceProtected: () => Qr4, tieredIdentity: () => ls4 });
         function Bo3(e20, o3) {
           if (typeof e20 == "string") {
             let t2 = o3 && o3.defaultView, n3 = t2 && t2.DOMParser || globalThis.DOMParser;
@@ -19783,7 +20165,7 @@
       nodes: unique,
       mode: mode3,
       status,
-      generation: ++generation2,
+      generation: ++generation3,
       witnesses: mode3 === "document" ? [] : unique.map(witness)
     };
     states.set(raw, state2);
@@ -19810,7 +20192,7 @@
     if (nodes.length && nodes.every((n3) => onPage(n3) && n3 !== document.documentElement)) return put(raw, nodes, "source");
     return broad(raw);
   }
-  function current(raw, create = false) {
+  function current2(raw, create = false) {
     let state2 = states.get(raw);
     if (!state2) return create ? seed(raw) : null;
     if (state2.mode === "document") return state2.nodes[0] === document.documentElement ? state2 : broad(raw);
@@ -19823,7 +20205,7 @@
   function protectionOf(record6) {
     if (released.has(record6)) return null;
     const raws = [...rawSet([record6])];
-    const values = raws.map((raw) => current(raw));
+    const values = raws.map((raw) => current2(raw));
     if (!values.some(Boolean)) return null;
     if (values.some((state2) => !state2)) {
       for (const raw of raws) if (!states.has(raw)) broad(raw);
@@ -19832,7 +20214,7 @@
     const union = [...new Set(values.flatMap((state2) => state2.nodes))];
     if (values.every((state2) => state2.mode === "source") && union.length === 1) return null;
     const nodes = values.some((state2) => state2.mode === "document") ? [document.documentElement] : union;
-    return { nodes, status: values.some((state2) => state2.status === "unknown") ? "unknown" : "proved", generation: generation2 };
+    return { nodes, status: values.some((state2) => state2.status === "unknown") ? "unknown" : "proved", generation: generation3 };
   }
   function releaseProtection(record6) {
     for (const raw of rawOf(record6)) {
@@ -19841,7 +20223,7 @@
     }
     released.add(record6);
     states.delete(record6);
-    generation2++;
+    generation3++;
   }
   function allRaw(records3) {
     const raws = rawSet(records3);
@@ -19869,10 +20251,10 @@
       report: null,
       finished: false
     };
-    generation2++;
+    generation3++;
     const elements2 = /* @__PURE__ */ new Set();
     for (const raw of frame.tracked) {
-      const state2 = current(raw, true);
+      const state2 = current2(raw, true);
       const chains = state2.mode === "document" ? [] : state2.nodes.map((node) => {
         const chain = [];
         for (let n3 = node; n3 && n3 !== document.documentElement; n3 = n3.parentElement) {
@@ -19888,7 +20270,7 @@
     pending.add(frame);
     const invalidate = (openRecords = []) => {
       frame.invalid = true;
-      generation2++;
+      generation3++;
       for (const raw of allRaw(openRecords)) broad(raw);
     };
     const lineage = {
@@ -19978,13 +20360,13 @@
       }
     };
   }
-  var states, released, pending, generation2, sequence, TEXT_BLOCKS, isElement, onPage, rawOf, rawSet, captureFootprintWitnesses, footprintWitnessesValid, protectionGeneration, broad;
+  var states, released, pending, generation3, sequence, TEXT_BLOCKS, isElement, onPage, rawOf, rawSet, captureFootprintWitnesses, footprintWitnessesValid, protectionGeneration, broad;
   var init_conflict_footprints = __esm({
     "src/sync/conflict-footprints.js"() {
       states = /* @__PURE__ */ new WeakMap();
       released = /* @__PURE__ */ new WeakSet();
       pending = /* @__PURE__ */ new Set();
-      generation2 = 0;
+      generation3 = 0;
       sequence = 0;
       TEXT_BLOCKS = new Set("P H1 H2 H3 H4 H5 H6 DIV LI DD DT BLOCKQUOTE FIGCAPTION SUMMARY ADDRESS".split(" "));
       isElement = (node) => node?.nodeType === 1;
@@ -19999,7 +20381,7 @@
       rawSet = (records3) => new Set(records3.flatMap(rawOf).filter((raw) => !released.has(raw)));
       captureFootprintWitnesses = (nodes) => [...new Set(nodes)].map(witness);
       footprintWitnessesValid = (witnesses) => witnesses.every((w6) => valid(w6));
-      protectionGeneration = () => generation2;
+      protectionGeneration = () => generation3;
       broad = (raw) => put(raw, [document.documentElement], "document", "unknown");
     }
   });
@@ -20470,8 +20852,22 @@
   });
 
   // src/sync/presence.js
+  function loadUI() {
+    uiLoad ??= Promise.all([Promise.resolve().then(() => (init_bevel_controls(), bevel_controls_exports)), Promise.resolve().then(() => (init_bevel(), bevel_exports))]).then(([controls2, bevel]) => ui2 = {
+      pageScheme: controls2.pageScheme,
+      RUNTIME_ONLY: controls2.RUNTIME_ONLY,
+      TOKENS: bevel.TOKENS,
+      SHADOW: bevel.SHADOW,
+      FONT: `600 11px/1 ${bevel.FONT_MONO}`,
+      LABEL_FONT: `500 11px/1.4 ${bevel.FONT_MONO}`
+    }).catch((error2) => {
+      uiLoad = null;
+      throw error2;
+    });
+    return uiLoad;
+  }
   function runtimeRoot(el10) {
-    el10.setAttribute("clay", RUNTIME_ONLY);
+    el10.setAttribute("clay", ui2.RUNTIME_ONLY);
     return el10;
   }
   function normalize(data) {
@@ -20490,18 +20886,17 @@
     const anonymous = typeof count2 === "number" && Number.isFinite(count2) && count2 > 0 ? Math.floor(count2) : 0;
     return { people: people2, anonymous };
   }
-  var SIZE2, OVERLAP, FONT, LABEL_FONT, RESET2, FACE, Presence, presence;
+  var SIZE2, OVERLAP, ui2, uiLoad, uiReady, RESET2, FACE, Presence, presence;
   var init_presence = __esm({
     "src/sync/presence.js"() {
       init_host_meta();
       init_hostile_css();
       init_person_face();
-      init_bevel_controls();
-      init_bevel();
       SIZE2 = 30;
       OVERLAP = 6;
-      FONT = `600 11px/1 ${FONT_MONO}`;
-      LABEL_FONT = `500 11px/1.4 ${FONT_MONO}`;
+      ui2 = null;
+      uiLoad = null;
+      uiReady = () => loadUI().then(() => true, () => false);
       RESET2 = ["all:initial", "color-scheme:inherit", "direction:ltr", "unicode-bidi:isolate"];
       FACE = "#FFFCF6";
       Presence = class {
@@ -20536,10 +20931,10 @@
           this.roster = next;
           if (!await this.supported()) return;
           if (same7) {
-            set(this.root, "color-scheme", pageScheme());
+            set(this.root, "color-scheme", ui2.pageScheme());
             return;
           }
-          this.render();
+          await this.render();
         }
         /** The stream went away, so the roster is no longer true about anything. */
         clear() {
@@ -20551,15 +20946,16 @@
           this.count = null;
           this.tip = null;
         }
-        render() {
+        async render() {
           const { people: people2, anonymous } = this.roster;
           if (people2.length + anonymous <= 1) {
             this.hide();
             return;
           }
+          if (!await uiReady()) return;
           if (!this.build()) return;
           this.hideTip();
-          set(this.root, "color-scheme", pageScheme());
+          set(this.root, "color-scheme", ui2.pageScheme());
           this.stack.textContent = "";
           for (const person of people2) {
             this.stack.appendChild(this.avatar(person));
@@ -20586,7 +20982,7 @@
           if (typeof document === "undefined" || !document.body) return false;
           this.root = runtimeRoot(make("div", [
             ...RESET2,
-            `color-scheme:${pageScheme()}`,
+            `color-scheme:${ui2.pageScheme()}`,
             "position:fixed",
             "top:calc(12px + env(safe-area-inset-top,0px))",
             "right:calc(12px + env(safe-area-inset-right,0px))",
@@ -20595,8 +20991,8 @@
             "align-items:center",
             "gap:8px",
             "max-width:calc(100vw - 24px)",
-            `font:${LABEL_FONT}`,
-            `color:${TOKENS2.ink}`,
+            `font:${ui2.LABEL_FONT}`,
+            `color:${ui2.TOKENS.ink}`,
             // Only the squares take a pointer. A fixed corner that swallowed clicks
             // would take a bite out of whatever the page put underneath it.
             "pointer-events:none"
@@ -20609,12 +21005,12 @@
             "white-space:nowrap",
             "padding:3px 8px",
             "border-radius:0",
-            `background:${TOKENS2.surface}`,
-            `color:${TOKENS2.muted}`,
-            `border:1px solid ${TOKENS2["line-2"]}`,
-            `font:${LABEL_FONT}`,
+            `background:${ui2.TOKENS.surface}`,
+            `color:${ui2.TOKENS.muted}`,
+            `border:1px solid ${ui2.TOKENS["line-2"]}`,
+            `font:${ui2.LABEL_FONT}`,
             "letter-spacing:.02em",
-            `box-shadow:${SHADOW}`,
+            `box-shadow:${ui2.SHADOW}`,
             "display:none",
             "pointer-events:none"
           ]));
@@ -20637,11 +21033,11 @@
             "pointer-events:none",
             "padding:5px 9px",
             "border-radius:0",
-            `background:${TOKENS2.ink}`,
-            `color:${TOKENS2.ground}`,
-            `font:${LABEL_FONT}`,
+            `background:${ui2.TOKENS.ink}`,
+            `color:${ui2.TOKENS.ground}`,
+            `font:${ui2.LABEL_FONT}`,
             "letter-spacing:.02em",
-            `box-shadow:${SHADOW}`,
+            `box-shadow:${ui2.SHADOW}`,
             "display:none"
           ]));
           this.tip.setAttribute("data-clay-presence-tip", "");
@@ -20662,13 +21058,13 @@
             "display:flex",
             "align-items:center",
             "justify-content:center",
-            `font:${FONT}`,
+            `font:${ui2.FONT}`,
             "letter-spacing:.02em",
             `margin-left:-${OVERLAP}px`,
             "border-width:2px",
             "border-style:solid",
             "background-image:none",
-            `box-shadow:${SHADOW}`,
+            `box-shadow:${ui2.SHADOW}`,
             "user-select:none",
             "cursor:default",
             "pointer-events:auto",
@@ -20744,8 +21140,18 @@
   });
 
   // src/sync/editing-marker.js
+  function loadUI2() {
+    uiLoad2 ??= Promise.all([Promise.resolve().then(() => (init_bevel_controls(), bevel_controls_exports)), Promise.resolve().then(() => (init_bevel(), bevel_exports))]).then(([controls2, bevel]) => ui3 = {
+      RUNTIME_ONLY: controls2.RUNTIME_ONLY,
+      CHIP_FONT: `600 11px/16px ${bevel.FONT_MONO}`
+    }).catch((error2) => {
+      uiLoad2 = null;
+      throw error2;
+    });
+    return uiLoad2;
+  }
   function runtimeRoot2(el10) {
-    el10.setAttribute("clay", RUNTIME_ONLY);
+    el10.setAttribute("clay", ui3.RUNTIME_ONLY);
     return el10;
   }
   function editorsOf(frame) {
@@ -20759,20 +21165,20 @@
     }
     return editors;
   }
-  var FACE2, RESET3, CHIP_HEIGHT, GAP, CHIP_FONT, EditingMarker, editingMarker;
+  var FACE2, RESET3, CHIP_HEIGHT, GAP, ui3, uiLoad2, uiReady2, EditingMarker, editingMarker;
   var init_editing_marker = __esm({
     "src/sync/editing-marker.js"() {
       init_host_meta();
       init_hostile_css();
       init_person_face();
-      init_bevel_controls();
-      init_bevel();
       init_editing_path();
       FACE2 = "#FFFCF6";
       RESET3 = ["all:initial", "color-scheme:inherit", "direction:ltr", "unicode-bidi:isolate"];
       CHIP_HEIGHT = 18;
       GAP = 3;
-      CHIP_FONT = `600 11px/16px ${FONT_MONO}`;
+      ui3 = null;
+      uiLoad2 = null;
+      uiReady2 = () => loadUI2().then(() => true, () => false);
       EditingMarker = class {
         constructor() {
           this.editors = [];
@@ -20789,7 +21195,7 @@
         async update(frame) {
           this.editors = editorsOf(frame);
           if (!await this.supported()) return;
-          this.render();
+          await this.render();
         }
         clear() {
           this.editors = [];
@@ -20806,7 +21212,18 @@
             this.render();
           });
         }
+        // A synchronous draw while the chunk is here, as it always was, and one draw
+        // queued for when it arrives on the first frame that needs it.
         render() {
+          if (ui3) {
+            this.paint();
+            return Promise.resolve();
+          }
+          return uiReady2().then((ok) => {
+            if (ok) this.paint();
+          });
+        }
+        paint() {
           const groups = /* @__PURE__ */ new Map();
           for (const editor of this.editors) {
             const element3 = elementAt(editor.path);
@@ -20866,7 +21283,7 @@
               "box-sizing:border-box",
               `height:${CHIP_HEIGHT}px`,
               "padding:1px 6px",
-              `font:${CHIP_FONT}`,
+              `font:${ui3.CHIP_FONT}`,
               "letter-spacing:.02em",
               "white-space:nowrap",
               "max-width:180px",
@@ -21185,12 +21602,12 @@
     }
   }
   function streamOpened({ clientId, lane }) {
-    current2 = { clientId, lane };
-    each("open", current2);
+    current3 = { clientId, lane };
+    each("open", current3);
   }
   function streamClosed() {
-    if (!current2) return;
-    current2 = null;
+    if (!current3) return;
+    current3 = null;
     each("close");
   }
   function streamEvent(type, data) {
@@ -21199,21 +21616,21 @@
   }
   function onStream(handler) {
     handlers.add(handler);
-    if (current2) {
+    if (current3) {
       try {
-        handler.open?.(current2);
+        handler.open?.(current3);
       } catch (err) {
         console.error("clay.live: stream handler failed:", err);
       }
     }
     return () => handlers.delete(handler);
   }
-  var LIVE_EVENTS, handlers, current2;
+  var LIVE_EVENTS, handlers, current3;
   var init_stream_bridge = __esm({
     "src/live/stream-bridge.js"() {
       LIVE_EVENTS = Object.freeze(["data", "data-state", "data-writer"]);
       handlers = /* @__PURE__ */ new Set();
-      current2 = null;
+      current3 = null;
     }
   });
 
@@ -21249,7 +21666,7 @@
     const hold = isEditMode ? Promise.resolve().then(() => (init_save(), save_exports)).then((save) => save.holdAllSaves(UPGRADED_MESSAGE), () => {
     }) : Promise.resolve();
     const event = new CustomEvent("clay:document-upgraded", { detail: { message: UPGRADED_MESSAGE } });
-    const drawn = isEditMode ? Promise.resolve() : Promise.resolve().then(() => (init_conflict_notice_ui(), conflict_notice_ui_exports)).then((ui6) => ui6.start(event), () => {
+    const drawn = isEditMode ? Promise.resolve() : Promise.resolve().then(() => (init_conflict_notice_ui(), conflict_notice_ui_exports)).then((ui8) => ui8.start(event), () => {
     });
     document.dispatchEvent(event);
     return Promise.all([hold, drawn]).then(() => {
@@ -21314,11 +21731,7 @@
   // src/core/admin-contenteditable.js
   function disableContentEditableBeforeSave() {
     addDocumentTransform((docElem) => {
-      docElem.querySelectorAll(SELECTOR).forEach((resource) => {
-        const originalValue = resource.getAttribute("contenteditable");
-        resource.setAttribute("inert-contenteditable", originalValue === null ? "true" : originalValue);
-        resource.removeAttribute("contenteditable");
-      });
+      docElem.querySelectorAll(SELECTOR).forEach(canonicalContentEditable);
     });
   }
   function enableContentEditableForAdminOnPageLoad() {
@@ -21329,8 +21742,9 @@
   }
   function enableContentEditable(root3 = document) {
     root3.querySelectorAll(SELECTOR).forEach((el10) => {
-      const val = el10.getAttribute("inert-contenteditable");
-      const keyword = val === null ? null : val.toLowerCase();
+      captureAuthored(el10);
+      const val = el10.getAttribute("inert-contenteditable") ?? el10.getAttribute("contenteditable") ?? authoredAttr(el10, "inert-contenteditable") ?? "true";
+      const keyword = val.toLowerCase();
       el10.setAttribute("contenteditable", ["", "true", "false", "plaintext-only"].includes(keyword) ? val : "true");
       el10.removeAttribute("inert-contenteditable");
     });
@@ -21345,6 +21759,7 @@
       init_is_edit_mode();
       init_dom_ready();
       init_snapshot();
+      init_preserve_authored();
       SELECTOR = "[editmode\\:contenteditable]";
     }
   });
@@ -21396,8 +21811,8 @@
         docElem.querySelectorAll(selector).forEach((input) => {
           if (input.hasAttribute(name)) return;
           const live3 = originalSnapshotNode(input);
-          const spelled = live3 && authored.get(live3);
-          input.setAttribute(name, spelled && spelled[name] !== void 0 ? spelled[name] : "");
+          const spelled = live3 ? authoredAttr(live3, name) : null;
+          input.setAttribute(name, spelled === null ? "" : spelled);
         });
       }
     });
@@ -21411,8 +21826,7 @@
   function enableAdminInputs(root3 = document) {
     for (const [selector, name] of BOOLEANS) {
       root3.querySelectorAll(selector).forEach((input) => {
-        const value = input.getAttribute(name);
-        if (value !== null) authored.set(input, { ...authored.get(input) || {}, [name]: value });
+        captureAuthored(input);
         input.removeAttribute(name);
       });
     }
@@ -21421,24 +21835,24 @@
     disableAdminInputsBeforeSave();
     enableAdminInputsOnPageLoad();
   }
-  var SELECTOR_DISABLED, SELECTOR_READONLY, BOOLEANS, authored;
+  var SELECTOR_DISABLED, SELECTOR_READONLY, BOOLEANS;
   var init_admin_inputs = __esm({
     "src/core/admin-inputs.js"() {
       init_is_edit_mode();
       init_dom_ready();
       init_snapshot();
+      init_preserve_authored();
       SELECTOR_DISABLED = "[viewmode\\:disabled]";
       SELECTOR_READONLY = "[viewmode\\:readonly]";
       BOOLEANS = [[SELECTOR_DISABLED, "disabled"], [SELECTOR_READONLY, "readonly"]];
-      authored = /* @__PURE__ */ new WeakMap();
     }
   });
 
   // src/core/admin-resources.js
   function makeInert(resource) {
-    const current4 = resource.getAttribute("type");
-    if (current4 && current4.startsWith(INERT_PREFIX)) return false;
-    resource.setAttribute("type", INERT_PREFIX + (current4 || ""));
+    const current5 = resource.getAttribute("type");
+    if (current5 && current5.startsWith(INERT_PREFIX)) return false;
+    resource.setAttribute("type", INERT_PREFIX + (current5 || ""));
     return true;
   }
   function makeActive(resource) {
@@ -21642,7 +22056,7 @@
     const counts = /* @__PURE__ */ new Map();
     const visit = (el10) => {
       if (el10.matches(SYNC_IGNORE_SELECTOR)) return;
-      const id = authoredAttr(el10);
+      const id = authoredAttr2(el10);
       if (id) counts.set(id, (counts.get(id) || 0) + 1);
       const kids = el10.localName === "template" && el10.content ? el10.content.children : el10.children;
       for (const kid of kids) visit(kid);
@@ -21667,7 +22081,7 @@
     const { forComparison, forDirty } = captureForComparisonAndDirty({ flushUndo: false });
     return [forComparison, forDirty];
   }
-  var edit2, editLoad2, notInEditModeResult, SYNC_IGNORE_SELECTOR, FREEZE_SELECTOR2, REMOTE_WINS_SELECTOR, isRootLocalAttr, authoredAttr, uniqueAuthoredIdentity, isIdMap, LiveSync, liveSync, morph2, live_sync_default;
+  var edit2, editLoad2, notInEditModeResult, SYNC_IGNORE_SELECTOR, FREEZE_SELECTOR2, REMOTE_WINS_SELECTOR, isRootLocalAttr, authoredAttr2, uniqueAuthoredIdentity, isIdMap, LiveSync, liveSync, morph2, live_sync_default;
   var init_live_sync = __esm({
     "src/sync/live-sync.js"() {
       init_hyper_morph_identity_vendor();
@@ -21728,9 +22142,9 @@
         "[mutations-ignore]"
       ].join(",");
       isRootLocalAttr = (el10, name, merged) => mergeIgnoresAttr(el10, name, merged) || EXTENSION_ATTR_PATTERN.test(name.toLowerCase());
-      authoredAttr = (el10) => el10.getAttribute("data-id") || el10.getAttribute("id") || null;
+      authoredAttr2 = (el10) => el10.getAttribute("data-id") || el10.getAttribute("id") || null;
       uniqueAuthoredIdentity = (memo2) => (el10) => {
-        const id = authoredAttr(el10);
+        const id = authoredAttr2(el10);
         if (!id) return null;
         const root3 = el10.getRootNode();
         let counts = memo2.get(root3);
@@ -23598,8 +24012,8 @@
       if (op.kind !== "reorder") continue;
       const container = kidsOf(op.parent);
       const participants = op.order.filter((n3) => n3.parentNode === container);
-      const queue = participants.slice();
-      const target = [...container.childNodes].map((n3) => participants.includes(n3) ? queue.shift() : n3);
+      const queue2 = participants.slice();
+      const target = [...container.childNodes].map((n3) => participants.includes(n3) ? queue2.shift() : n3);
       let ref2 = null;
       for (let i2 = target.length - 1; i2 >= 0; i2--) {
         const n3 = target[i2];
@@ -24653,8 +25067,8 @@ ${entry.now}`;
     }
     if (Date.now() - armedAt < DOUBLE_PRESS_MS) return;
     const token2 = armed;
-    const current4 = () => armed === token2 && token2.refusalGeneration === refusalGeneration && token2.ledgerRevision === ledgerRevision && token2.dirtyGeneration === gateCaptureToken().gen;
-    if (!reloadAfterDiscard({ isCurrent: current4, reload: () => window.location.reload() })) {
+    const current5 = () => armed === token2 && token2.refusalGeneration === refusalGeneration && token2.ledgerRevision === ledgerRevision && token2.dirtyGeneration === gateCaptureToken().gen;
+    if (!reloadAfterDiscard({ isCurrent: current5, reload: () => window.location.reload() })) {
       disarm();
       armLost = true;
       render();
@@ -24878,7 +25292,7 @@ ${entry.now}`;
     document.removeEventListener("clay:save-conflict", onSaveConflict2);
     document.removeEventListener("clay:document-upgraded", onUpgraded2);
     Promise.resolve().then(() => (init_conflict_notice_ui(), conflict_notice_ui_exports)).then(
-      (ui6) => ui6.start(trigger),
+      (ui8) => ui8.start(trigger),
       (error2) => {
         console.error("clayjs: the conflict notice could not be downloaded; it will try again on the next conflict", error2);
         loading2 = false;
@@ -25147,35 +25561,15 @@ ${entry.now}`;
   function log(...args) {
     if (saveFreeze.debug) console.log("[save-freeze]", ...args);
   }
-  function authoredInnerHTML(el10) {
-    const html = el10.innerHTML;
-    if (!el10.querySelector(`[${ROUTE_ACTIVE_ATTR}]`) && !html.includes("ephemeral") && !html.includes("<dialog")) return html;
-    const copy9 = el10.cloneNode(true);
-    for (const s3 of copy9.querySelectorAll(`[${ROUTE_ACTIVE_ATTR}]`)) s3.removeAttribute(ROUTE_ACTIVE_ATTR);
-    for (const child of copy9.children) stripEphemeral(child);
-    return copy9.innerHTML;
-  }
-  function capture(el10) {
-    if (!originals.has(el10)) {
-      originals.set(el10, authoredInnerHTML(el10));
-      log("captured original", originals.get(el10).substring(0, 80) + "...");
-    }
-  }
-  function captureAll() {
-    const els = document.querySelectorAll(FREEZE_SELECTOR);
-    log("captureAll found", els.length, "elements");
-    for (const el10 of els) {
-      capture(el10);
-    }
-  }
   function freezeSnapshot(clone, provenance) {
     pending3 = /* @__PURE__ */ new WeakMap();
     const cloneElements = clone.querySelectorAll(FREEZE_SELECTOR);
     log("freezing clone:", cloneElements.length);
     for (const cloneElement of cloneElements) {
       const liveElement = provenance.original(cloneElement);
-      if (!liveElement || !originals.has(liveElement)) continue;
-      const original = originals.get(liveElement);
+      if (!liveElement) continue;
+      const original = frozenOriginal(liveElement);
+      if (original === void 0) continue;
       pending3.set(cloneElement, original);
       if (cloneElement.innerHTML !== original) {
         log("restoring original");
@@ -25196,27 +25590,16 @@ ${entry.now}`;
     log("init, isEditMode:", isEditMode);
     if (!isEditMode) return;
     captureAll();
-    mutation_default.onAddElement({
-      selectorFilter: FREEZE_SELECTOR,
-      require: "observed",
-      pausable: false,
-      debounce: 0
-    }, (changes2) => {
-      changes2.forEach(({ element: element3 }) => capture(element3));
-    });
     onSnapshot(freezeSnapshot);
     addDocumentTransform(freezePrepare);
   }
-  var originals, saveFreeze, pending3, save_freeze_default;
+  var saveFreeze, pending3, save_freeze_default;
   var init_save_freeze = __esm({
     "src/attrs/save-freeze.js"() {
       init_snapshot();
       init_is_edit_mode();
       init_region_policy();
-      init_root_attrs();
-      init_ephemeral();
-      init_mutation();
-      originals = /* @__PURE__ */ new WeakMap();
+      init_preserve_authored();
       saveFreeze = { debug: false };
       pending3 = /* @__PURE__ */ new WeakMap();
       init12();
@@ -28364,19 +28747,19 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         }
         function li5(e20, t2 = {}, n3 = document, i2 = rn4(n3)) {
           let r45 = n3.createElement("template");
-          return r45.innerHTML = i2.sanitize(String(e20 || ""), ui6(t2)), hi5(r45.content), r45.innerHTML;
+          return r45.innerHTML = i2.sanitize(String(e20 || ""), ui8(t2)), hi5(r45.content), r45.innerHTML;
         }
         function ci5(e20, t2 = {}, n3 = rn4(e20.ownerDocument)) {
           let r45 = e20.ownerDocument.createElement("div");
           for (; e20.firstChild; ) r45.appendChild(e20.firstChild);
-          for (n3.sanitize(r45, { ...ui6(t2), IN_PLACE: true }), hi5(r45); r45.firstChild; ) e20.appendChild(r45.firstChild);
+          for (n3.sanitize(r45, { ...ui8(t2), IN_PLACE: true }), hi5(r45); r45.firstChild; ) e20.appendChild(r45.firstChild);
           return e20;
         }
         function fl4(e20, t2 = {}, n3 = document, i2 = rn4(n3)) {
-          let r45 = i2.sanitize(String(e20 || ""), { ...ui6(t2), RETURN_DOM_FRAGMENT: true }), o3 = r45?.ownerDocument === n3 ? r45 : n3.importNode(r45, true);
+          let r45 = i2.sanitize(String(e20 || ""), { ...ui8(t2), RETURN_DOM_FRAGMENT: true }), o3 = r45?.ownerDocument === n3 ? r45 : n3.importNode(r45, true);
           return hi5(o3), o3 || n3.createDocumentFragment();
         }
-        function ui6(e20) {
+        function ui8(e20) {
           return { ...dl4, ...e20 };
         }
         var pl4 = /* @__PURE__ */ new Set(["http", "https", "mailto", "tel"]), ml4 = new RegExp("[\\u0000-\\u0020\\u007F-\\u009F]", "g");
@@ -29731,10 +30114,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
     const parts = text4.split("|");
     if (parts.length !== 4) return null;
     const frames = parseRanges(parts[1]), ancestors2 = parseRanges(parts[2]);
-    const capture2 = /^([A-Za-z0-9_-]{1,64}):([1-9]\d{0,15})$/.exec(parts[3]);
-    if (!frames || !ancestors2 || !capture2 || !integer(capture2[2])) return null;
+    const capture = /^([A-Za-z0-9_-]{1,64}):([1-9]\d{0,15})$/.exec(parts[3]);
+    if (!frames || !ancestors2 || !capture || !integer(capture[2])) return null;
     if (rangeCount(frames) + rangeCount(ancestors2) + 1 > RANGE_LIMIT) return null;
-    const id = [capture2[1], Number(capture2[2])];
+    const id = [capture[1], Number(capture[2])];
     if (contains2(ancestors2, ...id)) return null;
     return { v: 2, frames, ancestors: ancestors2, capture: id };
   }
@@ -30105,9 +30488,9 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   }
   function applyInPlace(root3, op) {
     if (op.op === "set") {
-      const current4 = readPath(root3, op.path);
-      if (isContainer2(current4) && isContainer2(op.value) && Array.isArray(current4) === Array.isArray(op.value)) {
-        assignDeep(current4, cloneJson(op.value));
+      const current5 = readPath(root3, op.path);
+      if (isContainer2(current5) && isContainer2(op.value) && Array.isArray(current5) === Array.isArray(op.value)) {
+        assignDeep(current5, cloneJson(op.value));
         return;
       }
     }
@@ -30718,7 +31101,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
     let buffered = [];
     let fetching = false;
     let stopped2 = false;
-    let inFlight3 = false;
+    let inFlight4 = false;
     let flying = null;
     let lastSentAt = -Infinity;
     let holdUntil = 0;
@@ -30770,7 +31153,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       onApplied();
     }
     function schedule2() {
-      if (timer !== null || inFlight3 || stopped2) return;
+      if (timer !== null || inFlight4 || stopped2) return;
       const t2 = now3();
       const delay = Math.max(0, lastSentAt + MIN_GAP_MS2 - t2, holdUntil - t2);
       timer = setTimer(() => {
@@ -30804,7 +31187,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       return null;
     }
     async function flush() {
-      if (inFlight3 || stopped2 || !connected2 || !synced || conn === null) return;
+      if (inFlight4 || stopped2 || !connected2 || !synced || conn === null) return;
       const next = nextFrame();
       if (!next) return;
       const { name, lane, frame } = next;
@@ -30817,7 +31200,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       frame.sent = true;
       tell3(name, { phase: "sent", n: frame.n, first: frame.first, through: frame.through });
       frame.refused = false;
-      inFlight3 = true;
+      inFlight4 = true;
       flying = frame;
       lastSentAt = now3();
       let result2;
@@ -30826,7 +31209,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       } catch {
         result2 = null;
       }
-      inFlight3 = false;
+      inFlight4 = false;
       flying = null;
       if (stopped2) return;
       if (frame.undecided) decide(name, lane, frame, result2 || { status: 0 });
@@ -31495,7 +31878,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         body2 = null;
         for (const timer of timers) clearTimer(timer);
         timers.clear();
-        for (const controller of controllers) controller.abort();
+        for (const controller2 of controllers) controller2.abort();
         controllers.clear();
       }
       function apply3(saveId, requestHash) {
@@ -31527,17 +31910,17 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         if (terminal) return;
         const remaining = deadline - now3();
         if (remaining <= 0) return;
-        const controller = new AbortController();
-        controllers.add(controller);
-        const timer = addTimer(() => controller.abort(), Math.min(QUERY_TIMEOUT_MS, remaining));
+        const controller2 = new AbortController();
+        controllers.add(controller2);
+        const timer = addTimer(() => controller2.abort(), Math.min(QUERY_TIMEOUT_MS, remaining));
         let answer = null;
         try {
-          answer = await query2({ saveId, requestHash: hash, signal: controller.signal });
+          answer = await query2({ saveId, requestHash: hash, signal: controller2.signal });
         } catch (_7) {
           answer = null;
         } finally {
           dropTimer(timer);
-          controllers.delete(controller);
+          controllers.delete(controller2);
         }
         if (terminal) return;
         if (positive2(answer, saveId, hash)) apply3(saveId, hash);
@@ -31606,11 +31989,11 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   });
 
   // src/live/server-lane.js
-  function dataUrl2() {
+  function dataUrl3() {
     return new URL(DATA_PATH, window.location.origin);
   }
   async function relayData(clientId, frame) {
-    const url = dataUrl2();
+    const url = dataUrl3();
     url.searchParams.set("client-id", clientId);
     try {
       const response = await fetch(url.href, {
@@ -31631,7 +32014,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
     }
   }
   async function fetchLiveState(clientId, since = null, { signal } = {}) {
-    const url = dataUrl2();
+    const url = dataUrl3();
     if (clientId) url.searchParams.set("client-id", clientId);
     if (since && typeof since.epoch === "string" && Number.isInteger(since.seq)) url.searchParams.set("since", `${since.epoch}:${since.seq}`);
     try {
@@ -32652,7 +33035,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         const entry = entries.get(name);
         if (!entry) return false;
         if (entry.recovery) return true;
-        if (inFlight2(entry)) {
+        if (inFlight3(entry)) {
           entry.withheld = true;
           return true;
         }
@@ -32664,7 +33047,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         for (const entry of entries.values()) {
           endRefresh(entry);
           if (entry.recovery) continue;
-          if (!inFlight2(entry)) giveUp(entry, { read: false });
+          if (!inFlight3(entry)) giveUp(entry, { read: false });
         }
       }
     };
@@ -32751,8 +33134,8 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   }
   function textOf2(entry) {
     const fastMode = entry.store.handle.status.mode === "fast";
-    const current4 = fastMode ? entry.store.authoritative : entry.store.value;
-    const value = fastMode && /^page(\.[0-9]+)?$/.test(entry.store.name) ? captureYValue(current4) : current4;
+    const current5 = fastMode ? entry.store.authoritative : entry.store.value;
+    const value = fastMode && /^page(\.[0-9]+)?$/.test(entry.store.name) ? captureYValue(current5) : current5;
     if (entry.layout === "lines") return serializeLines(value);
     return entry.layout === "pretty" ? JSON.stringify(value, null, 2).replace(/</g, "\\u003c") : serializeLive(value);
   }
@@ -32991,7 +33374,7 @@ ${Object.entries(inner).map(([k8, v9]) => `${serializeLive(k8)}:${serializeLive(
       if (isEditMode && (!fast || fast.isWriter())) checkpoints.soon();
     });
   }
-  var NAME, entries, captureAuthor, captureNumber, anonymousCaptures, HOLD_MS, capturePins, wireCaptureId, unsentCaptureId, sending, history2, recoveries, onWire, inFlight2, fileWaiters, checkpoints, fast, laneRequested, serverLane, provenanceHost, local, closing, laneReady, writerReady, settleLane, settleWriter, isObject, live_default;
+  var NAME, entries, captureAuthor, captureNumber, anonymousCaptures, HOLD_MS, capturePins, wireCaptureId, unsentCaptureId, sending, history2, recoveries, onWire, inFlight3, fileWaiters, checkpoints, fast, laneRequested, serverLane, provenanceHost, local, closing, laneReady, writerReady, settleLane, settleWriter, isObject, live_default;
   var init_live = __esm({
     "src/plugins/live.js"() {
       init_provenance();
@@ -33028,7 +33411,7 @@ ${Object.entries(inner).map(([k8, v9]) => `${serializeLive(k8)}:${serializeLive(
         return capturePins.get(wireCaptureId)?.get(name)?.key === key3;
       };
       registerUnsavedState({ id: "live:held", isPending: () => [...entries.values()].some((entry) => endedCapture(entry)) });
-      inFlight2 = (entry) => [...entry.captureOps].some(([key3, captured]) => !captured.ended && onWire(entry.store.name, key3));
+      inFlight3 = (entry) => [...entry.captureOps].some(([key3, captured]) => !captured.ended && onWire(entry.store.name, key3));
       fileWaiters = /* @__PURE__ */ new Set();
       checkpoints = createCheckpoints({
         needsSave: unsavedLiveChanges,
@@ -33087,10 +33470,10 @@ ${Object.entries(inner).map(([k8, v9]) => `${serializeLive(k8)}:${serializeLive(
               fast?.refresh();
               throw Object.assign(new Error(message2), { code: "provenance-unsupported" });
             }
-            const capture2 = captureLineage(entry, forSave);
-            if (capture2) {
-              tag.element.setAttribute("live-at", capture2.at);
-              tag.element.setAttribute("live-by", capture2.by);
+            const capture = captureLineage(entry, forSave);
+            if (capture) {
+              tag.element.setAttribute("live-at", capture.at);
+              tag.element.setAttribute("live-by", capture.by);
             } else {
               tag.element.removeAttribute("live-at");
               tag.element.removeAttribute("live-by");
@@ -33114,14 +33497,14 @@ ${Object.entries(inner).map(([k8, v9]) => `${serializeLive(k8)}:${serializeLive(
           const resent = mode3 === "file" ? endedCapture(entry) : null;
           const pending5 = entry.store.pendingEntries().map((e20) => e20.id);
           const carried = resent ? resent[1].ids.filter((id) => pending5.includes(id)) : mode3 === "file" ? pending5 : [];
-          const capture2 = mode3 === "file" && proof?.v === 2 ? proof.capture : null;
-          const key3 = !carried.length ? null : resent ? resent[0] : capture2 ? JSON.stringify(capture2) : `anonymous:${++anonymousCaptures}`;
+          const capture = mode3 === "file" && proof?.v === 2 ? proof.capture : null;
+          const key3 = !carried.length ? null : resent ? resent[0] : capture ? JSON.stringify(capture) : `anonymous:${++anonymousCaptures}`;
           const mark2 = resent ? resent[1].mark : entry.store.mark;
           stores.set(entry.store.name, { mode: mode3, mark: mark2, canonical: canonical(tag.element.textContent), at: at8, lineage, by: tag.element.getAttribute("live-by"), key: key3, maybeLanded: !!resent, ids: carried });
           if (lineage && !lineage.disk && entry.leftAt) entry.leftAt = { ...entry.leftAt, ancestors: lineage.ancestors };
-          if (capture2 && capture2[0] === captureAuthor) captureNumber = Math.max(captureNumber, capture2[1]);
+          if (capture && capture[0] === captureAuthor) captureNumber = Math.max(captureNumber, capture[1]);
           if (key3) {
-            entry.captureOps.set(key3, { capture: capture2, ids: carried, ended: false, mark: mark2, text: tag.element.textContent, at: tag.element.getAttribute("live-at"), by: tag.element.getAttribute("live-by") });
+            entry.captureOps.set(key3, { capture, ids: carried, ended: false, mark: mark2, text: tag.element.textContent, at: tag.element.getAttribute("live-at"), by: tag.element.getAttribute("live-by") });
             pruneCaptures(entry);
           }
           entry.framesSince = false;
@@ -33993,10 +34376,10 @@ ${Object.entries(inner).map(([k8, v9]) => `${serializeLive(k8)}:${serializeLive(
     for (let t2 = 0; t2 < e20; t2++) r45 = r45.firstChild.content;
     return r45;
   }
-  function ui2(r45, e20, t2) {
+  function ui4(r45, e20, t2) {
     if (e20 <= 0) return r45;
     let n3 = r45.content;
-    return e20 > 1 && (n3 = n3.replaceChild(0, ui2(n3.firstChild, e20 - 1, n3.childCount == 1 ? t2 - 1 : 0))), e20 > 0 && (n3 = r45.type.contentMatch.fillBefore(n3).append(n3), t2 <= 0 && (n3 = n3.append(r45.type.contentMatch.matchFragment(n3).fillBefore(y3.empty, true)))), r45.copy(n3);
+    return e20 > 1 && (n3 = n3.replaceChild(0, ui4(n3.firstChild, e20 - 1, n3.childCount == 1 ? t2 - 1 : 0))), e20 > 0 && (n3 = r45.type.contentMatch.fillBefore(n3).append(n3), t2 <= 0 && (n3 = n3.append(r45.type.contentMatch.matchFragment(n3).fillBefore(y3.empty, true)))), r45.copy(n3);
   }
   function Mn(r45, e20, t2, n3, i2) {
     let s3 = r45.node(e20), o3 = i2 ? r45.indexAfter(e20) : r45.index(e20);
@@ -38000,7 +38383,7 @@ ${Object.entries(inner).map(([k8, v9]) => `${serializeLive(k8)}:${serializeLive(
           for (; f3 < l2.childCount; ) {
             let m7 = l2.child(f3), g7 = h.matchType(m7.type);
             if (!g7) break;
-            f3++, (f3 > 1 || a2 == 0 || m7.content.size) && (h = g7, c4.push(ui2(m7.mark(u4.allowedMarks(m7.marks)), f3 == 1 ? a2 : 0, f3 == l2.childCount ? d2 : -1)));
+            f3++, (f3 > 1 || a2 == 0 || m7.content.size) && (h = g7, c4.push(ui4(m7.mark(u4.allowedMarks(m7.marks)), f3 == 1 ? a2 : 0, f3 == l2.childCount ? d2 : -1)));
           }
           let p5 = f3 == l2.childCount;
           p5 || (d2 = -1), this.placed = mt2(this.placed, t2, y3.from(c4)), this.frontier[t2].match = h, p5 && d2 < 0 && n3 && n3.type == this.frontier[this.depth].type && this.frontier.length > 1 && this.closeFrontierNode();
@@ -41518,8 +41901,8 @@ ${Object.entries(inner).map(([k8, v9]) => `${serializeLive(k8)}:${serializeLive(
     });
     const points = series.flatMap((item) => item.points);
     const values = points.map((point2) => point2.value).filter((value) => value !== null);
-    let min = values.length ? values.reduce((current4, value) => Math.min(current4, value), Infinity) : 0;
-    let max = values.length ? values.reduce((current4, value) => Math.max(current4, value), -Infinity) : 1;
+    let min = values.length ? values.reduce((current5, value) => Math.min(current5, value), Infinity) : 0;
+    let max = values.length ? values.reduce((current5, value) => Math.max(current5, value), -Infinity) : 1;
     if (chart.type === "bar") {
       min = Math.min(min, 0);
       max = Math.max(max, 0);
@@ -42284,7 +42667,7 @@ ${parts.join("\n")}
       }
     }
   }
-  var Gi2, zi2, Ge3, A3, ze3, L3, Kr2, Yr2, rt3, He3, Wr2, Y3, Je3, de3, Zr2, st3, Dt3, B3, yt3, Xe3, it3, Ol2, Pe3, Tt3, Fn2, Nl2, Qr2, Ll2, Bl2, ge3, Hi2, Ml2, Ji2, Xi2, Pi2, Ki2, qn2, Yi2, Vt3, Wi2, ts2, vt2, Ke3, xt3, kt3, Zi2, q3, Qi2, D2, Mt3, g2, we3, Gn2, to2, eo2, no2, lt3, is2, Rt3, $3, zn2, ro2, so2, io2, ns2, oo2, Lt2, me3, rs2, bt3, ss2, Bt3, Ye3, G3, z2, T3, Ze3, os2, lo2, ao2, $t3, V3, Jn2, ho2, F3, St3, w3, xe3, uo2, fo2, ht3, Xn2, po2, go2, mo2, wo2, Ft3, ye3, _t2, jt3, We3, Fl2, cs2, Pn2, xo, ls2, Qe3, Kn2, Gl2, Yn2, Wn2, hs2, _o2, us2, Et3, tn2, ds2, fs2, Uo2, ps3, be3, gs2, qt3, ke3, Qn2, Co2, tr2, _e3, nr2, Se3, ms2, Gt3, en2, zl2, W3, Ao2, Io2, sr2, Ee3, ws2, ys2, Do2, xs2, bs2, To2, vo2, Vo2, Oo2, No2, Lo2, ks2, ir2, Z3, or2, rn2, cr2, lr2, Ro2, Ss2, sn2, Fo2, ar2, hr2, v4, Ue3, E3, Jl2, Ce3, I2, Xl2, Xt3, mn2, Es2, jo2, Us2, ur2, Pl2, qo2, on2, Go2, cn2, Kl2, Yl2, gn2, ln2, zo2, Ho2, Jo2, an2, Cs2, Xo2, hn2, Po2, Wl2, un2, As2, Ko2, Yo2, dn2, Wo2, Zl2, Zo2, dr2, Qo2, tc, fr2, Ql2, Ht3, Kt3, fn2, Is2, pn2, ec, gr2, nc, Ds2, ta3, Jt3, Ts2, Pt2, vs2, wn2, rc, Vs2, ea3, na3, yn2, sc, ra3, sa3, ic, ia3, Ae3, _s3, pr2, oc, Os2, zt3, Ut3, ca3, la3, aa3, ha3, Ns2, lc, ac, ua3, da3, hc, fa3, uc, pa3, Q3, Ie3, De2, mr2, wr2, yr2, Te3, xr2, Yt3, br2, Ls2, ga3, gc, mc, Bs2, xn2, kr2, Ms2, Rs2, $s2, bn2, Ve2, gt3, Qt3, kc, ae3, Mr2, te3, Oe3, Rr2, ci2, tt3, ot3, Gs2, Sc, li2, Ct3, At2, H2, Cn2, j3, mt3, ct3, ee3, X3, _c, $r2, Ec, Uc, Cc, ai2, Fr2, Ac, Ic, hi2, ui3, jr2, Dc, Tc, Aa3, _r2, zs2, Hs2, Js2, di2, pt3, Wt3, m3, fi2, An2, Ne3, Er2, vc, kn2, va2, Nc, Na3, In2, pi2, $a2, ut3, Ur2, Dn2, qe3, _2, gi2, P3, Rc, Zt3, Cr2, M3, Ys2, $c, mi2, Ar2, Ws2, Zs2, En2, wi2, yi2, xi2, x3, Ir2, Qs2, ti2, ei2, et3, Le3, Gc, zc, Jc, Tn2, bi2, ki2, dt3, qr2, Bn2, Xc, ni2, ne3, Pc, O3, _i2, Gr2, Dr2, Kc, Ei2, Yc, Mn2, Be3, Rn2, U3, Ui2, Ci2, Me3, Ai2, Wc, Ii2, vn2, Di2, Ti2, Zc, vi2, Vn2, zr2, Hr2, Vi2, Oi2, Qc, Sn2, Tr2, re2, tl2, vr2, se3, el4, ft2, Re3, ri2, _n2, Ni2, he3, Li2, Bi2, Sr2, si2, Mi2, nl2, rl2, sl2, ii2, Vr2, $e3, il2, ve3, ie3, ol2, oe3, cl2, Or2, On2, ll2, Nr2, al2, Fe3, hl2, R4, ce3, ul2, je3, dl2, Ri2, le3, fl2, wt3, pl2, C3, gl2, Nn2, ml2, wl2, It3, yl2, nt3, xl2, bl2, kl2, Sl2, _l2, El2, Ul2, Cl2, Al2, K3, Il2, Lr2, Jr2, Ln2, oi2, $i2, b2, Fi2, Dl2, Tl2, N3, ji2, qi2;
+  var Gi2, zi2, Ge3, A3, ze3, L3, Kr2, Yr2, rt3, He3, Wr2, Y3, Je3, de3, Zr2, st3, Dt3, B3, yt3, Xe3, it3, Ol2, Pe3, Tt3, Fn2, Nl2, Qr2, Ll2, Bl2, ge3, Hi2, Ml2, Ji2, Xi2, Pi2, Ki2, qn2, Yi2, Vt3, Wi2, ts2, vt2, Ke3, xt3, kt3, Zi2, q3, Qi2, D2, Mt3, g2, we3, Gn2, to2, eo2, no2, lt3, is2, Rt3, $3, zn2, ro2, so2, io2, ns2, oo2, Lt2, me3, rs2, bt3, ss2, Bt3, Ye3, G3, z2, T3, Ze3, os2, lo2, ao2, $t3, V3, Jn2, ho2, F3, St3, w3, xe3, uo2, fo2, ht3, Xn2, po2, go2, mo2, wo2, Ft3, ye3, _t2, jt3, We3, Fl2, cs2, Pn2, xo, ls2, Qe3, Kn2, Gl2, Yn2, Wn2, hs2, _o2, us2, Et3, tn2, ds2, fs2, Uo2, ps3, be3, gs2, qt3, ke3, Qn2, Co2, tr2, _e3, nr2, Se3, ms2, Gt3, en2, zl2, W3, Ao2, Io2, sr2, Ee3, ws2, ys2, Do2, xs2, bs2, To2, vo2, Vo2, Oo2, No2, Lo2, ks2, ir2, Z3, or2, rn2, cr2, lr2, Ro2, Ss2, sn2, Fo2, ar2, hr2, v4, Ue3, E3, Jl2, Ce3, I2, Xl2, Xt3, mn2, Es2, jo2, Us2, ur2, Pl2, qo2, on2, Go2, cn2, Kl2, Yl2, gn2, ln2, zo2, Ho2, Jo2, an2, Cs2, Xo2, hn2, Po2, Wl2, un2, As2, Ko2, Yo2, dn2, Wo2, Zl2, Zo2, dr2, Qo2, tc, fr2, Ql2, Ht3, Kt3, fn2, Is2, pn2, ec, gr2, nc, Ds2, ta3, Jt3, Ts2, Pt2, vs2, wn2, rc, Vs2, ea3, na3, yn2, sc, ra3, sa3, ic, ia3, Ae3, _s3, pr2, oc, Os2, zt3, Ut3, ca3, la3, aa3, ha3, Ns2, lc, ac, ua3, da3, hc, fa3, uc, pa3, Q3, Ie3, De2, mr2, wr2, yr2, Te3, xr2, Yt3, br2, Ls2, ga3, gc, mc, Bs2, xn2, kr2, Ms2, Rs2, $s2, bn2, Ve2, gt3, Qt3, kc, ae3, Mr2, te3, Oe3, Rr2, ci2, tt3, ot3, Gs2, Sc, li2, Ct3, At2, H2, Cn2, j3, mt3, ct3, ee3, X3, _c, $r2, Ec, Uc, Cc, ai2, Fr2, Ac, Ic, hi2, ui5, jr2, Dc, Tc, Aa3, _r2, zs2, Hs2, Js2, di2, pt3, Wt3, m3, fi2, An2, Ne3, Er2, vc, kn2, va2, Nc, Na3, In2, pi2, $a2, ut3, Ur2, Dn2, qe3, _2, gi2, P3, Rc, Zt3, Cr2, M3, Ys2, $c, mi2, Ar2, Ws2, Zs2, En2, wi2, yi2, xi2, x3, Ir2, Qs2, ti2, ei2, et3, Le3, Gc, zc, Jc, Tn2, bi2, ki2, dt3, qr2, Bn2, Xc, ni2, ne3, Pc, O3, _i2, Gr2, Dr2, Kc, Ei2, Yc, Mn2, Be3, Rn2, U3, Ui2, Ci2, Me3, Ai2, Wc, Ii2, vn2, Di2, Ti2, Zc, vi2, Vn2, zr2, Hr2, Vi2, Oi2, Qc, Sn2, Tr2, re2, tl2, vr2, se3, el4, ft2, Re3, ri2, _n2, Ni2, he3, Li2, Bi2, Sr2, si2, Mi2, nl2, rl2, sl2, ii2, Vr2, $e3, il2, ve3, ie3, ol2, oe3, cl2, Or2, On2, ll2, Nr2, al2, Fe3, hl2, R4, ce3, ul2, je3, dl2, Ri2, le3, fl2, wt3, pl2, C3, gl2, Nn2, ml2, wl2, It3, yl2, nt3, xl2, bl2, kl2, Sl2, _l2, El2, Ul2, Cl2, Al2, K3, Il2, Lr2, Jr2, Ln2, oi2, $i2, b2, Fi2, Dl2, Tl2, N3, ji2, qi2;
   var init_yjs_vendor = __esm({
     "src/vendor/yjs.vendor.js"() {
       Gi2 = Object.defineProperty;
@@ -43805,7 +44188,7 @@ ${n3.toString()}`);
         $r2(e20, t2.store, n3), tt3(e20, ci2(t2.store));
       };
       Ic = (e20, t2 = new Uint8Array([0]), n3 = new X3()) => {
-        let r45 = ui3(t2);
+        let r45 = ui5(t2);
         Ac(n3, e20, r45);
         let s3 = [n3.toUint8Array()];
         if (e20.store.pendingDs && s3.push(e20.store.pendingDs), e20.store.pendingStructs && s3.push(bi2(e20.store.pendingStructs.update, t2)), s3.length > 1) {
@@ -43822,7 +44205,7 @@ ${n3.toString()}`);
         }
         return t2;
       };
-      ui3 = (e20) => hi2(new At2(V3(e20)));
+      ui5 = (e20) => hi2(new At2(V3(e20)));
       jr2 = (e20, t2) => (g2(e20.restEncoder, t2.size), Y3(t2.entries()).sort((n3, r45) => r45[0] - n3[0]).forEach(([n3, r45]) => {
         g2(e20.restEncoder, n3), g2(e20.restEncoder, r45);
       }), e20);
@@ -44291,7 +44674,7 @@ ${n3.toString()}`);
         return tt3(o3, h), o3.toUint8Array();
       };
       bi2 = (e20, t2, n3 = j3, r45 = X3) => {
-        let s3 = ui3(t2), i2 = new r45(), o3 = new Le3(i2), c4 = new n3(V3(e20)), l2 = new et3(c4, false);
+        let s3 = ui5(t2), i2 = new r45(), o3 = new Le3(i2), c4 = new n3(V3(e20)), l2 = new et3(c4, false);
         for (; l2.curr; ) {
           let a2 = l2.curr, u4 = a2.id.client, d2 = s3.get(u4) || 0;
           if (l2.curr.constructor === N3) {
@@ -46664,8 +47047,8 @@ ${n3.toString()}`);
       const scratch = new Ct3();
       for (const [, v9] of entriesOf2(y6)) Fr2(scratch, dec(v9), NET);
       const sv = Aa3(scratch);
-      const mine = ui3(Aa3(ydoc));
-      const theirs = ui3(sv);
+      const mine = ui5(Aa3(ydoc));
+      const theirs = ui5(sv);
       if (svEqual(mine, theirs) && sameDeletes(ydoc, scratch)) {
         scratch.destroy();
         wantReconcile = false;
@@ -46760,13 +47143,13 @@ ${n3.toString()}`);
     }
     const clientsOf = (y6) => {
       const clients = /* @__PURE__ */ new Set();
-      for (const [, v9] of entriesOf2(y6 ?? {})) for (const c4 of ui3(zc(dec(v9))).keys()) clients.add(c4);
+      for (const [, v9] of entriesOf2(y6 ?? {})) for (const c4 of ui5(zc(dec(v9))).keys()) clients.add(c4);
       return clients;
     };
     const started5 = new Map(initial);
     const sharesLineage = (y6) => {
       const theirs = clientsOf(y6);
-      const mine = [...ui3(Aa3(ydoc)).keys()];
+      const mine = [...ui5(Aa3(ydoc)).keys()];
       if (!theirs.size || !mine.length || mine.some((c4) => theirs.has(c4))) return true;
       return entriesOf2(y6 ?? {}).some(([k8, v9]) => started5.get(k8) === v9);
     };
@@ -47165,22 +47548,22 @@ ${n3.toString()}`);
     }
     const stream2 = [...items.values()].sort((a2, b7) => a2.item.at - b7.item.at);
     const blocks = [{ ...root3, author: authorOf(index.resolve(ordered[0].source).client), runs: [] }];
-    let current4 = blocks[0];
+    let current5 = blocks[0];
     for (const entry of stream2) {
       const item = entry.item;
       if (item.kind === "marker") {
         if (index.boundaryOf({ client: item.client, clock: item.clock })?.kind === "restore") continue;
-        if (!item.blockId || item.blockId === current4.id) continue;
+        if (!item.blockId || item.blockId === current5.id) continue;
         const boundary3 = effective(item.blockId, { client: item.client, clock: item.clock });
-        current4 = { ...boundary3, author: authorOf(index.resolve({ client: item.client, clock: item.clock }).client), runs: [] };
-        blocks.push(current4);
+        current5 = { ...boundary3, author: authorOf(index.resolve({ client: item.client, clock: item.clock }).client), runs: [] };
+        blocks.push(current5);
         continue;
       }
       if (item.kind === "text") {
         for (let offset = 0; offset < item.length; offset++) {
-          pushRun(current4.runs, runOf(index, { ...item, clock: item.clock + offset, length: 1, text: item.text[offset] }, entry.vectors, current4.type, visible));
+          pushRun(current5.runs, runOf(index, { ...item, clock: item.clock + offset, length: 1, text: item.text[offset] }, entry.vectors, current5.type, visible));
         }
-      } else pushRun(current4.runs, runOf(index, item, entry.vectors, current4.type, visible));
+      } else pushRun(current5.runs, runOf(index, item, entry.vectors, current5.type, visible));
     }
     const out = {
       source: sourceKey,
@@ -47989,7 +48372,7 @@ ${n3.toString()}`);
     const badAfter = (ids, afterId) => afterId !== void 0 && afterId !== null && !ids.includes(afterId);
     const withBoard = (blockId, run5) => {
       const board = boardAt(blockId);
-      return board ? run5(board, copy5(board)) : refuse("missing-board");
+      return board ? run5(board, copy5(board)) : refuse3("missing-board");
     };
     return {
       read: (blockId) => boardAt(blockId),
@@ -47998,55 +48381,55 @@ ${n3.toString()}`);
         return recoveredSource(blockId) ? { columns: {}, cards: {} } : removedBoardEntities(pd.boardFields, blockId);
       },
       createColumn: (blockId, { name = "", afterId } = {}) => withBoard(blockId, (board, after) => {
-        if (typeof name !== "string") return refuse("invalid-value");
+        if (typeof name !== "string") return refuse3("invalid-value");
         const ids = orderedIds(board.columns);
-        if (badAfter(ids, afterId)) return refuse("missing-destination");
+        if (badAfter(ids, afterId)) return refuse3("missing-destination");
         const id = newId2("c");
         after.columns[id] = { pos: place4(after.columns, ids, indexAfter(ids, afterId)), name };
         return commit2(blockId, board, after, { status: "created", id });
       }),
       renameColumn: (blockId, columnId, name) => withBoard(blockId, (board, after) => {
-        if (!Object.hasOwn(board.columns, columnId)) return refuse("missing-column");
-        if (typeof name !== "string") return refuse("invalid-value");
+        if (!Object.hasOwn(board.columns, columnId)) return refuse3("missing-column");
+        if (typeof name !== "string") return refuse3("invalid-value");
         if (board.columns[columnId].name === name) return { status: "unchanged" };
         after.columns[columnId].name = name;
         return commit2(blockId, board, after, { status: "changed" });
       }),
       moveColumn: (blockId, columnId, { afterId = null } = {}) => withBoard(blockId, (board, after) => {
-        if (!Object.hasOwn(board.columns, columnId)) return refuse("missing-column");
+        if (!Object.hasOwn(board.columns, columnId)) return refuse3("missing-column");
         const ids = orderedIds(board.columns).filter((id) => id !== columnId);
-        if (badAfter(ids, afterId)) return refuse("missing-destination");
+        if (badAfter(ids, afterId)) return refuse3("missing-destination");
         const index = indexAfter(ids, afterId);
-        const current4 = orderedIds(board.columns);
-        if ([...ids.slice(0, index), columnId, ...ids.slice(index)].every((id, i2) => id === current4[i2])) return { status: "unchanged" };
+        const current5 = orderedIds(board.columns);
+        if ([...ids.slice(0, index), columnId, ...ids.slice(index)].every((id, i2) => id === current5[i2])) return { status: "unchanged" };
         after.columns[columnId].pos = place4(after.columns, ids, index);
         return commit2(blockId, board, after, { status: "moved" });
       }),
       removeColumn: (blockId, columnId) => withBoard(blockId, (board, after) => {
-        if (!Object.hasOwn(board.columns, columnId)) return refuse("missing-column");
+        if (!Object.hasOwn(board.columns, columnId)) return refuse3("missing-column");
         delete after.columns[columnId];
         return commit2(blockId, board, after, { status: "removed", cards: cardsIn(board, columnId).length });
       }),
       restoreColumn: (blockId, columnId) => withBoard(blockId, (board, after) => {
         if (Object.hasOwn(board.columns, columnId)) return { status: "unchanged" };
         const removed = recoveredSource(blockId) ? null : removedBoardEntities(pd.boardFields, blockId).columns[columnId];
-        if (!removed) return refuse("missing-column");
+        if (!removed) return refuse3("missing-column");
         after.columns[columnId] = removed;
         return commit2(blockId, board, after, { status: "restored" });
       }),
       createCard: (blockId, { columnId, title = "", owner = null, due = null, afterId } = {}) => withBoard(blockId, (board, after) => {
-        if (!Object.hasOwn(board.columns, columnId)) return refuse("missing-column");
-        if (!validValue2("title", title) || !validValue2("owner", owner) || !validValue2("due", due)) return refuse("invalid-value");
+        if (!Object.hasOwn(board.columns, columnId)) return refuse3("missing-column");
+        if (!validValue2("title", title) || !validValue2("owner", owner) || !validValue2("due", due)) return refuse3("invalid-value");
         const ids = cardsIn(board, columnId);
-        if (badAfter(ids, afterId)) return refuse("missing-destination");
+        if (badAfter(ids, afterId)) return refuse3("missing-destination");
         const id = newId2("k");
         after.cards[id] = { pos: place4(after.cards, ids, indexAfter(ids, afterId)), col: columnId, title, ...owner !== null ? { owner } : {}, ...due !== null ? { due } : {} };
         return commit2(blockId, board, after, { status: "created", id });
       }),
       editCard: (blockId, cardId, patch) => withBoard(blockId, (board, after) => {
-        if (!Object.hasOwn(board.cards, cardId)) return refuse("missing-card");
-        if (!record3(patch) || !Object.keys(patch).length || Object.keys(patch).some((field) => !CARD_FIELDS.includes(field))) return refuse("invalid-field");
-        if (Object.entries(patch).some(([field, value]) => !validValue2(field, value))) return refuse("invalid-value");
+        if (!Object.hasOwn(board.cards, cardId)) return refuse3("missing-card");
+        if (!record3(patch) || !Object.keys(patch).length || Object.keys(patch).some((field) => !CARD_FIELDS.includes(field))) return refuse3("invalid-field");
+        if (Object.entries(patch).some(([field, value]) => !validValue2(field, value))) return refuse3("invalid-value");
         const next = { ...board.cards[cardId] };
         for (const [field, value] of Object.entries(patch)) {
           if (value === null) delete next[field];
@@ -48057,34 +48440,34 @@ ${n3.toString()}`);
         return commit2(blockId, board, after, { status: "changed" });
       }),
       moveCard: (blockId, cardId, { columnId, afterId = null } = {}) => withBoard(blockId, (board, after) => {
-        if (!Object.hasOwn(board.cards, cardId)) return refuse("missing-card");
-        if (!Object.hasOwn(board.columns, columnId)) return refuse("missing-column");
+        if (!Object.hasOwn(board.cards, cardId)) return refuse3("missing-card");
+        if (!Object.hasOwn(board.columns, columnId)) return refuse3("missing-column");
         const ids = cardsIn(board, columnId, cardId);
-        if (badAfter(ids, afterId)) return refuse("missing-destination");
+        if (badAfter(ids, afterId)) return refuse3("missing-destination");
         const index = indexAfter(ids, afterId);
         const card = board.cards[cardId];
         if (card.col === columnId) {
-          const current4 = cardsIn(board, columnId);
-          if ([...ids.slice(0, index), cardId, ...ids.slice(index)].every((id, i2) => id === current4[i2])) return { status: "unchanged" };
+          const current5 = cardsIn(board, columnId);
+          if ([...ids.slice(0, index), cardId, ...ids.slice(index)].every((id, i2) => id === current5[i2])) return { status: "unchanged" };
         }
         after.cards[cardId] = { ...card, col: columnId, pos: place4(after.cards, ids, index) };
         return commit2(blockId, board, after, { status: "moved" });
       }),
       removeCard: (blockId, cardId) => withBoard(blockId, (board, after) => {
-        if (!Object.hasOwn(board.cards, cardId)) return refuse("missing-card");
+        if (!Object.hasOwn(board.cards, cardId)) return refuse3("missing-card");
         delete after.cards[cardId];
         return commit2(blockId, board, after, { status: "removed" });
       }),
       restoreCard: (blockId, cardId) => withBoard(blockId, (board, after) => {
         if (Object.hasOwn(board.cards, cardId)) return { status: "unchanged" };
         const removed = recoveredSource(blockId) ? null : removedBoardEntities(pd.boardFields, blockId).cards[cardId];
-        if (!removed) return refuse("missing-card");
+        if (!removed) return refuse3("missing-card");
         after.cards[cardId] = removed;
         return commit2(blockId, board, after, { status: "restored" });
       })
     };
   }
-  var refuse, copy5, CARD_FIELDS, DUE, validValue2, record3, place4;
+  var refuse3, copy5, CARD_FIELDS, DUE, validValue2, record3, place4;
   var init_board_commands = __esm({
     "src/page/ybind/board-commands.js"() {
       init_schema();
@@ -48095,7 +48478,7 @@ ${n3.toString()}`);
       init_doc();
       init_recovery2();
       init_board();
-      refuse = (code) => ({ status: "refused", code });
+      refuse3 = (code) => ({ status: "refused", code });
       copy5 = (value) => JSON.parse(JSON.stringify(value));
       CARD_FIELDS = ["title", "owner", "due"];
       DUE = /^\d{4}-\d{2}-\d{2}$/;
@@ -48571,9 +48954,12 @@ ${n3.toString()}`);
         const tr4 = st10.tr;
         let end = b7;
         for (let k8 = a2; k8 <= end; k8++) end = Math.max(end, ents[k8].subEnd);
+        let deep = a2 - 1;
         for (let k8 = a2; k8 <= end && sameRun(ents[k8], first); k8++) {
           tr4.setNodeMarkup(ents[k8].at, null, { ...ents[k8].node.attrs, indent: ents[k8].node.attrs.indent + 1 });
+          deep = k8;
         }
+        tr4.setMeta(MOVE, moveIntent(ents, a2, deep, ents[a2].at, (e20) => e20.i >= a2 && e20.i <= deep ? { indent: e20.node.attrs.indent + 1 } : null));
         dispatch(tr4);
       }
       return true;
@@ -48587,6 +48973,8 @@ ${n3.toString()}`);
         if (parentOf(ents[k8].node) === from) tr4.setNodeMarkup(ents[k8].at, null, { ...ents[k8].node.attrs, parent: to4 });
       }
       if (!ents[s3].node.attrs.open) tr4.setNodeMarkup(ents[s3].at, null, { ...ents[s3].node.attrs, open: true });
+      const intent = moveIntent(ents, a2, hi5, ents[a2].at, (e20) => e20.i >= a2 && e20.i <= hi5 && parentOf(e20.node) === from ? { parent: to4 } : null);
+      tr4.setMeta(MOVE, { ...intent, attrs: ents[s3].node.attrs.open ? intent.attrs : { ...intent.attrs, [to4]: { open: true } } });
       dispatch(tr4);
     }
     return true;
@@ -48599,16 +48987,22 @@ ${n3.toString()}`);
     const first = ents[a2];
     if (isList(first.node) && first.node.attrs.indent > 0) {
       if (dispatch) {
+        const { lo: lo5, hi: hi6 } = siblingSpan(ents, a2, b7);
         const tr4 = st10.tr;
+        const lowered = /* @__PURE__ */ new Set();
         for (let k8 = a2; k8 <= b7; ) {
           const e20 = ents[k8];
           if (isList(e20.node) && e20.node.attrs.indent > 0) {
             for (let m7 = k8; m7 <= e20.subEnd; m7++) {
-              if (isList(ents[m7].node)) tr4.setNodeMarkup(ents[m7].at, null, { ...ents[m7].node.attrs, indent: ents[m7].node.attrs.indent - 1 });
+              if (isList(ents[m7].node)) {
+                tr4.setNodeMarkup(ents[m7].at, null, { ...ents[m7].node.attrs, indent: ents[m7].node.attrs.indent - 1 });
+                lowered.add(m7);
+              }
             }
           }
           k8 = e20.subEnd + 1;
         }
+        tr4.setMeta(MOVE, moveIntent(ents, lo5, hi6, ents[lo5].at, (e20) => lowered.has(e20.i) ? { indent: e20.node.attrs.indent - 1 } : null));
         dispatch(tr4);
       }
       return true;
@@ -48628,6 +49022,7 @@ ${n3.toString()}`);
           const c4 = attrs(ents[k8]);
           if (c4) tr4.setNodeMarkup(ents[k8].at, null, { ...ents[k8].node.attrs, ...c4 });
         }
+        tr4.setMeta(MOVE, moveIntent(ents, lo4, hi5, ents[lo4].at, attrs));
         dispatch(tr4);
       } else dispatch(moveSpanTr(st10, ents, lo4, hi5, ents[end].end, attrs).scrollIntoView());
     }
@@ -49072,7 +49467,7 @@ ${n3.toString()}`);
     }
     function walk2(node, parentKey, target) {
       let line = null;
-      const inline = (n3) => {
+      const inline2 = (n3) => {
         if (!line) {
           line = doc.createElement("p");
           if (parentKey) line.setAttribute("data-page-parent", parentKey);
@@ -49087,11 +49482,11 @@ ${n3.toString()}`);
           continue;
         }
         if (child.nodeType !== 1) {
-          if (child.nodeType === 3 && (line || child.textContent.trim())) inline(child);
+          if (child.nodeType === 3 && (line || child.textContent.trim())) inline2(child);
           continue;
         }
         if (!BLOCK_TAGS2.has(child.tagName) && child.tagName !== "ASIDE") {
-          inline(child);
+          inline2(child);
           continue;
         }
         line = null;
@@ -50295,13 +50690,13 @@ ${n3.toString()}`);
   }
   function insertTableNode(st10, dispatch, table, remove3 = null, attachment = null) {
     const index = st10.selection.$head.index(0);
-    const current4 = st10.doc.child(index);
+    const current5 = st10.doc.child(index);
     let at8 = 0;
     for (let i2 = 0; i2 < index; i2++) at8 += st10.doc.child(i2).nodeSize;
-    const replace3 = current4.isTextblock && (current4.content.size === 0 || remove3?.from === at8 + 1 && remove3?.to === at8 + current4.nodeSize - 1);
+    const replace3 = current5.isTextblock && (current5.content.size === 0 || remove3?.from === at8 + 1 && remove3?.to === at8 + current5.nodeSize - 1);
     const next = st10.doc.maybeChild(index + 1);
-    const pos = replace3 ? current4.attrs.pos : keyBetween(current4.attrs.pos, next?.attrs.pos ?? null);
-    const node = table.type.create({ ...table.attrs, pos, parent: current4.attrs.parent ?? null }, table.content);
+    const pos = replace3 ? current5.attrs.pos : keyBetween(current5.attrs.pos, next?.attrs.pos ?? null);
+    const node = table.type.create({ ...table.attrs, pos, parent: current5.attrs.parent ?? null }, table.content);
     if (dispatch) {
       const tr4 = st10.tr;
       if (remove3) tr4.delete(remove3.from, remove3.to);
@@ -50310,7 +50705,7 @@ ${n3.toString()}`);
       const inserted = replace3 ? mappedAt : mappedAt + currentAfter.nodeSize;
       tr4.replaceWith(inserted, replace3 ? mappedAt + currentAfter.nodeSize : inserted, node);
       if (attachment) {
-        const file = attachment.type.create({ ...attachment.attrs, pos: keyBetween(pos, next?.attrs.pos ?? null), parent: current4.attrs.parent ?? null }, attachment.content);
+        const file = attachment.type.create({ ...attachment.attrs, pos: keyBetween(pos, next?.attrs.pos ?? null), parent: current5.attrs.parent ?? null }, attachment.content);
         tr4.insert(inserted + node.nodeSize, file);
       }
       tr4.setSelection(TextSelection5.create(tr4.doc, cellPos(tr4.doc, inserted, 0, 0)));
@@ -50397,8 +50792,8 @@ ${n3.toString()}`);
           const before = old.get(table.attrs.id), col = table.attrs.sort.col;
           if (!before) return;
           const cells = (node) => Object.fromEntries(node.content.content.map((row) => [row.attrs.id, row.content.content.find((cell) => cell.attrs.col === col)?.textContent]));
-          const previous = cells(before), current4 = cells(table);
-          if (Object.keys(previous).length !== Object.keys(current4).length || Object.keys(previous).some((id) => previous[id] !== current4[id] || !Object.hasOwn(current4, id))) {
+          const previous = cells(before), current5 = cells(table);
+          if (Object.keys(previous).length !== Object.keys(current5).length || Object.keys(previous).some((id) => previous[id] !== current5[id] || !Object.hasOwn(current5, id))) {
             tr4.setNodeMarkup(pos, null, { ...table.attrs, sort: null });
           }
         });
@@ -51046,6 +51441,7 @@ ${n3.toString()}`);
         if (c4) tr4.setNodeMarkup(ents[k8].at, null, { ...ents[k8].node.attrs, ...c4 });
       }
       tr4.setSelection(pick2.map(tr4.doc, tr4.mapping));
+      tr4.setMeta(MOVE, moveIntent(ents, lo4, hi5, target.at, attrs));
     } else {
       tr4 = moveSpanTr(st10, ents, lo4, hi5, target.at, attrs, pick2);
     }
@@ -51326,6 +51722,12 @@ ${n3.toString()}`);
   });
 
   // src/ui/bevel-dialog.js
+  var bevel_dialog_exports = {};
+  __export(bevel_dialog_exports, {
+    bevelDialog: () => bevelDialog,
+    dismissOf: () => dismissOf,
+    keepFocusIn: () => keepFocusIn
+  });
   function keepFocusIn(container, event) {
     const nodes = [...container.querySelectorAll(FOCUSABLE)].filter((node) => node.offsetParent !== null);
     if (!nodes.length) return;
@@ -51594,6 +51996,10 @@ ${n3.toString()}`);
   function currentConfig() {
     return config;
   }
+  function _resetTheme() {
+    config = null;
+    initialized2 = false;
+  }
   var TOKEN_PROPS, STATES, DIALOG, NOTICE, PART_NAMES, SCHEMES, DEFAULT, config, initialized2;
   var init_theme_config = __esm({
     "src/ui/theme-config.js"() {
@@ -51662,6 +52068,20 @@ ${n3.toString()}`);
   });
 
   // src/ui/theme.js
+  var theme_exports = {};
+  __export(theme_exports, {
+    PART_NAMES: () => PART_NAMES,
+    STATES: () => STATES,
+    TOKEN_PROPS: () => TOKEN_PROPS,
+    _resetTheme: () => _resetTheme,
+    contrast: () => contrast,
+    initTheme: () => initTheme,
+    parseColor: () => parseColor,
+    resolveTheme: () => resolveTheme,
+    samplePage: () => samplePage,
+    theme: () => theme,
+    validValue: () => validValue3
+  });
   function parseColor(value) {
     const v9 = String(value).trim().toLowerCase();
     let m7 = /^#([0-9a-f]{3}|[0-9a-f]{6})$/.exec(v9);
@@ -52876,9 +53296,6 @@ ${n3.toString()}`);
     if (node.type === N11.list_item && item.type === "list_item") keep2.indent = node.attrs.indent;
     return tr4.setBlockType(at8 + 1, at8 + node.nodeSize - 1, N11[item.type], { ...keep2, ...item.attrs || {} });
   }
-  function turnInto(st10, index, item) {
-    return st10.doc.child(index).isTextblock ? retype(st10.tr, index, item) : null;
-  }
   function insertAfter(st10, index, tr4 = st10.tr) {
     const ents = outline(tr4.doc);
     const { to: to4 } = subtreeRange(ents, index);
@@ -52909,20 +53326,33 @@ ${n3.toString()}`);
     ]);
     return tr4.setSelection(TextSelection7.create(tr4.doc, to4 + 2));
   }
+  function subsequenceCost(query2, candidate) {
+    if (query2.length < 2 || query2.length > 32) return Infinity;
+    let at8 = -1;
+    let cost = 0;
+    for (const ch of query2) {
+      const next = candidate.indexOf(ch, at8 + 1);
+      if (next < 0) return Infinity;
+      cost += next - at8 - 1;
+      at8 = next;
+    }
+    return cost;
+  }
   function rankItems(items, query2) {
     const q9 = query2.trim().toLowerCase();
     if (!q9) return items;
     const rank = (it9) => {
       const label = it9.label.toLowerCase();
       const names = [it9.key, ...it9.aliases || [], ...it9.hint ? [it9.hint] : []].map((s3) => s3.toLowerCase());
-      if (label === q9 || names.includes(q9)) return 0;
-      if (label.startsWith(q9)) return 1;
-      if ([...label.split(/\s+/), ...names].some((s3) => s3.startsWith(q9))) return 2;
-      if ([label, ...names].some((s3) => s3.includes(q9))) return 3;
-      if (q9.length >= 3 && it9.description && it9.description.toLowerCase().split(/[^a-z0-9]+/).some((w6) => w6.startsWith(q9))) return 4;
-      return Infinity;
+      if (label === q9 || names.includes(q9)) return [0, 0];
+      if (label.startsWith(q9)) return [1, 0];
+      if ([...label.split(/\s+/), ...names].some((s3) => s3.startsWith(q9))) return [2, 0];
+      if ([label, ...names].some((s3) => s3.includes(q9))) return [3, 0];
+      if (q9.length >= 3 && it9.description && it9.description.toLowerCase().split(/[^a-z0-9]+/).some((w6) => w6.startsWith(q9))) return [4, 0];
+      const cost = Math.min(...[label, it9.key, ...it9.aliases || []].map((s3) => subsequenceCost(q9, s3.toLowerCase())));
+      return cost === Infinity ? null : [5, cost];
     };
-    return items.map((it9, order) => ({ it: it9, order, rank: rank(it9) })).filter((x5) => x5.rank !== Infinity).sort((a2, b7) => a2.rank - b7.rank || a2.order - b7.order).map((x5) => x5.it);
+    return items.map((it9, order) => ({ it: it9, order, rank: rank(it9) })).filter((x5) => x5.rank).sort((a2, b7) => a2.rank[0] - b7.rank[0] || a2.rank[1] - b7.rank[1] || a2.order - b7.order).map((x5) => x5.it);
   }
   function runItem(view3, item, index, remove3 = null) {
     const st10 = view3.state;
@@ -52991,6 +53421,135 @@ ${n3.toString()}`);
     }
   });
 
+  // src/page/markdown.js
+  function tableFromMarkdownRow(st10, dispatch) {
+    const { $from, empty } = st10.selection;
+    if (!empty || $from.depth !== 1 || $from.parent.type !== N12.paragraph || $from.parentOffset !== $from.parent.content.size) return false;
+    if (inlineCode(st10, $from.start(), $from.end())) return false;
+    const match = TABLE_ROW.exec($from.parent.textContent);
+    if (!match) return false;
+    const names = match[1].split("|").map((name) => name.trim());
+    if (!names.some(Boolean)) return false;
+    const table = tableFromGrid([names, names.map(() => "")], { header: true });
+    return insertTableNode(st10, dispatch, table, { from: $from.start(), to: $from.end() });
+  }
+  function backspaceToParagraph(st10, dispatch) {
+    const { $from, empty } = st10.selection;
+    if (!empty || $from.depth !== 1 || $from.parentOffset !== 0) return false;
+    const n3 = $from.parent;
+    if (!(n3.type === N12.heading || n3.type === N12.callout || n3.type === N12.code_block && n3.content.size === 0)) return false;
+    if (dispatch) dispatch(asStep(st10.tr.setNodeMarkup($from.before(), N12.paragraph, { id: n3.attrs.id, pos: n3.attrs.pos, parent: n3.attrs.parent })));
+    return true;
+  }
+  var InputRule, N12, inlineCode, blockRule, dividerRule, OPENS, OPENS_ONE, escapeRe, bodyRe, composing, trailingBackslashes, opensAt, inline, inlineRule, markRule, linkRule, INLINE_RULES, LISTS, MARKDOWN_RULES, markdownPlugin, TABLE_ROW, markdownKeys;
+  var init_markdown = __esm({
+    "src/page/markdown.js"() {
+      init_prosemirror_vendor();
+      init_schema();
+      init_items();
+      init_blocksel();
+      init_table2();
+      init_table_paste();
+      init_address();
+      ({ InputRule } = po);
+      N12 = schema.nodes;
+      inlineCode = (st10, start8, end) => st10.doc.rangeHasMark(start8, end, schema.marks.code) || !!schema.marks.code.isInSet(st10.storedMarks || st10.selection.$from.marks());
+      blockRule = (re7, item, from = ["paragraph"], entire = false) => new InputRule(re7, (st10, match, start8, end) => {
+        const $s4 = st10.doc.resolve(start8);
+        if (!st10.selection.empty || $s4.depth !== 1 || $s4.parentOffset !== 0 || !from.includes($s4.parent.type.name)) return null;
+        if (entire && end !== $s4.end() || inlineCode(st10, start8, end)) return null;
+        return asStep(retype(st10.tr.delete(start8, end), $s4.index(0), typeof item === "function" ? item(match) : item));
+      });
+      dividerRule = new InputRule(/^---$/, (st10, match, start8, end) => {
+        const $s4 = st10.doc.resolve(start8);
+        if (!st10.selection.empty || $s4.depth !== 1 || $s4.parent.type !== N12.paragraph || $s4.parentOffset !== 0 || $s4.parent.content.size !== end - start8) return null;
+        if (inlineCode(st10, start8, end)) return null;
+        return asStep(replaceWithDivider(st10.tr, $s4.index(0)));
+      });
+      OPENS = `\\s\\(\\[\\{'\u2018\u201C"`;
+      OPENS_ONE = new RegExp(`[${OPENS}]`);
+      escapeRe = (s3) => s3.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      bodyRe = (exclude) => `([^\\s${exclude}](?:[\\s\\S]*?[^\\s${exclude}])?)`;
+      composing = (event, view3) => !!event?.isComposing || event?.keyCode === 229 || !!view3?.composing;
+      trailingBackslashes = (text4) => {
+        let n3 = 0;
+        for (let i2 = text4.length - 1; i2 >= 0 && text4[i2] === "\\"; i2--) n3++;
+        return n3;
+      };
+      opensAt = (st10, at8) => {
+        const $at = st10.doc.resolve(at8);
+        if (!$at.parent.inlineContent) return false;
+        if (trailingBackslashes($at.parent.textBetween(0, $at.parentOffset, null, "\uFFFC")) % 2) return false;
+        return $at.parentOffset === 0 || OPENS_ONE.test($at.parent.textBetween($at.parentOffset - 1, $at.parentOffset));
+      };
+      inline = (st10, match, start8, end, markOf) => {
+        const mark2 = markOf(match);
+        if (!mark2 || !st10.selection.empty) return null;
+        if (start8 < 0 || start8 > end || end > st10.doc.content.size) return null;
+        const $start = st10.doc.resolve(start8), $end = st10.doc.resolve(end);
+        if (!$start.sameParent($end) || !$start.parent.inlineContent) return null;
+        const [all, prefix, body2, close] = match;
+        if (inlineCode(st10, start8, end)) return null;
+        const open3 = all.slice(prefix.length, all.length - body2.length - close.length);
+        const from = start8 + prefix.length;
+        if (!opensAt(st10, from)) return null;
+        if (trailingBackslashes(all.slice(0, all.length - close.length)) % 2) return null;
+        const pending5 = all.length - (end - start8);
+        if (pending5 < 0) return null;
+        const tr4 = st10.tr;
+        if (pending5) tr4.insertText(all.slice(-pending5), end, end);
+        const bodyStart = from + open3.length;
+        const bodyEnd = bodyStart + body2.length;
+        tr4.delete(bodyEnd, start8 + all.length);
+        tr4.delete(from, bodyStart);
+        tr4.addMark(from, from + body2.length, mark2);
+        tr4.removeStoredMark(mark2.type);
+        return asStep(tr4);
+      };
+      inlineRule = (re7, markOf) => new InputRule(
+        re7,
+        (st10, match, start8, end) => inline(st10, match, start8, end, markOf),
+        { inCodeMark: false }
+      );
+      markRule = (open3, close, type) => inlineRule(
+        new RegExp(`(^|[${OPENS}])${escapeRe(open3)}${bodyRe(escapeRe(close))}(${escapeRe(close)})$`),
+        () => type.create()
+      );
+      linkRule = inlineRule(
+        new RegExp(`(^|[${OPENS}])\\[${bodyRe("\\[\\]")}(\\]\\([^()\\s]*\\))$`),
+        (match) => {
+          const href = safeHref(match[3].slice(2, -1));
+          return href ? schema.marks.link.create({ href }) : null;
+        }
+      );
+      INLINE_RULES = [
+        markRule("**", "**", schema.marks.strong),
+        markRule("__", "__", schema.marks.strong),
+        markRule("*", "*", schema.marks.em),
+        markRule("_", "_", schema.marks.em),
+        markRule("`", "`", schema.marks.code),
+        markRule("~~", "~~", schema.marks.strike),
+        linkRule
+      ];
+      LISTS = ["paragraph", "list_item"];
+      MARKDOWN_RULES = [
+        blockRule(/^(#{1,3})\s$/, (m7) => ({ type: "heading", attrs: { level: m7[1].length } })),
+        blockRule(/^[-*+]\s$/, { type: "list_item", attrs: { kind: "bullet" } }, LISTS),
+        blockRule(/^\d+[.)]\s$/, { type: "list_item", attrs: { kind: "ordered" } }, LISTS),
+        blockRule(/^\[( |x|X)?\]\s$/, (m7) => ({ type: "list_item", attrs: { kind: "check", checked: !!m7[1] && m7[1] !== " " } }), LISTS),
+        blockRule(/^>\s$/, { type: "toggle", attrs: { open: true } }),
+        blockRule(/^```$/, { type: "code_block" }, ["paragraph"], true),
+        dividerRule,
+        ...INLINE_RULES
+      ];
+      markdownPlugin = () => po.inputRules({ rules: MARKDOWN_RULES });
+      TABLE_ROW = /^\s*\|(.*)\|\s*$/;
+      markdownKeys = () => qs.keymap({
+        Enter: (st10, dispatch, view3) => !composing(null, view3) && tableFromMarkdownRow(st10, dispatch)
+      });
+    }
+  });
+
   // src/page/chrome.js
   function blockLink(id, loc = globalThis.location) {
     return `${loc.origin}${loc.pathname}${loc.search}#${encodeURIComponent(id)}`;
@@ -53019,7 +53578,7 @@ ${n3.toString()}`);
     const to4 = st10.selection.$to.after(1);
     const text4 = idx.map((i2) => lineText(st10.doc.child(i2))).join("\n");
     const { id, pos, parent } = first.attrs;
-    const tr4 = st10.tr.replaceWith(from, to4, N12.code_block.create({ id, pos, parent }, text4 ? schema.text(text4) : null));
+    const tr4 = st10.tr.replaceWith(from, to4, N13.code_block.create({ id, pos, parent }, text4 ? schema.text(text4) : null));
     return tr4.setSelection(TextSelection8.create(tr4.doc, from + 1, from + 1 + text4.length));
   }
   function codeLinesTr(st10, idx) {
@@ -53031,7 +53590,7 @@ ${n3.toString()}`);
       for (let k8 = 0; k8 < i2; k8++) at8 += st10.doc.child(k8).nodeSize;
       const node = st10.doc.child(i2);
       const { id, pos, parent } = node.attrs;
-      const lines = node.textContent.split("\n").map((line, k8) => N12.paragraph.create(k8 === 0 ? { id, pos, parent } : { parent }, line ? schema.text(line) : null));
+      const lines = node.textContent.split("\n").map((line, k8) => N13.paragraph.create(k8 === 0 ? { id, pos, parent } : { parent }, line ? schema.text(line) : null));
       tr4.replaceWith(at8, at8 + node.nodeSize, lines);
       if (!end) end = at8 + lines.reduce((n3, l2) => n3 + l2.nodeSize, 0);
     }
@@ -53105,12 +53664,13 @@ ${n3.toString()}`);
           if ($from.depth !== 1 || !$from.parent.isTextblock || $from.parent.type.spec.code) return inserted;
           if ($from.parentOffset > 0 && !/\s/.test(view3.state.doc.textBetween(from - 1, from, "", "\n"))) return inserted;
           if (!inserted) view3.dispatch(view3.state.tr.insertText("/", from, to4).setMeta(HISTORY_INTENT, typingIntent(view3.state, from, to4, "/")));
-          chrome.openMenu("insert", chrome.plus, from + 1);
+          const at8 = Math.min(view3.state.doc.resolve(from).index(0), view3.state.doc.childCount - 1);
+          chrome.openMenu("insert", chrome.plus, from + 1, null, view3.state.doc.child(at8).attrs.id);
           return true;
         },
         handleDOMEvents: {
           keydown(view3, event) {
-            return event.isComposing || view3.composing;
+            return composing(event, view3);
           },
           blur(view3) {
             if (chrome) chrome.bubble.hidden = true;
@@ -53120,7 +53680,7 @@ ${n3.toString()}`);
       }
     });
   }
-  var Plugin8, PluginKey5, TextSelection8, NodeSelection3, M4, N12, MOD, selectedRoots, imageId, blockStart, ACTION_ITEMS, actionsFor, svg2, ICONS, TOOLS, LIST_KINDS, LINE_TYPES, blocksIn, listable, isKind, listActive, lineText, allCode, el6, MOVED_MS, menuCount, chromeKey, chromeFor, slashRangeKey, slashRangeState, slashRangePlugin, holdSlashRange, heldSlashRange, Chrome;
+  var Plugin8, PluginKey5, TextSelection8, NodeSelection3, M4, N13, MOD, selectedRoots, imageId, blockStart, POPUP_ATTRS, TARGET_GONE, ACTION_ITEMS, actionsFor, svg2, ICONS, TOOLS, LIST_KINDS, LINE_TYPES, blocksIn, listable, isKind, listActive, lineText, allCode, el6, MOVED_MS, menuCount, chromeKey, chromeFor, slashRangeKey, slashRangeState, slashRangePlugin, holdSlashRange, heldSlashRange, Chrome;
   var init_chrome = __esm({
     "src/page/chrome.js"() {
       init_prosemirror_vendor();
@@ -53135,10 +53695,12 @@ ${n3.toString()}`);
       init_chart2();
       init_csv_import();
       init_history_intent();
+      init_markdown();
+      init_announce();
       init_items();
       ({ Plugin: Plugin8, PluginKey: PluginKey5, TextSelection: TextSelection8, NodeSelection: NodeSelection3 } = Oi);
       M4 = schema.marks;
-      N12 = schema.nodes;
+      N13 = schema.nodes;
       MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "\u2318" : "Ctrl+";
       selectedRoots = (st10) => {
         const ents = outline(st10.doc);
@@ -53151,6 +53713,8 @@ ${n3.toString()}`);
         for (let i2 = 0; i2 < index; i2++) at8 += doc.child(i2).nodeSize;
         return at8;
       };
+      POPUP_ATTRS = ["aria-haspopup", "aria-controls", "aria-activedescendant"];
+      TARGET_GONE = "That block is no longer available.";
       ACTION_ITEMS = [
         { key: "up", label: "Move up", icon: "\u2191", hint: `${MOD}\u21E7\u2191`, run: (view3) => moveBlock(-1)(view3.state, view3.dispatch) },
         { key: "down", label: "Move down", icon: "\u2193", hint: `${MOD}\u21E7\u2193`, run: (view3) => moveBlock(1)(view3.state, view3.dispatch) },
@@ -53171,8 +53735,8 @@ ${n3.toString()}`);
         if (!(st10.selection instanceof BlockSelection)) return [];
         const roots = selectedRoots(st10);
         const text4 = roots.every((e20) => e20.node.isTextblock);
-        const image = roots.length === 1 && roots[0].node.type === N12.image;
-        const table = roots.length === 1 && roots[0].node.type === N12.table;
+        const image = roots.length === 1 && roots[0].node.type === N13.image;
+        const table = roots.length === 1 && roots[0].node.type === N13.table;
         return ACTION_ITEMS.filter((a2) => a2.only === "text" ? text4 : a2.only === "image" ? image : a2.only === "table" ? table : true);
       };
       svg2 = (body2) => `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body2}</svg>`;
@@ -53211,9 +53775,9 @@ ${n3.toString()}`);
       };
       listable = (st10) => blocksIn(st10).filter((i2) => {
         const n3 = st10.doc.child(i2);
-        return n3.isTextblock && n3.type !== N12.code_block;
+        return n3.isTextblock && n3.type !== N13.code_block;
       });
-      isKind = (node, kind2) => node.type === N12.list_item && node.attrs.kind === kind2;
+      isKind = (node, kind2) => node.type === N13.list_item && node.attrs.kind === kind2;
       listActive = (st10, kind2) => {
         const idx = listable(st10);
         return idx.length > 0 && idx.every((i2) => isKind(st10.doc.child(i2), kind2));
@@ -53221,13 +53785,13 @@ ${n3.toString()}`);
       lineText = (node) => {
         let text4 = "";
         node.forEach((c4) => {
-          text4 += c4.isText ? c4.text : c4.type === N12.hard_break ? "\n" : "";
+          text4 += c4.isText ? c4.text : c4.type === N13.hard_break ? "\n" : "";
         });
         return text4;
       };
       allCode = (st10) => {
         const idx = blocksIn(st10);
-        return idx.length > 0 && idx.every((i2) => st10.doc.child(i2).type === N12.code_block) ? idx : null;
+        return idx.length > 0 && idx.every((i2) => st10.doc.child(i2).type === N13.code_block) ? idx : null;
       };
       el6 = (tag, cls, attrs = {}) => {
         const e20 = document.createElement(tag);
@@ -53268,8 +53832,13 @@ ${n3.toString()}`);
           this.onAiTool = onAiTool;
           this.shell = view3.dom.parentElement;
           this.menu = null;
+          this.priorAria = null;
           this.movedTimer = 0;
           this.hover = null;
+          this.pendingHover = null;
+          this.win = view3.dom.ownerDocument.defaultView ?? globalThis;
+          this.frame = null;
+          this.destroyed = false;
           this.dock = el6("div", "page-dock", { role: "toolbar", "aria-label": "Formatting" });
           this.turn = el6("button", "page-tool page-tool-turn", { type: "button", "aria-haspopup": "menu" });
           this.dock.append(this.turn, el6("span", "page-tool-sep"), ...TOOLS.map(([n3, l2]) => toolButton(n3, l2)));
@@ -53315,10 +53884,14 @@ ${n3.toString()}`);
           this.onKey = () => {
             clearTimeout(this.movedTimer);
             this.shell.classList.remove("is-moved");
+            this.pendingHover = null;
             this.setHover(null);
           };
-          this.onLeave = () => this.setHover(null);
-          this.onResize = () => this.place();
+          this.onLeave = () => {
+            this.pendingHover = null;
+            this.setHover(null);
+          };
+          this.onResize = () => this.scheduleLayout();
           this.onDocDown = (e20) => {
             if (!this.menu) return;
             if ([this.menuEl, this.plus, this.grip, this.turn].some((part) => part.contains(e20.target))) return;
@@ -53328,7 +53901,10 @@ ${n3.toString()}`);
           this.shell.addEventListener("mousemove", this.onMove);
           this.shell.addEventListener("mouseleave", this.onLeave);
           this.shell.addEventListener("keydown", this.onKey);
-          window.addEventListener("resize", this.onResize);
+          this.win.addEventListener("resize", this.onResize);
+          this.win.addEventListener("scroll", this.onResize, true);
+          this.win.visualViewport?.addEventListener("resize", this.onResize);
+          this.win.visualViewport?.addEventListener("scroll", this.onResize);
           this.update(view3, null);
         }
         blockIndex() {
@@ -53338,7 +53914,29 @@ ${n3.toString()}`);
         }
         gutterIndex() {
           if (this.view.dom.ownerDocument.defaultView.matchMedia?.("(max-width: 560px)").matches) return this.blockIndex();
+          this.settleHover();
           return Math.min(this.hover ?? this.blockIndex(), this.view.state.doc.childCount - 1);
+        }
+        // The blocks a menu's commands act on, by id, so a peer's edit between opening
+        // the menu and running the command cannot retarget them.
+        selectionIds() {
+          const st10 = this.view.state;
+          return blocksIn(st10).map((i2) => st10.doc.child(i2).attrs.id);
+        }
+        idIndex(id) {
+          let found = -1;
+          this.view.state.doc.forEach((n3, _7, i2) => {
+            if (n3.attrs.id === id) found = i2;
+          });
+          return found;
+        }
+        // Where Escape sends focus: the control that opened the menu when it can hold
+        // focus, otherwise the editor.
+        invoker() {
+          const m7 = this.menu;
+          if (!m7 || m7.slashAt !== null) return this.view.dom;
+          const a2 = m7.anchor;
+          return a2 && a2 !== this.view.dom && (a2.tagName === "BUTTON" || a2.hasAttribute("tabindex")) ? a2 : this.view.dom;
         }
         gripAction(index) {
           if (this.menu) this.closeMenu();
@@ -53346,32 +53944,47 @@ ${n3.toString()}`);
         }
         trackHover(event) {
           if (this.menu || this.drag.state || [this.plus, this.grip, this.dock, this.bubble].some((part) => part.contains(event.target))) return;
+          this.pendingHover = { clientY: event.clientY };
+          this.scheduleLayout();
+        }
+        // The pointer's block, read once per frame from the newest move.
+        hoverAt(clientY) {
           const view3 = this.view;
-          const hit = view3.posAtCoords({ left: view3.dom.getBoundingClientRect().left + 2, top: event.clientY });
+          const hit = view3.posAtCoords({ left: view3.dom.getBoundingClientRect().left + 2, top: clientY });
           if (!hit) return;
           const doc = view3.state.doc;
           const ents = outline(doc);
           let i2 = Math.min(doc.resolve(hit.inside >= 0 ? hit.inside : hit.pos).index(0), ents.length - 1);
           while (i2 > 0 && ents[i2].hidden) i2--;
-          this.setHover(i2);
+          this.hover = i2;
         }
         setHover(i2) {
           if (i2 === this.hover) return;
           this.hover = i2;
-          this.place();
+          this.scheduleLayout();
+        }
+        settleHover() {
+          if (!this.pendingHover) return;
+          const { clientY } = this.pendingHover;
+          this.pendingHover = null;
+          this.hoverAt(clientY);
         }
         fromPlus() {
           this.view.focus();
-          this.openMenu("insert", this.plus, null, this.gutterIndex());
+          const i2 = this.gutterIndex();
+          this.openMenu("insert", this.plus, null, null, this.view.state.doc.child(i2).attrs.id);
         }
         toggleMenu(mode3, anchor) {
           if (this.menu) this.closeMenu();
           else this.openMenu(mode3, anchor);
         }
-        openMenu(mode3, anchor, slashAt = null, index = null) {
-          this.menu = { mode: mode3, anchor, slashAt, index, query: "", active: 0, items: [] };
+        openMenu(mode3, anchor, slashAt = null, ids = null, anchorId = null) {
+          this.menu = { mode: mode3, anchor, slashAt, anchorId, ids: ids ?? (mode3 === "insert" ? [] : this.selectionIds()), query: "", active: 0, items: [] };
           anchor.setAttribute("aria-expanded", "true");
-          this.view.dom.setAttribute("aria-haspopup", "menu");
+          if (slashAt !== null) {
+            if (!this.priorAria) this.priorAria = POPUP_ATTRS.map((name) => [name, this.view.dom.getAttribute(name)]);
+            this.view.dom.setAttribute("aria-haspopup", "listbox");
+          } else this.view.dom.setAttribute("aria-haspopup", "menu");
           this.view.dom.setAttribute("aria-controls", this.menuId);
           this.renderMenu();
         }
@@ -53380,13 +53993,25 @@ ${n3.toString()}`);
           this.menu = null;
           this.menuEl.hidden = true;
           this.scrim.hidden = true;
-          for (const name of ["aria-haspopup", "aria-controls", "aria-activedescendant"]) this.view.dom.removeAttribute(name);
+          if (this.priorAria) {
+            for (const [name, value] of this.priorAria) {
+              if (value === null) this.view.dom.removeAttribute(name);
+              else this.view.dom.setAttribute(name, value);
+            }
+            this.priorAria = null;
+          } else for (const name of POPUP_ATTRS) this.view.dom.removeAttribute(name);
         }
         menuItems(m7) {
           if (m7.mode === "external") return m7.externalItems || [];
           if (m7.mode === "actions") return actionsFor(this.view.state);
           const items = m7.mode === "turn" ? BLOCK_TYPES : insertItemsFor(this.view.state, this.onAiTool ? [...MENU_ITEMS, { key: "ai", label: "Make a tool with AI\u2026", icon: "\u2726", aliases: ["tool", "generate"], insert: "ai" }] : MENU_ITEMS);
           return rankItems(items, m7.query);
+        }
+        // The types the blocks in the selection are now. A mixed selection has more
+        // than one and so checks no row.
+        currentTypes() {
+          const st10 = this.view.state;
+          return new Set(blocksIn(st10).map((i2) => blockTypeOf(st10.doc.child(i2)).key));
         }
         openActions(anchor = this.plus, at8 = null) {
           const st10 = this.view.state;
@@ -53395,12 +54020,17 @@ ${n3.toString()}`);
           const inside2 = at8 !== null && sel instanceof BlockSelection && sel.span(st10.doc).lo <= at8 && at8 <= sel.span(st10.doc).hi;
           const { lo: lo4, hi: hi5 } = at8 === null || inside2 ? currentSpan(st10, ents) : siblingSpan(ents, at8, at8);
           this.view.dispatch(st10.tr.setSelection(selectBlocks(st10.doc, lo4, hi5, ents)));
-          this.openMenu("actions", anchor, null, lo4);
+          const ids = [];
+          for (let i2 = lo4; i2 <= hi5; i2++) ids.push(st10.doc.child(i2).attrs.id);
+          this.openMenu("actions", anchor, null, ids);
         }
         renderMenu() {
           const m7 = this.menu;
           m7.items = this.menuItems(m7);
           m7.active = Math.min(m7.active, Math.max(0, m7.items.length - 1));
+          const slash = m7.slashAt !== null;
+          const current5 = m7.mode === "turn" ? this.currentTypes() : null;
+          this.menuEl.setAttribute("role", slash ? "listbox" : "menu");
           const nodes = [];
           if (m7.mode === "turn") {
             const title = el6("div", "page-menu-title");
@@ -53414,7 +54044,9 @@ ${n3.toString()}`);
           }
           m7.items.forEach((b7, i2) => {
             const active4 = i2 === m7.active;
-            const row = el6("button", `page-menu-item${active4 ? " is-active" : ""}`, { type: "button", role: typeof b7.checked === "boolean" ? "menuitemcheckbox" : "menuitem", tabindex: m7.mode === "external" ? "0" : "-1", id: `${this.menuId}-${i2}`, "data-index": String(i2), "aria-selected": active4 ? "true" : "false", ...typeof b7.checked === "boolean" ? { "aria-checked": String(b7.checked) } : {} });
+            const checked = current5 ? current5.size === 1 && b7.key === [...current5][0] : typeof b7.checked === "boolean" ? b7.checked : null;
+            const role = m7.mode === "turn" ? "menuitemradio" : typeof checked === "boolean" ? "menuitemcheckbox" : slash ? "option" : "menuitem";
+            const row = el6("button", `page-menu-item${active4 ? " is-active" : ""}`, { type: "button", role, tabindex: !slash && active4 ? "0" : "-1", id: `${this.menuId}-${i2}`, "data-index": String(i2), ...role === "menuitemradio" ? {} : { "aria-selected": active4 ? "true" : "false" }, ...typeof checked === "boolean" ? { "aria-checked": String(checked) } : {} });
             const icon = el6("span", "page-menu-icon");
             icon.textContent = b7.icon || "";
             const label = el6("span", "page-menu-label");
@@ -53434,12 +54066,12 @@ ${n3.toString()}`);
             nodes.push(row);
           });
           this.menuEl.replaceChildren(...nodes);
-          if (m7.items.length) this.view.dom.setAttribute("aria-activedescendant", `${this.menuId}-${m7.active}`);
+          if (slash && m7.items.length) this.view.dom.setAttribute("aria-activedescendant", `${this.menuId}-${m7.active}`);
           else this.view.dom.removeAttribute("aria-activedescendant");
           this.menuEl.hidden = false;
           this.scrim.hidden = false;
-          this.place();
-          if (m7.mode === "external") this.menuEl.querySelector("button")?.focus();
+          this.scheduleLayout();
+          if (!slash) this.menuEl.querySelectorAll("button")[m7.active]?.focus();
         }
         pick(i2) {
           const m7 = this.menu;
@@ -53447,33 +54079,37 @@ ${n3.toString()}`);
           if (!item) return;
           const st10 = this.view.state;
           const remove3 = m7.slashAt !== null && st10.selection.head >= m7.slashAt ? { from: m7.slashAt - 1, to: st10.selection.head } : null;
+          const wanted = m7.mode === "insert" ? m7.anchorId ? [m7.anchorId] : [] : m7.ids;
+          const stale = wanted.some((id) => !id || this.idIndex(id) < 0);
+          const index = wanted.length ? this.idIndex(wanted[0]) : -1;
           this.closeMenu();
+          if (stale && m7.mode !== "external") {
+            announce(this.view, TARGET_GONE);
+            this.view.focus();
+            return;
+          }
           if (m7.mode === "turn") {
-            let tr4 = null;
-            if (st10.selection instanceof BlockSelection) {
-              tr4 = st10.tr;
-              for (const root3 of selectedRoots(st10)) retype(tr4, root3.i, item);
-            } else tr4 = turnInto(st10, this.blockIndex(), item);
-            if (tr4) this.view.dispatch(asStep(tr4).scrollIntoView());
+            const tr4 = st10.tr;
+            for (const id of wanted) retype(tr4, this.idIndex(id), item);
+            this.view.dispatch(asStep(tr4).scrollIntoView());
             this.view.focus();
           } else if (m7.mode === "actions" || m7.mode === "external") {
-            item.run(this.view, this, m7.index);
+            item.run(this.view, this, index >= 0 ? index : this.blockIndex());
             if (!this.menu && item.focus !== false) this.view.focus();
           } else {
             if (item.insert === "ai") this.onAiTool(this.view, remove3);
-            else runItem(this.view, item, m7.slashAt !== null ? this.blockIndex() : m7.index, remove3);
+            else runItem(this.view, item, index >= 0 ? index : this.blockIndex(), remove3);
           }
         }
         // Keys while the menu is open; anything else falls through to the editor.
         key(event) {
-          if (event.isComposing || this.view.composing) return false;
+          if (composing(event, this.view)) return false;
           const m7 = this.menu;
           if (!m7) return false;
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             if (m7.items.length) {
               m7.active = (m7.active + (event.key === "ArrowDown" ? 1 : -1) + m7.items.length) % m7.items.length;
               this.renderMenu();
-              if (m7.mode === "external") this.menuEl.querySelectorAll("button")[m7.active]?.focus();
             }
             return true;
           }
@@ -53482,7 +54118,10 @@ ${n3.toString()}`);
             return true;
           }
           if (event.key === "Escape") {
+            const target = this.invoker();
             this.closeMenu();
+            if (target === this.view.dom) this.view.focus();
+            else target?.focus?.();
             return true;
           }
           return false;
@@ -53501,30 +54140,37 @@ ${n3.toString()}`);
           if (/\s$/.test(m7.query) && !this.menuItems(m7).length) return this.closeMenu();
           this.renderMenu();
         }
-        place() {
+        scheduleLayout() {
+          if (this.frame !== null || this.destroyed) return;
+          this.frame = this.win.requestAnimationFrame(() => {
+            this.frame = null;
+            if (this.destroyed) return;
+            const layout2 = this.measureLayout();
+            this.paintLayout(layout2);
+          });
+        }
+        // Every geometry read the chrome needs, taken in one pass for the frame.
+        measureLayout() {
           const view3 = this.view;
           const st10 = view3.state;
+          this.settleHover();
           const shellBox = this.shell.getBoundingClientRect();
           const edBox = view3.dom.getBoundingClientRect();
           const i2 = this.gutterIndex();
           let at8 = 0;
           for (let k8 = 0; k8 < i2; k8++) at8 += st10.doc.child(k8).nodeSize;
           const dom = view3.nodeDOM(at8);
+          const out = { textLeft: edBox.left - shellBox.left, gutter: null, bubble: null, menu: null };
           if (dom && dom.getBoundingClientRect) {
             const r45 = dom.getBoundingClientRect();
             const lineH = parseFloat(getComputedStyle(dom).lineHeight) || r45.height;
-            for (const part of [this.plus, this.grip]) {
-              part.style.setProperty("--page-plus-top", `${r45.top - shellBox.top + Math.min(r45.height, lineH) / 2}px`);
-              part.style.setProperty("--page-plus-left", `${r45.left - shellBox.left}px`);
-            }
+            out.gutter = { top: r45.top - shellBox.top + Math.min(r45.height, lineH) / 2, left: r45.left - shellBox.left };
           }
-          this.plus.style.setProperty("--page-text-left", `${edBox.left - shellBox.left}px`);
           const sel = st10.selection;
           if (!this.bubble.hidden) {
             const a2 = view3.coordsAtPos(sel.from), b7 = view3.coordsAtPos(sel.to, -1);
             const mid = (Math.min(a2.left, b7.left) + Math.max(a2.right, b7.right)) / 2;
-            this.bubble.style.setProperty("--page-pop-x", `${mid - shellBox.left}px`);
-            this.bubble.style.setProperty("--page-pop-y", `${Math.min(a2.top, b7.top) - shellBox.top}px`);
+            out.bubble = { x: mid - shellBox.left, y: Math.min(a2.top, b7.top) - shellBox.top };
           }
           if (this.menu) {
             const m7 = this.menu;
@@ -53534,19 +54180,41 @@ ${n3.toString()}`);
               left = c4.left;
               top = c4.bottom + 6;
               const height = this.menuEl.offsetHeight;
-              if (top + height > window.innerHeight - 8 && c4.top - 6 - height >= 8) top = c4.top - 6 - height;
+              if (top + height > this.win.innerHeight - 8 && c4.top - 6 - height >= 8) top = c4.top - 6 - height;
             } else {
               const r45 = m7.anchor === this.plus ? dom?.getBoundingClientRect?.() ?? edBox : m7.anchor.getBoundingClientRect();
               left = r45.left;
               top = r45.bottom + 6;
             }
-            this.menuEl.style.setProperty("--page-pop-x", `${Math.max(8, Math.min(left - shellBox.left, shellBox.width - 280))}px`);
-            this.menuEl.style.setProperty("--page-pop-y", `${top - shellBox.top}px`);
+            out.menu = { x: Math.max(8, Math.min(left - shellBox.left, shellBox.width - 280)), y: top - shellBox.top };
+          }
+          return out;
+        }
+        // The placement style writes, from the frame's measurements alone.
+        paintLayout(layout2) {
+          if (layout2.gutter) {
+            for (const part of [this.plus, this.grip]) {
+              part.style.setProperty("--page-plus-top", `${layout2.gutter.top}px`);
+              part.style.setProperty("--page-plus-left", `${layout2.gutter.left}px`);
+            }
+          }
+          this.plus.style.setProperty("--page-text-left", `${layout2.textLeft}px`);
+          if (layout2.bubble) {
+            this.bubble.style.setProperty("--page-pop-x", `${layout2.bubble.x}px`);
+            this.bubble.style.setProperty("--page-pop-y", `${layout2.bubble.y}px`);
+          }
+          if (layout2.menu) {
+            this.menuEl.style.setProperty("--page-pop-x", `${layout2.menu.x}px`);
+            this.menuEl.style.setProperty("--page-pop-y", `${layout2.menu.y}px`);
           }
         }
         update(view3, prev) {
           this.view = view3;
-          if (this.menu && this.menu.slashAt === null && prev && prev.doc !== view3.state.doc) this.closeMenu();
+          if (this.menu && this.menu.slashAt === null && prev && prev.doc !== view3.state.doc) {
+            const hadFocus = this.menuEl.contains(document.activeElement);
+            this.closeMenu();
+            if (hadFocus) view3.focus();
+          }
           const st10 = view3.state;
           const node = st10.doc.child(this.blockIndex());
           this.turn.textContent = `${blockTypeOf(node).label} \u25BE`;
@@ -53556,15 +54224,21 @@ ${n3.toString()}`);
           if (showBubble) for (const b7 of this.bubble.querySelectorAll("[data-cmd]")) b7.setAttribute("aria-pressed", String(toolActive(st10, b7.dataset.cmd)));
           this.grip.classList.toggle("is-on", st10.selection instanceof BlockSelection);
           this.slashQuery();
-          this.place();
+          this.scheduleLayout();
         }
         destroy() {
+          this.destroyed = true;
+          if (this.frame !== null) this.win.cancelAnimationFrame(this.frame);
+          this.frame = null;
           clearTimeout(this.movedTimer);
           this.drag.destroy();
           this.shell.removeEventListener("mousemove", this.onMove);
           this.shell.removeEventListener("mouseleave", this.onLeave);
           this.shell.removeEventListener("keydown", this.onKey);
-          window.removeEventListener("resize", this.onResize);
+          this.win.removeEventListener("resize", this.onResize);
+          this.win.removeEventListener("scroll", this.onResize, true);
+          this.win.visualViewport?.removeEventListener("resize", this.onResize);
+          this.win.visualViewport?.removeEventListener("scroll", this.onResize);
           document.removeEventListener("mousedown", this.onDocDown, true);
           for (const part of [this.dock, this.plus, this.grip, this.bubble, this.scrim, this.menuEl]) part.remove();
         }
@@ -53623,7 +54297,7 @@ ${n3.toString()}`);
       }
     };
   }
-  var N13, columns2, FONT2, textWidth, widthOf3, button2, TableView, TableCellView;
+  var N14, columns2, FONT, textWidth, widthOf3, button2, TableView, TableCellView;
   var init_table3 = __esm({
     "src/page/features/table.js"() {
       init_schema();
@@ -53636,14 +54310,14 @@ ${n3.toString()}`);
       init_table_select();
       init_table_style();
       init_table_views();
-      N13 = schema.nodes;
+      N14 = schema.nodes;
       columns2 = (table) => orderedIds(table.attrs.cols);
-      FONT2 = ["fontFamily", "fontSize", "fontWeight", "fontStyle", "letterSpacing"];
+      FONT = ["fontFamily", "fontSize", "fontWeight", "fontStyle", "letterSpacing"];
       textWidth = (el10) => {
         const doc = el10.ownerDocument;
         const style3 = doc.defaultView.getComputedStyle(el10);
         const probe = doc.createElement("span");
-        for (const key3 of FONT2) probe.style[key3] = style3[key3];
+        for (const key3 of FONT) probe.style[key3] = style3[key3];
         Object.assign(probe.style, { position: "absolute", visibility: "hidden", whiteSpace: "pre", left: "-9999px", top: "0" });
         probe.textContent = el10.textContent;
         doc.body.append(probe);
@@ -53846,7 +54520,7 @@ ${n3.toString()}`);
           this.header.replaceChildren(row);
         }
         update(node) {
-          if (node.type !== N13.table) return false;
+          if (node.type !== N14.table) return false;
           this.node = node;
           this.dom.dataset.id = node.attrs.id ?? "";
           this.render();
@@ -53903,7 +54577,7 @@ ${n3.toString()}`);
           this.update(node);
         }
         update(node) {
-          if (node.type !== N13.table_cell) return false;
+          if (node.type !== N14.table_cell) return false;
           this.node = node;
           const $cell = this.view.state.doc.resolve(this.getPos());
           const table = $cell.node(1);
@@ -53920,8 +54594,8 @@ ${n3.toString()}`);
           input.className = "page-table-date";
           input.contentEditable = "false";
           input.setAttribute("aria-label", "Pick a date");
-          const current4 = this.node.textContent.trim();
-          if (/^\d{4}-\d{2}-\d{2}$/.test(current4)) input.value = current4;
+          const current5 = this.node.textContent.trim();
+          if (/^\d{4}-\d{2}-\d{2}$/.test(current5)) input.value = current5;
           input.addEventListener("change", () => {
             if (input.value) setCellText(this.view, this.getPos(), input.value);
             this.closeDate();
@@ -54384,7 +55058,7 @@ ${n3.toString()}`);
     if (state2 === "overdue") badge.append(el7(doc, "span", "page-board-sr", {}, ", overdue"));
     return badge;
   }
-  var N14, boardViews, DUE2, boards, svg3, BOARD_ICONS, pad, todayKey, dueState, placeAfter, countOf2, isTyping, BoardView;
+  var N15, boardViews, DUE2, boards, svg3, BOARD_ICONS, pad, todayKey, dueState, placeAfter, countOf2, isTyping, BoardView;
   var init_board_view = __esm({
     "src/page/board-view.js"() {
       init_schema();
@@ -54392,7 +55066,7 @@ ${n3.toString()}`);
       init_announce();
       init_board_drag();
       init_board_face();
-      N14 = schema.nodes;
+      N15 = schema.nodes;
       boardViews = /* @__PURE__ */ new WeakMap();
       DUE2 = /^\d{4}-\d{2}-\d{2}$/;
       boards = 0;
@@ -54755,7 +55429,7 @@ ${n3.toString()}`);
           if (menu?.contains(event.target) && !menu.contains(event.relatedTarget)) this.closeMenu(false);
         }
         update(node) {
-          if (node.type !== N14.board || node.attrs.id !== this.node.attrs.id) return false;
+          if (node.type !== N15.board || node.attrs.id !== this.node.attrs.id) return false;
           const changed2 = !node.sameMarkup(this.node);
           this.node = node;
           if (changed2) this.render();
@@ -55512,9 +56186,9 @@ ${n3.toString()}`);
     }
     return path.slice();
   }
-  function checkedState(current4, op) {
+  function checkedState(current5, op) {
     try {
-      const holder = { state: current4 === void 0 ? {} : cloneJson(current4) };
+      const holder = { state: current5 === void 0 ? {} : cloneJson(current5) };
       applyOp(holder, { ...op, path: ["state", ...op.path] });
       const result2 = validateState(holder.state);
       if (!result2.ok) throw new ToolStateError(result2.code);
@@ -55794,14 +56468,14 @@ ${n3.toString()}`);
             warn(item.id, item.rev, new Error("invalid artifact"));
             return;
           }
-          const current4 = store2?.data?.[item.id]?.[item.rev];
-          item.signature = JSON.stringify(current4);
-          if (mode3 === "edit" && store2 && current4 === void 0) {
+          const current5 = store2?.data?.[item.id]?.[item.rev];
+          item.signature = JSON.stringify(current5);
+          if (mode3 === "edit" && store2 && current5 === void 0) {
             root3.innerHTML = item.artifact.fallbackHtml;
             note("Waiting for this tool's state\u2026");
             return;
           }
-          const state2 = mode3 === "edit" && store2 ? scopedStateHandle(store2, item.id, item.rev) : readerStateHandle(current4 ?? item.seed ?? {});
+          const state2 = mode3 === "edit" && store2 ? scopedStateHandle(store2, item.id, item.rev) : readerStateHandle(current5 ?? item.seed ?? {});
           item.runtime = mountTool({ root: root3, artifact: item.artifact, mode: mode3, state: state2, tables, onError: (error2) => warn(item.id, item.rev, error2) });
           item.readerOff = state2.on?.("change", () => {
             try {
@@ -56264,8 +56938,8 @@ ${n3.toString()}`);
     if (!edited.size && !created.size && !deleted.length && !reordered) return null;
     return { edited, created, deleted, order: parsed2.map((item) => item.id), reordered, base: q9 };
   }
-  function keyed2(list3, current4, prefix, extra = (x5) => x5) {
-    const items = list3.map((x5) => ({ id: x5.id, pos: current4?.[x5.id]?.pos ?? null }));
+  function keyed2(list3, current5, prefix, extra = (x5) => x5) {
+    const items = list3.map((x5) => ({ id: x5.id, pos: current5?.[x5.id]?.pos ?? null }));
     const fix = repairSiblings(items, prefix);
     const out = {};
     list3.forEach((x5, i2) => {
@@ -56341,16 +57015,16 @@ ${n3.toString()}`);
     if (!plan) return null;
     const schema2 = state2.schema;
     const doc = state2.doc;
-    const current4 = blockMap(doc);
+    const current5 = blockMap(doc);
     const tr4 = state2.tr;
-    const projected = new Map(project2(current4).map((item) => [item.id, item]));
+    const projected = new Map(project2(current5).map((item) => [item.id, item]));
     const displaced2 = {};
     for (const id of [...plan.edited.keys(), ...plan.deleted]) {
       const was = plan.base.get(id), now3 = projected.get(id);
-      if (was && now3 && !same4(body(was), body(now3))) displaced2[id] = current4[id];
+      if (was && now3 && !same4(body(was), body(now3))) displaced2[id] = current5[id];
     }
-    const nodeOf = (id, item) => nodeFromBlock(schema2, id, blockFromItem(item, current4[id]));
-    const placeholders = plan.base.size ? [] : Object.keys(current4).filter((id) => current4[id].t === "paragraph" && !current4[id].c && !plan.order.includes(id));
+    const nodeOf = (id, item) => nodeFromBlock(schema2, id, blockFromItem(item, current5[id]));
+    const placeholders = plan.base.size ? [] : Object.keys(current5).filter((id) => current5[id].t === "paragraph" && !current5[id].c && !plan.order.includes(id));
     for (const id of plan.deleted) {
       const f3 = find2(tr4.doc, id);
       if (f3) tr4.delete(f3.pos, f3.pos + f3.node.nodeSize);
@@ -56474,13 +57148,13 @@ ${n3.toString()}`);
     });
     return out.map((x5) => renamed.has(x5.parent) ? { ...x5, parent: renamed.get(x5.parent) } : x5);
   }
-  function mergePageModels(base2, current4, incoming, { doc, merge3: merge32, mergeJson }) {
+  function mergePageModels(base2, current5, incoming, { doc, merge3: merge32, mergeJson }) {
     const conflicts2 = [];
     const inc = restoreIds(base2, incoming);
     const b7 = new Map(base2.map((x5) => [x5.id, x5]));
-    const c4 = new Map(current4.map((x5) => [x5.id, x5]));
+    const c4 = new Map(current5.map((x5) => [x5.id, x5]));
     const i2 = new Map(inc.map((x5) => [x5.id, x5]));
-    const current22 = current4.map((x5) => ({ ...x5 }));
+    const current22 = current5.map((x5) => ({ ...x5 }));
     const incoming2 = inc.map((x5) => ({ ...x5 }));
     const c22 = new Map(current22.map((x5) => [x5.id, x5]));
     const i22 = new Map(incoming2.map((x5) => [x5.id, x5]));
@@ -56510,7 +57184,7 @@ ${n3.toString()}`);
         else delete t2.m;
       }
     }
-    const order = current4.map((x5) => x5.id);
+    const order = current5.map((x5) => x5.id);
     for (const [id, was] of b7) {
       const l2 = c22.get(id);
       if (!l2 || i2.has(id) || same5(c4.get(id), was)) continue;
@@ -56559,6 +57233,61 @@ ${n3.toString()}`);
     }
   });
 
+  // src/page/document-title.js
+  function documentTitle(items, { custom = false, currentTitle = "" } = {}) {
+    if (custom) return currentTitle;
+    const first = items.find(
+      (item) => item.t === "heading" && (item.level ?? 2) === 1 && item.parent == null
+    );
+    return String(first?.c ?? "").replace(/[\s\uFFFC]+/gu, " ").trim() || UNTITLED;
+  }
+  var UNTITLED;
+  var init_document_title = __esm({
+    "src/page/document-title.js"() {
+      UNTITLED = "Untitled";
+    }
+  });
+
+  // src/page/document-title-dom.js
+  function customTitle(root3) {
+    const head = headOf(root3);
+    if (!head) return false;
+    for (const meta of head.querySelectorAll("meta")) {
+      if ((meta.getAttribute("name") ?? "").trim().toLowerCase() !== TITLE_MODE) continue;
+      if ((meta.getAttribute("content") ?? "").trim().toLowerCase() === "custom") return true;
+    }
+    return false;
+  }
+  function titleText(root3) {
+    return headOf(root3)?.querySelector("title")?.textContent ?? "";
+  }
+  function writeTitle(root3, text4) {
+    const head = headOf(root3);
+    if (!head) return false;
+    const el10 = head.querySelector("title");
+    if (el10) {
+      if (el10.textContent === text4) return false;
+      el10.textContent = text4;
+      return true;
+    }
+    const title = head.ownerDocument.createElement("title");
+    title.textContent = text4;
+    head.insertBefore(title, head.firstChild);
+    return true;
+  }
+  function titleFor(root3, items) {
+    const custom = customTitle(root3);
+    return { custom, title: documentTitle(items, { custom, currentTitle: titleText(root3) }) };
+  }
+  var TITLE_MODE, headOf;
+  var init_document_title_dom = __esm({
+    "src/page/document-title-dom.js"() {
+      init_document_title();
+      TITLE_MODE = "clay-seo-title-mode";
+      headOf = (root3) => root3?.nodeType === 9 ? root3.head : root3?.tagName === "HEAD" ? root3 : root3?.querySelector?.("head") ?? null;
+    }
+  });
+
   // src/page/save-projection.js
   function pageTags(root3) {
     return [...root3.querySelectorAll('script[merge][clay~="live"]')].filter((el10) => PAGE.test(el10.getAttribute("merge")));
@@ -56579,7 +57308,7 @@ ${n3.toString()}`);
       const html = blocks[id]?.artifact?.fallbackHtml;
       return typeof html === "string" ? html : "";
     };
-    memo = { key: key3, html: renderModel(model2, { fallbackOf, clean: fragmentCleaner(document) }), rev: revOf(model2) };
+    memo = { key: key3, html: renderModel(model2, { fallbackOf, clean: fragmentCleaner(document) }), rev: revOf(model2), model: model2, title: documentTitle(model2) };
     return memo;
   }
   function projectInto(clone) {
@@ -56587,9 +57316,10 @@ ${n3.toString()}`);
     if (!article) return;
     const tags = pageTags(clone);
     if (!tags.length) return;
-    const { html, rev } = renderFromTags(tags.map((el10) => el10.textContent));
+    const { html, rev, title } = renderFromTags(tags.map((el10) => el10.textContent));
     if (article.innerHTML !== html) article.innerHTML = html;
     article.setAttribute("data-rev", rev);
+    if (!customTitle(clone)) writeTitle(clone, title);
   }
   var ARTICLE, PAGE, memo;
   var init_save_projection = __esm({
@@ -56598,6 +57328,8 @@ ${n3.toString()}`);
       init_snapshot();
       init_hyper_morph_json_vendor();
       init_projection();
+      init_document_title();
+      init_document_title_dom();
       init_decode();
       init_provider();
       ARTICLE = "article[data-page]";
@@ -56652,7 +57384,7 @@ ${n3.toString()}`);
       if (seen.size > 20) seen.delete(seen.keys().next().value);
     };
     if (disk) record6(disk);
-    let queue = Promise.resolve();
+    let queue2 = Promise.resolve();
     let disposed = false;
     let cancel2;
     const cancelled2 = new Promise((resolve) => cancel2 = resolve);
@@ -56667,12 +57399,12 @@ ${n3.toString()}`);
         clearTimeout(timer);
       }
     }
-    function land2(blocks, current4, baseItems, incoming) {
+    function land2(blocks, current5, baseItems, incoming) {
       const { HyperMorph: HyperMorph2 } = loadedEngine();
-      const merged = mergePageModels(baseItems, current4, incoming, { doc, merge3: HyperMorph2.merge3, mergeJson: HyperMorph2.mergeJson });
+      const merged = mergePageModels(baseItems, current5, incoming, { doc, merge3: HyperMorph2.merge3, mergeJson: HyperMorph2.mergeJson });
       const lost = merged.conflicts.filter((k8) => k8.kind === "text" || k8.kind === "field");
       const copy9 = lost.length ? snapshot() : null;
-      const plan = planAdoption(blocks, merged.items, current4);
+      const plan = planAdoption(blocks, merged.items, current5);
       const tr4 = plan && adoptionTransaction(view3.state, plan);
       if (!tr4) return null;
       view3.dispatch(tr4);
@@ -56729,10 +57461,10 @@ ${n3.toString()}`);
         if (waited === "disposed" || disposed) return STOPPED;
         if (!isAdopter()) return REFUSED;
         const blocks = blockMap(view3.state.doc);
-        const current4 = readBack(blocks, doc);
-        const known = new Map(current4.map((item) => [item.id, item]));
+        const current5 = readBack(blocks, doc);
+        const known = new Map(current5.map((item) => [item.id, item]));
         const parse2 = (article) => parseModel(article, { seed: article.getAttribute("data-rev") ?? "", known });
-        const counts = land2(blocks, current4, parse2(base2), parse2(file.article));
+        const counts = land2(blocks, current5, parse2(base2), parse2(file.article));
         return counts ? landed(counts) : UNCHANGED;
       } finally {
         release();
@@ -56748,7 +57480,7 @@ ${n3.toString()}`);
     }
     let bootOutcome = null;
     function run5(file, boot2 = false) {
-      queue = queue.then(() => attempt(file)).then((outcome2) => {
+      queue2 = queue2.then(() => attempt(file)).then((outcome2) => {
         if (boot2) bootOutcome = outcome2;
         if (!outcome2.ok || outcome2.outcome !== "adopted") return outcome2;
         requestCheckpoint2();
@@ -56756,7 +57488,7 @@ ${n3.toString()}`);
         doc.dispatchEvent(new CustomEvent("clay:page-adopted", { detail: outcome2.counts }));
         return outcome2;
       });
-      return queue;
+      return queue2;
     }
     function onFrame(event) {
       const html = event.detail?.html;
@@ -56772,7 +57504,7 @@ ${n3.toString()}`);
       // Resolves once everything queued so far has been attempted, with the boot
       // file's own outcome: landed, unchanged, stopped, refused or failed.
       idle: async () => {
-        await queue;
+        await queue2;
         return bootOutcome;
       },
       // A save of this tab landed: the file holds what it sent, so that article is
@@ -57459,7 +58191,7 @@ ${n3.toString()}`);
     });
     if (!steps.length) return;
     const mapping = new Mapping(maps);
-    const sv = [...ui3(Aa3(pd.ydoc)).entries()].sort((a2, b7) => a2[0] - b7[0]);
+    const sv = [...ui5(Aa3(pd.ydoc)).entries()].sort((a2, b7) => a2[0] - b7[0]);
     const operationId = mintOp(pd);
     const d0 = docs[0], dm = transactions[transactions.length - 1].doc;
     const visible = w6.visible.length === 0 && d0.childCount === 1 && d0.firstChild.type.name === "paragraph" ? [{ id: d0.firstChild.attrs.id, implicit: true, t: "paragraph", len: 0 }] : w6.visible;
@@ -57607,38 +58339,38 @@ ${n3.toString()}`);
     const ids = Array.isArray(args?.ids) ? [...new Set(args.ids)] : [];
     const afterId = args?.afterId === void 0 ? null : args.afterId;
     const hasParent = args?.parent !== void 0;
-    const current4 = walk(pd, origins);
-    const list3 = visibleBlocks(pd, current4, view3);
+    const current5 = walk(pd, origins);
+    const list3 = visibleBlocks(pd, current5, view3);
     const byId = new Map(list3.map((block2) => [block2.id, block2]));
     const order = list3.map((block2) => block2.id);
-    if (!ids.length) return refuse2("missing-source");
-    for (const id of ids) if (!byId.has(id)) return refuse2("missing-source");
+    if (!ids.length) return refuse4("missing-source");
+    for (const id of ids) if (!byId.has(id)) return refuse4("missing-source");
     const changes2 = attrChanges(args, byId);
-    if (!changes2) return refuse2("invalid-attrs");
+    if (!changes2) return refuse4("invalid-attrs");
     const roots = new Set(ids.filter((id) => !ids.some((other) => other !== id && isAncestor(byId, other, id))));
     const selected = list3.filter((block2) => ids.some((root3) => inSubtree(byId, block2.id, root3)));
     const selectedSet = new Set(selected.map((block2) => block2.id));
-    const segments = new Map(current4.visible.map((seg) => [seg.id, seg]));
+    const segments = new Map(current5.visible.map((seg) => [seg.id, seg]));
     for (const block2 of selected) {
       const seg = segments.get(block2.id);
-      if (!seg || seg.implicit || !seg.brk) return refuse2("missing-source");
+      if (!seg || seg.implicit || !seg.brk) return refuse4("missing-source");
     }
     let parent;
     if (hasParent) parent = args.parent ?? null;
     else {
       const parents = new Set(selected.filter((block2) => roots.has(block2.id)).map((block2) => block2.parent));
-      if (parents.size !== 1) return refuse2("invalid-parent");
+      if (parents.size !== 1) return refuse4("invalid-parent");
       parent = [...parents][0];
     }
     if (hasParent && parent !== null) {
       const node = byId.get(parent);
-      if (!node || node.t !== "toggle") return refuse2("invalid-parent");
-      if (selectedSet.has(parent)) return refuse2("cycle");
+      if (!node || node.t !== "toggle") return refuse4("invalid-parent");
+      if (selectedSet.has(parent)) return refuse4("cycle");
     }
     if (afterId !== null) {
-      if (typeof afterId !== "string" || !byId.has(afterId)) return refuse2("missing-destination");
-      if (selectedSet.has(afterId)) return refuse2("cycle");
-      if (byId.get(afterId).parent !== parent) return refuse2("missing-destination");
+      if (typeof afterId !== "string" || !byId.has(afterId)) return refuse4("missing-destination");
+      if (selectedSet.has(afterId)) return refuse4("cycle");
+      if (byId.get(afterId).parent !== parent) return refuse4("missing-destination");
     }
     const remaining = list3.filter((block2) => !selectedSet.has(block2.id));
     let insertAt = 0;
@@ -57667,13 +58399,13 @@ ${n3.toString()}`);
       render3();
       return { status: "moved", ids: movedIds };
     }
-    const sv = [...ui3(Aa3(pd.ydoc)).entries()].sort((left, right) => left[0] - right[0]);
+    const sv = [...ui5(Aa3(pd.ydoc)).entries()].sort((left, right) => left[0] - right[0]);
     const operationId = mintOp(pd);
     const units = flowUnits(pd, origins);
-    const before = createProjectionMap(current4, pd.flow.length);
+    const before = createProjectionMap(current5, pd.flow.length);
     const captured = [];
     let cursor = 0;
-    for (const seg of current4.visible) {
+    for (const seg of current5.visible) {
       if (selectedSet.has(seg.id)) {
         const block2 = [];
         for (const [from, to4] of before.physicalRanges(cursor, cursor + seg.len)) for (let unit = from; unit < to4; unit++) block2.push(units[unit]);
@@ -57686,13 +58418,13 @@ ${n3.toString()}`);
       if (block2.seg.id !== movedIds[index]) throw new Error(`Captured ${block2.seg.id} where ${movedIds[index]} was expected`);
       if (!block2.units.length || block2.units[0].embed === void 0 || block2.units[0].embed.b !== block2.seg.id) throw new Error(`The selected block ${block2.seg.id} has no physical marker to copy`);
     }
-    const removals = liveRemovals(pd, current4, selectedSet);
+    const removals = liveRemovals(pd, current5, selectedSet);
     const intents = parseGoneIntents(pd.gone);
     const promotions = /* @__PURE__ */ new Map();
     for (const block2 of selected) {
       const seg = segments.get(block2.id);
       if (!seg.recovered) continue;
-      const removalsOf = current4.removals.filter((removal) => removal.sourceKey === seg.sourceKey);
+      const removalsOf = current5.removals.filter((removal) => removal.sourceKey === seg.sourceKey);
       const winner = recoveredRoot(seg.sourceKey, removalsOf, intents);
       const baseline = intents.restores.find((restore3) => restore3.key === winner?.key)?.baseline ?? { type: seg.t, attrs: seg.fields ?? {} };
       promotions.set(seg.sourceKey, { covers: removalsOf.map((removal) => removal.key), baseline: JSON.parse(JSON.stringify(baseline)) });
@@ -57773,7 +58505,7 @@ ${n3.toString()}`);
     }
     return { status: "moved", ids: movedIds };
   }
-  var refuse2, attrsKey, visibleBlocks, ancestors, isAncestor, inSubtree, setAttr, setParent, MAX_INDENT2, ATTR_RULES, attrChanges, flowUnits, liveRemovals;
+  var refuse4, attrsKey, visibleBlocks, ancestors, isAncestor, inSubtree, setAttr, setParent, MAX_INDENT2, ATTR_RULES, attrChanges, flowUnits, liveRemovals;
   var init_moves2 = __esm({
     "src/page/ybind/moves.js"() {
       init_yjs_vendor();
@@ -57784,17 +58516,17 @@ ${n3.toString()}`);
       init_projection_map();
       init_origins();
       init_recovery2();
-      refuse2 = (code) => ({ status: "refused", code });
+      refuse4 = (code) => ({ status: "refused", code });
       attrsKey = (attrs) => {
         if (!attrs) return "";
         const out = [];
         for (const key3 of Object.keys(attrs).sort()) out.push(`${key3}=${JSON.stringify(attrs[key3])}`);
         return out.join("\n");
       };
-      visibleBlocks = (pd, current4, view3) => {
+      visibleBlocks = (pd, current5, view3) => {
         const doc = view3 ? view3.state.doc : null;
-        const settled2 = doc && doc.childCount === current4.visible.length && current4.visible.every((seg, index) => doc.child(index).attrs.id === seg.id);
-        const source3 = settled2 ? doc : docOf(pd, current4);
+        const settled2 = doc && doc.childCount === current5.visible.length && current5.visible.every((seg, index) => doc.child(index).attrs.id === seg.id);
+        const source3 = settled2 ? doc : docOf(pd, current5);
         const out = [];
         source3.forEach((node) => {
           if (node.attrs.id === null || node.attrs.id === void 0) return;
@@ -57860,10 +58592,10 @@ ${n3.toString()}`);
         if (at8 !== ids.length) throw new Error(`The flow delta has ${at8} units but the document has ${ids.length}`);
         return out;
       };
-      liveRemovals = (pd, current4, selected) => {
+      liveRemovals = (pd, current5, selected) => {
         const observed = /* @__PURE__ */ new Map();
-        for (const seg of current4.visible) if (selected.has(seg.id) && seg.brk) observed.set(physicalKeyOf(seg.brk), seg.id);
-        for (const id of selected) for (const key3 of current4.copies.get(id) ?? []) observed.set(key3, id);
+        for (const seg of current5.visible) if (selected.has(seg.id) && seg.brk) observed.set(physicalKeyOf(seg.brk), seg.id);
+        for (const id of selected) for (const key3 of current5.copies.get(id) ?? []) observed.set(key3, id);
         const out = [];
         for (let it9 = pd.flow._start; it9; it9 = it9.right) {
           if (it9.deleted || !(it9.content instanceof wt3)) continue;
@@ -57933,9 +58665,9 @@ ${n3.toString()}`);
     }
     return { start: start8, endA, endB };
   }
-  function keepViewPos(derived2, current4 = null) {
+  function keepViewPos(derived2, current5 = null) {
     const previous = /* @__PURE__ */ new Map();
-    current4?.forEach((block2) => {
+    current5?.forEach((block2) => {
       if (block2.attrs.id) previous.set(block2.attrs.id, block2);
     });
     const blocks = [];
@@ -58114,12 +58846,12 @@ ${n3.toString()}`);
     };
     const portMove = (tr4, move) => {
       const result2 = moveBlocks({ pd, view: view3, um, origins, render: render3 }, move);
-      if (result2.status === "refused") {
-        stats.moveFallbacks = (stats.moveFallbacks ?? 0) + 1;
-        return false;
+      if (result2.status !== "moved") {
+        if (result2.status === "refused") stats.moveRefusals = (stats.moveRefusals ?? 0) + 1;
+        return result2;
       }
       const sel = tr4.selection;
-      if (sel instanceof Oi.TextSelection) return true;
+      if (sel instanceof Oi.TextSelection) return result2;
       const doc = view3.state.doc;
       let from = null, to4 = null;
       doc.forEach((node, pos) => {
@@ -58127,11 +58859,11 @@ ${n3.toString()}`);
         if (from === null) from = pos;
         to4 = pos + node.nodeSize;
       });
-      if (from === null) return true;
+      if (from === null) return result2;
       const next = sel instanceof Oi.NodeSelection ? Oi.NodeSelection.create(doc, from) : sel.anchor <= sel.head ? new BlockSelection(doc.resolve(from), doc.resolve(to4)) : new BlockSelection(doc.resolve(to4), doc.resolve(from));
       const reselect = view3.state.tr.setSelection(next).setMeta(REMOTE_META, true).setMeta("addToHistory", false);
       view3.dispatch(tr4.scrolledIntoView ? reselect.scrollIntoView() : reselect);
-      return true;
+      return result2;
     };
     const board = createBoardCommands({ pd, um, origins, render: () => view3 ? render3() : refresh2() });
     pd.ydoc.on("beforeTransaction", onBefore);
@@ -58180,7 +58912,10 @@ ${n3.toString()}`);
       },
       dispatch(tr4) {
         const move = tr4.getMeta(MOVE);
-        if (move && portMove(tr4, move)) return;
+        if (move) {
+          portMove(tr4, move);
+          return;
+        }
         const { state: state2, transactions } = view3.state.applyTransaction(tr4);
         const local3 = transactions.filter((t2) => t2.docChanged && !t2.getMeta(REMOTE_META));
         view3.updateState(state2);
@@ -58764,6 +59499,87 @@ ${n3.toString()}`);
     }
   });
 
+  // src/page/document-title-runtime.js
+  function titleItemsOfDoc(doc) {
+    const items = [];
+    for (let i2 = 0; i2 < doc.childCount; i2++) {
+      const node = doc.child(i2);
+      if (node.type.name !== "heading" || node.attrs.level !== 1 || (node.attrs.parent ?? null) !== null) continue;
+      let c4 = "";
+      node.forEach((child) => {
+        c4 += child.isText ? child.text : child.type.name === "hard_break" ? ATOM6 : "";
+      });
+      items.push({ t: "heading", level: 1, parent: null, c: c4 });
+      break;
+    }
+    return items;
+  }
+  function refreshDocumentTitle(view3) {
+    if (!view3 || view3.isDestroyed) return null;
+    const doc = view3.dom?.ownerDocument ?? (typeof document === "undefined" ? null : document);
+    if (!doc) return null;
+    const items = titleItemsOfDoc(view3.state.doc);
+    const { custom, title } = titleFor(doc, items);
+    if (custom) return title;
+    const current5 = titleText(doc);
+    if (current5 === "" && !items.length) return title;
+    if (current5 === title) return title;
+    mutation_default.pause();
+    try {
+      writeTitle(doc, title);
+    } finally {
+      mutation_default.resume();
+    }
+    return title;
+  }
+  function titlePlugin() {
+    return new Oi.Plugin({
+      view(editorView) {
+        let doc = null;
+        const refresh2 = () => {
+          doc = editorView.state.doc;
+          refreshDocumentTitle(editorView);
+        };
+        refresh2();
+        return {
+          update(next) {
+            if (next.state.doc === doc) return;
+            refresh2();
+          }
+        };
+      }
+    });
+  }
+  function observeDocumentTitle(view3) {
+    const head = view3?.dom?.ownerDocument?.head ?? null;
+    if (!head) return { refresh: () => refreshDocumentTitle(view3), dispose() {
+    } };
+    let queued3 = false;
+    const refresh2 = () => {
+      if (queued3) return;
+      queued3 = true;
+      queueMicrotask(() => {
+        queued3 = false;
+        refreshDocumentTitle(view3);
+      });
+    };
+    const observer2 = new MutationObserver(refresh2);
+    observer2.observe(head, { childList: true, characterData: true, subtree: true, attributeFilter: ["content", "name"] });
+    refreshDocumentTitle(view3);
+    return { refresh: refresh2, dispose() {
+      observer2.disconnect();
+    } };
+  }
+  var ATOM6;
+  var init_document_title_runtime = __esm({
+    "src/page/document-title-runtime.js"() {
+      init_prosemirror_vendor();
+      init_mutation();
+      init_document_title_dom();
+      ATOM6 = "\uFFFC";
+    }
+  });
+
   // src/page/boot.js
   function createInstall({ gen = 0, isCurrent: isCurrent2 = () => true, onPhase = null } = {}) {
     installs += 1;
@@ -59049,36 +59865,36 @@ ${n3.toString()}`);
       for (let i2 = 0; i2 < index2; i2++) at9 += st10.doc.child(i2).nodeSize;
       return { node: st10.doc.child(index2), at: at9, index: index2 };
     })();
-    const { node: current4, at: at8, index } = found;
+    const { node: current5, at: at8, index } = found;
     const next = st10.doc.maybeChild(index + 1);
-    const replace3 = current4.isTextblock && (current4.content.size === 0 || bookmark?.hostId === current4.attrs.id && current4.textContent === bookmark.slashText);
-    const pos = replace3 ? current4.attrs.pos : keyBetween(current4.attrs.pos, next?.attrs.pos ?? null);
+    const replace3 = current5.isTextblock && (current5.content.size === 0 || bookmark?.hostId === current5.attrs.id && current5.textContent === bookmark.slashText);
+    const pos = replace3 ? current5.attrs.pos : keyBetween(current5.attrs.pos, next?.attrs.pos ?? null);
     const tool = schema.nodes.tool.create({
       id: candidate.id,
       pos,
-      parent: current4.attrs.parent ?? null,
+      parent: current5.attrs.parent ?? null,
       artifact: candidate.artifact,
       rev: candidate.rev,
       state: candidate.state
     });
-    const place5 = replace3 ? at8 : at8 + current4.nodeSize;
+    const place5 = replace3 ? at8 : at8 + current5.nodeSize;
     const tr4 = st10.tr;
-    if (!replace3 && bookmark?.hostId === current4.attrs.id && bookmark.slashText && bookmark.slashOffset >= 0) {
+    if (!replace3 && bookmark?.hostId === current5.attrs.id && bookmark.slashText && bookmark.slashOffset >= 0) {
       const from = at8 + 1 + bookmark.slashOffset;
       const to4 = from + bookmark.slashText.length;
-      if (to4 <= at8 + current4.nodeSize - 1 && st10.doc.textBetween(from, to4) === bookmark.slashText) tr4.delete(from, to4);
+      if (to4 <= at8 + current5.nodeSize - 1 && st10.doc.textBetween(from, to4) === bookmark.slashText) tr4.delete(from, to4);
     }
     const mapped = tr4.mapping.map(place5);
-    tr4.replaceWith(mapped, replace3 ? tr4.mapping.map(at8 + current4.nodeSize) : mapped, tool);
+    tr4.replaceWith(mapped, replace3 ? tr4.mapping.map(at8 + current5.nodeSize) : mapped, tool);
     tr4.setSelection(Selection4.near(tr4.doc.resolve(Math.min(mapped + tool.nodeSize, tr4.doc.content.size))));
     view3.dispatch(asStep(tr4).scrollIntoView());
   }
   function createAiTool({ getView, store: store2, transport: transport2, acceptState = () => globalThis.clay?.save?.flush?.(), newId: allocate = newId2 }) {
     const client = transport2 ? createToolClient({ transport: transport2, newId: () => allocate("request") }) : null;
     let panel2 = null;
-    let generation4 = 0;
+    let generation5 = 0;
     const close = () => {
-      generation4++;
+      generation5++;
       if (!panel2) return;
       client?.discard(panel2.pending);
       panel2.preview?.dispose();
@@ -59157,16 +59973,16 @@ ${n3.toString()}`);
         p5.status.textContent = "Making your tool\u2026";
         p5.actions.replaceChildren();
         button4("Cancel", close);
-        const turn = ++generation4;
+        const turn = ++generation5;
         const candidate = client.request(p5.input.value.trim(), toolContext(view3.state.doc, doc.title), p5.target);
         p5.pending = candidate;
         try {
           const result2 = await client.wait(candidate);
-          if (panel2 !== p5 || turn !== generation4) return;
+          if (panel2 !== p5 || turn !== generation5) return;
           p5.candidate = { artifact: result2.artifact, state: result2.state, id: null, rev: null };
           showCandidate();
         } catch (error2) {
-          if (panel2 !== p5 || turn !== generation4) return;
+          if (panel2 !== p5 || turn !== generation5) return;
           p5.status.textContent = error2.message;
           p5.actions.replaceChildren();
           button4("Generate", generate);
@@ -59235,90 +60051,49 @@ ${n3.toString()}`);
     }
   });
 
-  // src/page/markdown.js
-  function tableFromMarkdownRow(st10, dispatch) {
-    const { $from, empty } = st10.selection;
-    if (!empty || $from.depth !== 1 || $from.parent.type !== N15.paragraph || $from.parentOffset !== $from.parent.content.size) return false;
-    if (inlineCode(st10, $from.start(), $from.end())) return false;
-    const match = TABLE_ROW.exec($from.parent.textContent);
-    if (!match) return false;
-    const names = match[1].split("|").map((name) => name.trim());
-    if (!names.some(Boolean)) return false;
-    const table = tableFromGrid([names, names.map(() => "")], { header: true });
-    return insertTableNode(st10, dispatch, table, { from: $from.start(), to: $from.end() });
-  }
-  function backspaceToParagraph(st10, dispatch) {
-    const { $from, empty } = st10.selection;
-    if (!empty || $from.depth !== 1 || $from.parentOffset !== 0) return false;
-    const n3 = $from.parent;
-    if (!(n3.type === N15.heading || n3.type === N15.callout || n3.type === N15.code_block && n3.content.size === 0)) return false;
-    if (dispatch) dispatch(asStep(st10.tr.setNodeMarkup($from.before(), N15.paragraph, { id: n3.attrs.id, pos: n3.attrs.pos, parent: n3.attrs.parent })));
-    return true;
-  }
-  var InputRule, N15, inlineCode, blockRule, dividerRule, LISTS, MARKDOWN_RULES, markdownPlugin, TABLE_ROW, markdownKeys;
-  var init_markdown = __esm({
-    "src/page/markdown.js"() {
-      init_prosemirror_vendor();
-      init_schema();
-      init_items();
-      init_blocksel();
-      init_table2();
-      init_table_paste();
-      ({ InputRule } = po);
-      N15 = schema.nodes;
-      inlineCode = (st10, start8, end) => st10.doc.rangeHasMark(start8, end, schema.marks.code) || !!schema.marks.code.isInSet(st10.storedMarks || st10.selection.$from.marks());
-      blockRule = (re7, item, from = ["paragraph"], entire = false) => new InputRule(re7, (st10, match, start8, end) => {
-        const $s4 = st10.doc.resolve(start8);
-        if (!st10.selection.empty || $s4.depth !== 1 || $s4.parentOffset !== 0 || !from.includes($s4.parent.type.name)) return null;
-        if (entire && end !== $s4.end() || inlineCode(st10, start8, end)) return null;
-        return asStep(retype(st10.tr.delete(start8, end), $s4.index(0), typeof item === "function" ? item(match) : item));
-      });
-      dividerRule = new InputRule(/^---$/, (st10, match, start8, end) => {
-        const $s4 = st10.doc.resolve(start8);
-        if (!st10.selection.empty || $s4.depth !== 1 || $s4.parent.type !== N15.paragraph || $s4.parentOffset !== 0 || $s4.parent.content.size !== end - start8) return null;
-        if (inlineCode(st10, start8, end)) return null;
-        return asStep(replaceWithDivider(st10.tr, $s4.index(0)));
-      });
-      LISTS = ["paragraph", "list_item"];
-      MARKDOWN_RULES = [
-        blockRule(/^(#{1,3})\s$/, (m7) => ({ type: "heading", attrs: { level: m7[1].length } })),
-        blockRule(/^[-*+]\s$/, { type: "list_item", attrs: { kind: "bullet" } }, LISTS),
-        blockRule(/^\d+[.)]\s$/, { type: "list_item", attrs: { kind: "ordered" } }, LISTS),
-        blockRule(/^\[( |x|X)?\]\s$/, (m7) => ({ type: "list_item", attrs: { kind: "check", checked: !!m7[1] && m7[1] !== " " } }), LISTS),
-        blockRule(/^>\s$/, { type: "toggle", attrs: { open: true } }),
-        blockRule(/^```$/, { type: "code_block" }, ["paragraph"], true),
-        dividerRule
-      ];
-      markdownPlugin = () => po.inputRules({ rules: MARKDOWN_RULES });
-      TABLE_ROW = /^\s*\|(.*)\|\s*$/;
-      markdownKeys = () => qs.keymap({ Enter: tableFromMarkdownRow });
-    }
-  });
-
   // src/page/placeholder.js
+  function titlePlaceholder(doc) {
+    let done = false;
+    let decoration = null;
+    doc.forEach((node, offset) => {
+      if (done) return;
+      if (node.type !== schema.nodes.heading || node.attrs.level !== 1 || (node.attrs.parent ?? null) !== null) return;
+      done = true;
+      if (!node.content.size) decoration = Decoration3.node(offset, offset + node.nodeSize, { class: "page-title-placeholder", "data-placeholder": TITLE_PLACEHOLDER });
+    });
+    return decoration;
+  }
   function placeholderPlugin(text4 = PLACEHOLDER_TEXT) {
     return new Oi.Plugin({
       props: {
         decorations(st10) {
+          const decorations = [];
+          const title = titlePlaceholder(st10.doc);
+          if (title) decorations.push(title);
           const { selection } = st10;
-          if (!selection.empty) return null;
-          const $from = selection.$from;
-          if ($from.depth !== 1) return null;
-          const node = $from.parent;
-          if (node.type !== schema.nodes.paragraph || node.content.size) return null;
-          const pos = $from.before(1);
-          return DecorationSet3.create(st10.doc, [Decoration3.node(pos, pos + node.nodeSize, { class: "page-placeholder", "data-placeholder": text4 })]);
+          if (selection.empty) {
+            const $from = selection.$from;
+            if ($from.depth === 1) {
+              const node = $from.parent;
+              if (node.type === schema.nodes.paragraph && !node.content.size) {
+                const pos = $from.before(1);
+                decorations.push(Decoration3.node(pos, pos + node.nodeSize, { class: "page-placeholder", "data-placeholder": text4 }));
+              }
+            }
+          }
+          return decorations.length ? DecorationSet3.create(st10.doc, decorations) : null;
         }
       }
     });
   }
-  var Decoration3, DecorationSet3, PLACEHOLDER_TEXT;
+  var Decoration3, DecorationSet3, PLACEHOLDER_TEXT, TITLE_PLACEHOLDER;
   var init_placeholder = __esm({
     "src/page/placeholder.js"() {
       init_prosemirror_vendor();
       init_schema();
       ({ Decoration: Decoration3, DecorationSet: DecorationSet3 } = Ps);
       PLACEHOLDER_TEXT = "Type / for blocks";
+      TITLE_PLACEHOLDER = "Untitled";
     }
   });
 
@@ -59976,7 +60751,7 @@ ${n3.toString()}`);
           if (view3.isDestroyed) return;
           const decos = [];
           const seen = /* @__PURE__ */ new Map();
-          const current4 = highlightKey.getState(view3.state);
+          const current5 = highlightKey.getState(view3.state);
           view3.state.doc.forEach((node, pos) => {
             if (node.type !== schema.nodes.code_block) return;
             const id = node.attrs.id;
@@ -59994,7 +60769,7 @@ ${text4}`;
                 if (style3 && t2.content) decos.push(Decoration4.inline(pos + 1 + t2.offset, pos + 1 + t2.offset + t2.content.length, { style: style3 }));
               }
             } else {
-              decos.push(...current4.find(pos, pos + node.nodeSize));
+              decos.push(...current5.find(pos, pos + node.nodeSize));
               if (this.io && !this.visible.has(id) || this.pending.has(key3)) return;
               this.pending.add(key3);
               this.run(text4, lang).then((lines) => lines.flat(), () => []).then((flat) => {
@@ -60099,14 +60874,14 @@ ${text4}`;
   }
   function ownerPicker(view3, id, anchor) {
     const doc = anchor.ownerDocument;
-    const current4 = itemAt(view3, id)?.node.attrs.owner || "";
+    const current5 = itemAt(view3, id)?.node.attrs.owner || "";
     const popup = doc.createElement("span");
     popup.className = "page-check-popup page-check-owner";
     popup.contentEditable = "false";
     const box = el7(doc, "span", "page-board-owners");
     const people2 = el7(doc, "span", "page-board-people", { role: "group", "aria-label": "Owner" });
     const input = el7(doc, "input", "page-board-owner-input", { type: "text", "aria-label": "Owner name", placeholder: "Or type a name\u2026" });
-    input.value = current4;
+    input.value = current5;
     const choose = (name) => setItem(view3, id, "owner", name);
     const person = (name, label, attr2, pressed2) => {
       const button4 = el7(doc, "button", `page-board-person${name ? "" : " is-none"}`, { type: "button", "aria-pressed": String(pressed2), "data-check": attr2 });
@@ -60117,8 +60892,8 @@ ${text4}`;
     };
     const draw = (available3) => {
       const typed = input.value.trim().toLowerCase();
-      const shown3 = (available3 || []).filter((p5) => !typed || typed === current4.toLowerCase() || p5.name.toLowerCase().includes(typed));
-      people2.replaceChildren(...shown3.map((p5) => person(p5.name, p5.name, "owner-option", p5.name === current4)), person(null, "No owner", "clear-owner", !current4));
+      const shown3 = (available3 || []).filter((p5) => !typed || typed === current5.toLowerCase() || p5.name.toLowerCase().includes(typed));
+      people2.replaceChildren(...shown3.map((p5) => person(p5.name, p5.name, "owner-option", p5.name === current5)), person(null, "No owner", "clear-owner", !current5));
     };
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -60236,14 +61011,14 @@ ${text4}`;
     return writeStyle(name, css, legacyId, tokens);
   }
   function writeStyle(nameOrHref, css, legacyId, tokens = []) {
-    const inline = typeof css === "string";
-    const identity = inline ? { name: nameOrHref, legacyId } : { href: getStyleBaseUrl(nameOrHref) };
+    const inline2 = typeof css === "string";
+    const identity = inline2 ? { name: nameOrHref, legacyId } : { href: getStyleBaseUrl(nameOrHref) };
     const legacy = legacyId === void 0 ? [] : document.querySelectorAll(`style[id="${legacyId}"]:not([data-name])`);
     mutation_default.pause();
     try {
       adoptStyleComparisons(identity);
       for (const el10 of legacy) el10.dataset.name = nameOrHref;
-      if (inline) {
+      if (inline2) {
         const el10 = insertStyles(nameOrHref, css, marker(tokens));
         if (legacyId !== void 0) el10.id = legacyId;
         return el10;
@@ -60373,6 +61148,7 @@ ${text4}`;
       markdownPlugin(),
       markdownKeys(),
       placeholderPlugin(),
+      titlePlugin(),
       qs.keymap(markKeys),
       tableKeys,
       checklistKeys,
@@ -60479,7 +61255,7 @@ ${text4}`;
     };
     return view3;
   }
-  var STYLE_ID2, INDENTS, LIGHT, DARK, PAGE_EDITOR_CSS, insertHardBreak, editKeys, markKeys, defaultUpload, nodeViewRegistries, lazyViewsKey, PendingView;
+  var STYLE_ID2, INDENTS, LIGHT, DARK, PAGE_EDITOR_CSS, insertHardBreak, editKeys, restoreShortcut, markKeys, defaultUpload, nodeViewRegistries, lazyViewsKey, PendingView;
   var init_editor = __esm({
     "src/page/editor.js"() {
       init_prosemirror_vendor();
@@ -60492,6 +61268,7 @@ ${text4}`;
       init_blocksel();
       init_markdown();
       init_placeholder();
+      init_document_title_runtime();
       init_media();
       init_highlight();
       init_table2();
@@ -60629,6 +61406,7 @@ ${INDENTS.map((n3) => `:where(article[data-page], .page-editor) .page-li[data-in
 .page-link-btn:hover { background: var(--page-pop-hover); }
 .page-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .ProseMirror-focused .page-placeholder::before { content: attr(data-placeholder); float: left; height: 0; color: var(--page-ink-faint); pointer-events: none; }
+.page-editor .page-title-placeholder::before { content: attr(data-placeholder); float: left; height: 0; color: var(--page-ink-faint); pointer-events: none; }
 .page-csv-error { margin: 8px 0; color: var(--page-danger); font-size: 14px; }
 .page-editor .page-table { max-width: 100%; min-width: 0; border: 1px solid var(--page-rule); border-radius: 8px; }
 .page-editor .page-chart { position: relative; max-width: 100%; min-width: 0; margin-inline: 0; color: var(--page-ink); }
@@ -60708,8 +61486,12 @@ ${INDENTS.map((n3) => `:where(article[data-page], .page-editor) .page-li[data-in
         "Mod-b": lo.toggleMark(schema.marks.strong),
         "Mod-i": lo.toggleMark(schema.marks.em)
       });
+      restoreShortcut = (st10, dispatch, view3) => {
+        if (composing(null, view3)) return false;
+        return po.undoInputRule(st10, dispatch && ((tr4) => dispatch(asStep(tr4))));
+      };
       markKeys = {
-        Backspace: lo.chainCommands(po.undoInputRule, backspaceToParagraph),
+        Backspace: lo.chainCommands(restoreShortcut, backspaceToParagraph),
         "Mod-e": lo.toggleMark(schema.marks.code),
         "Mod-Shift-s": lo.toggleMark(schema.marks.strike)
       };
@@ -60955,11 +61737,13 @@ ${doc.documentElement.outerHTML}`);
     if (inst.view) toolViews.delete(inst.view);
     const shell = inst.article?.querySelector(".page-shell");
     if (shell) shell.remove();
+    inst.titleObserver?.dispose();
+    inst.titleObserver = null;
     clearLoadingStatus(inst);
     restoreArticle(inst);
   }
   function dispose() {
-    generation3 += 1;
+    generation4 += 1;
     const inst = active2;
     active2 = null;
     if (!inst) return;
@@ -60988,6 +61772,8 @@ ${doc.documentElement.outerHTML}`);
     } catch (error2) {
       console.error("clayjs: page plugin recover list failed to dispose", error2);
     }
+    inst.titleObserver?.dispose();
+    inst.titleObserver = null;
     clearLoadingStatus(inst);
     if (inst.view && !inst.view.isDestroyed) {
       try {
@@ -61233,11 +62019,11 @@ ${doc.documentElement.outerHTML}`);
       if (!store2) return { ok: false, reason: "missing-page-store" };
       inst2.store = store2;
       let flushFailed = false;
-      let registered2 = null;
+      let registered3 = null;
       const trackFlush = async (call) => {
         const result2 = await call();
         flushFailed = result2?.ok === false;
-        registered2?.changed();
+        registered3?.changed();
         return result2;
       };
       identity = authorIdentity();
@@ -61257,12 +62043,12 @@ ${doc.documentElement.outerHTML}`);
         checkpointWithin,
         requestCheckpoint,
         registerUnsavedState: (def) => {
-          registered2 = registerUnsavedState({
+          registered3 = registerUnsavedState({
             id: def.id,
             isPending: () => flushFailed || def.isPending(),
             flush: () => trackFlush(() => def.flush())
           });
-          return registered2;
+          return registered3;
         }
       });
       inst2.binding = binding;
@@ -61329,6 +62115,7 @@ ${doc.documentElement.outerHTML}`);
         onRestored: (id) => focusBlock(view3, id),
         onStale: () => toast_default("That change was updated. The list now shows the latest version.", "warning")
       });
+      inst2.titleObserver = observeDocumentTitle(view3);
       return { ok: true, view: view3 };
     }
     async function adoptSource(inst2, source3, mounted) {
@@ -61414,11 +62201,11 @@ ${doc.documentElement.outerHTML}`);
   }
   function install2(options = {}) {
     dispose();
-    const gen = ++generation3;
+    const gen = ++generation4;
     const inst = {
       ...createInstall({
         gen,
-        isCurrent: () => gen === generation3,
+        isCurrent: () => gen === generation4,
         onPhase: (result2) => {
           if (result2.phase === "ready" || result2.phase === "blocked" || result2.phase === "error") clearLoadingStatus(inst);
           options.onPhase?.(result2);
@@ -61454,7 +62241,7 @@ ${doc.documentElement.outerHTML}`);
       if (active2 === inst) dispose();
     });
   }
-  var ARTICLE_SEL, TAG_SEL, BLOCKED2, RETRY_BOUND_MS, GENERIC_ERROR, GENERIC_OFFLINE, REPLACED_TEXT, TOO_LARGE_TEXT, OVERWRITTEN_TEXT, REPLACED_HOLD, LOADING_MS, LOADING_TEXT, isPlainObject2, generation3, active2, WRITER_WAIT_MS, showReplaced, showTooLarge, page, page_default;
+  var ARTICLE_SEL, TAG_SEL, BLOCKED2, RETRY_BOUND_MS, GENERIC_ERROR, GENERIC_OFFLINE, REPLACED_TEXT, TOO_LARGE_TEXT, OVERWRITTEN_TEXT, REPLACED_HOLD, LOADING_MS, LOADING_TEXT, isPlainObject2, generation4, active2, WRITER_WAIT_MS, showReplaced, showTooLarge, page, page_default;
   var init_page = __esm({
     "src/plugins/page.js"() {
       init_feature_loader();
@@ -61478,6 +62265,7 @@ ${doc.documentElement.outerHTML}`);
       init_toast();
       init_recover();
       init_runtime_owner();
+      init_document_title_runtime();
       init_boot();
       init_tool_capability();
       init_tool_views();
@@ -61496,7 +62284,7 @@ ${doc.documentElement.outerHTML}`);
       LOADING_MS = 150;
       LOADING_TEXT = "Loading the editor\u2026";
       isPlainObject2 = (v9) => v9 !== null && typeof v9 === "object" && !Array.isArray(v9);
-      generation3 = 0;
+      generation4 = 0;
       active2 = null;
       WRITER_WAIT_MS = 8e3;
       showReplaced = (inst) => stopWithNotice(inst, REPLACED_TEXT);
@@ -61588,13 +62376,13 @@ ${doc.documentElement.outerHTML}`);
     let discards = 0;
     let sink = onSnapshot2;
     let notify = onStatus2;
-    let generation4 = 0;
+    let generation5 = 0;
     let stopped2 = false;
     let stream2 = null;
     let repairJob = null;
     let pendingRepair = null;
     let repairPaused = false;
-    const active4 = (gen) => !stopped2 && gen === generation4;
+    const active4 = (gen) => !stopped2 && gen === generation5;
     function report2(state2, detail = {}) {
       if (stopped2 || typeof notify !== "function") return;
       notify({ state: state2, ...detail });
@@ -61660,16 +62448,16 @@ ${doc.documentElement.outerHTML}`);
     }
     function runRepair() {
       if (stopped2 || repairJob || repairPaused || !pendingRepair) return;
-      const gen = generation4;
+      const gen = generation5;
       const reason = pendingRepair;
       pendingRepair = null;
-      const controller = new AbortController();
-      repairJob = { controller };
+      const controller2 = new AbortController();
+      repairJob = { controller: controller2 };
       const arrivalsAtStart = arrivals;
       const watermarkAtStart = watermark;
       const settle7 = (body2) => {
-        if (repairJob && repairJob.controller === controller) repairJob = null;
-        if (!active4(gen) || controller.signal.aborted) return;
+        if (repairJob && repairJob.controller === controller2) repairJob = null;
+        if (!active4(gen) || controller2.signal.aborted) return;
         if (body2 == null) {
           deferRepair(reason, "repair-failed");
           return;
@@ -61688,12 +62476,12 @@ ${doc.documentElement.outerHTML}`);
         acceptBody(body2.text, reason, body2.etag);
         runRepair();
       };
-      fetch(pageURL, { cache: "no-store", signal: controller.signal }).then(
+      fetch(pageURL, { cache: "no-store", signal: controller2.signal }).then(
         (response) => response.ok ? response.text().then((text4) => ({ text: text4, etag: stampOf2(response.headers?.get?.("etag")) })) : null
       ).then(settle7).catch(() => settle7(null));
     }
-    function acceptBody(html, reason, responseEtag2) {
-      const bodyStamp = stampOf2(responseEtag2) ?? readBodyStamp(html);
+    function acceptBody(html, reason, responseEtag3) {
+      const bodyStamp = stampOf2(responseEtag3) ?? readBodyStamp(html);
       const etag = bodyStamp ?? (html === receipt2.bytes ? receipt2.etag : null);
       const seq = reason.kind === "startup" ? receipt2.seq : reason.seq ?? receipt2.seq;
       if (!accept({ bytes: html, etag, seq })) return;
@@ -61812,7 +62600,7 @@ ${doc.documentElement.outerHTML}`);
       },
       start() {
         stopped2 = false;
-        const gen = ++generation4;
+        const gen = ++generation5;
         closeStream();
         abortRepair();
         pendingRepair = null;
@@ -61847,7 +62635,7 @@ ${doc.documentElement.outerHTML}`);
       stop() {
         if (stopped2) return;
         stopped2 = true;
-        generation4++;
+        generation5++;
         closeStream();
         abortRepair();
         pendingRepair = null;
@@ -64027,12 +64815,12 @@ ${doc.documentElement.outerHTML}`);
     const key3 = keyOf(el10);
     const draft = key3 && drafts.get(key3);
     if (!draft) return;
-    const current4 = el10.value;
+    const current5 = el10.value;
     bases.set(el10, draft.base);
     el10.value = draft.text;
     el10.dispatchEvent(new CustomEvent("clay:unsent-restored", {
       bubbles: true,
-      detail: { base: draft.base, current: current4, stale: current4 !== draft.base }
+      detail: { base: draft.base, current: current5, stale: current5 !== draft.base }
     }));
   }
   var KEY, drafts, bases, pending4, keyOf, split, unsent;
@@ -64694,7 +65482,7 @@ ${doc.documentElement.outerHTML}`);
     return s3;
   }
   function li3(e20, t2) {
-    if (!ui4(t2)) return e20 == null ? " null" : String(e20);
+    if (!ui6(t2)) return e20 == null ? " null" : String(e20);
     let r45 = Object.keys(t2);
     return JSON.stringify(r45.map((n3) => {
       let i2 = JSON.stringify(e20?.[n3]);
@@ -64702,7 +65490,7 @@ ${doc.documentElement.outerHTML}`);
     }));
   }
   function wl3(e20, t2, r45) {
-    if (!ui4(r45)) return (l2, a2) => e20[l2] === t2[a2] ? 0 : 1;
+    if (!ui6(r45)) return (l2, a2) => e20[l2] === t2[a2] ? 0 : 1;
     let n3 = Object.keys(r45), i2 = (l2) => n3.map((a2) => JSON.stringify(l2?.[a2])), o3 = e20.map(i2), s3 = t2.map(i2);
     return (l2, a2) => {
       let u4 = o3[l2], h = s3[a2], f3 = 0;
@@ -68231,7 +69019,7 @@ ${r45}` : r45, i2.hidden = false;
   function Uu2(e20) {
     return typeof CSS < "u" && CSS.escape ? CSS.escape(e20) : String(e20).replace(/[^a-zA-Z0-9_\-.*]/g, (t2) => "\\" + t2);
   }
-  var import_meta, il3, Ar3, Ln3, Ct4, nt4, Sr3, Le4, zn3, Lt3, Ne4, Me4, je4, ve4, ot4, ue3, st4, Ot3, Rt4, Tr3, Cr3, dl3, Nt3, fl3, Gn3, gl3, yl3, F4, qe4, ni3, ri3, Wh, ui4, mi3, Kl3, B4, Fr3, yi3, $r3, Ai3, Dr3, ra4, ua4, It4, Li3, ha4, Ci3, Pt3, da4, ma3, fa4, pa4, Pi3, $i3, zi3, Bi3, $e4, wa2, Ui3, Aa4, Sa3, Ea3, _a3, Hi3, Wr3, P5, te4, De3, ne4, ze4, Oa3, jm, Ra3, La3, to3, J4, $4, H4, Jr3, ao3, Wa2, Ga2, Qr3, _o3, To3, Co3, re3, fe3, en3, _e4, Ja2, Za2, tn3, tc2, nc2, lc2, Qt4, or3, wc, sr3, Ac2, Xe4, cn3, Sc2, Tc2, Wo3, Go3, hn3, Mc, qc, Ic2, Pc2, Fc2, $c2, Dc2, Zo3, zc2, ts3, hr3, Wc2, Hf, Kc2, Jc2, Zc2, z3, Qc2, mr3, fr3, dr3, tu2, ds3, ru2, fs3, iu2, lu2, et4, vn3, gs3, au2, cu2, uu2, yu2, wn3, L5, Sn3, An3, Rs3, Z5, Ls3, Ns3, yr3, Su2, Eu2, _u2, Tu2, En3, qs2, Is3, Cn3, Fu2, $u2, Du2, Rn3, Us3, xr3, Wu2, ig, og;
+  var import_meta, il3, Ar3, Ln3, Ct4, nt4, Sr3, Le4, zn3, Lt3, Ne4, Me4, je4, ve4, ot4, ue3, st4, Ot3, Rt4, Tr3, Cr3, dl3, Nt3, fl3, Gn3, gl3, yl3, F4, qe4, ni3, ri3, Wh, ui6, mi3, Kl3, B4, Fr3, yi3, $r3, Ai3, Dr3, ra4, ua4, It4, Li3, ha4, Ci3, Pt3, da4, ma3, fa4, pa4, Pi3, $i3, zi3, Bi3, $e4, wa2, Ui3, Aa4, Sa3, Ea3, _a3, Hi3, Wr3, P5, te4, De3, ne4, ze4, Oa3, jm, Ra3, La3, to3, J4, $4, H4, Jr3, ao3, Wa2, Ga2, Qr3, _o3, To3, Co3, re3, fe3, en3, _e4, Ja2, Za2, tn3, tc2, nc2, lc2, Qt4, or3, wc, sr3, Ac2, Xe4, cn3, Sc2, Tc2, Wo3, Go3, hn3, Mc, qc, Ic2, Pc2, Fc2, $c2, Dc2, Zo3, zc2, ts3, hr3, Wc2, Hf, Kc2, Jc2, Zc2, z3, Qc2, mr3, fr3, dr3, tu2, ds3, ru2, fs3, iu2, lu2, et4, vn3, gs3, au2, cu2, uu2, yu2, wn3, L5, Sn3, An3, Rs3, Z5, Ls3, Ns3, yr3, Su2, Eu2, _u2, Tu2, En3, qs2, Is3, Cn3, Fu2, $u2, Du2, Rn3, Us3, xr3, Wu2, ig, og;
   var init_hypercms_vendor = __esm({
     "src/vendor/hypercms.vendor.js"() {
       init_hyper_morph_vendor();
@@ -68375,7 +69163,7 @@ ${r45}` : r45, i2.hidden = false;
       ni3 = "1";
       ri3 = /^[a-zA-Z0-9_-]+$/;
       Wh = new Function("url", "return import(url)");
-      ui4 = (e20) => typeof e20 == "object" && e20 !== null;
+      ui6 = (e20) => typeof e20 == "object" && e20 !== null;
       mi3 = ["no-data", "editor-ui"];
       Kl3 = Object.freeze({ refusedRuleForms: ["innerHTML", "outerHTML"], refusedTargets: ["script", "style", "template", "noscript", "iframe", "object", "embed", "xmp", "plaintext", "noembed", "noframes", "meta", "link", "base", "animate", "set", "animatemotion", "animatetransform"], refusedAttributes: ["style", "srcdoc", "is", "http-equiv", "sandbox", "allow", "nonce", "integrity", "charset", "htmlclaytoken", "htmlclayid", "data-rules-name", "data-rules-version", "clay", "contenteditable", ...Gn3], refusedAttributePrefixes: ["on"], urlAttributes: ["href", "src", "srcset", "action", "formaction", "poster", "cite", "data", "ping", "background", "longdesc", "usemap", "xlink:href", "manifest", "codebase", "icon"], refusedSchemes: ["javascript", "vbscript", "data"], customPropertyValues: Object.freeze({ maxLength: 200, refusedCharacters: [";", "{", "}", "<", ">", "\\"], refusedFunctions: ["url", "src", "image", "image-set", "-webkit-image-set", "cross-fade", "element", "expression", "paint"] }) });
       B4 = { extract: (e20, t2, r45 = {}) => he4(ie4(e20, r45), e20, t2, r45), apply: (e20, t2, r45, n3 = {}) => Pe4(ie4(e20, { ...n3, _write: true }), e20, t2, r45, n3), findRulesIn: (e20, t2) => ht4(qe4, e20, t2), findRules: (e20, t2) => Ir3(qe4, e20, t2), bind: (e20, t2, r45 = {}) => {
@@ -71545,8 +72333,8 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
     let total = null;
     let percent = null;
     let outcome2 = null;
-    let controller = null;
-    let current4 = null;
+    let controller2 = null;
+    let current5 = null;
     let disposed = false;
     let cancelledAttempt = 0;
     const listeners2 = /* @__PURE__ */ new Set();
@@ -71566,15 +72354,15 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
     function runAttempt() {
       attempt += 1;
       const mine = attempt;
-      controller = new AbortController();
+      controller2 = new AbortController();
       state2 = "uploading";
       loaded = 0;
       total = null;
       percent = null;
       outcome2 = null;
-      current4 = runUpload(held, {
+      current5 = runUpload(held, {
         requiredAccess,
-        signal: controller.signal,
+        signal: controller2.signal,
         taskId: id,
         attempt: mine,
         onProgress: (progress) => {
@@ -71599,7 +72387,7 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
         return value;
       });
       publish();
-      return current4;
+      return current5;
     }
     const task = {
       id,
@@ -71613,7 +72401,7 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
         return held;
       },
       get result() {
-        return current4;
+        return current5;
       },
       snapshot: readSnapshot,
       subscribe(listener) {
@@ -71638,16 +72426,16 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
           outcome2 = result(false, "Upload cancelled", "error", "aborted");
           publish();
         }
-        controller?.abort();
+        controller2?.abort();
       },
       retry() {
-        if (disposed || !canRetry(readSnapshot())) return current4;
+        if (disposed || !canRetry(readSnapshot())) return current5;
         return runAttempt();
       },
       dispose() {
         if (disposed) return;
         disposed = true;
-        controller?.abort();
+        controller2?.abort();
         listeners2.clear();
         held = null;
       }
@@ -72082,12 +72870,33 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
     el10.setAttribute(attr2, me9.id);
     return me9;
   }
+  function loadDialogUI() {
+    dialogLoad ??= Promise.all([
+      Promise.resolve().then(() => (init_bevel_dialog(), bevel_dialog_exports)),
+      Promise.resolve().then(() => (init_bevel_controls(), bevel_controls_exports)),
+      Promise.resolve().then(() => (init_theme(), theme_exports))
+    ]).then(([dialog, controls2, theme2]) => ({ ...dialog, ...controls2, resolveTheme: theme2.resolveTheme })).catch((error2) => {
+      dialogLoad = null;
+      throw error2;
+    });
+    return dialogLoad;
+  }
   function askName() {
-    if (asking && askingRoot?.isConnected) return asking;
+    if (asking && (askingRoot ? askingRoot.isConnected : true)) return asking;
     if (asking) cancelAsking();
-    asking = new Promise((resolve) => {
-      const theme2 = resolveTheme();
-      const { root: root3, overlay, panel: panel2, heading, body: body2, footer, close } = bevelDialog({
+    asking = promptForName().catch((error2) => {
+      asking = null;
+      askingRoot = null;
+      cancelAsking = null;
+      throw error2;
+    });
+    return asking;
+  }
+  async function promptForName() {
+    const ui8 = await loadDialogUI();
+    return new Promise((resolve) => {
+      const theme2 = ui8.resolveTheme();
+      const { root: root3, overlay, panel: panel2, heading, body: body2, footer, close } = ui8.bevelDialog({
         zIndex: "2147483001",
         width: "420px",
         closable: true,
@@ -72099,11 +72908,11 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
       cancelAsking = () => finish2(null);
       heading.textContent = "What name should appear on your changes?";
       panel2.setAttribute("aria-label", "Your name");
-      const input = bevelInput("input", { rules: ["display:block", "width:100%", "margin:0"], theme: theme2, parts: ["dialog.input", "people.input"] });
+      const input = ui8.bevelInput("input", { rules: ["display:block", "width:100%", "margin:0"], theme: theme2, parts: ["dialog.input", "people.input"] });
       input.setAttribute("aria-label", "Your name");
       input.maxLength = MAX_NAME;
       input.autocomplete = "name";
-      const hint = bevelText(
+      const hint = ui8.bevelText(
         "p",
         ["display:block", "margin:10px 0 0", "font-size:13px", "opacity:.8"],
         "Saved in this browser. Everyone who can read this page will see it.",
@@ -72113,15 +72922,15 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
       body2.append(input, hint);
       const known = list().slice(0, 8);
       if (known.length) {
-        const label = bevelText("p", ["display:block", "margin:18px 0 8px", "font-size:13px"], "Or continue as someone already in this page:", { theme: theme2, parts: ["people.choiceLabel"], role: "mutedText" });
-        const row = bevelBox("div", ["display:flex", "flex-wrap:wrap", "gap:8px"], { theme: theme2, parts: ["people.choices"] });
+        const label = ui8.bevelText("p", ["display:block", "margin:18px 0 8px", "font-size:13px"], "Or continue as someone already in this page:", { theme: theme2, parts: ["people.choiceLabel"], role: "mutedText" });
+        const row = ui8.bevelBox("div", ["display:flex", "flex-wrap:wrap", "gap:8px"], { theme: theme2, parts: ["people.choices"] });
         for (const person of known) {
-          row.append(bevelButton(person.name, { small: true, onClick: () => finish2({ id: person.id, name: person.name }), theme: theme2, parts: ["dialog.button", "people.button", "people.choice"], labelParts: ["dialog.buttonLabel", "people.buttonLabel"] }));
+          row.append(ui8.bevelButton(person.name, { small: true, onClick: () => finish2({ id: person.id, name: person.name }), theme: theme2, parts: ["dialog.button", "people.button", "people.choice"], labelParts: ["dialog.buttonLabel", "people.buttonLabel"] }));
         }
         body2.append(label, row);
       }
-      const cancel2 = bevelButton("Cancel", { onClick: () => finish2(null), theme: theme2, parts: ["dialog.button", "people.button"], labelParts: ["dialog.buttonLabel", "people.buttonLabel"] });
-      const ok = bevelButton("Continue", { variant: "primary", onClick: () => submit2(), theme: theme2, parts: ["dialog.button", "people.button"], labelParts: ["dialog.buttonLabel", "people.buttonLabel"] });
+      const cancel2 = ui8.bevelButton("Cancel", { onClick: () => finish2(null), theme: theme2, parts: ["dialog.button", "people.button"], labelParts: ["dialog.buttonLabel", "people.buttonLabel"] });
+      const ok = ui8.bevelButton("Continue", { variant: "primary", onClick: () => submit2(), theme: theme2, parts: ["dialog.button", "people.button"], labelParts: ["dialog.buttonLabel", "people.buttonLabel"] });
       footer.append(cancel2, ok);
       const submit2 = () => {
         const name = input.value.trim().replace(/\s+/g, " ");
@@ -72155,7 +72964,7 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
       const onKey2 = (event) => {
         if (event.key === "Tab") {
           event.stopPropagation();
-          keepFocusIn(panel2, event);
+          ui8.keepFocusIn(panel2, event);
           return;
         }
         if (event.key === "Escape") {
@@ -72181,12 +72990,11 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
         cancelAsking = null;
         resolve(person);
       }
-      dismissOf.set(root3, () => finish2(null));
+      ui8.dismissOf.set(root3, () => finish2(null));
       root3.setAttribute("aria-hidden", "false");
       modalHost().append(root3);
       input.focus();
     });
-    return asking;
   }
   function modalHost() {
     const open3 = [...document.querySelectorAll("dialog[open]")].filter((d2) => d2.matches(":modal"));
@@ -72229,14 +73037,11 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
     const first = refresh(false);
     await Promise.race([first, new Promise((resolve) => setTimeout(resolve, BOOT_WAIT_MS))]);
   }
-  var editing, ID, STORE, BOOT_WAIT_MS, MAX_NAME, EMAIL, host, outcome, local2, cache2, asking, askingRoot, cancelAsking, lastRegistry, people, ready3, people_default;
+  var editing, ID, STORE, BOOT_WAIT_MS, MAX_NAME, EMAIL, host, outcome, local2, cache2, asking, askingRoot, cancelAsking, lastRegistry, dialogLoad, people, ready3, people_default;
   var init_people = __esm({
     "src/plugins/people.js"() {
       init_host_meta();
       init_is_edit_mode();
-      init_bevel_dialog();
-      init_bevel_controls();
-      init_theme();
       init_person_face();
       editing = () => window.clay && "isEditMode" in window.clay ? !!window.clay.isEditMode : isEditMode;
       ID = /^[A-Za-z0-9_-]{8,64}$/;
@@ -72251,6 +73056,7 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
       askingRoot = null;
       cancelAsking = null;
       lastRegistry = "";
+      dialogLoad = null;
       people = Object.freeze({ get: get2, list, available, add, remove: remove2, canRename, rename });
       ready3 = init20();
       people_default = people;
@@ -72269,13 +73075,13 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
   function createMeta(doc, attribute, name) {
     const meta = doc.createElement("meta");
     meta.setAttribute(attribute, name);
-    headOf(doc).appendChild(meta);
+    headOf2(doc).appendChild(meta);
     return meta;
   }
   function createLink(doc, rel) {
     const link2 = doc.createElement("link");
     link2.setAttribute("rel", rel);
-    headOf(doc).appendChild(link2);
+    headOf2(doc).appendChild(link2);
     return link2;
   }
   function setMetaContent(doc, attribute, name, value) {
@@ -72436,7 +73242,7 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
     writeAutomatic(doc, wanted);
     return { normalized, errors: {} };
   }
-  var SCHEME, ROBOTS_OWNED, PREVIEW_KEYS, text2, filled, headOf, metas, links, titles, robotsMetas, drop, robotsTokens, titleField, langField, canonicalField, TITLE_MODE, titleModeField, SPECS, FIELDS2;
+  var SCHEME, ROBOTS_OWNED, PREVIEW_KEYS, text2, filled, headOf2, metas, links, titles, robotsMetas, drop, robotsTokens, titleField, langField, canonicalField, TITLE_MODE2, titleModeField, SPECS, FIELDS2;
   var init_seo_head = __esm({
     "src/plugins/menu/seo-head.js"() {
       SCHEME = /^[a-z][a-z0-9+.-]*:/i;
@@ -72444,14 +73250,14 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
       PREVIEW_KEYS = ["ogTitle", "ogDescription", "ogImage", "ogImageAlt", "siteName"];
       text2 = (value) => value == null ? "" : String(value);
       filled = (value) => text2(value).trim() !== "";
-      headOf = (doc) => doc.head || doc.querySelector("head");
-      metas = (doc, attribute, name) => Array.from(headOf(doc).querySelectorAll("meta")).filter(
+      headOf2 = (doc) => doc.head || doc.querySelector("head");
+      metas = (doc, attribute, name) => Array.from(headOf2(doc).querySelectorAll("meta")).filter(
         (meta) => text2(meta.getAttribute(attribute)).trim().toLowerCase() === name
       );
-      links = (doc, rel) => Array.from(headOf(doc).querySelectorAll("link")).filter(
+      links = (doc, rel) => Array.from(headOf2(doc).querySelectorAll("link")).filter(
         (link2) => text2(link2.getAttribute("rel")).trim().toLowerCase().split(/\s+/).includes(rel)
       );
-      titles = (doc) => Array.from(headOf(doc).querySelectorAll("title"));
+      titles = (doc) => Array.from(headOf2(doc).querySelectorAll("title"));
       robotsMetas = (doc) => metas(doc, "name", "robots");
       drop = (element3) => element3.remove();
       robotsTokens = (element3) => text2(element3.getAttribute("content")).split(",").map((token2) => token2.trim()).filter(Boolean);
@@ -72469,7 +73275,7 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
             return;
           }
           const el10 = els[0] || doc.createElement("title");
-          if (!els.length) headOf(doc).appendChild(el10);
+          if (!els.length) headOf2(doc).appendChild(el10);
           el10.textContent = raw;
           els.slice(1).forEach(drop);
         }
@@ -72512,20 +73318,22 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
           els.slice(1).forEach(drop);
         }
       };
-      TITLE_MODE = "clay-seo-title-mode";
+      TITLE_MODE2 = "clay-seo-title-mode";
       titleModeField = {
-        find: (doc) => metas(doc, "name", TITLE_MODE),
+        find: (doc) => metas(doc, "name", TITLE_MODE2),
         read(doc) {
-          const el10 = metas(doc, "name", TITLE_MODE)[0];
-          return el10 && text2(el10.getAttribute("content")).trim().toLowerCase() === "custom" ? "custom" : "derived";
+          const custom = metas(doc, "name", TITLE_MODE2).some(
+            (el10) => text2(el10.getAttribute("content")).trim().toLowerCase() === "custom"
+          );
+          return custom ? "custom" : "derived";
         },
         write(doc, value) {
-          const els = metas(doc, "name", TITLE_MODE);
+          const els = metas(doc, "name", TITLE_MODE2);
           if (text2(value).trim().toLowerCase() !== "custom") {
             els.forEach(drop);
             return;
           }
-          const el10 = els[0] || createMeta(doc, "name", TITLE_MODE);
+          const el10 = els[0] || createMeta(doc, "name", TITLE_MODE2);
           el10.setAttribute("content", "custom");
           els.slice(1).forEach(drop);
         }
@@ -72606,11 +73414,37 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
   function isDocumentPage() {
     return document.querySelectorAll("article[data-page]").length === 1;
   }
-  function firstHeadingText() {
+  function titleItems(view3) {
+    if (view3 && !view3.isDestroyed) {
+      const doc = view3.state.doc;
+      for (let i2 = 0; i2 < doc.childCount; i2++) {
+        const node = doc.child(i2);
+        if (node.type.name !== "heading" || node.attrs.level !== 1 || (node.attrs.parent ?? null) !== null) continue;
+        let c5 = "";
+        node.forEach((child) => {
+          c5 += child.isText ? child.text : child.type.name === "hard_break" ? ATOM7 : "";
+        });
+        return rootHeading(c5);
+      }
+      return [];
+    }
     const article = document.querySelector("article[data-page]");
-    if (!article) return "";
-    const heading = article.querySelector("h1") || article.querySelector("h1, h2, h3, h4, h5, h6");
-    return heading ? text3(heading.textContent).trim() : "";
+    const heading = article && [...article.children].find((node) => node.tagName === "H1");
+    if (!heading) return [];
+    let c4 = "";
+    const walk2 = (parent) => {
+      for (const child of parent.childNodes) {
+        if (child.nodeType === 3) c4 += child.data;
+        else if (child.tagName === "BR") c4 += ATOM7;
+        else walk2(child);
+      }
+    };
+    walk2(heading);
+    return rootHeading(c4);
+  }
+  function firstHeadingText() {
+    const view3 = window.clay && window.clay.page && window.clay.page.view;
+    return documentTitle(titleItems(view3));
   }
   function hostOf2(value) {
     const url = parseUrl2(text3(value).trim());
@@ -72810,13 +73644,13 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
       return found;
     }
     function conflictsFor(wanted) {
-      const current4 = readHead(document).values;
+      const current5 = readHead(document).values;
       const found = {};
       for (const key3 of Object.keys(wanted)) {
         if (chosen.has(key3)) continue;
-        if (current4[key3] === opened[key3]) continue;
-        if (current4[key3] === wanted[key3]) continue;
-        found[key3] = current4[key3];
+        if (current5[key3] === opened[key3]) continue;
+        if (current5[key3] === wanted[key3]) continue;
+        found[key3] = current5[key3];
       }
       return found;
     }
@@ -72829,10 +73663,10 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
     }
     function showConflicts(found) {
       for (const [key3, entry] of conflicts2) {
-        const current4 = found[key3];
-        const visible = current4 !== void 0;
+        const current5 = found[key3];
+        const visible = current5 !== void 0;
         entry.row.hidden = !visible;
-        entry.theirs.textContent = visible ? showValue(key3, current4) : "";
+        entry.theirs.textContent = visible ? showValue(key3, current5) : "";
       }
     }
     function apply3() {
@@ -72985,11 +73819,12 @@ tr.hcms-shell.hcms-inline-ghost { display: table-row; }
     checkHostedRobots();
     checkUploads();
   }
-  var STYLE_ID3, REOPEN_KEY, LABEL, SCHEME2, ROBOTS_NOTE, PUBLIC_NOTE, PASTE_NOTE, GROUPS, SHEET_CSS, text3, parseUrl2, isWebUrl2, isLocalHostname;
+  var STYLE_ID3, REOPEN_KEY, LABEL, SCHEME2, ROBOTS_NOTE, PUBLIC_NOTE, PASTE_NOTE, GROUPS, SHEET_CSS, text3, parseUrl2, isWebUrl2, isLocalHostname, ATOM7, rootHeading;
   var init_seo = __esm({
     "src/plugins/menu/seo.js"() {
       init_seo_head();
       init_host_meta();
+      init_document_title();
       STYLE_ID3 = "clay-seo-style";
       REOPEN_KEY = "reopen-seo";
       LABEL = "SEO settings";
@@ -73277,6 +74112,8 @@ textarea.clay-seo-input { min-height: 64px; resize: vertical; }
         const host2 = url.hostname.toLowerCase();
         return host2 === "localhost" || host2.endsWith(".localhost") || host2 === "127.0.0.1";
       };
+      ATOM7 = "\uFFFC";
+      rootHeading = (c4) => [{ t: "heading", level: 1, parent: null, c: c4 }];
     }
   });
 
@@ -74630,9 +75467,9 @@ textarea.clay-seo-input { min-height: 64px; resize: vertical; }
     positionChrome();
     showBar("saving");
     setBarStatus("Saving\u2026");
-    const lifecycle = barLifecycle;
+    const lifecycle2 = barLifecycle;
     const result2 = await window.clay.save();
-    if (lifecycle !== barLifecycle) return;
+    if (lifecycle2 !== barLifecycle) return;
     if (result2 && result2.ok === false) {
       showBar("error");
       setBarStatus(result2.msg || SAVE_FAILED2, "warn");
@@ -74973,13 +75810,13 @@ textarea.clay-seo-input { min-height: 64px; resize: vertical; }
   }
   function scheduleBarClose() {
     clearTimeout(barCloseTimer);
-    const lifecycle = barLifecycle;
+    const lifecycle2 = barLifecycle;
     barCloseTimer = setTimeout(() => {
-      if (lifecycle && lifecycle === barLifecycle) closeBar();
+      if (lifecycle2 && lifecycle2 === barLifecycle) closeBar();
     }, 1500);
   }
-  function closeBar(lifecycle) {
-    if (lifecycle !== void 0 && lifecycle !== barLifecycle) return;
+  function closeBar(lifecycle2) {
+    if (lifecycle2 !== void 0 && lifecycle2 !== barLifecycle) return;
     clearTimeout(barCloseTimer);
     barCloseTimer = null;
     barLifecycle = null;
@@ -76946,17 +77783,17 @@ textarea.clay-seo-input { min-height: 64px; resize: vertical; }
       console.warn("visitor-drafts: another tab changed the same thing; its copy was kept under", conflictKey);
     }
     function merge(mine) {
-      const current4 = getRaw();
-      const record6 = current4 == null ? null : parse2(current4);
+      const current5 = getRaw();
+      const record6 = current5 == null ? null : parse2(current5);
       if (!record6) return { data: mine, stored: null };
       let data = mine;
-      if (current4 !== lastRaw) {
+      if (current5 !== lastRaw) {
         const merged = merge3(base2, mine, record6.data);
-        if (merged.conflict) keepConflict(current4);
+        if (merged.conflict) keepConflict(current5);
         data = merged.value;
       }
       data = complete(data, record6.data);
-      return { data, stored: same6(data, record6.data) ? current4 : null };
+      return { data, stored: same6(data, record6.data) ? current5 : null };
     }
     function adopt2(data) {
       const fitted = fit(data);
@@ -76975,8 +77812,8 @@ textarea.clay-seo-input { min-height: 64px; resize: vertical; }
         throw storageFailure(doc, new Error("an earlier saved copy could not be kept aside"));
       }
       const mine = rt4(new DOMParser().parseFromString(html, "text/html"), rules);
-      const current4 = getRaw();
-      if (fitsInto(mine, base2) && (current4 === lastRaw || current4 == null)) {
+      const current5 = getRaw();
+      if (fitsInto(mine, base2) && (current5 === lastRaw || current5 == null)) {
         setDraftStoreFailed(false);
         doc.dispatchEvent(new CustomEvent("clay:drafts-saved", { detail: { data: mine, unchanged: true } }));
         return mine;
@@ -77341,9 +78178,9 @@ textarea.clay-seo-input { min-height: 64px; resize: vertical; }
     }
     if (!document.getElementById("hcp")) document.body.insertAdjacentHTML("beforeend", ASIDE);
     const root3 = document.getElementById("hcp");
-    const ui6 = memory.get();
-    if (!ui6.prompt || typeof ui6.prompt !== "object") ui6.prompt = {};
-    const mem = ui6.prompt;
+    const ui8 = memory.get();
+    if (!ui8.prompt || typeof ui8.prompt !== "object") ui8.prompt = {};
+    const mem = ui8.prompt;
     const USES_TO_SHOW = 3;
     const IDLE_MS2 = 2500;
     const TEXTY = /^(INPUT|TEXTAREA|SELECT)$/;
@@ -79039,7 +79876,7 @@ body:has(> .clay-intro) { height: auto !important; overflow: visible !important;
     const type = (res.headers.get("content-type") || "").toLowerCase();
     if (!type.startsWith("text/html")) throw new Error(`source fetch: content-type ${type || "missing"}`);
     const text4 = await res.text();
-    if (text4.includes('id="clay-runtime-map"')) throw new Error("source fetch: projected response");
+    if (text4.includes('<script type="application/json" id="clay-runtime-map"')) throw new Error("source fetch: projected response");
     return text4;
   }
   function pairAgainstPage(m7) {
@@ -79073,8 +79910,8 @@ body:has(> .clay-intro) { height: auto !important; overflow: visible !important;
     if (!state.installed) return today;
     refreshNow();
     state.lastOutcome = null;
-    const capture2 = currentCaptureContext();
-    const adoptable = !!capture2 && !capture2.authoredHandlers;
+    const capture = currentCaptureContext();
+    const adoptable = !!capture && !capture.authoredHandlers;
     const print = /* @__PURE__ */ new Set();
     let firstDiff = null;
     for (let round = 0; round <= MAX_PRINT_ROUNDS; round++) {
@@ -79089,7 +79926,7 @@ body:has(> .clay-intro) { height: auto !important; overflow: visible !important;
         state.lastRenderMs = out.ms;
         state.lastBytes = out.text.length;
         state.lastOutcome = print.size ? { text: out.text, scope: "partial", reason: firstDiff, printed: print.size } : { text: out.text, scope: null };
-        if (v9.model) offerCandidate(v9.model, out.text, clone, capture2);
+        if (v9.model) offerCandidate(v9.model, out.text, clone, capture);
         return out.text;
       }
       if (firstDiff === null) firstDiff = v9.diff;
@@ -79097,11 +79934,11 @@ body:has(> .clay-intro) { height: auto !important; overflow: visible !important;
     }
     return fallback(firstDiff, today);
   }
-  function offerCandidate(m7, html, clone, capture2) {
+  function offerCandidate(m7, html, clone, capture) {
     const paired = pairCaptured(clone, m7, originalSnapshotNode);
     if (!paired) return;
     attachCaptureArtifact({
-      captureId: capture2.captureId,
+      captureId: capture.captureId,
       html,
       source: {
         model: m7,
@@ -79333,6 +80170,81 @@ body:has(> .clay-intro) { height: auto !important; overflow: visible !important;
     "src/plugins/derive.js"() {
       ready7 = fullSapjs() ? null : Promise.resolve().then(() => (init_sap_core_vendor(), sap_core_vendor_exports)).then(() => {
       });
+    }
+  });
+
+  // src/core/version.js
+  function parseVersion(value) {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim().replace(/^v/, "");
+    return /^\d+(\.\d+)*$/.test(trimmed) ? trimmed.split(".").map(Number) : null;
+  }
+  function isNewerVersion(candidate, current5) {
+    const next = parseVersion(candidate);
+    const now3 = parseVersion(current5);
+    if (!next || !now3) return false;
+    const length = Math.max(next.length, now3.length);
+    for (let index = 0; index < length; index++) {
+      const candidatePart = next[index] || 0;
+      const currentPart = now3[index] || 0;
+      if (candidatePart !== currentPart) return candidatePart > currentPart;
+    }
+    return false;
+  }
+  var init_version = __esm({
+    "src/core/version.js"() {
+    }
+  });
+
+  // src/core/save-replace.js
+  var save_replace_exports = {};
+  __export(save_replace_exports, {
+    replace: () => replace
+  });
+  function failed() {
+    return { ok: false, code: "failed" };
+  }
+  async function replace(html, { etag } = {}) {
+    if (typeof html !== "string" || html === "") return failed();
+    const given = typeof etag === "string" && etag ? etag : null;
+    if (!conditionalSaves()) await seedEtag();
+    if (!conditionalSaves()) return { ok: false, code: "unsupported" };
+    const stamp3 = given || lastSeenEtag();
+    if (!stamp3) return { ok: false, code: "conflict" };
+    const controller2 = new AbortController();
+    const timeoutId = setTimeout(() => controller2.abort(), TIMEOUT_MS);
+    try {
+      const { url, options } = buildSaveRequest(html, true, controller2.signal, mintSaveId(), stamp3);
+      const res = await fetch(url, options);
+      const text4 = await res.text();
+      let data = {};
+      if (text4) {
+        try {
+          data = JSON.parse(text4);
+        } catch (_7) {
+          data = {};
+        }
+      }
+      if (!res.ok) {
+        if (res.status === 412) return { ok: false, code: "conflict" };
+        if (res.status === 401 || res.status === 403) return { ok: false, code: "forbidden" };
+        return failed();
+      }
+      const stored = typeof data.etag === "string" && data.etag ? data.etag : null;
+      recordEtag(stored);
+      return { ok: true, etag: stored };
+    } catch (_7) {
+      return failed();
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+  var TIMEOUT_MS;
+  var init_save_replace = __esm({
+    "src/core/save-replace.js"() {
+      init_save_core();
+      init_etag();
+      TIMEOUT_MS = 3e4;
     }
   });
 
@@ -80337,58 +81249,6 @@ body:has(> .clay-intro) { height: auto !important; overflow: visible !important;
     }
   });
 
-  // src/core/save-replace.js
-  var save_replace_exports = {};
-  __export(save_replace_exports, {
-    replace: () => replace
-  });
-  function failed() {
-    return { ok: false, code: "failed" };
-  }
-  async function replace(html, { etag } = {}) {
-    if (typeof html !== "string" || html === "") return failed();
-    const given = typeof etag === "string" && etag ? etag : null;
-    if (!conditionalSaves()) await seedEtag();
-    if (!conditionalSaves()) return { ok: false, code: "unsupported" };
-    const stamp3 = given || lastSeenEtag();
-    if (!stamp3) return { ok: false, code: "conflict" };
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-    try {
-      const { url, options } = buildSaveRequest(html, true, controller.signal, mintSaveId(), stamp3);
-      const res = await fetch(url, options);
-      const text4 = await res.text();
-      let data = {};
-      if (text4) {
-        try {
-          data = JSON.parse(text4);
-        } catch (_7) {
-          data = {};
-        }
-      }
-      if (!res.ok) {
-        if (res.status === 412) return { ok: false, code: "conflict" };
-        if (res.status === 401 || res.status === 403) return { ok: false, code: "forbidden" };
-        return failed();
-      }
-      const stored = typeof data.etag === "string" && data.etag ? data.etag : null;
-      recordEtag(stored);
-      return { ok: true, etag: stored };
-    } catch (_7) {
-      return failed();
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  }
-  var TIMEOUT_MS;
-  var init_save_replace = __esm({
-    "src/core/save-replace.js"() {
-      init_save_core();
-      init_etag();
-      TIMEOUT_MS = 3e4;
-    }
-  });
-
   // src/core/upgrade-run.js
   async function digestOf(bytes3) {
     const subtle = globalThis.crypto && globalThis.crypto.subtle;
@@ -80436,12 +81296,12 @@ body:has(> .clay-intro) { height: auto !important; overflow: visible !important;
     return out;
   }
   function valuesAt(data, pattern) {
-    let current4 = [data];
+    let current5 = [data];
     for (const part of String(pattern).split(".")) {
       const list3 = part.endsWith("[]");
       const key3 = list3 ? part.slice(0, -2) : part;
       const next = [];
-      for (const node of current4) {
+      for (const node of current5) {
         const value = key3 ? node?.[key3] : node;
         if (list3) {
           if (Array.isArray(value)) next.push(...value);
@@ -80449,9 +81309,9 @@ body:has(> .clay-intro) { height: auto !important; overflow: visible !important;
           next.push(value);
         }
       }
-      current4 = next;
+      current5 = next;
     }
-    return current4;
+    return current5;
   }
   function lostValues(before, after, renames = {}) {
     const kept = /* @__PURE__ */ new Map();
@@ -80512,7 +81372,7 @@ body:has(> .clay-intro) { height: auto !important; overflow: visible !important;
       return { ok: false, code: "template", message: "This upgrade is for a different document." };
     }
     const fromVersion = N18(doc, "hyper-version");
-    if (!fromVersion || typeof latest.version !== "string" || !nt6(latest.version, fromVersion)) {
+    if (!fromVersion || typeof latest.version !== "string" || !isNewerVersion(latest.version, fromVersion)) {
       return { ok: false, code: "not-newer", message: "There is no newer version to install." };
     }
     if (typeof latest.html !== "string" || !latest.html) return { ok: false, code: "unavailable", message: MANIFEST_FAILED };
@@ -80740,6 +81600,7 @@ body:has(> .clay-intro) { height: auto !important; overflow: visible !important;
     "src/core/upgrade-run.js"() {
       init_save_replace();
       init_etag();
+      init_version();
       init_hyper_html_api_upgrade_vendor();
       MANIFEST_FAILED = "The new version could not be downloaded. Nothing was changed.";
       SAVE_FAILED3 = "The upgrade could not be saved. Nothing was changed.";
@@ -80844,7 +81705,7 @@ body:has(> .clay-intro) { height: auto !important; overflow: visible !important;
     latestUrl.pathname = latestUrl.pathname.replace(/\.html$/, ".json");
     const { latest } = await latestManifest(source3.href, currentVersion, { fetchFn, now: now3 });
     if (!latest || typeof latest !== "object") return null;
-    if (typeof latest.version !== "string" || !nt6(latest.version, currentVersion)) return null;
+    if (typeof latest.version !== "string" || !isNewerVersion(latest.version, currentVersion)) return null;
     const storage2 = clay5.storage && clay5.storage.local;
     if (storage2 && storage2.get(DISMISSED_KEY) === latest.version) return null;
     if (typeof latest.html !== "string" || !latest.html) return null;
@@ -80924,7 +81785,7 @@ body:has(> .clay-intro) { height: auto !important; overflow: visible !important;
   var CACHE_PREFIX, TTL_MS, DISMISSED_KEY, NOTICE2, started3, bootClay;
   var init_upgrade = __esm({
     "src/plugins/upgrade.js"() {
-      init_hyper_html_api_upgrade_vendor();
+      init_version();
       CACHE_PREFIX = "hha:upgrade-check:";
       TTL_MS = 24 * 60 * 60 * 1e3;
       DISMISSED_KEY = "upgrade-dismissed";
@@ -82747,7 +83608,7 @@ ${a2}` : o3;
     return ci4.has(ne7(e20));
   }
   function Ae7(e20) {
-    return ui5.some((t2) => {
+    return ui7.some((t2) => {
       try {
         return e20.matches(t2);
       } catch {
@@ -82986,7 +83847,7 @@ ${a2}` : o3;
     }
     return false;
   }
-  var Mt7, on5, sn4, C6, ye6, an4, ln4, ge7, pn4, vn4, gn5, yn4, wn4, bn4, kn4, T5, Ot6, j7, ft5, mt7, V8, In3, Mn3, gt7, Hn3, $n2, yt7, wt7, O5, ue6, _5, zn4, jn2, Fe7, Q6, xe7, P8, Un3, qn3, Wn4, Lt6, St7, Zn3, Gn4, ni4, ii3, ri4, si3, ai4, li4, ci4, ui5, di4, hi4, fi4, vi4, gi4, Ct7, Li4, _i4, Mi4, Hi4, $i4, Pi4, Oi4, Ri4, Di4, Bi4, Fi4, Ni4, Vi4, zi4, ji4, Ui4, qi4, Wi4, Ki4, Xi4, Zi4, E5, je7, ae7, $7, ie7, Qi4;
+  var Mt7, on5, sn4, C6, ye6, an4, ln4, ge7, pn4, vn4, gn5, yn4, wn4, bn4, kn4, T5, Ot6, j7, ft5, mt7, V8, In3, Mn3, gt7, Hn3, $n2, yt7, wt7, O5, ue6, _5, zn4, jn2, Fe7, Q6, xe7, P8, Un3, qn3, Wn4, Lt6, St7, Zn3, Gn4, ni4, ii3, ri4, si3, ai4, li4, ci4, ui7, di4, hi4, fi4, vi4, gi4, Ct7, Li4, _i4, Mi4, Hi4, $i4, Pi4, Oi4, Ri4, Di4, Bi4, Fi4, Ni4, Vi4, zi4, ji4, Ui4, qi4, Wi4, Ki4, Xi4, Zi4, E5, je7, ae7, $7, ie7, Qi4;
   var init_overtype_vendor = __esm({
     "src/vendor/overtype.vendor.js"() {
       Mt7 = Object.defineProperty;
@@ -83671,7 +84532,7 @@ ${a2}` : o3;
       };
       li4 = /* @__PURE__ */ new Set(["inline", "contents"]);
       ci4 = /* @__PURE__ */ new Set(["table", "td", "th"]);
-      ui5 = [":popover-open", ":modal"];
+      ui7 = [":popover-open", ":modal"];
       di4 = ["transform", "translate", "scale", "rotate", "perspective"];
       hi4 = ["transform", "translate", "scale", "rotate", "perspective", "filter"];
       fi4 = ["paint", "layout", "strict", "content"];
@@ -88039,38 +88900,38 @@ https://github.com/highlightjs/highlight.js/issues/2277`), x5 = n3, E6 = a2), h 
     "entries/sap.js"() {
       (function() {
         var Sap = (() => {
-          var jt7 = Object.defineProperty;
-          var kn5 = Object.getOwnPropertyDescriptor;
-          var $n3 = Object.getOwnPropertyNames;
-          var _n5 = Object.prototype.hasOwnProperty;
-          var Tn5 = (t2, e20) => {
-            for (var r45 in e20) jt7(t2, r45, { get: e20[r45], enumerable: true });
-          }, Nn4 = (t2, e20, r45, n3) => {
-            if (e20 && typeof e20 == "object" || typeof e20 == "function") for (let o3 of $n3(e20)) !_n5.call(t2, o3) && o3 !== r45 && jt7(t2, o3, { get: () => e20[o3], enumerable: !(n3 = kn5(e20, o3)) || n3.enumerable });
+          var Ht7 = Object.defineProperty;
+          var _n5 = Object.getOwnPropertyDescriptor;
+          var Tn5 = Object.getOwnPropertyNames;
+          var Nn4 = Object.prototype.hasOwnProperty;
+          var Rn5 = (t2, e20) => {
+            for (var r45 in e20) Ht7(t2, r45, { get: e20[r45], enumerable: true });
+          }, Ln5 = (t2, e20, r45, n3) => {
+            if (e20 && typeof e20 == "object" || typeof e20 == "function") for (let o3 of Tn5(e20)) !Nn4.call(t2, o3) && o3 !== r45 && Ht7(t2, o3, { get: () => e20[o3], enumerable: !(n3 = _n5(e20, o3)) || n3.enumerable });
             return t2;
           };
-          var Ln5 = (t2) => Nn4(jt7({}, "__esModule", { value: true }), t2);
-          var $r4 = {};
-          Tn5($r4, { Sap: () => Wt6, default: () => kr4, mount: () => xr4, mountAll: () => xn5, runtime: () => Sr4 });
-          function oe8(t2) {
+          var Cn5 = (t2) => Ln5(Ht7({}, "__esModule", { value: true }), t2);
+          var Nr4 = {};
+          Rn5(Nr4, { Sap: () => jt7, default: () => Tr4, mount: () => $r4, mountAll: () => kn5, runtime: () => _r4 });
+          function se8(t2) {
             let e20 = false, r45 = /* @__PURE__ */ new Set(), n3 = [];
             function o3(u4) {
               u4 && (n3.push(u4), n3.length > 8 && n3.shift());
             }
-            function i2(u4, v9) {
-              if (o3(v9), u4._broken) {
-                if (v9 === "mutation") return;
-                d2(u4);
+            function i2(u4, E6) {
+              if (o3(E6), u4._broken) {
+                if (E6 === "mutation") return;
+                p5(u4);
               }
-              r45.add(u4), !e20 && (e20 = true, queueMicrotask(a2));
+              r45.add(u4), !e20 && (e20 = true, queueMicrotask(s3));
             }
-            function a2() {
+            function s3() {
               e20 = false;
               let u4 = [...r45];
               r45.clear();
-              for (let v9 of u4) g7(v9);
+              for (let E6 of u4) g7(E6);
             }
-            function g7(u4, v9 = false) {
+            function g7(u4, E6 = false) {
               if (!(u4._broken || u4.halted)) {
                 if (u4._passes = (u4._passes || 0) + 1, u4._passes > 50) {
                   u4._broken = true, u4._breakerRing = n3.slice(), t2(u4, { breaker: true });
@@ -88078,19 +88939,19 @@ https://github.com/highlightjs/highlight.js/issues/2277`), x5 = n3, E6 = a2), h 
                 }
                 u4._resetArmed || (u4._resetArmed = true, setTimeout(() => {
                   u4._passes = 0, u4._resetArmed = false;
-                }, 0)), t2(u4, v9 ? { full: true } : {});
+                }, 0)), t2(u4, E6 ? { full: true } : {});
               }
             }
-            function b7(u4, v9) {
-              o3(v9), u4._broken && d2(u4), g7(u4, true);
+            function w6(u4, E6) {
+              o3(E6), u4._broken && p5(u4), g7(u4, true);
             }
-            function d2(u4) {
+            function p5(u4) {
               u4._broken = false, u4._passes = 0;
             }
-            return { schedule: i2, runNow: b7, rearm: d2, ring: n3 };
+            return { schedule: i2, runNow: w6, rearm: p5, ring: n3 };
           }
-          var qt9 = { E01: { slug: "foreign-dialect", behavior: "HALT" }, E02: { slug: "moustaches-in-text", behavior: "HALT" }, E04: { slug: "duplicate-declaration", behavior: "HALT" }, E05: { slug: "reserved-name", behavior: "HALT" }, E06: { slug: "global-html-name", behavior: "HALT" }, E07: { slug: "calc-cycle", behavior: "ERR" }, E08: { slug: "expression-syntax", behavior: "HALT" }, E10: { slug: "orphan-item", behavior: "HALT" }, E12: { slug: "unknown-state-key", behavior: "ERR" }, E15: { slug: "write-to-undeclared-key", behavior: "ERR" }, E16: { slug: "write-to-computed-field", behavior: "ERR" }, E17: { slug: "unresolvable-action-target", behavior: "HALT" }, E18: { slug: "paint-on-form-control", behavior: "HALT" }, E20: { slug: "bind-on-non-control", behavior: "HALT" }, E22: { slug: "format-type", behavior: "ERR" }, E24: { slug: "runtime-expression-throw", behavior: "ERR" }, E26: { slug: "circuit-breaker", behavior: "HALT" }, E30: { slug: "attr-on-bound-control", behavior: "HALT" }, E31: { slug: "password-without-transient", behavior: "HALT" }, E32: { slug: "file-bind", behavior: "HALT" }, E33: { slug: "dialog-state-open", behavior: "HALT" }, E34: { slug: "transient-persist-collision", behavior: "HALT" }, E35: { slug: "presence-state-misuse", behavior: "HALT" }, E40: { slug: "each-not-array", behavior: "ERR" }, E41: { slug: "each-bad-key", behavior: "ERR" }, E42: { slug: "each-template", behavior: "ERR" }, E43: { slug: "bind-in-each-row", behavior: "ERR" }, E50: { slug: "needs-full-sapjs", behavior: "HALT" }, W03: { slug: "unknown-colon-attribute", behavior: "WARN" }, W04: { slug: "expression-in-when", behavior: "WARN" }, W30: { slug: "nonzero-mount-writes", behavior: "WARN" }, W31: { slug: "detail-dialog-saved-open", behavior: "WARN" } }, tt7 = ["disabled", "readonly", "required", "checked", "selected", "multiple", "open", "inert", "autofocus", "novalidate", "hidden"], ft8 = /* @__PURE__ */ new Set(["title", "style", "hidden", "lang", "dir", "translate", "class", "id", "nonce", "autofocus", "tabindex", "contenteditable", "spellcheck", "draggable", "role", "slot", "part", "name", "value", "type", "itemscope", "itemtype", "itemid", "itemprop", "itemref"]), Et9 = /* @__PURE__ */ new Set(["sap", "scope", "items", "item", "template", "bind", "calc", "text", "show", "attr", "set", "trigger", "move", "sort", "detail", "each", "effect", "invalid", "confirm", "transient", "default", "persist", "sortable", "editmode"]);
-          function vt7(t2) {
+          var Vt7 = { E01: { slug: "foreign-dialect", behavior: "HALT" }, E02: { slug: "moustaches-in-text", behavior: "HALT" }, E04: { slug: "duplicate-declaration", behavior: "HALT" }, E05: { slug: "reserved-name", behavior: "HALT" }, E06: { slug: "global-html-name", behavior: "HALT" }, E07: { slug: "calc-cycle", behavior: "ERR" }, E08: { slug: "expression-syntax", behavior: "HALT" }, E10: { slug: "orphan-item", behavior: "HALT" }, E12: { slug: "unknown-state-key", behavior: "ERR" }, E15: { slug: "write-to-undeclared-key", behavior: "ERR" }, E16: { slug: "write-to-computed-field", behavior: "ERR" }, E17: { slug: "unresolvable-action-target", behavior: "HALT" }, E18: { slug: "paint-on-form-control", behavior: "HALT" }, E20: { slug: "bind-on-non-control", behavior: "HALT" }, E22: { slug: "format-type", behavior: "ERR" }, E24: { slug: "runtime-expression-throw", behavior: "ERR" }, E26: { slug: "circuit-breaker", behavior: "HALT" }, E30: { slug: "attr-on-bound-control", behavior: "HALT" }, E31: { slug: "password-without-transient", behavior: "HALT" }, E32: { slug: "file-bind", behavior: "HALT" }, E33: { slug: "dialog-state-open", behavior: "HALT" }, E34: { slug: "transient-persist-collision", behavior: "HALT" }, E35: { slug: "presence-state-misuse", behavior: "HALT" }, E40: { slug: "each-not-array", behavior: "ERR" }, E41: { slug: "each-bad-key", behavior: "ERR" }, E42: { slug: "each-template", behavior: "ERR" }, E43: { slug: "bind-in-each-row", behavior: "ERR" }, E50: { slug: "needs-full-sapjs", behavior: "HALT" }, W03: { slug: "unknown-colon-attribute", behavior: "WARN" }, W04: { slug: "expression-in-when", behavior: "WARN" }, W30: { slug: "nonzero-mount-writes", behavior: "WARN" }, W31: { slug: "detail-dialog-saved-open", behavior: "WARN" } }, nt9 = ["disabled", "readonly", "required", "checked", "selected", "multiple", "open", "inert", "autofocus", "novalidate", "hidden"], lt9 = /* @__PURE__ */ new Set(["title", "style", "hidden", "lang", "dir", "translate", "class", "id", "nonce", "autofocus", "tabindex", "contenteditable", "spellcheck", "draggable", "role", "slot", "part", "name", "value", "type", "itemscope", "itemtype", "itemid", "itemprop", "itemref"]), Et9 = /* @__PURE__ */ new Set(["sap", "scope", "items", "item", "template", "bind", "calc", "text", "show", "attr", "set", "trigger", "move", "sort", "detail", "each", "effect", "invalid", "confirm", "transient", "default", "persist", "sortable", "editmode"]);
+          function xt9(t2) {
             if (!t2 || t2.nodeType !== 1) return "?";
             if (t2.id) return `${t2.tagName.toLowerCase()}#${t2.id}`;
             let e20 = [], r45 = t2, n3 = 0;
@@ -88098,23 +88959,23 @@ https://github.com/highlightjs/highlight.js/issues/2277`), x5 = n3, E6 = a2), h 
               let o3 = r45.tagName.toLowerCase();
               if (r45.hasAttribute("sap")) o3 += "[sap]";
               else if (r45.parentElement) {
-                let i2 = 0, a2 = 0;
-                for (let g7 = r45.parentElement.firstElementChild; g7; g7 = g7.nextElementSibling) g7.tagName === r45.tagName && (i2++, g7 === r45 && (a2 = i2));
-                i2 > 1 && (o3 += `:nth-of-type(${a2})`);
+                let i2 = 0, s3 = 0;
+                for (let g7 = r45.parentElement.firstElementChild; g7; g7 = g7.nextElementSibling) g7.tagName === r45.tagName && (i2++, g7 === r45 && (s3 = i2));
+                i2 > 1 && (o3 += `:nth-of-type(${s3})`);
               }
               if (e20.unshift(o3), r45.hasAttribute("sap")) break;
               r45 = r45.parentElement, n3++;
             }
             return e20.join(" > ");
           }
-          var Z9 = class {
+          var et9 = class {
             constructor(e20) {
               this.appName = e20, this.errors = [], this.warnings = [], this.halted = false, this.haltReason = null;
             }
             block(e20, r45, n3 = {}) {
-              let o3 = (qt9[e20] || {}).slug || "error", i2 = { code: e20, slug: o3, el: vt7(r45), attr: n3.attr || null, expr: n3.expr || null, key: n3.key || null, problem: n3.problem || "", didYouMean: n3.didYouMean || null, fix: n3.fix || null, phase: n3.phase || "runtime" }, a2 = [`
+              let o3 = (Vt7[e20] || {}).slug || "error", i2 = { code: e20, slug: o3, el: xt9(r45), attr: n3.attr || null, expr: n3.expr || null, key: n3.key || null, problem: n3.problem || "", didYouMean: n3.didYouMean || null, fix: n3.fix || null, phase: n3.phase || "runtime" }, s3 = [`
 ` + (e20[0] === "W" ? "sap \u26A0 " : "sap \u2717 ") + e20 + " " + o3];
-              return a2.push(`  at ${i2.el}${i2.attr ? ` \u2014 ${i2.attr}="${i2.expr ?? ""}"` : ""}`), i2.problem && a2.push(`  problem: ${i2.problem}`), i2.didYouMean && a2.push(`  did you mean: ${i2.didYouMean}`), i2.fix && a2.push(`  fix: ${i2.fix}`), (e20[0] === "W" ? console.warn : console.error)(a2.join(`
+              return s3.push(`  at ${i2.el}${i2.attr ? ` \u2014 ${i2.attr}="${i2.expr ?? ""}"` : ""}`), i2.problem && s3.push(`  problem: ${i2.problem}`), i2.didYouMean && s3.push(`  did you mean: ${i2.didYouMean}`), i2.fix && s3.push(`  fix: ${i2.fix}`), (e20[0] === "W" ? console.warn : console.error)(s3.join(`
 `)), i2;
             }
             error(e20, r45, n3 = {}) {
@@ -88129,55 +88990,55 @@ https://github.com/highlightjs/highlight.js/issues/2277`), x5 = n3, E6 = a2), h 
               return { ok: this.errors.length === 0 && !this.halted, app: this.appName, halted: this.halted, haltReason: this.haltReason, errors: this.errors.slice(), warnings: this.warnings.slice() };
             }
           };
-          function O7(t2, e20) {
+          function B8(t2, e20) {
             t2 && t2.getAttribute("sap-error") !== e20 && t2.setAttribute("sap-error", e20);
           }
-          function et9(t2) {
+          function rt9(t2) {
             t2 && t2.hasAttribute("sap-error") && t2.removeAttribute("sap-error");
           }
-          function lt9(t2, e20) {
+          function dt9(t2, e20) {
             let r45 = null, n3 = 3;
             for (let o3 of e20) {
-              let i2 = Rn5(t2, o3);
+              let i2 = Dn4(t2, o3);
               i2 < n3 && (n3 = i2, r45 = o3);
             }
             return r45;
           }
-          function Rn5(t2, e20) {
-            let r45 = t2.length, n3 = e20.length, o3 = Array.from({ length: r45 + 1 }, (i2, a2) => [a2, ...new Array(n3).fill(0)]);
+          function Dn4(t2, e20) {
+            let r45 = t2.length, n3 = e20.length, o3 = Array.from({ length: r45 + 1 }, (i2, s3) => [s3, ...new Array(n3).fill(0)]);
             for (let i2 = 0; i2 <= n3; i2++) o3[0][i2] = i2;
-            for (let i2 = 1; i2 <= r45; i2++) for (let a2 = 1; a2 <= n3; a2++) o3[i2][a2] = Math.min(o3[i2 - 1][a2] + 1, o3[i2][a2 - 1] + 1, o3[i2 - 1][a2 - 1] + (t2[i2 - 1] === e20[a2 - 1] ? 0 : 1));
+            for (let i2 = 1; i2 <= r45; i2++) for (let s3 = 1; s3 <= n3; s3++) o3[i2][s3] = Math.min(o3[i2 - 1][s3] + 1, o3[i2][s3 - 1] + 1, o3[i2 - 1][s3 - 1] + (t2[i2 - 1] === e20[s3 - 1] ? 0 : 1));
             return o3[r45][n3];
           }
-          var Cn5 = new Set(tt7), Dn4 = { readonly: "readOnly", novalidate: "noValidate" }, Fn4 = 0, ie9 = /* @__PURE__ */ new WeakMap();
-          function xt9(t2, e20 = "sap") {
+          var Fn4 = new Set(nt9), Mn4 = { readonly: "readOnly", novalidate: "noValidate" }, Pn4 = 0, ae9 = /* @__PURE__ */ new WeakMap();
+          function St9(t2, e20 = "sap") {
             let r45 = t2.getAttribute("data-id");
             if (r45) return r45;
             if (t2.id) return t2.id;
-            let n3 = ie9.get(t2);
-            return n3 || (n3 = `${e20}-${(Fn4++).toString(36)}`, ie9.set(t2, n3)), n3;
+            let n3 = ae9.get(t2);
+            return n3 || (n3 = `${e20}-${(Pn4++).toString(36)}`, ae9.set(t2, n3)), n3;
           }
-          function se8(t2, e20 = "row") {
+          function ue8(t2, e20 = "row") {
             for (; ; ) {
               let r45 = `${e20}-${Math.random().toString(36).slice(2, 8)}`;
               if (!t2.getElementById(r45) && !t2.querySelector(`[data-id="${r45}"]`)) return r45;
             }
           }
-          function Mn4(t2) {
+          function In4(t2) {
             return t2.hasAttribute("scope") || t2.hasAttribute("items") || t2.hasAttribute("detail") || t2.hasAttribute("each");
           }
-          function Pn4(t2) {
+          function On5(t2) {
             return t2.tagName === "TEMPLATE" || t2.hasAttribute("sap-ignore") || t2.hasAttribute("template") || t2.hasAttribute("cms-template");
           }
-          function B8(t2, e20) {
+          function W8(t2, e20) {
             for (let n3 = t2.firstElementChild; n3; n3 = n3.nextElementSibling) r45(n3);
             function r45(n3) {
-              if (Pn4(n3)) return;
-              let o3 = Mn4(n3);
+              if (On5(n3)) return;
+              let o3 = In4(n3);
               if (e20(n3, o3), !o3) for (let i2 = n3.firstElementChild; i2; i2 = i2.nextElementSibling) r45(i2);
             }
           }
-          function F7(t2) {
+          function P9(t2) {
             let e20 = t2;
             for (; e20; ) {
               if (e20.hasAttribute("sap") || e20.hasAttribute("scope") || e20.hasAttribute("item") || e20.hasAttribute("detail")) return e20;
@@ -88185,14 +89046,14 @@ https://github.com/highlightjs/highlight.js/issues/2277`), x5 = n3, E6 = a2), h 
             }
             return null;
           }
-          function G8(t2) {
+          function Y7(t2) {
             for (let e20 = t2; e20 && e20.nodeType === 1; e20 = e20.parentElement) {
               if (e20._sapEachRow) return e20;
               if (e20.hasAttribute("item") || e20.hasAttribute("sap")) return null;
             }
             return null;
           }
-          function St9(t2) {
+          function kt9(t2) {
             let e20 = t2;
             for (; e20; ) {
               if (e20.hasAttribute("detail") || e20.hasAttribute("item")) return e20;
@@ -88200,7 +89061,7 @@ https://github.com/highlightjs/highlight.js/issues/2277`), x5 = n3, E6 = a2), h 
             }
             return null;
           }
-          function dt9(t2) {
+          function pt9(t2) {
             let e20 = t2;
             for (; e20; ) {
               if (e20.hasAttribute("detail")) return e20;
@@ -88208,58 +89069,58 @@ https://github.com/highlightjs/highlight.js/issues/2277`), x5 = n3, E6 = a2), h 
             }
             return null;
           }
-          function Y7(t2, e20) {
+          function X10(t2, e20) {
             if (t2.hasAttribute("item") && t2.getAttribute("bind") === e20) return t2;
             let r45 = null;
-            return B8(t2, (n3) => {
+            return W8(t2, (n3) => {
               !r45 && n3.getAttribute("bind") === e20 && (r45 = n3);
             }), r45;
           }
-          function nt9(t2, e20) {
+          function ot9(t2, e20) {
             let r45 = null;
-            return B8(t2, (n3) => {
+            return W8(t2, (n3) => {
               !r45 && n3.getAttribute("items") === e20 && (r45 = n3);
             }), r45;
           }
-          function rt9(t2, e20) {
-            return !t2 || t2.nodeType !== 1 || !t2.hasAttribute("item") ? false : Y7(t2, e20) || nt9(t2, e20) ? true : C7(t2.getAttribute("state") || "").some((r45) => r45.name === e20);
+          function it9(t2, e20) {
+            return !t2 || t2.nodeType !== 1 || !t2.hasAttribute("item") ? false : X10(t2, e20) || ot9(t2, e20) ? true : D9(t2.getAttribute("state") || "").some((r45) => r45.name === e20);
           }
-          function ae9(t2) {
+          function ce8(t2) {
             let e20 = t2 && t2.$el;
             return e20 && e20.nodeType === 1 && e20.isConnected && e20.hasAttribute("item") ? e20 : null;
           }
-          function kt9(t2) {
+          function $t9(t2) {
             return !!t2.closest("form[trigger-add]");
           }
-          function q9(t2) {
+          function H10(t2) {
             let e20 = [];
             for (let r45 = t2.firstElementChild; r45; r45 = r45.nextElementSibling) r45.hasAttribute("item") && !r45.hasAttribute("template") && !r45.hasAttribute("cms-template") && e20.push(r45);
             return e20;
           }
-          function Vt7(t2, e20) {
+          function zt9(t2, e20) {
             if (!t2 || !e20) return null;
             let r45 = [...t2.querySelectorAll(`template[items="${e20}"]`)].find((o3) => o3.closest("[sap]") === t2), n3 = r45 && r45.content.firstElementChild;
             return n3 && n3.hasAttribute("item") ? n3 : null;
           }
-          function $t9(t2) {
+          function _t7(t2) {
             for (let e20 = t2.firstElementChild; e20; e20 = e20.nextElementSibling) if (e20.hasAttribute("item") && e20.hasAttribute("template")) return e20;
-            return Vt7(t2.closest("[sap]"), t2.getAttribute("items"));
+            return zt9(t2.closest("[sap]"), t2.getAttribute("items"));
           }
-          function C7(t2) {
+          function D9(t2) {
             let e20 = [];
             if (!t2) return e20;
             for (let r45 of t2.trim().split(/\s+/)) {
               if (!r45) continue;
               let n3 = r45, o3, i2 = n3.indexOf("=");
               i2 >= 0 && (o3 = n3.slice(i2 + 1), n3 = n3.slice(0, i2));
-              let a2 = n3.split(":"), g7 = a2[0], b7 = "string", d2 = false;
-              for (let S8 of a2.slice(1)) S8 === "num" ? b7 = "num" : S8 === "bool" ? b7 = "bool" : S8 === "presence" ? b7 = "presence" : S8 === "transient" && (d2 = true);
-              let u4 = g7, v9 = u4.startsWith("data-") && u4.length > 5 ? u4.slice(5).replace(/-([a-z])/g, (S8, $9) => $9.toUpperCase()) : u4;
-              e20.push({ name: v9, attr: u4, type: b7, default: o3, transient: d2 });
+              let s3 = n3.split(":"), g7 = s3[0], w6 = "string", p5 = false;
+              for (let S8 of s3.slice(1)) S8 === "num" ? w6 = "num" : S8 === "bool" ? w6 = "bool" : S8 === "presence" ? w6 = "presence" : S8 === "transient" && (p5 = true);
+              let u4 = g7, E6 = u4.startsWith("data-") && u4.length > 5 ? u4.slice(5).replace(/-([a-z])/g, (S8, $9) => $9.toUpperCase()) : u4;
+              e20.push({ name: E6, attr: u4, type: w6, default: o3, transient: p5 });
             }
             return e20;
           }
-          function U8(t2, e20) {
+          function G8(t2, e20) {
             if (e20 === "num") {
               if (t2 == null || t2 === "") return 0;
               let r45 = Number(t2);
@@ -88267,119 +89128,119 @@ https://github.com/highlightjs/highlight.js/issues/2277`), x5 = n3, E6 = a2), h 
             }
             return e20 === "bool" ? t2 === "true" || t2 === "" || t2 === "1" : t2 ?? "";
           }
-          function zt9(t2, e20) {
+          function Ut7(t2, e20) {
             return e20 === "bool" ? t2 ? "true" : "false" : t2 == null ? "" : String(t2);
           }
-          function Ht7(t2, e20) {
-            return Cn5.has(e20) && typeof t2[Dn4[e20] || e20] == "boolean";
+          function Gt7(t2, e20) {
+            return Fn4.has(e20) && typeof t2[Mn4[e20] || e20] == "boolean";
           }
-          function X10(t2, e20) {
-            return e20.type === "presence" || e20.type !== "num" && Ht7(t2, e20.attr || e20.name);
+          function K10(t2, e20) {
+            return e20.type === "presence" || e20.type !== "num" && Gt7(t2, e20.attr || e20.name);
           }
-          function pt9(t2) {
+          function mt9(t2) {
             return t2.default != null ? t2.default : t2.type === "num" ? "0" : t2.type === "bool" ? "false" : "";
           }
-          function ue8(t2, e20) {
+          function fe7(t2, e20) {
             let r45 = e20.attr || e20.name;
-            if (X10(t2, e20)) return t2.hasAttribute(r45);
+            if (K10(t2, e20)) return t2.hasAttribute(r45);
             let n3 = t2.getAttribute(r45);
-            return U8(n3 ?? pt9(e20), e20.type);
+            return G8(n3 ?? mt9(e20), e20.type);
           }
-          function ce8(t2, e20) {
-            return X10(t2, e20) ? e20.default != null ? U8(e20.default, "bool") : false : U8(pt9(e20), e20.type);
-          }
-          function mt9(t2, e20, r45) {
-            let n3 = e20.attr || e20.name;
-            if (X10(t2, e20)) {
-              r45 ? t2.hasAttribute(n3) || t2.setAttribute(n3, "") : t2.hasAttribute(n3) && t2.removeAttribute(n3);
-              return;
-            }
-            t2.setAttribute(n3, zt9(r45, e20.type));
-          }
-          function _t7(t2, e20) {
-            let r45 = e20.attr || e20.name, n3 = t2._sapTransient || (t2._sapTransient = {});
-            if (!(e20.name in n3)) {
-              let o3 = t2.getAttribute(r45);
-              o3 == null && (o3 = pt9(e20)), n3[e20.name] = U8(o3, e20.type);
-            }
-            return t2.hasAttribute(r45) && t2.removeAttribute(r45), n3[e20.name];
+          function le9(t2, e20) {
+            return K10(t2, e20) ? e20.default != null ? G8(e20.default, "bool") : false : G8(mt9(e20), e20.type);
           }
           function ht9(t2, e20, r45) {
             let n3 = e20.attr || e20.name;
-            (t2._sapTransient || (t2._sapTransient = {}))[e20.name] = r45, t2.hasAttribute(n3) && t2.removeAttribute(n3);
+            if (K10(t2, e20)) {
+              r45 ? t2.hasAttribute(n3) || t2.setAttribute(n3, "") : t2.hasAttribute(n3) && t2.removeAttribute(n3);
+              return;
+            }
+            t2.setAttribute(n3, Ut7(r45, e20.type));
+          }
+          function Tt8(t2, e20) {
+            let r45 = e20.attr || e20.name, n3 = t2._sapTransient || (t2._sapTransient = {});
+            if (!(e20.name in n3)) {
+              let o3 = t2.getAttribute(r45);
+              o3 == null && (o3 = mt9(e20)), n3[e20.name] = G8(o3, e20.type);
+            }
+            return t2.hasAttribute(r45) && t2.removeAttribute(r45), n3[e20.name];
           }
           function bt9(t2, e20, r45) {
+            let n3 = e20.attr || e20.name;
+            (t2._sapTransient || (t2._sapTransient = {}))[e20.name] = r45, t2.hasAttribute(n3) && t2.removeAttribute(n3);
+          }
+          function gt9(t2, e20, r45) {
             let n3 = String(r45).split("."), o3 = n3[n3.length - 1];
             if (n3.length === 1) {
-              let g7 = In4(e20, o3);
+              let g7 = Wn5(e20, o3);
               return g7 || (t2.getAttribute("items") === o3 ? t2 : t2.querySelector(`[items="${o3}"]:not(template)`));
             }
-            let i2 = n3[n3.length - 2], a2 = [...t2.querySelectorAll(`[scope="${i2}"]`)].find((g7) => nt9(g7, o3));
-            return a2 ? nt9(a2, o3) : null;
+            let i2 = n3[n3.length - 2], s3 = [...t2.querySelectorAll(`[scope="${i2}"]`)].find((g7) => ot9(g7, o3));
+            return s3 ? ot9(s3, o3) : null;
           }
-          function In4(t2, e20) {
-            let r45 = F7(t2);
+          function Wn5(t2, e20) {
+            let r45 = P9(t2);
             for (; r45; ) {
               if (r45.getAttribute("items") === e20) return r45;
-              let n3 = nt9(r45, e20);
+              let n3 = ot9(r45, e20);
               if (n3) return n3;
-              r45 = F7(r45.parentElement);
+              r45 = P9(r45.parentElement);
             }
             return null;
           }
-          function P9(t2) {
+          function I6(t2) {
             if (typeof t2 == "number") return t2;
             if (t2 == null || t2 === "") return 0;
             let e20 = Number(typeof t2 == "string" ? t2.replace(/[$,%\s]/g, "") : t2);
             return Number.isNaN(e20) ? 0 : e20;
           }
-          function Tt8(t2, e20) {
+          function Nt7(t2, e20) {
             return Array.isArray(t2) ? e20 == null ? t2 : t2.map((r45) => typeof e20 == "function" ? e20(r45) : r45?.[e20]) : [];
           }
-          function Ut7(t2, e20) {
-            return Tt8(t2, e20).reduce((r45, n3) => r45 + P9(n3), 0);
-          }
-          function fe7(t2, e20) {
-            return Array.isArray(t2) ? e20 == null ? t2.length : t2.reduce((r45, n3) => r45 + (e20(n3) ? 1 : 0), 0) : 0;
-          }
-          function le9(t2, e20) {
-            let r45 = Tt8(t2, e20);
-            return r45.length ? Ut7(t2, e20) / r45.length : 0;
+          function Yt8(t2, e20) {
+            return Nt7(t2, e20).reduce((r45, n3) => r45 + I6(n3), 0);
           }
           function de9(t2, e20) {
-            let r45 = Tt8(t2, e20).filter((n3) => n3 != null && n3 !== "");
-            return r45.length ? r45.every((n3) => typeof n3 == "number" || !Number.isNaN(Number(n3))) ? Math.min(...r45.map(Number)) : r45.reduce((n3, o3) => String(n3) <= String(o3) ? n3 : o3) : 0;
+            return Array.isArray(t2) ? e20 == null ? t2.length : t2.reduce((r45, n3) => r45 + (e20(n3) ? 1 : 0), 0) : 0;
           }
           function pe7(t2, e20) {
-            let r45 = Tt8(t2, e20).filter((n3) => n3 != null && n3 !== "");
-            return r45.length ? r45.every((n3) => typeof n3 == "number" || !Number.isNaN(Number(n3))) ? Math.max(...r45.map(Number)) : r45.reduce((n3, o3) => String(n3) >= String(o3) ? n3 : o3) : 0;
+            let r45 = Nt7(t2, e20);
+            return r45.length ? Yt8(t2, e20) / r45.length : 0;
           }
-          function me9(t2, e20, r45) {
-            let n3 = P9(t2) === 1 ? e20 : r45 ?? e20 + "s";
-            return `${t2} ${n3}`;
+          function me9(t2, e20) {
+            let r45 = Nt7(t2, e20).filter((n3) => n3 != null && n3 !== "");
+            return r45.length ? r45.every((n3) => typeof n3 == "number" || !Number.isNaN(Number(n3))) ? Math.min(...r45.map(Number)) : r45.reduce((n3, o3) => String(n3) <= String(o3) ? n3 : o3) : 0;
           }
           function he9(t2, e20) {
+            let r45 = Nt7(t2, e20).filter((n3) => n3 != null && n3 !== "");
+            return r45.length ? r45.every((n3) => typeof n3 == "number" || !Number.isNaN(Number(n3))) ? Math.max(...r45.map(Number)) : r45.reduce((n3, o3) => String(n3) >= String(o3) ? n3 : o3) : 0;
+          }
+          function be10(t2, e20, r45) {
+            let n3 = I6(t2) === 1 ? e20 : r45 ?? e20 + "s";
+            return `${t2} ${n3}`;
+          }
+          function ge9(t2, e20) {
             let r45 = new Date(t2), n3 = new Date(e20);
             return Number.isNaN(+r45) || Number.isNaN(+n3) ? 0 : Math.round((n3 - r45) / 864e5);
           }
-          function W8(t2) {
+          function q9(t2) {
             return typeof t2 == "number" ? t2 : Number(t2);
           }
-          var ot9 = { usd: (t2) => "$" + W8(t2).toLocaleString("en-US", { maximumFractionDigits: 0 }), usd2: (t2) => "$" + W8(t2).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }), pct: (t2) => Math.round(W8(t2)) + "%", pct1: (t2) => W8(t2).toFixed(1) + "%", int: (t2) => Math.round(W8(t2)).toLocaleString("en-US"), num: (t2) => W8(t2).toLocaleString("en-US"), num2: (t2) => W8(t2).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }), compact: (t2) => W8(t2).toLocaleString("en-US", { notation: "compact" }), date: (t2) => {
+          var st10 = { usd: (t2) => "$" + q9(t2).toLocaleString("en-US", { maximumFractionDigits: 0 }), usd2: (t2) => "$" + q9(t2).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }), pct: (t2) => Math.round(q9(t2)) + "%", pct1: (t2) => q9(t2).toFixed(1) + "%", int: (t2) => Math.round(q9(t2)).toLocaleString("en-US"), num: (t2) => q9(t2).toLocaleString("en-US"), num2: (t2) => q9(t2).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }), compact: (t2) => q9(t2).toLocaleString("en-US", { notation: "compact" }), date: (t2) => {
             let e20 = new Date(t2);
             return Number.isNaN(+e20) ? String(t2) : e20.toLocaleDateString("en-US");
           }, clock: (t2) => {
-            let e20 = W8(t2), r45 = Math.floor(e20 / 100), n3 = r45 % 10, o3 = Math.floor(r45 / 10) % 60;
+            let e20 = q9(t2), r45 = Math.floor(e20 / 100), n3 = r45 % 10, o3 = Math.floor(r45 / 10) % 60;
             return `${Math.floor(r45 / 600)}:${String(o3).padStart(2, "0")}.${n3}`;
-          } }, On5 = /* @__PURE__ */ new Set(["usd", "usd2", "pct", "pct1", "int", "num", "num2", "compact", "clock"]);
-          function be10(t2, e20) {
+          } }, Bn4 = /* @__PURE__ */ new Set(["usd", "usd2", "pct", "pct1", "int", "num", "num2", "compact", "clock"]);
+          function we9(t2, e20) {
             if (!t2) return e20 == null ? "" : String(e20);
-            let r45 = ot9[t2];
+            let r45 = st10[t2];
             if (typeof r45 != "function") {
               let n3 = new Error(`unknown format "${t2}"`);
               throw n3.sapCode = "E22", n3;
             }
-            if (On5.has(t2)) {
+            if (Bn4.has(t2)) {
               let n3 = typeof e20 == "number" ? e20 : Number(e20);
               if (!Number.isFinite(n3)) {
                 let o3 = new Error(`format "${t2}" received ${typeof e20 == "string" ? `"${e20}"` : e20}`);
@@ -88388,95 +89249,95 @@ https://github.com/highlightjs/highlight.js/issues/2277`), x5 = n3, E6 = a2), h 
             }
             return r45(e20);
           }
-          var Bn4 = ["state", "item", "el", "root", "fmt", "num", "sum", "count", "avg", "min", "max", "plural", "days"], Nt7 = /* @__PURE__ */ new Map(), ge9 = /\bstate\.([a-z][a-z0-9_]*)/g, we9 = /\bitem\.([a-z][a-z0-9_]*)/g;
-          function Wn5(t2) {
+          var qn4 = ["state", "item", "el", "root", "fmt", "num", "sum", "count", "avg", "min", "max", "plural", "days"], Rt9 = /* @__PURE__ */ new Map(), ye8 = /\bstate\.([a-z][a-z0-9_]*)/g, Ae8 = /\bitem\.([a-z][a-z0-9_]*)/g;
+          function jn3(t2) {
             let e20 = /* @__PURE__ */ new Set(), r45 = /* @__PURE__ */ new Set(), n3;
-            for (ge9.lastIndex = 0; n3 = ge9.exec(t2); ) e20.add(n3[1]);
-            for (we9.lastIndex = 0; n3 = we9.exec(t2); ) r45.add(n3[1]);
+            for (ye8.lastIndex = 0; n3 = ye8.exec(t2); ) e20.add(n3[1]);
+            for (Ae8.lastIndex = 0; n3 = Ae8.exec(t2); ) r45.add(n3[1]);
             return { state: e20, item: r45 };
           }
-          function L10(t2, e20 = false) {
-            let r45 = (e20 ? "!" : "") + t2, n3 = Nt7.get(r45);
+          function C7(t2, e20 = false) {
+            let r45 = (e20 ? "!" : "") + t2, n3 = Rt9.get(r45);
             if (n3) return n3;
-            Nt7.size > 512 && Nt7.clear();
+            Rt9.size > 512 && Rt9.clear();
             try {
               let o3 = e20 ? `"use strict";
 ${t2}` : `"use strict"; return (${t2});`;
-              n3 = { fn: new Function(...Bn4, o3), src: t2, statement: e20, deps: Wn5(t2), error: null };
+              n3 = { fn: new Function(...qn4, o3), src: t2, statement: e20, deps: jn3(t2), error: null };
             } catch (o3) {
               n3 = { fn: null, src: t2, statement: e20, deps: { state: /* @__PURE__ */ new Set(), item: /* @__PURE__ */ new Set() }, error: o3 };
             }
-            return Nt7.set(r45, n3), n3;
+            return Rt9.set(r45, n3), n3;
           }
-          function K10(t2, e20) {
-            return I6(t2, e20.state, e20.item, e20.el ?? null, e20.root);
+          function J9(t2, e20) {
+            return O7(t2, e20.state, e20.item, e20.el ?? null, e20.root);
           }
-          function I6(t2, e20, r45, n3, o3) {
+          function O7(t2, e20, r45, n3, o3) {
             if (t2.error) throw t2.error;
-            return t2.fn(e20, r45, n3, o3, ot9, P9, Ut7, fe7, le9, de9, pe7, me9, he9);
+            return t2.fn(e20, r45, n3, o3, st10, I6, Yt8, de9, pe7, me9, he9, be10, ge9);
           }
-          function ye8(t2) {
+          function ve9(t2) {
             let e20 = /* @__PURE__ */ new Map();
-            for (let a2 of t2) e20.set(a2.name, a2);
+            for (let s3 of t2) e20.set(s3.name, s3);
             let r45 = [], n3 = /* @__PURE__ */ new Map(), o3 = [];
-            function i2(a2) {
-              let g7 = n3.get(a2.name);
+            function i2(s3) {
+              let g7 = n3.get(s3.name);
               if (g7 !== 1) {
                 if (g7 === 0) {
-                  let b7 = [...o3.slice(o3.indexOf(a2.name)), a2.name].join(" -> "), d2 = new Error(`calc: cycle: ${b7}`);
-                  throw d2.sapCode = "E07", d2.cycle = b7, d2;
+                  let w6 = [...o3.slice(o3.indexOf(s3.name)), s3.name].join(" -> "), p5 = new Error(`calc: cycle: ${w6}`);
+                  throw p5.sapCode = "E07", p5.cycle = w6, p5;
                 }
-                n3.set(a2.name, 0), o3.push(a2.name);
-                for (let b7 of a2.entry.deps.state) {
-                  let d2 = e20.get(b7);
-                  d2 && d2 !== a2 && i2(d2);
+                n3.set(s3.name, 0), o3.push(s3.name);
+                for (let w6 of s3.entry.deps.state) {
+                  let p5 = e20.get(w6);
+                  p5 && p5 !== s3 && i2(p5);
                 }
-                for (let b7 of a2.entry.deps.item) {
-                  let d2 = e20.get(b7);
-                  d2 && d2 !== a2 && i2(d2);
+                for (let w6 of s3.entry.deps.item) {
+                  let p5 = e20.get(w6);
+                  p5 && p5 !== s3 && i2(p5);
                 }
-                o3.pop(), n3.set(a2.name, 1), r45.push(a2);
+                o3.pop(), n3.set(s3.name, 1), r45.push(s3);
               }
             }
-            for (let a2 of t2) i2(a2);
+            for (let s3 of t2) i2(s3);
             return r45;
           }
-          var gt9 = {}, J9 = null, Ee8 = true, Rt9 = false;
-          function ve9() {
-            gt9 = {};
-          }
-          function xe9(t2) {
-            let e20 = Rt9;
-            return J9 ? Gt7(J9.takeRecords()) : Ee8 && jn3(), Rt9 = !!J9 && t2.getRootNode() === document, e20;
-          }
-          function Se9(t2) {
-            Rt9 = t2;
-          }
-          function Ct9() {
-            J9 && Gt7(J9.takeRecords());
-          }
-          function jn3() {
-            if (typeof document > "u" || typeof MutationObserver != "function") {
-              Ee8 = false;
-              return;
-            }
-            J9 = new MutationObserver(Gt7), J9.observe(document, { attributes: true, childList: true, subtree: true });
-          }
-          function Gt7(t2) {
-            for (let e20 of t2) if (e20.type === "attributes") e20.target._sapPlan && (e20.target._sapPlan = null);
-            else for (let r45 of e20.addedNodes) r45.nodeType === 1 && ke9(r45);
+          var wt9 = {}, Q8 = null, xe9 = true, Ct9 = false;
+          function Se9() {
+            wt9 = {};
           }
           function ke9(t2) {
+            let e20 = Ct9;
+            return Q8 ? Xt8(Q8.takeRecords()) : xe9 && Hn4(), Ct9 = !!Q8 && t2.getRootNode() === document, e20;
+          }
+          function $e9(t2) {
+            Ct9 = t2;
+          }
+          function Dt7() {
+            Q8 && Xt8(Q8.takeRecords());
+          }
+          function Hn4() {
+            if (typeof document > "u" || typeof MutationObserver != "function") {
+              xe9 = false;
+              return;
+            }
+            Q8 = new MutationObserver(Xt8), Q8.observe(document, { attributes: true, childList: true, subtree: true });
+          }
+          function Xt8(t2) {
+            for (let e20 of t2) if (e20.type === "attributes") e20.target._sapPlan && (e20.target._sapPlan = null);
+            else for (let r45 of e20.addedNodes) r45.nodeType === 1 && _e9(r45);
+          }
+          function _e9(t2) {
             t2._sapPlan && (t2._sapPlan = null);
-            for (let e20 = t2.firstElementChild; e20; e20 = e20.nextElementSibling) ke9(e20);
+            for (let e20 = t2.firstElementChild; e20; e20 = e20.nextElementSibling) _e9(e20);
           }
           function V10(t2) {
-            if (!Rt9) return Ae8(t2);
+            if (!Ct9) return Ee8(t2);
             let e20 = t2._sapPlan;
-            return e20 && e20.gen === gt9 ? e20 : t2._sapPlan = Ae8(t2);
+            return e20 && e20.gen === wt9 ? e20 : t2._sapPlan = Ee8(t2);
           }
-          function Ae8(t2) {
-            let e20 = { gen: gt9, inert: t2.tagName === "TEMPLATE", template: false, item: false, scope: false, items: false, detail: false, each: false, boundary: null, bind: null, transient: false, decls: null, calcs: null, paints: null, effects: null, invalids: null };
+          function Ee8(t2) {
+            let e20 = { gen: wt9, inert: t2.tagName === "TEMPLATE", template: false, item: false, scope: false, items: false, detail: false, each: false, boundary: null, bind: null, transient: false, decls: null, calcs: null, paints: null, effects: null, invalids: null };
             for (let r45 of t2.attributes) {
               let n3 = r45.name, o3 = r45.value, i2 = n3.indexOf(":");
               if (i2 < 0) {
@@ -88512,39 +89373,39 @@ ${t2}` : `"use strict"; return (${t2});`;
                     e20.transient = true;
                     break;
                   case "state":
-                    e20.decls = C7(o3);
+                    e20.decls = D9(o3);
                     break;
                   case "text":
-                    (e20.paints || (e20.paints = [])).push({ kind: "text", fmt: null, entry: L10(o3) });
+                    (e20.paints || (e20.paints = [])).push({ kind: "text", fmt: null, entry: C7(o3) });
                     break;
                   case "show":
-                    (e20.paints || (e20.paints = [])).push({ kind: "show", entry: L10(o3) });
+                    (e20.paints || (e20.paints = [])).push({ kind: "show", entry: C7(o3) });
                     break;
                   case "effect":
-                    (e20.effects || (e20.effects = [])).push({ entry: L10(o3, true) });
+                    (e20.effects || (e20.effects = [])).push({ entry: C7(o3, true) });
                     break;
                   case "invalid":
-                    (e20.invalids || (e20.invalids = [])).push({ entry: L10(o3) });
+                    (e20.invalids || (e20.invalids = [])).push({ entry: C7(o3) });
                     break;
                 }
                 continue;
               }
-              let a2 = n3.slice(0, i2), g7 = n3.slice(i2 + 1);
-              switch (a2) {
+              let s3 = n3.slice(0, i2), g7 = n3.slice(i2 + 1);
+              switch (s3) {
                 case "calc":
-                  (e20.calcs || (e20.calcs = [])).push({ name: g7, entry: L10(o3) });
+                  (e20.calcs || (e20.calcs = [])).push({ name: g7, entry: C7(o3) });
                   break;
                 case "text":
-                  (e20.paints || (e20.paints = [])).push({ kind: "text", fmt: g7, entry: L10(o3) });
+                  (e20.paints || (e20.paints = [])).push({ kind: "text", fmt: g7, entry: C7(o3) });
                   break;
                 case "attr":
-                  (e20.paints || (e20.paints = [])).push({ kind: "attr", arg: g7, entry: L10(o3) });
+                  (e20.paints || (e20.paints = [])).push({ kind: "attr", arg: g7, entry: C7(o3) });
                   break;
                 case "class":
-                  (e20.paints || (e20.paints = [])).push({ kind: "class", arg: g7, entry: L10(o3) });
+                  (e20.paints || (e20.paints = [])).push({ kind: "class", arg: g7, entry: C7(o3) });
                   break;
                 case "css":
-                  (e20.paints || (e20.paints = [])).push({ kind: "css", arg: g7, entry: L10(o3) });
+                  (e20.paints || (e20.paints = [])).push({ kind: "css", arg: g7, entry: C7(o3) });
                   break;
                 case "show-when":
                 case "option":
@@ -88558,61 +89419,61 @@ ${t2}` : `"use strict"; return (${t2});`;
                   break;
               }
             }
-            return e20.boundary = e20.scope ? "scope" : e20.items ? "items" : e20.detail ? "detail" : e20.each ? "each" : null, Vn5(e20) ? qn4() : e20;
+            return e20.boundary = e20.scope ? "scope" : e20.items ? "items" : e20.detail ? "detail" : e20.each ? "each" : null, zn5(e20) ? Vn5() : e20;
           }
           var Lt8 = null;
-          function qn4() {
-            return (!Lt8 || Lt8.gen !== gt9) && (Lt8 = Object.freeze({ gen: gt9, inert: false, template: false, item: false, scope: false, items: false, detail: false, each: false, boundary: null, bind: null, transient: false, decls: null, calcs: null, paints: null, effects: null, invalids: null })), Lt8;
+          function Vn5() {
+            return (!Lt8 || Lt8.gen !== wt9) && (Lt8 = Object.freeze({ gen: wt9, inert: false, template: false, item: false, scope: false, items: false, detail: false, each: false, boundary: null, bind: null, transient: false, decls: null, calcs: null, paints: null, effects: null, invalids: null })), Lt8;
           }
-          function Vn5(t2) {
+          function zn5(t2) {
             return !t2.inert && !t2.item && t2.boundary === null && t2.bind === null && !t2.transient && !t2.decls && !t2.calcs && !t2.paints && !t2.effects && !t2.invalids;
           }
-          var Q8 = /* @__PURE__ */ new WeakMap(), it9 = null, wt9 = false;
-          function _e9() {
-            Q8 = /* @__PURE__ */ new WeakMap();
+          var Z9 = /* @__PURE__ */ new WeakMap(), at8 = null, yt9 = false;
+          function Ne9() {
+            Z9 = /* @__PURE__ */ new WeakMap();
           }
-          function $e9(t2) {
+          function Te7(t2) {
             for (let e20 of t2) {
               if (e20.type === "attributes") {
-                Q8.delete(e20.target);
+                Z9.delete(e20.target);
                 continue;
               }
               let r45 = e20.target.nodeType === 1 ? e20.target : e20.target.parentElement;
-              for (let n3 = r45; n3; n3 = n3.parentElement) Q8.delete(n3);
+              for (let n3 = r45; n3; n3 = n3.parentElement) Z9.delete(n3);
               for (let n3 of e20.addedNodes || []) if (n3.nodeType === 1) {
-                Q8.delete(n3);
-                for (let o3 of n3.querySelectorAll("*")) Q8.delete(o3);
+                Z9.delete(n3);
+                for (let o3 of n3.querySelectorAll("*")) Z9.delete(o3);
               }
             }
           }
-          function Te7(t2) {
-            let e20 = wt9;
-            return !it9 && typeof MutationObserver == "function" && (it9 = new MutationObserver($e9), it9.observe(document, { attributes: true, childList: true, characterData: true, subtree: true })), it9 && $e9(it9.takeRecords()), wt9 = !!it9 && t2.getRootNode() === document, e20;
-          }
-          function Ne9(t2) {
-            wt9 = t2;
+          function Re8(t2) {
+            let e20 = yt9;
+            return !at8 && typeof MutationObserver == "function" && (at8 = new MutationObserver(Te7), at8.observe(document, { attributes: true, childList: true, characterData: true, subtree: true })), at8 && Te7(at8.takeRecords()), yt9 = !!at8 && t2.getRootNode() === document, e20;
           }
           function Le9(t2) {
-            let e20 = Q8.get(t2);
-            return e20 || Q8.set(t2, e20 = { attrs: /* @__PURE__ */ new Map(), hasText: false, text: "" }), e20;
-          }
-          function Re8(t2, e20) {
-            if (!wt9) return t2.getAttribute(e20);
-            let r45 = Le9(t2);
-            return r45.attrs.has(e20) || r45.attrs.set(e20, t2.getAttribute(e20)), r45.attrs.get(e20);
+            yt9 = t2;
           }
           function Ce9(t2) {
-            if (!wt9) return t2.textContent;
-            let e20 = Le9(t2);
+            let e20 = Z9.get(t2);
+            return e20 || Z9.set(t2, e20 = { attrs: /* @__PURE__ */ new Map(), hasText: false, text: "" }), e20;
+          }
+          function De8(t2, e20) {
+            if (!yt9) return t2.getAttribute(e20);
+            let r45 = Ce9(t2);
+            return r45.attrs.has(e20) || r45.attrs.set(e20, t2.getAttribute(e20)), r45.attrs.get(e20);
+          }
+          function Fe9(t2) {
+            if (!yt9) return t2.textContent;
+            let e20 = Ce9(t2);
             return e20.hasText || (e20.text = t2.textContent, e20.hasText = true), e20.text;
           }
-          function De8(t2) {
+          function Me8(t2) {
             return (t2.getAttribute("type") || "text").toLowerCase();
           }
-          function st10(t2) {
+          function ut10(t2) {
             let e20 = t2.tagName;
             if (e20 === "INPUT") {
-              let r45 = De8(t2);
+              let r45 = Me8(t2);
               r45 === "checkbox" || r45 === "radio" ? t2.checked ? t2.setAttribute("checked", "") : t2.removeAttribute("checked") : t2.setAttribute("value", t2.value);
               return;
             }
@@ -88625,10 +89486,10 @@ ${t2}` : `"use strict"; return (${t2});`;
               for (let n3 = 0; n3 < r45.length; n3++) r45[n3].selected ? r45[n3].setAttribute("selected", "") : r45[n3].removeAttribute("selected");
             }
           }
-          function Fe9(t2, e20 = t2) {
+          function Pe9(t2, e20 = t2) {
             let r45 = t2.tagName;
             if (r45 === "INPUT") {
-              let n3 = De8(t2);
+              let n3 = Me8(t2);
               n3 === "checkbox" || n3 === "radio" ? e20.checked ? t2.hasAttribute("checked") || t2.setAttribute("checked", "") : t2.removeAttribute("checked") : e20.value !== (t2.getAttribute("value") ?? "") && t2.setAttribute("value", e20.value);
               return;
             }
@@ -88644,20 +89505,20 @@ ${t2}` : `"use strict"; return (${t2});`;
               for (let i2 = 0; i2 < n3.length; i2++) o3[i2] && o3[i2].selected ? n3[i2].hasAttribute("selected") || n3[i2].setAttribute("selected", "") : n3[i2].removeAttribute("selected");
             }
           }
-          function Dt7(t2) {
+          function Ft8(t2) {
             t2.tagName !== "TEXTAREA" || !t2.hasAttribute("data-value") || t2 !== t2.ownerDocument.activeElement && (t2.textContent = t2.getAttribute("data-value"), t2.removeAttribute("data-value"));
           }
-          function R9(t2) {
+          function L10(t2) {
             if (typeof window > "u") return null;
             let e20 = window.clay, r45 = window.hyperclay;
             return t2 === "consent" ? e20?.confirm || r45?.consent || null : e20?.[t2] || r45?.[t2] || null;
           }
-          function Me8() {
-            let t2 = R9("visitorDrafts");
+          function Ie9() {
+            let t2 = L10("visitorDrafts");
             return !!(t2 && typeof t2.restored == "function" && t2.restored()?.restored);
           }
-          var Yt8 = ["clay:mutation-ready", "hyperclay:mutation-ready"], zn5 = ["clay:sync-applied", "hyperclay:livesync-applied"], Hn4 = ["clay:ready", "hyperclay:ready"], Un4 = ["clay:route"];
-          function at8(t2, e20, r45) {
+          var Kt8 = ["clay:mutation-ready", "hyperclay:mutation-ready"], Un4 = ["clay:sync-applied", "hyperclay:livesync-applied"], Gn5 = ["clay:ready", "hyperclay:ready"], Yn5 = ["clay:route"], Xn5 = ["clay:modechange"];
+          function tt7(t2, e20, r45) {
             let n3 = null, o3 = (i2) => {
               n3 !== null && n3 !== i2.type || (n3 = i2.type, queueMicrotask(() => {
                 n3 = null;
@@ -88668,54 +89529,65 @@ ${t2}` : `"use strict"; return (${t2});`;
               for (let i2 of e20) t2.removeEventListener(i2, o3);
             };
           }
-          function Pe9(t2) {
+          function Oe8(t2) {
             let e20 = typeof window < "u" && window.clay && window.clay.ready;
             e20 && typeof e20.then == "function" ? e20.then(() => t2(), () => t2()) : t2();
           }
-          function Ft8(t2) {
-            let e20 = R9("region");
+          function Mt8(t2) {
+            let e20 = L10("region");
             return !e20 || typeof e20.resolveRegionPolicy != "function" || typeof e20.skipForPolicy != "function" ? false : e20.skipForPolicy(e20.resolveRegionPolicy(t2), void 0, ["no-save", "freeze"]);
           }
-          function Ie9() {
-            let t2 = R9("consent");
+          function Pt8() {
+            return typeof window > "u" ? null : window.clay?.modeLifecycle || null;
+          }
+          function N20(t2, { transient: e20 = false } = {}) {
+            if (e20) return true;
+            let r45 = typeof window > "u" ? null : window.clay?.modeLifecycle;
+            return typeof r45?.canWrite != "function" || L10("region")?.resolveRegionPolicy?.(t2)?.persist === "none" ? true : r45.canWrite();
+          }
+          function We9() {
+            let t2 = L10("consent");
             return typeof t2 == "function" ? t2 : null;
           }
-          function Oe8(t2, e20) {
+          function Be9(t2, e20) {
             if (typeof e20 != "function") throw new Error("Sap.batch(label, fn): fn must be a function");
-            let r45 = R9("undo");
+            let r45 = L10("undo");
             r45 && r45.flush && r45.flush();
             let n3 = e20();
             if (n3 && typeof n3.then == "function") throw new Error("Sap.batch fn must be synchronous (it returned a promise)");
             return r45 && r45.commitCaptured && r45.commitCaptured(t2), n3;
           }
-          function Be9(t2) {
+          function qe9(t2) {
             if (typeof window > "u" || typeof document > "u") return;
             let e20 = () => {
-              let d2 = false;
-              for (let u4 of t2.apps()) u4.root.isConnected ? t2.runNow(u4, "platform") : d2 = true;
-              d2 && t2.pruneDisconnected(), t2.remountIfPresent();
-            }, r45 = R9("derived"), n3 = r45 && typeof r45.register == "function" ? r45.register(e20) : null, o3 = typeof n3 == "function" ? null : at8(document, zn5, e20), i2 = at8(document, Un4, e20), a2 = false, g7 = () => {
-            }, b7 = () => {
-              if (a2) return true;
-              let d2 = R9("undo");
-              if (!d2 || typeof d2.on != "function") return false;
-              let u4 = d2.on("undo", e20);
-              return typeof u4 != "function" ? false : typeof d2.on("redo", e20) != "function" ? (u4(), false) : (a2 = true, g7(), true);
+              let l2 = false;
+              for (let y6 of t2.apps()) y6.root.isConnected ? t2.runNow(y6, "platform") : l2 = true;
+              l2 && t2.pruneDisconnected(), t2.remountIfPresent();
+            }, r45 = L10("derived"), n3 = r45 && typeof r45.register == "function" ? r45.register(e20) : null, o3 = typeof n3 == "function" ? null : tt7(document, Un4, e20), i2 = tt7(document, Yn5, e20), s3 = null, g7 = false, w6 = () => {
+              let l2 = Pt8()?.state;
+              return l2 ? l2.generation : null;
+            }, p5 = () => {
+              let l2 = s3;
+              l2 && (s3 = null, l2.offUndo(), l2.offRedo());
+            }, u4 = () => {
+              if (g7) return false;
+              let l2 = L10("undo"), y6 = w6();
+              if (!l2 || typeof l2.on != "function") return p5(), false;
+              if (s3 && s3.impl === l2 && s3.generation === y6) return true;
+              p5();
+              let h = l2.on("undo", e20);
+              if (typeof h != "function") return false;
+              let b7 = l2.on("redo", e20);
+              return typeof b7 != "function" ? (h(), false) : (s3 = { impl: l2, generation: y6, offUndo: h, offRedo: b7 }, true);
             };
-            if (!b7()) {
-              let d2 = at8(document, Yt8, b7), u4 = at8(document, Hn4, b7);
-              g7 = () => {
-                d2(), u4();
-              };
-              let v9 = R9("ready");
-              v9 && typeof v9.then == "function" && v9.then(b7, () => {
-              });
-            }
-            return () => {
-              typeof n3 == "function" && n3(), o3 && o3(), i2(), g7();
+            u4();
+            let E6 = tt7(document, Kt8, u4), S8 = tt7(document, Gn5, u4), $9 = tt7(document, Xn5, u4), _7 = L10("ready");
+            return _7 && typeof _7.then == "function" && _7.then(() => u4(), () => {
+            }), () => {
+              g7 = true, typeof n3 == "function" && n3(), o3 && o3(), i2(), E6(), S8(), $9(), p5();
             };
           }
-          function yt9(t2) {
+          function At8(t2) {
             let e20 = t2.tagName;
             if (e20 === "INPUT") {
               let r45 = (t2.getAttribute("type") || "text").toLowerCase();
@@ -88723,20 +89595,20 @@ ${t2}` : `"use strict"; return (${t2});`;
             }
             return e20 === "TEXTAREA" ? "text" : e20 === "SELECT" ? t2.multiple ? "select-multiple" : "select-one" : "leaf";
           }
-          function Gn5(t2) {
+          function Kn5(t2) {
             if (t2.validity && t2.validity.badInput) return t2.hasAttribute("value") ? Number(t2.getAttribute("value")) || 0 : t2._sapLastGood ?? 0;
             if (t2.value === "") return 0;
             let e20 = Number(t2.value);
             return Number.isNaN(e20) ? t2._sapLastGood ?? 0 : (t2._sapLastGood = e20, e20);
           }
-          function We9(t2, e20) {
+          function je10(t2, e20) {
             switch (e20) {
               case "checkbox":
                 return t2.checked;
               case "radio":
                 return t2.checked ? t2.value : void 0;
               case "number":
-                return Gn5(t2);
+                return Kn5(t2);
               case "select-one":
                 return t2.value;
               case "select-multiple":
@@ -88750,7 +89622,7 @@ ${t2}` : `"use strict"; return (${t2});`;
                 return t2.value;
             }
           }
-          function je10(t2, e20, r45) {
+          function He10(t2, e20, r45) {
             switch (e20) {
               case "checkbox":
                 t2.checked = !!r45;
@@ -88778,34 +89650,34 @@ ${t2}` : `"use strict"; return (${t2});`;
                 t2.value = r45 == null ? "" : String(r45);
             }
           }
-          function Xt8(t2) {
+          function Jt8(t2) {
             if (t2.hasAttribute("transient")) {
               t2.removeAttribute("value"), t2.removeAttribute("checked"), t2.removeAttribute("data-value");
               return;
             }
-            Ft8(t2) || st10(t2);
+            Mt8(t2) || ut10(t2);
           }
-          function Yn5(t2) {
+          function Jn5(t2) {
             t2.dispatchEvent(new Event("input", { bubbles: true })), t2.dispatchEvent(new Event("change", { bubbles: true }));
           }
-          function Mt8(t2, e20) {
-            return We9(t2, e20);
+          function It8(t2, e20) {
+            return je10(t2, e20);
           }
-          function qe9(t2, e20, r45) {
-            je10(t2, e20, r45), Xt8(t2);
+          function Ve8(t2, e20, r45) {
+            He10(t2, e20, r45), Jt8(t2);
           }
-          function D9(t2) {
-            let e20 = yt9(t2);
+          function M9(t2) {
+            let e20 = At8(t2);
             return { el: t2, kind: e20, read() {
-              return We9(t2, e20);
+              return je10(t2, e20);
             }, write(r45, n3 = {}) {
-              je10(t2, e20, r45), n3.noMirror || Xt8(t2), n3.silent || Yn5(t2);
+              He10(t2, e20, r45), n3.noMirror || Jt8(t2), n3.silent || Jn5(t2);
             }, mirror() {
-              Xt8(t2);
+              Jt8(t2);
             } };
           }
-          var z7 = null, It8 = false, ut10 = null;
-          function Ve8(t2) {
+          var z7 = null, Wt6 = false, ct9 = null;
+          function ze7(t2) {
             let e20 = null;
             return { kind: "hub", subscribe(r45) {
               let n3 = t2.onAnyChange({ debounce: 0, require: "observed" }, r45);
@@ -88827,14 +89699,14 @@ ${t2}` : `"use strict"; return (${t2});`;
               }
             } };
           }
-          function Xn5() {
+          function Qn5() {
             let t2 = null;
             return { kind: "native", subscribe(e20) {
-              t2 = new MutationObserver((n3) => e20(Kn5(n3)));
+              t2 = new MutationObserver((n3) => e20(Zn4(n3)));
               let r45 = typeof document < "u" && document.body || typeof document < "u" && document.documentElement;
               r45 && t2.observe(r45, { childList: true, subtree: true, attributes: true, characterData: true });
             }, suppress(e20) {
-              let r45 = R9("undo");
+              let r45 = L10("undo");
               r45 && r45.pause && r45.pause();
               try {
                 return e20();
@@ -88845,36 +89717,36 @@ ${t2}` : `"use strict"; return (${t2});`;
               t2 && (t2.disconnect(), t2 = null);
             } };
           }
-          function Kn5(t2) {
+          function Zn4(t2) {
             let e20 = [];
             for (let r45 of t2) if (r45.type === "attributes") {
               let n3 = r45.target;
-              n3 && n3.nodeType === 1 && !Pt8(n3) && e20.push({ type: "attribute", element: n3 });
+              n3 && n3.nodeType === 1 && !Ot7(n3) && e20.push({ type: "attribute", element: n3 });
             } else if (r45.type === "characterData") {
               let n3 = r45.target && r45.target.parentElement;
-              n3 && !Pt8(n3) && e20.push({ type: "characterData", element: n3 });
+              n3 && !Ot7(n3) && e20.push({ type: "characterData", element: n3 });
             } else if (r45.type === "childList") {
-              for (let n3 of r45.addedNodes) if (!(n3.nodeType !== 1 || Pt8(n3)) && (e20.push({ type: "add", element: n3 }), n3.querySelectorAll)) for (let o3 of n3.querySelectorAll("*")) Pt8(o3) || e20.push({ type: "add", element: o3 });
+              for (let n3 of r45.addedNodes) if (!(n3.nodeType !== 1 || Ot7(n3)) && (e20.push({ type: "add", element: n3 }), n3.querySelectorAll)) for (let o3 of n3.querySelectorAll("*")) Ot7(o3) || e20.push({ type: "add", element: o3 });
               for (let n3 of r45.removedNodes) n3.nodeType === 1 && e20.push({ type: "remove", element: n3, parent: r45.target });
             }
             return e20;
           }
-          function Pt8(t2) {
+          function Ot7(t2) {
             return !!(t2.closest && t2.closest("[sap-ignore],[template],[cms-template]"));
           }
-          function Jn5(t2, e20) {
+          function tr4(t2, e20) {
             t2.pruneDisconnected();
             let r45 = /* @__PURE__ */ new Set(), n3 = false;
             for (let o3 of e20) {
-              let i2 = o3.type === "remove" ? o3.parent : o3.element, a2 = i2 && t2.appFor(i2);
-              a2 && r45.add(a2), o3.type === "add" && o3.element && o3.element.nodeType === 1 && o3.element.hasAttribute && o3.element.hasAttribute("sap") && !(t2.isRegistered && t2.isRegistered(o3.element)) && (n3 = true);
+              let i2 = o3.type === "remove" ? o3.parent : o3.element, s3 = i2 && t2.appFor(i2);
+              s3 && r45.add(s3), o3.type === "add" && o3.element && o3.element.nodeType === 1 && o3.element.hasAttribute && o3.element.hasAttribute("sap") && !(t2.isRegistered && t2.isRegistered(o3.element)) && (n3 = true);
             }
             n3 && t2.remountIfPresent();
             for (let o3 of r45) o3.root.isConnected && t2.schedule(o3, "mutation");
           }
-          function ze7(t2) {
+          function Ue9(t2) {
             if (z7) return z7.suppress(t2);
-            let e20 = R9("undo");
+            let e20 = L10("undo");
             if (e20 && e20.pause && e20.resume) {
               e20.pause();
               try {
@@ -88885,144 +89757,144 @@ ${t2}` : `"use strict"; return (${t2});`;
             }
             return t2();
           }
-          function Kt8(t2, e20) {
-            It8 = true, z7 = t2, t2.subscribe((r45) => Jn5(e20, r45));
+          function Qt6(t2, e20) {
+            Wt6 = true, z7 = t2, t2.subscribe((r45) => tr4(e20, r45));
           }
-          function Jt8(t2) {
-            if (It8 || typeof window > "u" || typeof document > "u") return;
-            let e20 = R9("Mutation");
+          function Zt8(t2) {
+            if (Wt6 || typeof window > "u" || typeof document > "u") return;
+            let e20 = L10("Mutation");
             if (e20 && typeof e20.onAnyChange == "function") {
-              Kt8(Ve8(e20), t2);
+              Qt6(ze7(e20), t2);
               return;
             }
-            typeof MutationObserver == "function" && (Kt8(Xn5(), t2), ut10 = at8(document, Yt8, function() {
-              let n3 = R9("Mutation");
-              n3 && (ut10(), ut10 = null, z7 && z7.teardown(), It8 = false, Kt8(Ve8(n3), t2));
+            typeof MutationObserver == "function" && (Qt6(Qn5(), t2), ct9 = tt7(document, Kt8, function() {
+              let n3 = L10("Mutation");
+              n3 && (ct9(), ct9 = null, z7 && z7.teardown(), Wt6 = false, Qt6(ze7(n3), t2));
             }));
           }
-          function Qt6() {
+          function te9() {
             if (z7) try {
               z7.teardown();
             } catch {
             }
-            ut10 && typeof document < "u" && ut10(), z7 = null, It8 = false, ut10 = null;
+            ct9 && typeof document < "u" && ct9(), z7 = null, Wt6 = false, ct9 = null;
           }
-          var Qn5 = new Set(tt7), H10 = [], Ue9 = {}, Ge9 = {};
-          function Ye8(t2) {
-            H10.includes(t2) || (H10.push(t2), t2.boundary && Object.assign(Ue9, t2.boundary), t2.paintKinds && Object.assign(Ge9, t2.paintKinds));
+          var er3 = new Set(nt9), U8 = [], Ye8 = {}, Xe8 = {};
+          function Ke8(t2) {
+            U8.includes(t2) || (U8.push(t2), t2.boundary && Object.assign(Ye8, t2.boundary), t2.paintKinds && Object.assign(Xe8, t2.paintKinds));
           }
-          function ct9(t2, e20 = {}) {
+          function ft8(t2, e20 = {}) {
             if (e20.breaker) {
-              t2.diag.error("E26", t2.root, { problem: "recompute loop halted after 50 passes; recent triggers: " + (t2._breakerRing || []).join(", ") }), O7(t2.root, "loop");
+              t2.diag.error("E26", t2.root, { problem: "recompute loop halted after 50 passes; recent triggers: " + (t2._breakerRing || []).join(", ") }), B8(t2.root, "loop");
               return;
             }
-            e20.full && (ve9(), _e9());
-            let r45 = xe9(t2.root);
+            e20.full && (Se9(), Ne9());
+            let r45 = ke9(t2.root);
             try {
-              ze7(() => Zn4(t2, e20));
+              Ue9(() => nr4(t2, e20));
             } finally {
-              Se9(r45);
+              $e9(r45);
             }
             t2._viewsChanged && (t2._viewsChanged = false, t2.root.dispatchEvent(new CustomEvent("sap:views-updated", { bubbles: true })));
           }
-          function Zn4(t2, e20) {
-            let r45 = t2.root, n3 = {}, o3 = [], i2 = [], a2 = /* @__PURE__ */ new Set();
+          function nr4(t2, e20) {
+            let r45 = t2.root, n3 = {}, o3 = [], i2 = [], s3 = /* @__PURE__ */ new Set();
             t2.diag.errors = [];
             let g7 = { root: n3, state: n3, item: null, ownerEl: r45, projection: false };
-            function b7(s3, m7, y6 = false) {
-              let E6 = m7.attr || m7.name, k8 = y6 ? Re8(s3, E6) : s3.getAttribute(E6);
-              return k8 == null && (k8 = pt9(m7), i2.push({ el: s3, name: m7.name, attr: E6, value: zt9(U8(k8, m7.type), m7.type) })), U8(k8, m7.type);
+            function w6(a2, m7, A6 = false) {
+              let v9 = m7.attr || m7.name, k8 = A6 ? De8(a2, v9) : a2.getAttribute(v9);
+              return k8 == null && (k8 = mt9(m7), i2.push({ el: a2, name: m7.name, attr: v9, value: Ut7(G8(k8, m7.type), m7.type) })), G8(k8, m7.type);
             }
-            function d2(s3, m7, y6, E6) {
+            function p5(a2, m7, A6, v9) {
               let k8 = m7.decls;
               if (!k8) return;
-              let T7 = !!E6.item && !E6.projection && !E6.view;
-              for (let N20 of k8) {
-                if (N20.transient) {
-                  y6[N20.name] = _t7(s3, N20);
+              let R9 = !!v9.item && !v9.projection && !v9.view;
+              for (let T7 of k8) {
+                if (T7.transient) {
+                  A6[T7.name] = Tt8(a2, T7);
                   continue;
                 }
-                if (X10(s3, N20)) {
-                  y6[N20.name] = s3.hasAttribute(N20.attr);
+                if (K10(a2, T7)) {
+                  A6[T7.name] = a2.hasAttribute(T7.attr);
                   continue;
                 }
-                y6[N20.name] = b7(s3, N20, T7);
+                A6[T7.name] = w6(a2, T7, R9);
               }
             }
-            function u4(s3, m7, y6) {
-              let E6 = m7.bind, k8 = y6.item || y6.state, T7 = yt9(s3);
-              T7 === "radio" ? (E6 in k8 || (k8[E6] = ""), s3.checked && (k8[E6] = s3.value)) : T7 === "leaf" && y6.item && !y6.projection && !y6.view ? k8[E6] = Ce9(s3) : k8[E6] = Mt8(s3, T7), m7.transient && (s3.removeAttribute("value"), s3.removeAttribute("checked"));
+            function u4(a2, m7, A6) {
+              let v9 = m7.bind, k8 = A6.item || A6.state, R9 = At8(a2);
+              R9 === "radio" ? (v9 in k8 || (k8[v9] = ""), a2.checked && (k8[v9] = a2.value)) : R9 === "leaf" && A6.item && !A6.projection && !A6.view ? k8[v9] = Fe9(a2) : k8[v9] = It8(a2, R9), m7.transient && (a2.removeAttribute("value"), a2.removeAttribute("checked"));
             }
-            function v9(s3, m7, y6) {
-              if (m7.paints) for (let E6 of m7.paints) E6.kind === "when" && a2.add(E6.field), o3.push({ def: E6, el: s3, ctx: y6 });
-              for (let E6 of H10) E6.collect && E6.collect(w6, s3, m7, y6);
+            function E6(a2, m7, A6) {
+              if (m7.paints) for (let v9 of m7.paints) v9.kind === "when" && s3.add(v9.field), o3.push({ def: v9, el: a2, ctx: A6 });
+              for (let v9 of U8) v9.collect && v9.collect(b7, a2, m7, A6);
             }
-            function S8(s3, m7, y6) {
-              Object.defineProperty(s3, "$key", { value: xt9(m7, "row"), enumerable: false }), Object.defineProperty(s3, "$index", { value: y6, enumerable: false }), Object.defineProperty(s3, "$el", { value: m7, enumerable: false });
+            function S8(a2, m7, A6) {
+              Object.defineProperty(a2, "$key", { value: St9(m7, "row"), enumerable: false }), Object.defineProperty(a2, "$index", { value: A6, enumerable: false }), Object.defineProperty(a2, "$el", { value: m7, enumerable: false });
             }
-            function $9(s3, m7, y6) {
-              let E6 = V10(s3);
-              d2(s3, E6, m7, y6), s3._sapScope = m7, !y6.projection && E6.bind != null && u4(s3, E6, y6), v9(s3, E6, y6), E6.items ? p5(s3, m7, y6) : _7(s3, m7, y6);
+            function $9(a2, m7, A6) {
+              let v9 = V10(a2);
+              p5(a2, v9, m7, A6), a2._sapScope = m7, !A6.projection && v9.bind != null && u4(a2, v9, A6), E6(a2, v9, A6), v9.items ? h(a2, m7, A6) : _7(a2, m7, A6);
             }
-            function _7(s3, m7, y6) {
-              for (let E6 = s3.firstElementChild; E6; E6 = E6.nextElementSibling) h(E6, m7, y6);
+            function _7(a2, m7, A6) {
+              for (let v9 = a2.firstElementChild; v9; v9 = v9.nextElementSibling) l2(v9, m7, A6);
             }
-            function h(s3, m7, y6) {
-              let E6 = V10(s3);
-              if (!E6.inert) {
-                if (E6.boundary) {
-                  E6.boundary === "scope" ? A6(s3, m7, y6) : E6.boundary === "items" ? (v9(s3, E6, y6), p5(s3, m7, y6)) : Ue9[E6.boundary](w6, s3, E6, m7, y6);
+            function l2(a2, m7, A6) {
+              let v9 = V10(a2);
+              if (!v9.inert) {
+                if (v9.boundary) {
+                  v9.boundary === "scope" ? y6(a2, m7, A6) : v9.boundary === "items" ? (E6(a2, v9, A6), h(a2, m7, A6)) : Ye8[v9.boundary](b7, a2, v9, m7, A6);
                   return;
                 }
-                !y6.projection && !y6.view && E6.bind != null && u4(s3, E6, y6), v9(s3, E6, y6);
-                for (let k8 = s3.firstElementChild; k8; k8 = k8.nextElementSibling) h(k8, m7, y6);
+                !A6.projection && !A6.view && v9.bind != null && u4(a2, v9, A6), E6(a2, v9, A6);
+                for (let k8 = a2.firstElementChild; k8; k8 = k8.nextElementSibling) l2(k8, m7, A6);
               }
             }
-            function A6(s3, m7, y6) {
-              let E6 = s3.getAttribute("scope"), k8 = {};
-              m7[E6] = k8;
-              let T7 = { root: y6.root, state: k8, item: null, ownerEl: s3, projection: y6.projection };
-              $9(s3, k8, T7);
+            function y6(a2, m7, A6) {
+              let v9 = a2.getAttribute("scope"), k8 = {};
+              m7[v9] = k8;
+              let R9 = { root: A6.root, state: k8, item: null, ownerEl: a2, projection: A6.projection };
+              $9(a2, k8, R9);
             }
-            function p5(s3, m7, y6) {
-              let E6 = s3.getAttribute("items"), k8 = [];
-              m7[E6] = k8, s3._sapList = k8;
-              let T7 = 0;
-              for (let N20 = s3.firstElementChild; N20; N20 = N20.nextElementSibling) {
-                let M9 = V10(N20);
-                if (!M9.item || M9.template || N20.hasAttribute("cms-template")) continue;
+            function h(a2, m7, A6) {
+              let v9 = a2.getAttribute("items"), k8 = [];
+              m7[v9] = k8, a2._sapList = k8;
+              let R9 = 0;
+              for (let T7 = a2.firstElementChild; T7; T7 = T7.nextElementSibling) {
+                let F7 = V10(T7);
+                if (!F7.item || F7.template || T7.hasAttribute("cms-template")) continue;
                 let j9 = {};
-                S8(j9, N20, T7);
-                let Sn5 = { root: y6.root, state: y6.state, item: j9, ownerEl: N20, projection: y6.projection };
-                $9(N20, j9, Sn5), k8.push(j9), T7++;
+                S8(j9, T7, R9);
+                let $n3 = { root: A6.root, state: A6.state, item: j9, ownerEl: T7, projection: A6.projection };
+                $9(T7, j9, $n3), k8.push(j9), R9++;
               }
             }
-            let w6 = { app: t2, root: r45, rootObj: n3, paints: o3, stats: { calcs: 0, lists: 0 }, resolveDefault: b7, collectEl: v9, walkScope: _7 };
-            for (let s3 of H10) s3.begin && s3.begin(w6);
-            let x5 = e20.cacheReads === false ? null : Te7(r45);
+            let b7 = { app: t2, root: r45, rootObj: n3, paints: o3, stats: { calcs: 0, lists: 0 }, resolveDefault: w6, collectEl: E6, walkScope: _7 };
+            for (let a2 of U8) a2.begin && a2.begin(b7);
+            let x5 = e20.cacheReads === false ? null : Re8(r45);
             try {
               $9(r45, n3, g7);
             } finally {
-              e20.cacheReads !== false && Ne9(x5);
+              e20.cacheReads !== false && Le9(x5);
             }
             if (t2.halted) return;
-            for (let s3 of H10) s3.afterIntake && s3.afterIntake(w6);
-            if (i2.length && a2.size) for (let s3 of i2) a2.has(s3.attr) && s3.el.getAttribute(s3.attr) == null && s3.el.setAttribute(s3.attr, s3.value);
-            for (let s3 of H10) s3.compute && s3.compute(w6);
+            for (let a2 of U8) a2.afterIntake && a2.afterIntake(b7);
+            if (i2.length && s3.size) for (let a2 of i2) s3.has(a2.attr) && a2.el.getAttribute(a2.attr) == null && a2.el.setAttribute(a2.attr, a2.value);
+            for (let a2 of U8) a2.compute && a2.compute(b7);
             let f3 = 0;
-            for (let s3 of H10) s3.reconcile && (f3 += s3.reconcile(w6));
-            let c4 = 0, l2 = f3;
-            for (let s3 of o3) {
-              let m7 = er3(s3, t2);
-              s3.ctx.view ? l2 += m7 : c4 += m7;
+            for (let a2 of U8) a2.reconcile && (f3 += a2.reconcile(b7));
+            let c4 = 0, d2 = f3;
+            for (let a2 of o3) {
+              let m7 = or4(a2, t2);
+              a2.ctx.view ? d2 += m7 : c4 += m7;
             }
-            for (let s3 of H10) s3.afterPaint && s3.afterPaint(w6);
-            t2._state = n3, t2._stats = { fields: Object.keys(n3).filter((s3) => typeof n3[s3] != "function").length, calcs: w6.stats.calcs, paints: o3.length, lists: w6.stats.lists, writes: c4, viewWrites: l2 }, t2._viewsChanged = l2 > 0, t2._lastPass = { trigger: e20.trigger || "refresh", writes: c4 }, t2._debug && console.log(`sap pass \xB7 trigger: ${t2._lastPass.trigger} \xB7 writes ${c4}/${o3.length}`);
+            for (let a2 of U8) a2.afterPaint && a2.afterPaint(b7);
+            t2._state = n3, t2._stats = { fields: Object.keys(n3).filter((a2) => typeof n3[a2] != "function").length, calcs: b7.stats.calcs, paints: o3.length, lists: b7.stats.lists, writes: c4, viewWrites: d2 }, t2._viewsChanged = d2 > 0, t2._lastPass = { trigger: e20.trigger || "refresh", writes: c4 }, t2._debug && console.log(`sap pass \xB7 trigger: ${t2._lastPass.trigger} \xB7 writes ${c4}/${o3.length}`);
           }
-          function tr4(t2) {
+          function rr3(t2) {
             return t2.kind === "text" ? t2.fmt ? "text:" + t2.fmt : "text" : t2.kind === "attr" ? "attr:" + t2.arg : t2.kind === "class" ? "class:" + t2.arg : t2.kind === "css" ? "css:" + t2.arg : t2.kind === "when" ? (t2.match === "hide" ? "hide-when:" : t2.match === "show-not" ? "option-not:" : "show-when:") + t2.field : t2.kind;
           }
-          function Zt8(t2, e20, r45, n3) {
+          function ee9(t2, e20, r45, n3) {
             let o3 = t2;
             for (; o3 && o3.nodeType === 1; ) {
               if (o3.hasAttribute && o3.hasAttribute(e20)) {
@@ -89033,21 +89905,21 @@ ${t2}` : `"use strict"; return (${t2});`;
             }
             return false;
           }
-          function er3(t2, e20) {
-            let r45 = t2.def, n3 = t2.el, o3 = Ge9[r45.kind];
+          function or4(t2, e20) {
+            let r45 = t2.def, n3 = t2.el, o3 = Xe8[r45.kind];
             if (o3) return o3(t2, e20);
-            if (r45.kind === "when") return He10(r45, n3, null);
+            if (r45.kind === "when") return Ge9(r45, n3, null);
             try {
-              let i2 = I6(r45.entry, t2.ctx.state, t2.ctx.item, n3, t2.ctx.root), a2 = He10(r45, n3, i2);
-              return et9(n3), a2;
+              let i2 = O7(r45.entry, t2.ctx.state, t2.ctx.item, n3, t2.ctx.root), s3 = Ge9(r45, n3, i2);
+              return rt9(n3), s3;
             } catch (i2) {
-              return e20.diag.error(i2.sapCode === "E22" ? "E22" : "E24", n3, { attr: tr4(r45), expr: r45.entry && r45.entry.src, problem: String(i2.message) }), O7(n3, i2.sapCode || "E24"), 0;
+              return e20.diag.error(i2.sapCode === "E22" ? "E22" : "E24", n3, { attr: rr3(r45), expr: r45.entry && r45.entry.src, problem: String(i2.message) }), B8(n3, i2.sapCode || "E24"), 0;
             }
           }
-          function He10(t2, e20, r45) {
+          function Ge9(t2, e20, r45) {
             switch (t2.kind) {
               case "text": {
-                let n3 = t2.fmt != null ? be10(t2.fmt, r45) : r45 == null ? "" : String(r45);
+                let n3 = t2.fmt != null ? we9(t2.fmt, r45) : r45 == null ? "" : String(r45);
                 return e20.textContent !== n3 ? (e20.textContent = n3, 1) : 0;
               }
               case "show": {
@@ -89055,10 +89927,10 @@ ${t2}` : `"use strict"; return (${t2});`;
                 return e20.hidden !== n3 ? (e20.hidden = n3, 1) : 0;
               }
               case "when": {
-                let n3 = R9("optionVisibility");
+                let n3 = L10("optionVisibility");
                 if (n3 && n3._started) return e20._sapWhen && e20.hidden ? (e20.hidden = false, e20._sapWhen = false, 1) : 0;
                 let o3;
-                t2.match === "hide" ? o3 = !Zt8(e20, t2.field, t2.values, false) : t2.match === "show-not" ? o3 = Zt8(e20, t2.field, t2.values, true) : o3 = Zt8(e20, t2.field, t2.values, false), e20._sapWhen = true;
+                t2.match === "hide" ? o3 = !ee9(e20, t2.field, t2.values, false) : t2.match === "show-not" ? o3 = ee9(e20, t2.field, t2.values, true) : o3 = ee9(e20, t2.field, t2.values, false), e20._sapWhen = true;
                 let i2 = !o3;
                 return e20.hidden !== i2 ? (e20.hidden = i2, 1) : 0;
               }
@@ -89068,7 +89940,7 @@ ${t2}` : `"use strict"; return (${t2});`;
                   let i2 = 0;
                   return e20[n3] !== !!r45 && (e20[n3] = !!r45, i2 = 1), !!r45 !== e20.hasAttribute(n3) && (r45 ? e20.setAttribute(n3, "") : e20.removeAttribute(n3), i2 = 1), i2;
                 }
-                if (Qn5.has(n3)) {
+                if (er3.has(n3)) {
                   let i2 = e20.hasAttribute(n3);
                   return r45 && !i2 ? (e20.setAttribute(n3, ""), 1) : !r45 && i2 ? (e20.removeAttribute(n3), 1) : 0;
                 }
@@ -89087,17 +89959,17 @@ ${t2}` : `"use strict"; return (${t2});`;
                 return 0;
             }
           }
-          var nr4 = new Set(tt7), Xe8 = /* @__PURE__ */ new Set(["calc", "text", "attr", "class", "css", "set", "move", "sort", "option", "option-not", "show-when", "hide-when", "editmode"]), rr3 = /* @__PURE__ */ new Set(["show-when", "hide-when", "option", "option-not"]), or4 = /\b(?:state|item|root)\.|===|!==|&&|\|\||[()]|^\s*!/, Ke8 = /* @__PURE__ */ new Set(["sap", "scope", "items", "item", "template", "bind", "show", "effect", "invalid", "detail", "state", "transient", "confirm", "default", "persist", "sortable", "trigger-add", "trigger-remove", "trigger-reset", "sap-ignore", "sap-error", "no-save", "no-watch", "no-undo", "no-trigger-autosave", "freeze", "mutations-ignore", "save-remove", "save-ignore", "save-freeze"]), ee9 = [];
-          function Je8(t2) {
-            ee9.includes(t2) || ee9.push(t2);
+          var ir4 = new Set(nt9), Je8 = /* @__PURE__ */ new Set(["calc", "text", "attr", "class", "css", "set", "move", "sort", "option", "option-not", "show-when", "hide-when", "editmode", "viewmode"]), sr4 = /* @__PURE__ */ new Set(["show-when", "hide-when", "option", "option-not"]), ar4 = /\b(?:state|item|root)\.|===|!==|&&|\|\||[()]|^\s*!/, Qe9 = /* @__PURE__ */ new Set(["sap", "scope", "items", "item", "template", "bind", "show", "effect", "invalid", "detail", "state", "transient", "confirm", "default", "persist", "sortable", "trigger-add", "trigger-remove", "trigger-reset", "sap-ignore", "sap-error", "no-save", "no-watch", "no-undo", "no-trigger-autosave", "freeze", "mutations-ignore", "save-remove", "save-ignore", "save-freeze"]), re7 = [];
+          function Ze9(t2) {
+            re7.includes(t2) || re7.push(t2);
           }
-          function ir4(t2) {
+          function ur4(t2) {
             return t2.tagName === "INPUT" || t2.tagName === "SELECT" || t2.tagName === "TEXTAREA";
           }
-          function te9(t2) {
+          function ne9(t2) {
             return t2.hasAttribute("bind");
           }
-          function sr4(t2, e20) {
+          function cr4(t2, e20) {
             e20(t2);
             for (let n3 = t2.firstElementChild; n3; n3 = n3.nextElementSibling) r45(n3);
             function r45(n3) {
@@ -89111,584 +89983,599 @@ ${t2}` : `"use strict"; return (${t2});`;
               }
             }
           }
-          function Ot7(t2, e20) {
-            let r45 = false, n3 = (a2, g7, b7) => {
-              e20.error(a2, g7, b7), r45 = true;
+          function Bt9(t2, e20) {
+            let r45 = false, n3 = (s3, g7, w6) => {
+              e20.error(s3, g7, w6), r45 = true;
             }, o3 = t2.ownerDocument.createTreeWalker(t2, 4), i2;
             for (; i2 = o3.nextNode(); ) if (/\{\{.*\}\}/.test(i2.nodeValue || "")) {
               n3("E02", i2.parentElement || t2, { problem: "moustaches in text content are not a Sap feature", fix: 'move the expression onto the element: text="state.x"' });
               break;
             }
-            return sr4(t2, (a2) => {
+            return cr4(t2, (s3) => {
               let g7 = /* @__PURE__ */ new Set();
-              for (let d2 of ee9) d2(a2, n3, (u4) => g7.add(u4));
-              let b7 = a2.closest && a2.closest("[detail]");
-              for (let d2 of [...a2.attributes]) {
-                let u4 = d2.name;
+              for (let p5 of re7) p5(s3, n3, (u4) => g7.add(u4));
+              let w6 = s3.closest && s3.closest("[detail]");
+              for (let p5 of [...s3.attributes]) {
+                let u4 = p5.name;
                 if (g7.has(u4)) continue;
                 if (u4.includes(":")) {
                   let S8 = u4.slice(0, u4.indexOf(":"));
-                  if (Xe8.has(S8)) {
-                    if (rr3.has(S8) && or4.test(d2.value)) {
+                  if (Je8.has(S8)) {
+                    if (sr4.has(S8) && ar4.test(p5.value)) {
                       let $9 = u4.slice(u4.indexOf(":") + 1);
-                      e20.warn("W04", a2, { attr: u4, expr: d2.value, problem: `${S8}: compares the "${$9}" attribute against a literal value, not a JS expression`, fix: `use show="${d2.value}" for an expression, or a literal like ${S8}:${$9}="overview"` });
+                      e20.warn("W04", s3, { attr: u4, expr: p5.value, problem: `${S8}: compares the "${$9}" attribute against a literal value, not a JS expression`, fix: `use show="${p5.value}" for an expression, or a literal like ${S8}:${$9}="overview"` });
                     }
                   } else {
-                    let $9 = lt9(S8, [...Xe8]);
-                    e20.warn("W03", a2, { attr: u4, problem: `unknown "${S8}:" attribute`, didYouMean: $9 ? `${$9}:` : null });
+                    let $9 = dt9(S8, [...Je8]);
+                    e20.warn("W03", s3, { attr: u4, problem: `unknown "${S8}:" attribute`, didYouMean: $9 ? `${$9}:` : null });
                   }
-                } else if (!Ke8.has(u4) && !ft8.has(u4) && !nr4.has(u4) && !/^(data-|aria-|on)/.test(u4) && !(u4 in a2)) {
-                  let S8 = lt9(u4, [...Ke8]);
-                  S8 && e20.warn("W03", a2, { attr: u4, problem: `unknown "${u4}" attribute`, didYouMean: S8 });
+                } else if (!Qe9.has(u4) && !lt9.has(u4) && !ir4.has(u4) && !/^(data-|aria-|on)/.test(u4) && !(u4 in s3)) {
+                  let S8 = dt9(u4, [...Qe9]);
+                  S8 && e20.warn("W03", s3, { attr: u4, problem: `unknown "${u4}" attribute`, didYouMean: S8 });
                 }
-                u4 === "attr:hidden" && e20.warn("W03", a2, { attr: u4, problem: "attr:hidden paints the wrong attribute", fix: 'use show="expr"' });
-                let v9 = te9(a2) || u4 === "attr:selected" && a2.tagName === "OPTION" && !!a2.closest("select[bind]");
-                (u4 === "attr:value" || u4 === "attr:checked" || u4 === "attr:selected") && v9 && n3("E30", a2, { attr: u4, problem: "attr: on a bound control collides with persist ownership", fix: "remove it; bind owns this attribute" }), u4 === "effect" && te9(a2) && /\b(value|checked)\s*=[^=]/.test(d2.value) && n3("E30", a2, { attr: u4, expr: d2.value, problem: "effect writes value/checked on a bound control (writes a stale value with no synthetic event)", fix: "write through onclick + Sap(this) instead" }), (u4 === "text" || u4.startsWith("text:") || u4 === "show") && ir4(a2) && (u4 === "show" || n3("E18", a2, { attr: u4, problem: "paint belongs on output elements, not form controls", fix: "move the paint to an <output> or <span>" }));
+                u4 === "attr:hidden" && e20.warn("W03", s3, { attr: u4, problem: "attr:hidden paints the wrong attribute", fix: 'use show="expr"' });
+                let E6 = ne9(s3) || u4 === "attr:selected" && s3.tagName === "OPTION" && !!s3.closest("select[bind]");
+                (u4 === "attr:value" || u4 === "attr:checked" || u4 === "attr:selected") && E6 && n3("E30", s3, { attr: u4, problem: "attr: on a bound control collides with persist ownership", fix: "remove it; bind owns this attribute" }), u4 === "effect" && ne9(s3) && /\b(value|checked)\s*=[^=]/.test(p5.value) && n3("E30", s3, { attr: u4, expr: p5.value, problem: "effect writes value/checked on a bound control (writes a stale value with no synthetic event)", fix: "write through onclick + Sap(this) instead" }), (u4 === "text" || u4.startsWith("text:") || u4 === "show") && ur4(s3) && (u4 === "show" || n3("E18", s3, { attr: u4, problem: "paint belongs on output elements, not form controls", fix: "move the paint to an <output> or <span>" }));
               }
-              if (a2.hasAttribute("state")) {
-                let d2 = C7(a2.getAttribute("state")), u4 = /* @__PURE__ */ new Set();
-                for (let v9 of d2) {
-                  v9.name.includes("-") && n3("E08", a2, { attr: "state", problem: `field "${v9.name}" is not a valid identifier (the hyphen parses as subtraction)`, fix: `rename to ${v9.name.replace(/-/g, "")}` }), u4.has(v9.name) && n3("E04", a2, { attr: "state", problem: `field "${v9.name}" is declared twice in one scope` }), u4.add(v9.name), Et9.has(v9.attr) && n3("E05", a2, { attr: "state", problem: `"${v9.name}" is a reserved Sap word` }), ft8.has(v9.attr) && n3("E06", a2, { attr: "state", problem: `"${v9.name}" is a global HTML attribute name; pick another field name` }), v9.name === "open" && a2.tagName === "DIALOG" && n3("E33", a2, { attr: "state", problem: "dialog open is transient", fix: "use showModal() \u2014 declare state= only on <details> or popovers" });
-                  let S8 = Ht7(a2, v9.attr);
-                  S8 && (v9.attr === "checked" || v9.attr === "selected") && n3("E35", a2, { attr: "state", problem: `"${v9.attr}" on a form control is the control's own state, not a declared field`, fix: 'bind the control instead, e.g. <input type="checkbox" bind="done">' }), S8 && v9.type === "num" && n3("E35", a2, { attr: "state", problem: `"${v9.attr}" is an HTML boolean attribute; it cannot hold a number`, fix: `declare it bare: state="${v9.attr}"` }), v9.transient && (S8 || v9.type === "presence") && n3("E35", a2, { attr: "state", problem: `"${v9.name}" is carried by attribute presence, which transient would strip`, fix: "declare a separate name:bool:transient field and paint the attribute from it" });
-                }
-              }
-              if (te9(a2)) {
-                if (a2.hasAttribute("-"), a2.tagName === "INPUT") {
-                  let d2 = (a2.getAttribute("type") || "text").toLowerCase();
-                  d2 === "file" && n3("E32", a2, { attr: "bind", problem: "files never serialize into an HTML file", fix: "use no-save + effect instead of bind" }), d2 === "password" && !a2.hasAttribute("transient") && n3("E31", a2, { attr: "bind", problem: "a password must never serialize into a world-readable file", fix: "add transient to the password input" });
-                } else if (a2.tagName !== "SELECT" && a2.tagName !== "TEXTAREA") {
-                  let d2 = a2.getAttribute("contenteditable");
-                  !(d2 != null && d2 !== "false") && a2.children.length > 0 && n3("E20", a2, { attr: "bind", problem: "bind on a container element is not a control; a write would overwrite its children", fix: "bind a control (input/select/textarea), a contenteditable, or an empty text leaf" });
+              if (s3.hasAttribute("state")) {
+                let p5 = D9(s3.getAttribute("state")), u4 = /* @__PURE__ */ new Set();
+                for (let E6 of p5) {
+                  E6.name.includes("-") && n3("E08", s3, { attr: "state", problem: `field "${E6.name}" is not a valid identifier (the hyphen parses as subtraction)`, fix: `rename to ${E6.name.replace(/-/g, "")}` }), u4.has(E6.name) && n3("E04", s3, { attr: "state", problem: `field "${E6.name}" is declared twice in one scope` }), u4.add(E6.name), Et9.has(E6.attr) && n3("E05", s3, { attr: "state", problem: `"${E6.name}" is a reserved Sap word` }), lt9.has(E6.attr) && n3("E06", s3, { attr: "state", problem: `"${E6.name}" is a global HTML attribute name; pick another field name` }), E6.name === "open" && s3.tagName === "DIALOG" && n3("E33", s3, { attr: "state", problem: "dialog open is transient", fix: "use showModal() \u2014 declare state= only on <details> or popovers" });
+                  let S8 = Gt7(s3, E6.attr);
+                  S8 && (E6.attr === "checked" || E6.attr === "selected") && n3("E35", s3, { attr: "state", problem: `"${E6.attr}" on a form control is the control's own state, not a declared field`, fix: 'bind the control instead, e.g. <input type="checkbox" bind="done">' }), S8 && E6.type === "num" && n3("E35", s3, { attr: "state", problem: `"${E6.attr}" is an HTML boolean attribute; it cannot hold a number`, fix: `declare it bare: state="${E6.attr}"` }), E6.transient && (S8 || E6.type === "presence") && n3("E35", s3, { attr: "state", problem: `"${E6.name}" is carried by attribute presence, which transient would strip`, fix: "declare a separate name:bool:transient field and paint the attribute from it" });
                 }
               }
-              if (a2.hasAttribute("transient") && a2.hasAttribute("persist") && n3("E34", a2, { problem: "transient and persist are opposite: persist forces the live value into the saved bytes, leaking exactly what transient drops", fix: "remove one \u2014 transient to keep it out of the file, or persist to save it" }), a2.tagName === "DIALOG" && a2.hasAttribute("detail") && !(a2.parentElement && a2.parentElement.closest('[clay~="freeze"], [freeze], [save-freeze]')) && e20.warn("W31", a2, { attr: "detail", problem: "a detail dialog writes open when it opens, and that attribute would be saved into the file", fix: 'wrap the dialog in an element with clay="freeze" (not editor-ui, which removes it from the file), and make its key field transient' }), a2.hasAttribute("item") && !a2.hasAttribute("template") && a2.parentNode && a2.parentNode.nodeType === 1) {
-                let d2 = a2.parentElement;
-                (!d2 || !d2.hasAttribute("items")) && n3("E10", a2, { problem: "an [item] must be a direct child of an [items] list", fix: 'wrap it in a container with items="name"' });
+              if (ne9(s3)) {
+                if (s3.hasAttribute("-"), s3.tagName === "INPUT") {
+                  let p5 = (s3.getAttribute("type") || "text").toLowerCase();
+                  p5 === "file" && n3("E32", s3, { attr: "bind", problem: "files never serialize into an HTML file", fix: "use no-save + effect instead of bind" }), p5 === "password" && !s3.hasAttribute("transient") && n3("E31", s3, { attr: "bind", problem: "a password must never serialize into a world-readable file", fix: "add transient to the password input" });
+                } else if (s3.tagName !== "SELECT" && s3.tagName !== "TEXTAREA") {
+                  let p5 = s3.getAttribute("contenteditable");
+                  !(p5 != null && p5 !== "false") && s3.children.length > 0 && n3("E20", s3, { attr: "bind", problem: "bind on a container element is not a control; a write would overwrite its children", fix: "bind a control (input/select/textarea), a contenteditable, or an empty text leaf" });
+                }
               }
-              if (a2.hasAttribute("items") && b7 && n3("E17", a2, { attr: "items", problem: "nested items inside a detail panel is a v1 mount error (nested collections ship in v1.1)" }), a2.hasAttribute("items")) {
-                let d2 = t2.querySelector(`[trigger-add="${a2.getAttribute("items")}"]`);
-                !$t9(a2) && !Vt7(t2, a2.getAttribute("items")) && q9(a2).length === 0 && d2 && n3("E17", a2, { attr: "items", problem: `trigger-add targets items="${a2.getAttribute("items")}" but it has no [item template] to clone` });
+              if (s3.hasAttribute("transient") && s3.hasAttribute("persist") && n3("E34", s3, { problem: "transient and persist are opposite: persist forces the live value into the saved bytes, leaking exactly what transient drops", fix: "remove one \u2014 transient to keep it out of the file, or persist to save it" }), s3.tagName === "DIALOG" && s3.hasAttribute("detail") && !(s3.parentElement && s3.parentElement.closest('[clay~="freeze"], [freeze], [save-freeze]')) && e20.warn("W31", s3, { attr: "detail", problem: "a detail dialog writes open when it opens, and that attribute would be saved into the file", fix: 'wrap the dialog in an element with clay="freeze" (not editor-ui, which removes it from the file), and make its key field transient' }), s3.hasAttribute("item") && !s3.hasAttribute("template") && s3.parentNode && s3.parentNode.nodeType === 1) {
+                let p5 = s3.parentElement;
+                (!p5 || !p5.hasAttribute("items")) && n3("E10", s3, { problem: "an [item] must be a direct child of an [items] list", fix: 'wrap it in a container with items="name"' });
               }
-            }), r45 && (e20.halted = true, e20.haltReason = e20.errors[0] ? e20.errors[0].code : "halt", O7(t2, e20.haltReason)), !r45;
+              if (s3.hasAttribute("items") && w6 && n3("E17", s3, { attr: "items", problem: "nested items inside a detail panel is a v1 mount error (nested collections ship in v1.1)" }), s3.hasAttribute("items")) {
+                let p5 = t2.querySelector(`[trigger-add="${s3.getAttribute("items")}"]`);
+                !_t7(s3) && !zt9(t2, s3.getAttribute("items")) && H10(s3).length === 0 && p5 && n3("E17", s3, { attr: "items", problem: `trigger-add targets items="${s3.getAttribute("items")}" but it has no [item template] to clone` });
+              }
+            }), r45 && (e20.halted = true, e20.haltReason = e20.errors[0] ? e20.errors[0].code : "halt", B8(t2, e20.haltReason)), !r45;
           }
-          var Qe9 = "sap-styles", Ze9 = "[item][template]{display:none!important}[hidden]{display:none!important}[sap-error]{outline:2px solid #e5484d;outline-offset:1px}", ne9 = /* @__PURE__ */ new WeakSet();
-          function ar4(t2) {
-            if (ne9.has(t2)) return;
+          var tn6 = "sap-styles", en5 = "[item][template]{display:none!important}[hidden]{display:none!important}[sap-error]{outline:2px solid #e5484d;outline-offset:1px}", oe8 = /* @__PURE__ */ new WeakSet();
+          function fr4(t2) {
+            if (oe8.has(t2)) return;
             let e20 = t2.defaultView, r45 = e20 && e20.CSSStyleSheet;
             if (r45 && "adoptedStyleSheets" in t2) try {
               let n3 = new r45();
-              n3.replaceSync(Ze9), t2.adoptedStyleSheets = [...t2.adoptedStyleSheets, n3], ne9.add(t2);
+              n3.replaceSync(en5), t2.adoptedStyleSheets = [...t2.adoptedStyleSheets, n3], oe8.add(t2);
               return;
             } catch {
             }
-            if (!t2.getElementById(Qe9)) {
+            if (!t2.getElementById(tn6)) {
               let n3 = t2.createElement("style");
-              n3.id = Qe9, n3.textContent = Ze9, (t2.head || t2.documentElement).appendChild(n3);
+              n3.id = tn6, n3.textContent = en5, (t2.head || t2.documentElement).appendChild(n3);
             }
-            ne9.add(t2);
+            oe8.add(t2);
           }
-          var ur4 = 0;
-          function tn6() {
+          var lr4 = 0;
+          function nn4() {
             return typeof performance < "u" && performance.now ? performance.now() : 0;
           }
-          function re7(t2) {
-            let e20 = t2.id || t2.getAttribute("sap") || `app-${ur4++}`, r45 = new Z9(e20), n3 = { root: t2, name: e20, diag: r45, _state: null, _stats: null, _lastPass: null, _passes: 0, _broken: false, _mountMs: 0, _mountWrites: 0 };
-            if (!Ot7(t2, r45)) return n3.halted = true, n3;
-            ar4(t2.ownerDocument);
-            for (let a2 of t2.querySelectorAll("textarea[data-value]")) Dt7(a2);
-            let i2 = tn6();
-            return ct9(n3, { trigger: "mount", full: true }), n3._mountMs = tn6() - i2, n3._mountWrites = n3._stats ? n3._stats.writes : 0, n3._mountWrites > 0 && !Me8() && !R9("derived") && r45.warn("W30", t2, { problem: `${n3._mountWrites} paint(s) ran at mount; the saved file was out of sync with its declared state`, fix: "re-save once so the file mounts clean (a settled file writes nothing)" }), n3;
+          function ie9(t2) {
+            let e20 = t2.id || t2.getAttribute("sap") || `app-${lr4++}`, r45 = new et9(e20), n3 = { root: t2, name: e20, diag: r45, _state: null, _stats: null, _lastPass: null, _passes: 0, _broken: false, _mountMs: 0, _mountWrites: 0 };
+            if (!Bt9(t2, r45)) return n3.halted = true, n3;
+            fr4(t2.ownerDocument);
+            for (let s3 of t2.querySelectorAll("textarea[data-value]")) Ft8(s3);
+            let i2 = nn4();
+            return ft8(n3, { trigger: "mount", full: true }), n3._mountMs = nn4() - i2, n3._mountWrites = n3._stats ? n3._stats.writes : 0, n3._mountWrites > 0 && !Ie9() && !L10("derived") && r45.warn("W30", t2, { problem: `${n3._mountWrites} paint(s) ran at mount; the saved file was out of sync with its declared state`, fix: "re-save once so the file mounts clean (a settled file writes nothing)" }), n3;
           }
-          var en5 = /^(set:|move:|sort:|trigger-add$|trigger-remove$|trigger-reset$)/;
-          function Bt9(t2) {
+          var rn4 = /^(set:|move:|sort:|trigger-add$|trigger-remove$|trigger-reset$)/;
+          function qt9(t2) {
             return `${t2.tagName.toLowerCase()}[sap]`;
           }
-          function cr4(t2) {
+          function dr4(t2) {
             let e20 = 0;
-            for (let r45 of t2.querySelectorAll("*")) for (let n3 of r45.attributes) if (en5.test(n3.name)) {
+            for (let r45 of t2.querySelectorAll("*")) for (let n3 of r45.attributes) if (rn4.test(n3.name)) {
               e20++;
               break;
             }
-            for (let r45 of t2.attributes) if (en5.test(r45.name)) {
+            for (let r45 of t2.attributes) if (rn4.test(r45.name)) {
               e20++;
               break;
             }
             return e20;
           }
-          function nn4(t2) {
+          function on6(t2) {
             function e20(g7) {
-              let b7 = g7._stats || {}, d2 = g7.root;
-              return { root: Bt9(d2), fields: b7.fields || 0, calcs: b7.calcs || 0, paints: b7.paints || 0, actions: cr4(d2), lists: (d2.hasAttribute("items") ? 1 : 0) + d2.querySelectorAll("[items]").length, rows: d2.querySelectorAll("[item]:not([template])").length, warnings: g7.diag.warnings.length, errors: g7.diag.errors.length, mountWrites: g7._mountWrites || 0, ms: Math.round((g7._mountMs || 0) * 10) / 10, passes: g7._passes || 0, lastPass: g7._lastPass || null, ok: g7.diag.errors.length === 0 && !g7.halted };
+              let w6 = g7._stats || {}, p5 = g7.root;
+              return { root: qt9(p5), fields: w6.fields || 0, calcs: w6.calcs || 0, paints: w6.paints || 0, actions: dr4(p5), lists: (p5.hasAttribute("items") ? 1 : 0) + p5.querySelectorAll("[items]").length, rows: p5.querySelectorAll("[item]:not([template])").length, warnings: g7.diag.warnings.length, errors: g7.diag.errors.length, mountWrites: g7._mountWrites || 0, ms: Math.round((g7._mountMs || 0) * 10) / 10, passes: g7._passes || 0, lastPass: g7._lastPass || null, ok: g7.diag.errors.length === 0 && !g7.halted };
             }
             function r45() {
               let g7 = t2.apps().map(e20);
-              return { ok: g7.every((b7) => b7.ok), apps: g7 };
+              return { ok: g7.every((w6) => w6.ok), apps: g7 };
             }
             function n3(g7) {
-              let b7 = e20(g7);
-              return b7.ok ? `sap \u2713 ${b7.root} \xB7 fields ${b7.fields} \xB7 calcs ${b7.calcs} \xB7 paints ${b7.paints} \xB7 actions ${b7.actions} \xB7 lists ${b7.lists} \xB7 rows ${b7.rows} \xB7 warnings ${b7.warnings} \xB7 mount writes ${b7.mountWrites} \xB7 ${b7.ms}ms` : `sap \u2717 ${b7.root} \xB7 errors ${b7.errors} \xB7 warnings ${b7.warnings} \xB7 ${b7.ms}ms`;
+              let w6 = e20(g7);
+              return w6.ok ? `sap \u2713 ${w6.root} \xB7 fields ${w6.fields} \xB7 calcs ${w6.calcs} \xB7 paints ${w6.paints} \xB7 actions ${w6.actions} \xB7 lists ${w6.lists} \xB7 rows ${w6.rows} \xB7 warnings ${w6.warnings} \xB7 mount writes ${w6.mountWrites} \xB7 ${w6.ms}ms` : `sap \u2717 ${w6.root} \xB7 errors ${w6.errors} \xB7 warnings ${w6.warnings} \xB7 ${w6.ms}ms`;
             }
             function o3() {
               for (let g7 of t2.apps()) {
-                let b7 = n3(g7);
-                g7.diag.errors.length || g7.halted ? console.error(b7) : console.log(b7);
+                let w6 = n3(g7);
+                g7.diag.errors.length || g7.halted ? console.error(w6) : console.log(w6);
               }
             }
             function i2() {
-              let g7 = [], b7 = [];
-              for (let d2 of t2.apps()) g7.push(...d2.diag.errors), b7.push(...d2.diag.warnings);
-              return { ok: g7.length === 0, errors: g7, warnings: b7, counts: { errors: g7.length, warnings: b7.length } };
+              let g7 = [], w6 = [];
+              for (let p5 of t2.apps()) g7.push(...p5.diag.errors), w6.push(...p5.diag.warnings);
+              return { ok: g7.length === 0, errors: g7, warnings: w6, counts: { errors: g7.length, warnings: w6.length } };
             }
-            function a2(g7) {
-              let b7 = g7 === void 0 ? true : !!g7;
-              for (let d2 of t2.apps()) d2._debug = b7;
-              return console.log(`sap debug ${b7 ? "on" : "off"} \u2014 per-pass headers will ${b7 ? "" : "no longer "}log`), b7;
+            function s3(g7) {
+              let w6 = g7 === void 0 ? true : !!g7;
+              for (let p5 of t2.apps()) p5._debug = w6;
+              return console.log(`sap debug ${w6 ? "on" : "off"} \u2014 per-pass headers will ${w6 ? "" : "no longer "}log`), w6;
             }
-            return { status: r45, report: i2, debug: a2, greenLine: n3, printGreenLines: o3, REGISTRY: qt9 };
+            return { status: r45, report: i2, debug: s3, greenLine: n3, printGreenLines: o3, REGISTRY: Vt7 };
           }
-          var rn4 = "0.6.0";
-          function on6({ createAccessor: t2, installInput: e20, debugExtras: r45 }) {
-            let n3 = /* @__PURE__ */ new Map(), o3 = [], i2 = oe8(ct9);
-            function a2(l2) {
-              let s3 = l2;
-              for (; s3; ) {
-                if (s3.nodeType === 1 && s3.hasAttribute && s3.hasAttribute("sap")) return n3.get(s3) || null;
-                s3 = s3.parentNode && s3.parentNode.host ? s3.parentNode.host : s3.parentElement;
+          var sn5 = "0.6.0";
+          function an5({ createAccessor: t2, installInput: e20, debugExtras: r45 }) {
+            let n3 = /* @__PURE__ */ new Map(), o3 = [], i2 = se8(ft8);
+            function s3(d2) {
+              let a2 = d2;
+              for (; a2; ) {
+                if (a2.nodeType === 1 && a2.hasAttribute && a2.hasAttribute("sap")) return n3.get(a2) || null;
+                a2 = a2.parentNode && a2.parentNode.host ? a2.parentNode.host : a2.parentElement;
               }
               return null;
             }
             function g7() {
-              for (let l2 = o3.length - 1; l2 >= 0; l2--) {
-                let s3 = o3[l2];
-                s3.root.isConnected || (n3.delete(s3.root), o3.splice(l2, 1));
+              for (let d2 = o3.length - 1; d2 >= 0; d2--) {
+                let a2 = o3[d2];
+                a2.root.isConnected || (n3.delete(a2.root), o3.splice(d2, 1));
               }
             }
-            function b7(l2, s3) {
-              if (l2.moveBefore) try {
-                l2.moveBefore(s3, null);
+            function w6(d2, a2) {
+              if (d2.moveBefore) try {
+                d2.moveBefore(a2, null);
                 return;
               } catch {
               }
-              l2.appendChild(s3);
+              d2.appendChild(a2);
             }
-            function d2(l2, s3) {
-              let m7 = s3.parentElement;
+            function p5(d2, a2) {
+              let m7 = a2.parentElement;
               if (m7) {
                 if (m7.moveBefore) try {
-                  m7.moveBefore(l2, s3);
+                  m7.moveBefore(d2, a2);
                   return;
                 } catch {
                 }
-                m7.insertBefore(l2, s3);
+                m7.insertBefore(d2, a2);
               }
             }
-            let u4 = { apps: () => o3.slice(), appFor: a2, isRegistered: (l2) => n3.has(l2), pruneDisconnected: g7, schedule: (l2, s3) => i2.schedule(l2, s3), runNow: (l2, s3) => i2.runNow(l2, s3), moveInto: b7, placeBefore: d2, remountIfPresent: () => x5() }, v9 = t2(u4), S8 = nn4(u4), $9 = r45 ? r45(u4, S8) : {}, _7 = false, h = false, A6 = null;
-            function p5() {
-              _7 || (_7 = true, e20(u4, v9, document), A6 = Be9(u4));
+            let u4 = { apps: () => o3.slice(), appFor: s3, isRegistered: (d2) => n3.has(d2), pruneDisconnected: g7, schedule: (d2, a2) => i2.schedule(d2, a2), runNow: (d2, a2) => i2.runNow(d2, a2), moveInto: w6, placeBefore: p5, remountIfPresent: () => x5() }, E6 = t2(u4), S8 = on6(u4), $9 = r45 ? r45(u4, S8) : {}, _7 = false, l2 = false, y6 = null;
+            function h() {
+              _7 || (_7 = true, e20(u4, E6, document), y6 = qe9(u4));
             }
-            function w6() {
-              let l2 = R9("derived");
-              l2 && typeof l2.mounted == "function" && l2.mounted();
+            function b7() {
+              let d2 = L10("derived");
+              d2 && typeof d2.mounted == "function" && d2.mounted();
             }
-            function x5(l2 = document) {
-              if (h) return [];
-              p5(), Jt8(u4);
-              let s3 = l2.querySelectorAll("[sap]"), m7 = [];
-              for (let y6 of s3) {
-                if (n3.has(y6)) continue;
-                let E6 = re7(y6);
-                n3.set(y6, E6), o3.push(E6), m7.push(E6);
+            function x5(d2 = document) {
+              if (l2) return [];
+              h(), Zt8(u4);
+              let a2 = d2.querySelectorAll("[sap]"), m7 = [];
+              for (let A6 of a2) {
+                if (n3.has(A6)) continue;
+                let v9 = ie9(A6);
+                n3.set(A6, v9), o3.push(v9), m7.push(v9);
               }
-              for (let y6 of m7) {
-                let E6 = S8.greenLine(y6);
-                y6.diag.errors.length || y6.halted ? console.error(E6) : console.log(E6);
+              for (let A6 of m7) {
+                let v9 = S8.greenLine(A6);
+                A6.diag.errors.length || A6.halted ? console.error(v9) : console.log(v9);
               }
-              return w6(), m7;
+              return b7(), m7;
             }
-            function f3(l2) {
-              if (h) return null;
-              if (p5(), Jt8(u4), !l2) return x5();
-              let s3 = typeof l2 == "string" ? document.querySelector(l2) : l2;
-              if (!s3) return null;
-              if (n3.has(s3)) return n3.get(s3);
-              let m7 = re7(s3);
-              n3.set(s3, m7), o3.push(m7);
-              let y6 = S8.greenLine(m7);
-              return m7.diag.errors.length || m7.halted ? console.error(y6) : console.log(y6), m7;
+            function f3(d2) {
+              if (l2) return null;
+              if (h(), Zt8(u4), !d2) return x5();
+              let a2 = typeof d2 == "string" ? document.querySelector(d2) : d2;
+              if (!a2) return null;
+              if (n3.has(a2)) return n3.get(a2);
+              let m7 = ie9(a2);
+              n3.set(a2, m7), o3.push(m7);
+              let A6 = S8.greenLine(m7);
+              return m7.diag.errors.length || m7.halted ? console.error(A6) : console.log(A6), m7;
             }
-            let c4 = v9.Sap;
-            return c4.version = rn4, c4.refresh = function() {
-              for (let s3 of o3) s3.root.isConnected && i2.runNow(s3, "refresh");
-            }, c4.batch = Oe8, c4.status = S8.status, c4.report = S8.report, c4.why = $9.why, c4.debug = S8.debug, c4.doctor = $9.doctor, c4.greenLine = S8.greenLine, c4.formats = ot9, c4.serializeControlToAttributes = st10, c4.finalizeControlForSave = Fe9, c4.rehydrateControlFromAttributes = Dt7, c4.mount = f3, c4.config = function(s3 = {}) {
-              return s3.formats && Object.assign(ot9, s3.formats), c4;
+            let c4 = E6.Sap;
+            return c4.version = sn5, c4.refresh = function() {
+              for (let a2 of o3) a2.root.isConnected && i2.runNow(a2, "refresh");
+            }, c4.batch = Be9, c4.status = S8.status, c4.report = S8.report, c4.why = $9.why, c4.debug = S8.debug, c4.doctor = $9.doctor, c4.greenLine = S8.greenLine, c4.formats = st10, c4.serializeControlToAttributes = ut10, c4.finalizeControlForSave = Pe9, c4.rehydrateControlFromAttributes = Ft8, c4.mount = f3, c4.config = function(a2 = {}) {
+              return a2.formats && Object.assign(st10, a2.formats), c4;
             }, c4._registry = n3, c4._reset = function() {
-              n3.clear(), o3.length = 0, Qt6();
+              n3.clear(), o3.length = 0, te9();
             }, c4.unmount = function() {
-              h = true, n3.clear(), o3.length = 0, Qt6(), typeof A6 == "function" && A6();
+              l2 = true, n3.clear(), o3.length = 0, te9(), typeof y6 == "function" && y6();
             }, { Sap: c4, mountAll: x5, mount: f3, runtime: u4 };
           }
-          function sn5(t2) {
+          function un5(t2) {
             if (typeof document > "u") return;
-            let e20 = () => Pe9(() => t2());
+            let e20 = () => Oe8(() => t2());
             document.readyState === "loading" ? document.addEventListener("DOMContentLoaded", e20) : e20();
           }
-          var fr4 = ["for", "form", "list", "headers", "popovertarget", "commandfor", "anchor", "aria-activedescendant", "aria-controls", "aria-describedby", "aria-details", "aria-errormessage", "aria-flowto", "aria-labelledby", "aria-owns"];
-          function lr4(t2, e20) {
+          var pr4 = ["for", "form", "list", "headers", "popovertarget", "commandfor", "anchor", "aria-activedescendant", "aria-controls", "aria-describedby", "aria-details", "aria-errormessage", "aria-flowto", "aria-labelledby", "aria-owns"];
+          function mr4(t2, e20) {
             let r45 = null;
-            return B8(t2, (n3) => {
+            return W8(t2, (n3) => {
               !r45 && n3.getAttribute("scope") === e20 && (r45 = n3);
             }), r45;
           }
-          function an5(t2, e20, r45) {
-            let n3 = F7(t2) || e20;
+          function cn5(t2, e20, r45) {
+            let n3 = P9(t2) || e20;
             for (; n3; ) {
-              for (let o3 of C7(n3.getAttribute("state") || "")) if (o3.name === r45) return { el: n3, decl: o3 };
+              for (let o3 of D9(n3.getAttribute("state") || "")) if (o3.name === r45) return { el: n3, decl: o3 };
               if (n3.hasAttribute("sap")) break;
-              n3 = F7(n3.parentElement);
+              n3 = P9(n3.parentElement);
             }
             return null;
           }
-          function dr4(t2) {
+          function hr4(t2) {
             return typeof t2 == "number" ? "num" : typeof t2 == "boolean" ? "bool" : "string";
           }
-          function un5(t2) {
-            function e20(h) {
-              let A6 = t2.appFor(h);
-              if (!A6) return null;
-              let p5 = G8(h), w6 = p5 && p5._sapEachItem && p5._sapEachItem.$el;
-              if (w6 && w6.isConnected) return { ctxEl: w6, appRec: A6, isRow: true };
-              let x5 = dt9(h);
-              if (x5) return x5._sapDetailRow ? { ctxEl: x5._sapDetailRow, appRec: A6, isRow: true } : { ctxEl: F7(x5.parentElement) || A6.root, appRec: A6, isRow: false };
-              let f3 = St9(h);
-              if (f3 && f3.hasAttribute("item")) return { ctxEl: f3, appRec: A6, isRow: true };
-              let c4 = F7(h) || A6.root;
-              return { ctxEl: c4, appRec: A6, isRow: c4.hasAttribute("item") };
+          function fn5(t2) {
+            function e20(l2) {
+              let y6 = t2.appFor(l2);
+              if (!y6) return null;
+              let h = Y7(l2), b7 = h && h._sapEachItem && h._sapEachItem.$el;
+              if (b7 && b7.isConnected) return { ctxEl: b7, appRec: y6, isRow: true };
+              let x5 = pt9(l2);
+              if (x5) return x5._sapDetailRow ? { ctxEl: x5._sapDetailRow, appRec: y6, isRow: true } : { ctxEl: P9(x5.parentElement) || y6.root, appRec: y6, isRow: false };
+              let f3 = kt9(l2);
+              if (f3 && f3.hasAttribute("item")) return { ctxEl: f3, appRec: y6, isRow: true };
+              let c4 = P9(l2) || y6.root;
+              return { ctxEl: c4, appRec: y6, isRow: c4.hasAttribute("item") };
             }
-            function r45(h) {
-              let A6 = typeof h == "string" ? document.querySelector(h) : h;
-              if (!A6 || A6.nodeType !== 1) return null;
-              let p5 = e20(A6);
-              return p5 ? _7(p5.ctxEl, p5.appRec, p5.isRow) : null;
+            function r45(l2) {
+              let y6 = typeof l2 == "string" ? document.querySelector(l2) : l2;
+              if (!y6 || y6.nodeType !== 1) return null;
+              let h = e20(y6);
+              return h ? _7(h.ctxEl, h.appRec, h.isRow) : null;
             }
-            function n3(h, A6) {
-              let p5 = G8(h);
-              if (!p5) return r45(h);
-              let w6 = t2.appFor(h), x5 = p5._sapEachItem && p5._sapEachItem.$el;
-              if (x5 && x5.nodeType === 1 && x5.hasAttribute("item") && rt9(x5, A6)) return x5.isConnected ? _7(x5, w6, true) : null;
-              let f3 = p5.parentElement && p5.parentElement._sapDrawnEl;
-              return !f3 || !f3.isConnected ? null : _7(f3, w6, f3.hasAttribute("item"));
+            function n3(l2, y6) {
+              let h = Y7(l2);
+              if (!h) return r45(l2);
+              let b7 = t2.appFor(l2), x5 = h._sapEachItem && h._sapEachItem.$el;
+              if (x5 && x5.nodeType === 1 && x5.hasAttribute("item") && it9(x5, y6)) return x5.isConnected ? _7(x5, b7, true) : null;
+              let f3 = h.parentElement && h.parentElement._sapDrawnEl;
+              return !f3 || !f3.isConnected ? null : _7(f3, b7, f3.hasAttribute("item"));
             }
-            function o3(h, A6, p5) {
-              let w6 = Y7(h, p5);
-              if (w6) return D9(w6).read();
-              let x5 = nt9(h, p5);
-              if (x5) return q9(x5).map((s3) => _7(s3, A6, true));
-              let f3 = lr4(h, p5);
-              if (f3) return _7(f3, A6, false);
-              let c4 = an5(h, A6.root, p5);
-              if (c4) return c4.decl.transient ? _t7(c4.el, c4.decl) : ue8(c4.el, c4.decl);
-              let l2 = h._sapScope;
-              return l2 ? l2[p5] : void 0;
+            function o3(l2, y6, h) {
+              let b7 = X10(l2, h);
+              if (b7) return M9(b7).read();
+              let x5 = ot9(l2, h);
+              if (x5) return H10(x5).map((a2) => _7(a2, y6, true));
+              let f3 = mr4(l2, h);
+              if (f3) return _7(f3, y6, false);
+              let c4 = cn5(l2, y6.root, h);
+              if (c4) return c4.decl.transient ? Tt8(c4.el, c4.decl) : fe7(c4.el, c4.decl);
+              let d2 = l2._sapScope;
+              return d2 ? d2[h] : void 0;
             }
-            function i2(h, A6, p5, w6, x5) {
-              w6.transient ? ht9(h, w6, p5) : mt9(h, w6, p5), t2.schedule(x5, "set:" + A6);
+            function i2(l2, y6, h, b7, x5) {
+              b7.transient ? bt9(l2, b7, h) : ht9(l2, b7, h), t2.schedule(x5, "set:" + y6);
             }
-            function a2(h, A6) {
-              let p5 = /* @__PURE__ */ new Set(), w6 = F7(h) || A6;
-              for (; w6; ) {
-                for (let x5 of C7(w6.getAttribute("state") || "")) p5.add(x5.name);
-                if (w6.hasAttribute("sap")) break;
-                w6 = F7(w6.parentElement);
+            function s3(l2, y6) {
+              let h = /* @__PURE__ */ new Set(), b7 = P9(l2) || y6;
+              for (; b7; ) {
+                for (let x5 of D9(b7.getAttribute("state") || "")) h.add(x5.name);
+                if (b7.hasAttribute("sap")) break;
+                b7 = P9(b7.parentElement);
               }
-              return B8(h, (x5) => {
+              return W8(l2, (x5) => {
                 let f3 = x5.getAttribute("bind");
-                f3 && p5.add(f3);
-              }), p5;
+                f3 && h.add(f3);
+              }), h;
             }
-            function g7(h, A6, p5, w6) {
-              let x5 = Y7(h, p5);
+            function g7(l2, y6, h, b7) {
+              let x5 = X10(l2, h);
               if (x5) {
-                D9(x5).write(w6);
+                if (!N20(x5)) return;
+                M9(x5).write(b7);
                 return;
               }
-              let f3 = h;
+              let f3 = l2;
               for (; f3; ) {
-                for (let T7 of f3.attributes) if (T7.name === "calc:" + p5) {
-                  A6.diag.error("E16", f3, { attr: "calc:" + p5, problem: `"${p5}" is a computed field; computed fields are read-only` });
+                for (let R9 of f3.attributes) if (R9.name === "calc:" + h) {
+                  y6.diag.error("E16", f3, { attr: "calc:" + h, problem: `"${h}" is a computed field; computed fields are read-only` });
                   return;
                 }
                 if (f3.hasAttribute("sap")) break;
                 f3 = f3.parentElement;
               }
-              let c4 = an5(h, A6.root, p5);
+              let c4 = cn5(l2, y6.root, h);
               if (c4) {
-                i2(c4.el, p5, w6, c4.decl, A6);
+                if (!N20(c4.el, { transient: c4.decl.transient })) return;
+                i2(c4.el, h, b7, c4.decl, y6);
                 return;
               }
-              let l2 = a2(h, A6.root);
-              l2.delete(p5);
-              let s3 = p5.length >= 4 ? lt9(p5, [...l2]) : null;
-              if (s3) {
-                A6.diag.error("E12", h, { key: p5, problem: `unknown state key "${p5}"`, didYouMean: s3 });
+              let d2 = s3(l2, y6.root);
+              d2.delete(h);
+              let a2 = h.length >= 4 ? dt9(h, [...d2]) : null;
+              if (a2) {
+                y6.diag.error("E12", l2, { key: h, problem: `unknown state key "${h}"`, didYouMean: a2 });
                 return;
               }
-              if (Et9.has(p5) || ft8.has(p5)) {
-                A6.diag.error("E15", h, { key: p5, problem: `cannot write undeclared field "${p5}" \u2014 it is a reserved/global name and cannot become state`, fix: "pick a different field name, or declare it explicitly in a state= attribute" });
+              if (Et9.has(h) || lt9.has(h)) {
+                y6.diag.error("E15", l2, { key: h, problem: `cannot write undeclared field "${h}" \u2014 it is a reserved/global name and cannot become state`, fix: "pick a different field name, or declare it explicitly in a state= attribute" });
                 return;
               }
-              let m7 = A6.root, y6 = dr4(w6), E6 = m7.getAttribute("state") || "", k8 = y6 === "string" ? p5 : `${p5}:${y6}`;
-              m7.setAttribute("state", E6 ? `${E6} ${k8}` : k8), i2(m7, p5, w6, { name: p5, attr: p5, type: y6, transient: false }, A6);
+              let m7 = y6.root;
+              if (!N20(m7)) return;
+              let A6 = hr4(b7), v9 = m7.getAttribute("state") || "", k8 = A6 === "string" ? h : `${h}:${A6}`;
+              m7.setAttribute("state", v9 ? `${v9} ${k8}` : k8), i2(m7, h, b7, { name: h, attr: h, type: A6, transient: false }, y6);
             }
-            function b7(h) {
-              let A6 = h.ownerDocument, p5 = /* @__PURE__ */ new Map(), w6 = (x5, f3) => {
-                let c4 = se8(A6), l2 = x5.getAttribute(f3);
-                l2 && f3 === "id" && p5.set(l2, c4), x5.setAttribute(f3, c4);
+            function w6(l2) {
+              let y6 = l2.ownerDocument, h = /* @__PURE__ */ new Map(), b7 = (x5, f3) => {
+                let c4 = ue8(y6), d2 = x5.getAttribute(f3);
+                d2 && f3 === "id" && h.set(d2, c4), x5.setAttribute(f3, c4);
               };
-              h.querySelectorAll("[id]").forEach((x5) => w6(x5, "id")), h.querySelectorAll("[data-id]").forEach((x5) => w6(x5, "data-id")), h.querySelectorAll("[sap-error]").forEach((x5) => x5.removeAttribute("sap-error")), h.removeAttribute("sap-error"), h.hasAttribute("data-id") ? (h.removeAttribute("id"), w6(h, "data-id")) : w6(h, "id");
-              for (let x5 of [h, ...h.querySelectorAll("*")]) for (let f3 of fr4) {
+              l2.querySelectorAll("[id]").forEach((x5) => b7(x5, "id")), l2.querySelectorAll("[data-id]").forEach((x5) => b7(x5, "data-id")), l2.querySelectorAll("[sap-error]").forEach((x5) => x5.removeAttribute("sap-error")), l2.removeAttribute("sap-error"), l2.hasAttribute("data-id") ? (l2.removeAttribute("id"), b7(l2, "data-id")) : b7(l2, "id");
+              for (let x5 of [l2, ...l2.querySelectorAll("*")]) for (let f3 of pr4) {
                 let c4 = x5.getAttribute(f3);
                 if (c4 == null) continue;
-                let l2 = c4.split(/\s+/).map((s3) => p5.get(s3) || s3).join(" ");
-                l2 !== c4 && x5.setAttribute(f3, l2);
+                let d2 = c4.split(/\s+/).map((a2) => h.get(a2) || a2).join(" ");
+                d2 !== c4 && x5.setAttribute(f3, d2);
               }
             }
-            function d2(h, A6, p5) {
-              let w6 = bt9(A6.root, h, p5);
-              if (!w6) return A6.diag.error("E17", h, { problem: `cannot resolve a list named "${p5}" from here` }), null;
-              let x5 = $t9(w6);
-              if (!x5) return A6.diag.error("E17", w6, { problem: `items="${p5}" has no [item template] to clone` }), null;
-              let f3 = w6.ownerDocument.importNode(x5, true);
-              return f3.removeAttribute("template"), b7(f3), w6.appendChild(f3), t2.schedule(A6, "trigger-add:" + p5), _7(f3, A6, true);
+            function p5(l2, y6, h) {
+              let b7 = gt9(y6.root, l2, h);
+              if (!b7) return y6.diag.error("E17", l2, { problem: `cannot resolve a list named "${h}" from here` }), null;
+              if (!N20(b7)) return null;
+              let x5 = _t7(b7);
+              if (!x5) return y6.diag.error("E17", b7, { problem: `items="${h}" has no [item template] to clone` }), null;
+              let f3 = b7.ownerDocument.importNode(x5, true);
+              return f3.removeAttribute("template"), w6(f3), b7.appendChild(f3), t2.schedule(y6, "trigger-add:" + h), _7(f3, y6, true);
             }
-            function u4(h, A6) {
-              B8(h, (p5) => {
-                if (p5.hasAttribute("bind")) {
-                  let w6 = D9(p5), x5 = p5.getAttribute("default");
-                  w6.kind === "checkbox" || w6.kind === "radio" ? w6.write(x5 != null ? x5 === "" || x5 === "true" || p5.value === x5 : p5.hasAttribute("checked")) : w6.write(x5 ?? (p5.getAttribute("value") || ""));
-                }
+            function u4(l2, y6) {
+              let h = D9(l2.getAttribute("state") || ""), b7 = true;
+              W8(l2, (x5) => {
+                x5.hasAttribute("bind") && !N20(x5) && (b7 = false);
               });
-              for (let p5 of C7(h.getAttribute("state") || "")) {
-                let w6 = ce8(h, p5);
-                p5.transient ? ht9(h, p5, w6) : mt9(h, p5, w6);
+              for (let x5 of h) N20(l2, { transient: x5.transient }) || (b7 = false);
+              if (b7) {
+                W8(l2, (x5) => {
+                  if (x5.hasAttribute("bind")) {
+                    let f3 = M9(x5), c4 = x5.getAttribute("default");
+                    f3.kind === "checkbox" || f3.kind === "radio" ? f3.write(c4 != null ? c4 === "" || c4 === "true" || x5.value === c4 : x5.hasAttribute("checked")) : f3.write(c4 ?? (x5.getAttribute("value") || ""));
+                  }
+                });
+                for (let x5 of h) {
+                  let f3 = le9(l2, x5);
+                  x5.transient ? bt9(l2, x5, f3) : ht9(l2, x5, f3);
+                }
+                t2.schedule(y6, "trigger-reset");
               }
-              t2.schedule(A6, "trigger-reset");
             }
-            function v9(h, A6) {
-              if (!h.isConnected) throw new Error("stale row handle: $remove() on a removed row");
-              h.remove(), t2.schedule(A6, "trigger-remove");
+            function E6(l2, y6) {
+              if (!l2.isConnected) throw new Error("stale row handle: $remove() on a removed row");
+              N20(l2) && (l2.remove(), t2.schedule(y6, "trigger-remove"));
             }
-            function S8(h, A6, p5) {
-              if (!h.isConnected) throw new Error("stale row handle: $move() on a removed row");
-              let w6 = null;
-              if (p5 && p5.nodeType === 1 ? w6 = p5 : typeof p5 == "string" && (w6 = bt9(A6.root, h, p5)), !w6) {
-                A6.diag.error("E17", h, { problem: `$move() cannot resolve target "${p5}"` });
+            function S8(l2, y6, h) {
+              if (!l2.isConnected) throw new Error("stale row handle: $move() on a removed row");
+              let b7 = null;
+              if (h && h.nodeType === 1 ? b7 = h : typeof h == "string" && (b7 = gt9(y6.root, l2, h)), !b7) {
+                y6.diag.error("E17", l2, { problem: `$move() cannot resolve target "${h}"` });
                 return;
               }
-              t2.moveInto(w6, h), t2.schedule(A6, "trigger-move");
+              !N20(l2) || !N20(b7) || (t2.moveInto(b7, l2), t2.schedule(y6, "trigger-move"));
             }
-            function $9(h) {
-              let A6 = h.parentElement;
-              return A6 ? q9(A6).indexOf(h) : -1;
+            function $9(l2) {
+              let y6 = l2.parentElement;
+              return y6 ? H10(y6).indexOf(l2) : -1;
             }
-            function _7(h, A6, p5) {
-              let w6 = { get $el() {
-                return h;
+            function _7(l2, y6, h) {
+              let b7 = { get $el() {
+                return l2;
               }, get $key() {
-                return xt9(h, p5 ? "row" : "scope");
+                return St9(l2, h ? "row" : "scope");
               }, get $index() {
-                return $9(h);
+                return $9(l2);
               }, $add(f3) {
-                return d2(h, A6, f3);
+                return p5(l2, y6, f3);
               }, $reset() {
-                return u4(h, A6), x5;
+                return u4(l2, y6), x5;
               }, $remove() {
-                v9(h, A6);
+                E6(l2, y6);
               }, $move(f3) {
-                S8(h, A6, f3);
+                S8(l2, y6, f3);
               }, get $appRec() {
-                return A6;
-              } }, x5 = new Proxy(w6, { get(f3, c4) {
-                return typeof c4 == "symbol" || c4[0] === "$" ? f3[c4] : o3(h, A6, c4);
-              }, set(f3, c4, l2) {
-                return typeof c4 == "string" && c4[0] === "$" ? (f3[c4] = l2, true) : (g7(h, A6, c4, l2), true);
+                return y6;
+              } }, x5 = new Proxy(b7, { get(f3, c4) {
+                return typeof c4 == "symbol" || c4[0] === "$" ? f3[c4] : o3(l2, y6, c4);
+              }, set(f3, c4, d2) {
+                return typeof c4 == "string" && c4[0] === "$" ? (f3[c4] = d2, true) : (g7(l2, y6, c4, d2), true);
               }, has(f3, c4) {
-                return typeof c4 == "string" && c4[0] === "$" ? c4 in f3 : o3(h, A6, c4) !== void 0;
+                return typeof c4 == "string" && c4[0] === "$" ? c4 in f3 : o3(l2, y6, c4) !== void 0;
               } });
               return x5;
             }
             return { Sap: r45, contextElFor: e20, readField: o3, writeField: g7, makeProxy: _7, writeTargetFor: n3 };
           }
-          var pr4 = ["trigger-add", "trigger-remove", "trigger-reset"];
-          function mr4(t2) {
+          var br4 = ["trigger-add", "trigger-remove", "trigger-reset"];
+          function gr4(t2) {
             if (t2.nodeType !== 1) return false;
             for (let e20 of t2.attributes) {
               let r45 = e20.name;
-              if (r45.startsWith("set:") || r45.startsWith("move:") || r45.startsWith("sort:") || pr4.includes(r45)) return true;
+              if (r45.startsWith("set:") || r45.startsWith("move:") || r45.startsWith("sort:") || br4.includes(r45)) return true;
             }
             return false;
           }
-          function hr4(t2, e20) {
+          function wr3(t2, e20) {
             let r45 = t2, n3 = e20.parentElement;
             for (; r45 && r45 !== n3; ) {
-              if (r45.nodeType === 1 && mr4(r45) && !(r45.tagName === "FORM" && r45.hasAttribute("trigger-add"))) return r45;
+              if (r45.nodeType === 1 && gr4(r45) && !(r45.tagName === "FORM" && r45.hasAttribute("trigger-add"))) return r45;
               r45 = r45.parentElement;
             }
             return null;
           }
-          function cn5(t2, e20) {
+          function ln5(t2, e20) {
             let { Sap: r45 } = e20;
             function n3(f3, c4) {
-              let l2 = null, s3 = G8(f3), m7 = dt9(f3);
-              if (s3) l2 = s3._sapEachItem ?? null;
-              else if (m7 && m7._sapDetailRow) l2 = m7._sapDetailRow._sapScope || null;
+              let d2 = null, a2 = Y7(f3), m7 = pt9(f3);
+              if (a2) d2 = a2._sapEachItem ?? null;
+              else if (m7 && m7._sapDetailRow) d2 = m7._sapDetailRow._sapScope || null;
               else {
-                let k8 = St9(f3);
-                k8 && k8.hasAttribute("item") && (l2 = k8._sapScope || null);
+                let k8 = kt9(f3);
+                k8 && k8.hasAttribute("item") && (d2 = k8._sapScope || null);
               }
-              return { state: (F7(f3) || c4.root)._sapScope || c4._state || {}, item: l2, el: f3, root: c4._state || {} };
+              return { state: (P9(f3) || c4.root)._sapScope || c4._state || {}, item: d2, el: f3, root: c4._state || {} };
             }
-            function o3(f3, c4, l2) {
+            function o3(f3, c4, d2) {
               if (!f3.hasAttribute("confirm")) {
-                l2();
+                d2();
                 return;
               }
-              let s3 = f3.getAttribute("confirm"), m7 = s3, y6 = L10(s3);
-              if (!y6.error) try {
-                let T7 = K10(y6, n3(f3, c4));
-                (typeof T7 == "string" || typeof T7 == "number") && (m7 = String(T7));
+              let a2 = f3.getAttribute("confirm"), m7 = a2, A6 = C7(a2);
+              if (!A6.error) try {
+                let F7 = J9(A6, n3(f3, c4));
+                (typeof F7 == "string" || typeof F7 == "number") && (m7 = String(F7));
               } catch {
               }
-              let E6 = Ie9();
-              if (!E6) {
-                window.confirm(m7) && l2();
+              let v9 = Pt8(), k8 = () => {
+                Pt8() === v9 && d2();
+              }, R9 = We9();
+              if (!R9) {
+                window.confirm(m7) && k8();
                 return;
               }
               if (f3._sapGatePending) return;
               f3._sapGatePending = true;
-              let k8 = () => {
+              let T7 = () => {
                 f3._sapGatePending = false;
               };
-              E6(m7, () => {
-                k8(), l2();
-              }).catch(k8);
+              R9(m7, () => {
+                T7(), k8();
+              }).catch(T7);
             }
             function i2(f3, c4) {
-              for (let l2 of f3.attributes) {
-                if (!l2.name.startsWith("set:")) continue;
-                let s3 = l2.name.slice(4), m7 = L10(l2.value);
+              for (let d2 of f3.attributes) {
+                if (!d2.name.startsWith("set:")) continue;
+                let a2 = d2.name.slice(4), m7 = C7(d2.value);
                 if (m7.error) {
-                  c4.diag.error("E08", f3, { attr: l2.name, expr: l2.value, problem: String(m7.error.message) });
+                  c4.diag.error("E08", f3, { attr: d2.name, expr: d2.value, problem: String(m7.error.message) });
                   continue;
                 }
-                let y6;
+                let A6;
                 try {
-                  y6 = K10(m7, n3(f3, c4));
+                  A6 = J9(m7, n3(f3, c4));
                 } catch (k8) {
-                  c4.diag.error("E24", f3, { attr: l2.name, expr: l2.value, problem: String(k8.message) });
+                  c4.diag.error("E24", f3, { attr: d2.name, expr: d2.value, problem: String(k8.message) });
                   continue;
                 }
-                let E6 = e20.writeTargetFor(f3, s3);
-                E6 && (E6[s3] = y6);
+                let v9 = e20.writeTargetFor(f3, a2);
+                v9 && (v9[a2] = A6);
               }
             }
-            function a2(f3) {
-              let c4 = G8(f3);
+            function s3(f3) {
+              let c4 = Y7(f3);
               if (!c4) return f3.closest("[item]");
-              let l2 = c4._sapEachItem && c4._sapEachItem.$el;
-              return l2 && l2.nodeType === 1 && l2.hasAttribute("item") ? l2 : null;
+              let d2 = c4._sapEachItem && c4._sapEachItem.$el;
+              return d2 && d2.nodeType === 1 && d2.hasAttribute("item") ? d2 : null;
             }
             function g7(f3, c4) {
-              let l2 = a2(f3);
-              if (!l2) return;
-              let s3 = q9(l2.parentElement), m7 = s3.indexOf(l2);
-              c4 === "up" && m7 > 0 ? t2.placeBefore(l2, s3[m7 - 1]) : c4 === "down" && m7 < s3.length - 1 && t2.placeBefore(s3[m7 + 1], l2);
+              let d2 = s3(f3);
+              if (!d2 || !N20(d2) || !N20(d2.parentElement)) return;
+              let a2 = H10(d2.parentElement), m7 = a2.indexOf(d2);
+              c4 === "up" && m7 > 0 ? t2.placeBefore(d2, a2[m7 - 1]) : c4 === "down" && m7 < a2.length - 1 && t2.placeBefore(a2[m7 + 1], d2);
             }
-            function b7(f3, c4, l2) {
-              if (c4) return bt9(l2.root, f3, c4);
-              let s3 = f3;
-              for (; s3; ) {
-                if (s3.hasAttribute && s3.hasAttribute("items")) return s3;
-                s3 = s3.parentElement;
+            function w6(f3, c4, d2) {
+              if (c4) return gt9(d2.root, f3, c4);
+              let a2 = f3;
+              for (; a2; ) {
+                if (a2.hasAttribute && a2.hasAttribute("items")) return a2;
+                a2 = a2.parentElement;
               }
-              let m7 = F7(f3) || l2.root, y6 = [];
-              return B8(m7, (E6) => {
-                E6.hasAttribute("items") && y6.push(E6);
-              }), y6[0] || null;
+              let m7 = P9(f3) || d2.root, A6 = [];
+              return W8(m7, (v9) => {
+                v9.hasAttribute("items") && A6.push(v9);
+              }), A6[0] || null;
             }
-            function d2(f3, c4) {
-              let l2 = f3 == null || f3 === "", s3 = c4 == null || c4 === "";
-              if (l2 && s3) return 0;
-              if (l2) return 1;
-              if (s3) return -1;
-              let m7 = Number(f3), y6 = Number(c4);
-              return !Number.isNaN(m7) && !Number.isNaN(y6) ? m7 - y6 : String(f3) < String(c4) ? -1 : String(f3) > String(c4) ? 1 : 0;
+            function p5(f3, c4) {
+              let d2 = f3 == null || f3 === "", a2 = c4 == null || c4 === "";
+              if (d2 && a2) return 0;
+              if (d2) return 1;
+              if (a2) return -1;
+              let m7 = Number(f3), A6 = Number(c4);
+              return !Number.isNaN(m7) && !Number.isNaN(A6) ? m7 - A6 : String(f3) < String(c4) ? -1 : String(f3) > String(c4) ? 1 : 0;
             }
-            function u4(f3, c4, l2, s3) {
-              let m7 = b7(f3, l2, s3);
+            function u4(f3, c4, d2, a2) {
+              let m7 = w6(f3, d2, a2);
               if (!m7) {
-                s3.diag.error("E17", f3, { attr: "sort:" + c4, problem: `no items list resolvable for sort:${c4}` });
+                a2.diag.error("E17", f3, { attr: "sort:" + c4, problem: `no items list resolvable for sort:${c4}` });
                 return;
               }
-              let y6 = q9(m7), E6 = (M9) => M9._sapScope ? M9._sapScope[c4] : void 0, k8 = [...y6].sort((M9, j9) => d2(E6(M9), E6(j9))), N20 = k8.every((M9, j9) => M9 === y6[j9]) ? [...k8].reverse() : k8;
-              for (let M9 of N20) t2.moveInto(m7, M9);
-              t2.schedule(s3, "sort:" + c4);
+              if (!N20(m7)) return;
+              let A6 = H10(m7), v9 = (F7) => F7._sapScope ? F7._sapScope[c4] : void 0, k8 = [...A6].sort((F7, j9) => p5(v9(F7), v9(j9))), T7 = k8.every((F7, j9) => F7 === A6[j9]) ? [...k8].reverse() : k8;
+              for (let F7 of T7) t2.moveInto(m7, F7);
+              t2.schedule(a2, "sort:" + c4);
             }
-            function v9(f3) {
+            function E6(f3) {
               if (!f3 || f3.hidden) return;
               let c4 = f3.querySelector("[bind]:not([type=hidden]), [contenteditable]");
               c4 && typeof c4.focus == "function" && c4.focus();
             }
             function S8(f3, c4) {
               o3(f3, c4, () => {
-                let l2 = r45(f3);
-                for (let s3 of [...f3.attributes]) {
-                  let m7 = s3.name;
-                  if (m7 === "trigger-remove") l2 && l2.$remove();
-                  else if (m7 === "trigger-reset") l2 && l2.$reset();
+                let d2 = r45(f3);
+                for (let a2 of [...f3.attributes]) {
+                  let m7 = a2.name;
+                  if (m7 === "trigger-remove") d2 && d2.$remove();
+                  else if (m7 === "trigger-reset") d2 && d2.$reset();
                   else if (m7 === "trigger-add") {
-                    let y6 = l2 && l2.$add(s3.value);
-                    y6 && v9(y6.$el);
-                  } else m7 === "move:up" ? (g7(f3, "up"), t2.schedule(c4, "move:up")) : m7 === "move:down" ? (g7(f3, "down"), t2.schedule(c4, "move:down")) : m7.startsWith("move:to") ? l2 && l2.$move(s3.value) : m7.startsWith("sort:") && u4(f3, m7.slice(5), s3.value, c4);
+                    let A6 = d2 && d2.$add(a2.value);
+                    A6 && E6(A6.$el);
+                  } else m7 === "move:up" ? (g7(f3, "up"), t2.schedule(c4, "move:up")) : m7 === "move:down" ? (g7(f3, "down"), t2.schedule(c4, "move:down")) : m7.startsWith("move:to") ? d2 && d2.$move(a2.value) : m7.startsWith("sort:") && u4(f3, m7.slice(5), a2.value, c4);
                 }
-                [...f3.attributes].some((s3) => s3.name.startsWith("set:")) && i2(f3, c4);
+                [...f3.attributes].some((a2) => a2.name.startsWith("set:")) && i2(f3, c4);
               });
             }
             function $9(f3) {
               let c4 = f3.target;
               if (!c4 || c4.nodeType !== 1) return;
-              let l2 = t2.appFor(c4);
-              if (!l2) return;
-              let s3 = hr4(c4, l2.root);
-              s3 && S8(s3, l2);
+              let d2 = t2.appFor(c4);
+              if (!d2) return;
+              let a2 = wr3(c4, d2.root);
+              a2 && S8(a2, d2);
             }
             function _7(f3) {
-              let c4 = D9(f3), l2 = f3.getAttribute("default");
-              c4.kind === "checkbox" ? c4.write(l2 === "" || l2 === "true") : c4.write(l2 ?? "");
+              let c4 = M9(f3), d2 = f3.getAttribute("default");
+              c4.kind === "checkbox" ? c4.write(d2 === "" || d2 === "true") : c4.write(d2 ?? "");
             }
-            function h(f3, c4, l2) {
-              let s3 = r45(f3);
-              if (!s3) return;
-              let m7 = s3.$add(l2);
+            function l2(f3, c4, d2) {
+              let a2 = r45(f3);
+              if (!a2) return;
+              let m7 = a2.$add(d2);
               if (!m7) return;
-              let y6 = [];
-              B8(f3, (E6) => {
-                E6.hasAttribute("bind") && y6.push(E6);
+              let A6 = [];
+              W8(f3, (v9) => {
+                v9.hasAttribute("bind") && A6.push(v9);
               });
-              for (let E6 of y6) {
-                if (E6.type === "radio" && !E6.checked) continue;
-                let k8 = E6.getAttribute("bind"), T7 = Y7(m7.$el, k8);
-                T7 ? D9(T7).write(D9(E6).read()) : rt9(m7.$el, k8) && (m7[k8] = D9(E6).read());
+              for (let v9 of A6) {
+                if (v9.type === "radio" && !v9.checked) continue;
+                let k8 = v9.getAttribute("bind"), R9 = X10(m7.$el, k8);
+                R9 ? M9(R9).write(M9(v9).read()) : it9(m7.$el, k8) && (m7[k8] = M9(v9).read());
               }
-              y6.forEach(_7), y6.length ? typeof y6[0].focus == "function" && y6[0].focus() : v9(m7.$el);
+              A6.forEach(_7), A6.length ? typeof A6[0].focus == "function" && A6[0].focus() : E6(m7.$el);
             }
-            function A6(f3) {
+            function y6(f3) {
               let c4 = f3.target;
               if (!c4 || !c4.hasAttribute || !c4.hasAttribute("trigger-add")) return;
-              let l2 = t2.appFor(c4);
-              l2 && (f3.preventDefault(), o3(c4, l2, () => h(c4, l2, c4.getAttribute("trigger-add"))));
+              let d2 = t2.appFor(c4);
+              d2 && (f3.preventDefault(), o3(c4, d2, () => l2(c4, d2, c4.getAttribute("trigger-add"))));
             }
-            function p5(f3) {
+            function h(f3) {
               let c4 = f3.target;
               if (!c4 || c4.tagName !== "DIALOG" || !c4.hasAttribute("detail")) return;
               if (c4._sapEngineClose) {
@@ -89696,87 +90583,88 @@ ${t2}` : `"use strict"; return (${t2});`;
                 return;
               }
               if (c4.open) return;
-              let l2 = /^[\w.]+\s+by\s+state\.(\w+)\s*$/.exec(c4.getAttribute("detail") || ""), s3 = t2.appFor(c4);
-              if (!l2 || !s3) return;
-              let m7 = C7(c4.getAttribute("state") || "").find((E6) => E6.name === l2[1]);
+              let d2 = /^[\w.]+\s+by\s+state\.(\w+)\s*$/.exec(c4.getAttribute("detail") || ""), a2 = t2.appFor(c4);
+              if (!d2 || !a2) return;
+              let m7 = D9(c4.getAttribute("state") || "").find((v9) => v9.name === d2[1]);
               if (m7) {
-                m7.transient ? ht9(c4, m7, "") : mt9(c4, m7, ""), t2.schedule(s3, "close");
+                if (!N20(c4, { transient: m7.transient })) return;
+                m7.transient ? bt9(c4, m7, "") : ht9(c4, m7, ""), t2.schedule(a2, "close");
                 return;
               }
-              let y6 = r45(c4.parentElement);
-              y6 && y6[l2[1]] !== "" && (y6[l2[1]] = "");
+              let A6 = r45(c4.parentElement);
+              A6 && A6[d2[1]] !== "" && (A6[d2[1]] = "");
             }
-            function w6(f3, c4) {
-              let l2 = f3.hasAttribute("bind") && kt9(f3);
-              if (!l2 && f3.hasAttribute("bind") && G8(f3)) {
-                let m7 = f3.getAttribute("bind"), y6 = f3._sapViewBind ? e20.writeTargetFor(f3, m7) : null;
-                return y6 && (y6[m7] = D9(f3).read()), true;
+            function b7(f3, c4) {
+              let d2 = f3.hasAttribute("bind") && $t9(f3);
+              if (!d2 && f3.hasAttribute("bind") && Y7(f3)) {
+                let m7 = f3.getAttribute("bind"), A6 = f3._sapViewBind ? e20.writeTargetFor(f3, m7) : null;
+                return A6 && (A6[m7] = M9(f3).read()), true;
               }
-              let s3 = dt9(f3);
-              if (s3 && s3._sapDetailRow && f3.hasAttribute("bind") && !l2) {
-                let m7 = s3._sapDetailRow, y6 = f3.getAttribute("bind"), E6 = Y7(m7, y6);
-                if (E6 && E6 !== f3) return D9(E6).write(D9(f3).read()), true;
-                if (!E6 && C7(m7.getAttribute("state") || "").some((k8) => k8.name === y6)) return e20.writeField(m7, c4, y6, D9(f3).read()), true;
+              let a2 = pt9(f3);
+              if (a2 && a2._sapDetailRow && f3.hasAttribute("bind") && !d2) {
+                let m7 = a2._sapDetailRow, A6 = f3.getAttribute("bind"), v9 = X10(m7, A6);
+                if (v9 && v9 !== f3) return N20(v9) && M9(v9).write(M9(f3).read()), true;
+                if (!v9 && D9(m7.getAttribute("state") || "").some((k8) => k8.name === A6)) return e20.writeField(m7, c4, A6, M9(f3).read()), true;
               }
               return false;
             }
             function x5(f3 = document) {
-              f3.addEventListener("click", $9), f3.addEventListener("submit", A6), f3.addEventListener("close", p5, true);
+              f3.addEventListener("click", $9), f3.addEventListener("submit", y6), f3.addEventListener("close", h, true);
             }
-            return { install: x5, routeInput: w6 };
+            return { install: x5, routeInput: b7 };
           }
-          function fn5(t2) {
+          function dn5(t2) {
             let e20 = [];
-            function r45(b7) {
-              let d2 = b7.target;
-              if (!d2 || d2.nodeType !== 1) return;
-              let u4 = t2.appFor(d2);
+            function r45(w6) {
+              let p5 = w6.target;
+              if (!p5 || p5.nodeType !== 1) return;
+              let u4 = t2.appFor(p5);
               if (u4) {
-                d2.hasAttribute("persist") && !Ft8(d2) && st10(d2);
-                for (let v9 of e20) if (v9(d2, u4)) return;
-                t2.schedule(u4, b7.type + " " + (d2.id || d2.tagName.toLowerCase()));
+                p5.hasAttribute("persist") && !Mt8(p5) && N20(p5) && ut10(p5);
+                for (let E6 of e20) if (E6(p5, u4)) return;
+                t2.schedule(u4, w6.type + " " + (p5.id || p5.tagName.toLowerCase()));
               }
             }
-            function n3(b7) {
-              let d2 = b7.target, u4 = t2.appFor(d2);
-              u4 && setTimeout(() => {
-                d2.querySelectorAll("[bind]").forEach((v9) => {
-                  v9.dispatchEvent(new Event("input", { bubbles: true })), v9.dispatchEvent(new Event("change", { bubbles: true }));
+            function n3(w6) {
+              let p5 = w6.target, u4 = t2.appFor(p5);
+              u4 && [...p5.querySelectorAll("[bind]")].every((E6) => N20(E6)) && setTimeout(() => {
+                p5.querySelectorAll("[bind]").forEach((E6) => {
+                  E6.dispatchEvent(new Event("input", { bubbles: true })), E6.dispatchEvent(new Event("change", { bubbles: true }));
                 }), t2.schedule(u4, "reset");
               }, 0);
             }
-            function o3(b7) {
-              let d2 = t2.appFor(b7.target);
-              d2 && t2.schedule(d2, "toggle");
+            function o3(w6) {
+              let p5 = t2.appFor(w6.target);
+              p5 && t2.schedule(p5, "toggle");
             }
-            function i2(b7) {
-              let d2 = b7.detail || {};
-              for (let u4 of [d2.from, d2.to, b7.target]) {
+            function i2(w6) {
+              let p5 = w6.detail || {};
+              for (let u4 of [p5.from, p5.to, w6.target]) {
                 if (!u4 || u4.nodeType !== 1) continue;
-                let v9 = t2.appFor(u4);
-                v9 && t2.schedule(v9, "sorted");
+                let E6 = t2.appFor(u4);
+                E6 && t2.schedule(E6, "sorted");
               }
             }
-            function a2(b7) {
-              if (b7.key !== "ArrowUp" && b7.key !== "ArrowDown") return;
-              let d2 = b7.target;
-              if (!d2 || d2.nodeType !== 1 || d2.tagName !== "INPUT" || !d2.hasAttribute("bind") || !d2.hasAttribute("step")) return;
-              let u4 = (d2.getAttribute("type") || "text").toLowerCase();
-              if (u4 !== "text" && u4 !== "tel" && u4 !== "search" || !t2.appFor(d2)) return;
-              b7.preventDefault();
-              let S8 = P9(d2.getAttribute("step")) || 1, $9 = b7.key === "ArrowUp" ? 1 : -1, _7 = P9(d2.value) + S8 * (b7.shiftKey ? 10 : 1) * $9, h = d2.getAttribute("min"), A6 = d2.getAttribute("max");
-              h !== null && h !== "" && _7 < P9(h) && (_7 = P9(h)), A6 !== null && A6 !== "" && _7 > P9(A6) && (_7 = P9(A6)), D9(d2).write(String(Number(_7.toFixed(2))));
+            function s3(w6) {
+              if (w6.key !== "ArrowUp" && w6.key !== "ArrowDown") return;
+              let p5 = w6.target;
+              if (!p5 || p5.nodeType !== 1 || p5.tagName !== "INPUT" || !p5.hasAttribute("bind") || !p5.hasAttribute("step")) return;
+              let u4 = (p5.getAttribute("type") || "text").toLowerCase();
+              if (u4 !== "text" && u4 !== "tel" && u4 !== "search" || !t2.appFor(p5) || !N20(p5)) return;
+              w6.preventDefault();
+              let S8 = I6(p5.getAttribute("step")) || 1, $9 = w6.key === "ArrowUp" ? 1 : -1, _7 = I6(p5.value) + S8 * (w6.shiftKey ? 10 : 1) * $9, l2 = p5.getAttribute("min"), y6 = p5.getAttribute("max");
+              l2 !== null && l2 !== "" && _7 < I6(l2) && (_7 = I6(l2)), y6 !== null && y6 !== "" && _7 > I6(y6) && (_7 = I6(y6)), M9(p5).write(String(Number(_7.toFixed(2))));
             }
-            function g7(b7 = document) {
-              b7.addEventListener("reset", n3), b7.addEventListener("toggle", o3, true), b7.addEventListener("input", r45), b7.addEventListener("change", r45), b7.addEventListener("clay:sorted", i2), b7.addEventListener("keydown", a2);
+            function g7(w6 = document) {
+              w6.addEventListener("reset", n3), w6.addEventListener("toggle", o3, true), w6.addEventListener("input", r45), w6.addEventListener("change", r45), w6.addEventListener("clay:sorted", i2), w6.addEventListener("keydown", s3);
             }
-            return { install: g7, addRouter: (b7) => e20.push(b7) };
+            return { install: g7, addRouter: (w6) => e20.push(w6) };
           }
-          function ln5(t2) {
+          function pn5(t2) {
             let e20 = t2.toLowerCase();
             return /^x-text$|^x-html$/.test(e20) ? 'use text="state.x" (Sap paints text only)' : /^x-show$|^v-show$|^v-if$/.test(e20) ? 'use show="expr" (toggles native hidden)' : /^x-model$|^v-model$/.test(e20) ? 'use bind="field"' : /^@|^x-on:|^v-on:|^on:/.test(e20) ? "use native onclick + Sap(this) (no event directive)" : /^:|^x-bind:class$|^v-bind:class$/.test(e20) ? 'use class:NAME="expr" or attr:NAME="expr"' : /^x-for$|^v-for$/.test(e20) ? 'use items="name" on the container and item template on the row' : /^x-data$/.test(e20) ? "declare state with state= / bind / items (no JS state object)" : /^x-init$/.test(e20) ? "use a <script> or onclick + Sap(this)" : /^bind:/.test(e20) ? 'use bind="field"; one-way paint is attr:NAME="expr"' : /^x-/.test(e20) || /^v-/.test(e20) ? "this is a foreign-dialect attribute; Sap has no x-/v- attributes" : null;
           }
-          function dn5(t2) {
+          function mn5(t2) {
             let e20 = [], r45 = (n3) => {
               for (let o3 of n3.attributes) {
                 let i2 = o3.name;
@@ -89787,21 +90675,21 @@ ${t2}` : `"use strict"; return (${t2});`;
             for (let n3 of t2.querySelectorAll("*")) r45(n3);
             return e20;
           }
-          function pn5(t2) {
+          function hn5(t2) {
             function e20(o3) {
               return o3 ? typeof o3 == "string" ? document.querySelector(o3) : o3.nodeType === 1 ? o3 : null : null;
             }
             function r45(o3, i2) {
-              let a2 = e20(o3);
-              if (!a2) return console.warn("sap why: element not found"), null;
-              let g7 = [`sap why <${a2.tagName.toLowerCase()}> \u2014 ${vt7(a2)}`], b7 = [...a2.attributes].filter((u4) => /^(bind|text|show|effect|invalid|detail|calc:|text:|attr:|class:|css:|set:|state|items|scope)/.test(u4.name));
-              for (let u4 of b7) g7.push(`  ${u4.name}="${u4.value}"`);
-              let d2 = a2;
-              for (; d2 && !d2._sapScope; ) d2 = d2.parentElement;
-              if (d2 && d2._sapScope) {
-                let u4 = d2._sapScope, v9 = i2 ? [i2] : Object.keys(u4);
+              let s3 = e20(o3);
+              if (!s3) return console.warn("sap why: element not found"), null;
+              let g7 = [`sap why <${s3.tagName.toLowerCase()}> \u2014 ${xt9(s3)}`], w6 = [...s3.attributes].filter((u4) => /^(bind|text|show|effect|invalid|detail|calc:|text:|attr:|class:|css:|set:|state|items|scope)/.test(u4.name));
+              for (let u4 of w6) g7.push(`  ${u4.name}="${u4.value}"`);
+              let p5 = s3;
+              for (; p5 && !p5._sapScope; ) p5 = p5.parentElement;
+              if (p5 && p5._sapScope) {
+                let u4 = p5._sapScope, E6 = i2 ? [i2] : Object.keys(u4);
                 g7.push("  reads:");
-                for (let S8 of v9) {
+                for (let S8 of E6) {
                   let $9 = u4[S8];
                   typeof $9 != "function" && g7.push(`    ${S8} = ${JSON.stringify(Array.isArray($9) ? `[${$9.length} rows]` : $9)}`);
                 }
@@ -89812,61 +90700,61 @@ ${t2}` : `"use strict"; return (${t2});`;
             function n3() {
               let o3 = [], i2 = 0;
               for (let u4 of t2.apps()) {
-                let v9 = u4.root, S8 = Bt9(v9);
+                let E6 = u4.root, S8 = qt9(E6);
                 i2++;
-                let $9 = new Z9(u4.name);
-                Ot7(v9, $9);
-                for (let w6 of $9.errors) o3.push({ code: w6.code, severity: "error", message: `${S8}: ${w6.code} ${w6.slug} at ${w6.el}` });
-                for (let w6 of $9.warnings) o3.push({ code: w6.code, severity: "warn", message: `${S8}: ${w6.code} ${w6.slug} at ${w6.el}` });
-                i2++, ct9(u4, { trigger: "doctor-dryrun" });
+                let $9 = new et9(u4.name);
+                Bt9(E6, $9);
+                for (let b7 of $9.errors) o3.push({ code: b7.code, severity: "error", message: `${S8}: ${b7.code} ${b7.slug} at ${b7.el}` });
+                for (let b7 of $9.warnings) o3.push({ code: b7.code, severity: "warn", message: `${S8}: ${b7.code} ${b7.slug} at ${b7.el}` });
+                i2++, ft8(u4, { trigger: "doctor-dryrun" });
                 let _7 = u4._stats ? u4._stats.writes : 0;
                 _7 > 0 && o3.push({ code: "W30", severity: "warn", message: `${S8}: dry recompute wrote ${_7} cells on a quiet page; an element is stale or non-idempotent` }), i2++;
-                let h = dn5(v9).map((w6) => w6.src).join(" \0 "), A6 = [];
-                for (let w6 of [v9, ...v9.querySelectorAll("[state]")]) for (let x5 of C7(w6.getAttribute("state") || "")) A6.push(x5.name);
-                for (let w6 of A6) new RegExp(`(state|item)\\.${w6}\\b`).test(h) || o3.push({ code: "I33", severity: "info", message: `${S8}: field "${w6}" is declared but read nowhere (dead state)` });
+                let l2 = mn5(E6).map((b7) => b7.src).join(" \0 "), y6 = [];
+                for (let b7 of [E6, ...E6.querySelectorAll("[state]")]) for (let x5 of D9(b7.getAttribute("state") || "")) y6.push(x5.name);
+                for (let b7 of y6) new RegExp(`(state|item)\\.${b7}\\b`).test(l2) || o3.push({ code: "I33", severity: "info", message: `${S8}: field "${b7}" is declared but read nowhere (dead state)` });
                 i2++;
-                let p5 = /* @__PURE__ */ new Map();
-                for (let w6 of v9.querySelectorAll("[id]")) p5.set(w6.id, (p5.get(w6.id) || 0) + 1);
-                for (let [w6, x5] of p5) x5 > 1 && o3.push({ code: "W32", severity: "warn", message: `${S8}: duplicate id "${w6}" (${x5} elements) \u2014 clone/edit collision` });
+                let h = /* @__PURE__ */ new Map();
+                for (let b7 of E6.querySelectorAll("[id]")) h.set(b7.id, (h.get(b7.id) || 0) + 1);
+                for (let [b7, x5] of h) x5 > 1 && o3.push({ code: "W32", severity: "warn", message: `${S8}: duplicate id "${b7}" (${x5} elements) \u2014 clone/edit collision` });
                 i2++;
-                for (let w6 of dn5(v9)) w6.src.length > 120 && o3.push({ code: "I33", severity: "info", message: `${S8}: ${w6.attr} expression is ${w6.src.length} chars; consider a calc: field` });
+                for (let b7 of mn5(E6)) b7.src.length > 120 && o3.push({ code: "I33", severity: "info", message: `${S8}: ${b7.attr} expression is ${b7.src.length} chars; consider a calc: field` });
                 i2++;
-                for (let w6 of v9.querySelectorAll("[text], [text\\:num]")) {
-                  let x5 = w6.textContent || "";
-                  /\.\d{5,}/.test(x5) && o3.push({ code: "I33", severity: "info", message: `${S8}: ${vt7(w6)} paints >4 decimals; consider text:FMT` });
+                for (let b7 of E6.querySelectorAll("[text], [text\\:num]")) {
+                  let x5 = b7.textContent || "";
+                  /\.\d{5,}/.test(x5) && o3.push({ code: "I33", severity: "info", message: `${S8}: ${xt9(b7)} paints >4 decimals; consider text:FMT` });
                 }
               }
-              let a2 = o3.filter((u4) => u4.severity === "error").length, g7 = o3.filter((u4) => u4.severity === "warn").length, b7 = o3.filter((u4) => u4.severity === "info").length;
-              console.log(`sap doctor \xB7 ${t2.apps().map((u4) => Bt9(u4.root)).join(", ")} \xB7 errors ${a2} \xB7 warnings ${g7} \xB7 info ${b7} \xB7 ${i2} checks \xB7 0ms`);
+              let s3 = o3.filter((u4) => u4.severity === "error").length, g7 = o3.filter((u4) => u4.severity === "warn").length, w6 = o3.filter((u4) => u4.severity === "info").length;
+              console.log(`sap doctor \xB7 ${t2.apps().map((u4) => qt9(u4.root)).join(", ")} \xB7 errors ${s3} \xB7 warnings ${g7} \xB7 info ${w6} \xB7 ${i2} checks \xB7 0ms`);
               for (let u4 of o3) (u4.severity === "error" ? console.error : u4.severity === "warn" ? console.warn : console.info)(`  ${u4.severity === "error" ? "\u2717" : u4.severity === "warn" ? "\u26A0" : "\xB7"} ${u4.message}`);
               return o3;
             }
             return { why: r45, doctor: n3 };
           }
-          function br4(t2, e20) {
+          function yr4(t2, e20) {
             let r45 = String(t2).split("."), n3 = (i2) => {
-              for (let a2 of r45) {
+              for (let s3 of r45) {
                 if (i2 == null) return;
-                i2 = Array.isArray(i2) ? i2.flatMap((g7) => g7 && g7[a2] != null ? g7[a2] : []) : i2[a2];
+                i2 = Array.isArray(i2) ? i2.flatMap((g7) => g7 && g7[s3] != null ? g7[s3] : []) : i2[s3];
               }
               return i2;
             }, o3 = n3(e20.state);
             return o3 === void 0 ? n3(e20.root) : o3;
           }
-          function gr4(t2, e20, r45, n3) {
+          function Ar4(t2, e20, r45, n3) {
             e20._sapScope = r45;
             let o3 = e20.getAttribute("detail") || "", i2 = /^([\w.]+)\s+by\s+(.+)$/.exec(o3);
             if (!i2) {
               e20.hidden = true, e20._sapDetailRow = null;
               return;
             }
-            let a2 = i2[1], g7 = i2[2].trim(), b7 = br4(a2, n3), d2;
+            let s3 = i2[1], g7 = i2[2].trim(), w6 = yr4(s3, n3), p5;
             try {
-              d2 = K10(L10(g7), { state: r45, item: n3.item, el: e20, root: n3.root });
+              p5 = J9(C7(g7), { state: r45, item: n3.item, el: e20, root: n3.root });
             } catch {
-              d2 = void 0;
+              p5 = void 0;
             }
-            let u4 = Array.isArray(b7) && d2 != null ? b7.find((S8) => S8 && typeof S8 == "object" && S8.$el && String(S8.$key) === String(d2)) : null;
+            let u4 = Array.isArray(w6) && p5 != null ? w6.find((S8) => S8 && typeof S8 == "object" && S8.$el && String(S8.$key) === String(p5)) : null;
             if (e20._sapDetailRow = u4 ? u4.$el : null, e20.tagName === "DIALOG") {
               let S8 = u4 ? String(u4.$key) : null;
               if (S8 !== e20._sapDetailKey && (e20._sapDetailKey = S8, e20._sapDismissed = false), !u4) {
@@ -89881,27 +90769,27 @@ ${t2}` : `"use strict"; return (${t2});`;
               }
               e20.hidden && (e20.hidden = false);
             }
-            Ct9();
-            let v9 = { root: n3.root, state: r45, item: u4, ownerEl: u4.$el, projection: true };
-            t2.collectEl(e20, V10(e20), v9), t2.walkScope(e20, u4, v9);
+            Dt7();
+            let E6 = { root: n3.root, state: r45, item: u4, ownerEl: u4.$el, projection: true };
+            t2.collectEl(e20, V10(e20), E6), t2.walkScope(e20, u4, E6);
           }
-          var mn5 = { name: "detail", begin(t2) {
+          var bn5 = { name: "detail", begin(t2) {
             t2.deferredDetails = [];
           }, boundary: { detail(t2, e20, r45, n3, o3) {
-            for (let i2 of C7(e20.getAttribute("state") || "")) i2.name in n3 || (n3[i2.name] = X10(e20, i2) ? e20.hasAttribute(i2.attr) : t2.resolveDefault(e20, i2));
+            for (let i2 of D9(e20.getAttribute("state") || "")) i2.name in n3 || (n3[i2.name] = K10(e20, i2) ? e20.hasAttribute(i2.attr) : t2.resolveDefault(e20, i2));
             t2.deferredDetails.push({ el: e20, parentObj: n3, ctx: o3 });
           } }, afterIntake(t2) {
             for (let e20 = 0; e20 < t2.deferredDetails.length; e20++) {
               let { el: r45, parentObj: n3, ctx: o3 } = t2.deferredDetails[e20];
-              gr4(t2, r45, n3, o3);
+              Ar4(t2, r45, n3, o3);
             }
           } };
-          function hn5(t2) {
+          function gn6(t2) {
             let e20 = 0, r45 = t2;
             for (; r45 && !(r45.hasAttribute && r45.hasAttribute("sap")); ) r45 = r45.parentElement, e20++;
             return e20;
           }
-          var bn5 = { name: "calc", begin(t2) {
+          var wn5 = { name: "calc", begin(t2) {
             t2.calcs = [];
           }, collect(t2, e20, r45, n3) {
             if (!r45.calcs) return;
@@ -89913,23 +90801,23 @@ ${t2}` : `"use strict"; return (${t2});`;
               let i2 = r45.get(o3.owner);
               i2 || (i2 = { ownerEl: o3.ownerEl, list: [] }, r45.set(o3.owner, i2)), i2.list.push(o3);
             }
-            let n3 = [...r45.values()].sort((o3, i2) => hn5(i2.ownerEl) - hn5(o3.ownerEl));
+            let n3 = [...r45.values()].sort((o3, i2) => gn6(i2.ownerEl) - gn6(o3.ownerEl));
             for (let o3 of n3) {
               let i2;
               try {
-                i2 = ye8(o3.list);
-              } catch (a2) {
-                e20.diag.error("E07", o3.list[0].el, { problem: a2.message }), i2 = o3.list;
+                i2 = ve9(o3.list);
+              } catch (s3) {
+                e20.diag.error("E07", o3.list[0].el, { problem: s3.message }), i2 = o3.list;
               }
-              for (let a2 of i2) try {
-                a2.owner[a2.name] = I6(a2.entry, a2.ctx.state, a2.ctx.item, a2.el, a2.ctx.root), et9(a2.el);
+              for (let s3 of i2) try {
+                s3.owner[s3.name] = O7(s3.entry, s3.ctx.state, s3.ctx.item, s3.el, s3.ctx.root), rt9(s3.el);
               } catch (g7) {
-                a2.owner[a2.name] = void 0, e20.diag.error("E24", a2.el, { attr: "calc:" + a2.name, expr: a2.entry.src, problem: String(g7.message) }), O7(a2.el, g7.sapCode || "E24");
+                s3.owner[s3.name] = void 0, e20.diag.error("E24", s3.el, { attr: "calc:" + s3.name, expr: s3.entry.src, problem: String(g7.message) }), B8(s3.el, g7.sapCode || "E24");
               }
             }
             t2.stats.calcs = t2.calcs.length, t2.stats.lists = r45.size;
           } };
-          function wr3(t2, e20, r45) {
+          function vr4(t2, e20, r45) {
             let n3 = r45.nextSibling;
             if (e20.isConnected && t2.moveBefore) try {
               t2.moveBefore(e20, n3);
@@ -89938,135 +90826,135 @@ ${t2}` : `"use strict"; return (${t2});`;
             }
             t2.insertBefore(e20, n3);
           }
-          function yr4(t2, e20, r45) {
+          function Er4(t2, e20, r45) {
             for (let n3 = e20.parentElement; n3; n3 = n3.parentElement) if (n3._sapScope === r45 && !n3.hasAttribute("detail") || n3.hasAttribute("sap")) return n3;
             return t2;
           }
-          function Ar4(t2, e20, r45) {
+          function xr4(t2, e20, r45) {
             let n3 = t2.app;
-            e20._sapDrawnEl = yr4(t2.root, e20, r45.state);
+            e20._sapDrawnEl = Er4(t2.root, e20, r45.state);
             let o3 = null;
-            for (let h = e20.firstElementChild; h; h = h.nextElementSibling) if (h.tagName === "TEMPLATE") {
-              o3 = h;
+            for (let l2 = e20.firstElementChild; l2; l2 = l2.nextElementSibling) if (l2.tagName === "TEMPLATE") {
+              o3 = l2;
               break;
             }
             let i2 = o3 && o3.content.children.length === 1 ? o3.content.firstElementChild : null;
             if (!i2) return n3.diag.error("E42", e20, { attr: "each", problem: "each needs one <template> child with exactly one element root" }), 0;
-            let a2 = e20.getAttribute("each"), g7;
+            let s3 = e20.getAttribute("each"), g7;
             try {
-              g7 = K10(L10(a2), { state: r45.state, item: r45.item, el: e20, root: r45.root });
-            } catch (h) {
-              return n3.diag.error("E24", e20, { attr: "each", expr: a2, problem: String(h.message) }), 0;
+              g7 = J9(C7(s3), { state: r45.state, item: r45.item, el: e20, root: r45.root });
+            } catch (l2) {
+              return n3.diag.error("E24", e20, { attr: "each", expr: s3, problem: String(l2.message) }), 0;
             }
-            if (!Array.isArray(g7)) return n3.diag.error("E40", e20, { attr: "each", expr: a2, problem: "each must evaluate to an array; the list keeps its last good rows" }), 0;
-            let b7 = L10(e20.getAttribute("key") || "item.$key"), d2 = [], u4 = /* @__PURE__ */ new Set();
-            for (let h of g7) {
-              let A6;
+            if (!Array.isArray(g7)) return n3.diag.error("E40", e20, { attr: "each", expr: s3, problem: "each must evaluate to an array; the list keeps its last good rows" }), 0;
+            let w6 = C7(e20.getAttribute("key") || "item.$key"), p5 = [], u4 = /* @__PURE__ */ new Set();
+            for (let l2 of g7) {
+              let y6;
               try {
-                A6 = I6(b7, r45.state, h, e20, r45.root);
+                y6 = O7(w6, r45.state, l2, e20, r45.root);
               } catch {
-                A6 = void 0;
+                y6 = void 0;
               }
-              let p5 = A6 == null ? "" : String(A6);
-              if (p5 === "" || u4.has(p5)) return n3.diag.error("E41", e20, { attr: "key", expr: b7.src, problem: p5 === "" ? "an item has no key; the list keeps its last good rows" : `duplicate key "${p5}"; the list keeps its last good rows` }), 0;
-              u4.add(p5), d2.push(p5);
+              let h = y6 == null ? "" : String(y6);
+              if (h === "" || u4.has(h)) return n3.diag.error("E41", e20, { attr: "key", expr: w6.src, problem: h === "" ? "an item has no key; the list keeps its last good rows" : `duplicate key "${h}"; the list keeps its last good rows` }), 0;
+              u4.add(h), p5.push(h);
             }
-            let v9 = e20._sapEach || /* @__PURE__ */ new Map(), S8 = /* @__PURE__ */ new Map(), $9 = 0, _7 = o3;
-            d2.forEach((h, A6) => {
-              let p5 = v9.get(h);
-              if (!p5 || p5.parentElement !== e20) {
-                p5 = e20.ownerDocument.importNode(i2, true);
-                let w6 = (p5.getAttribute("clay") || "").split(/\s+/).filter(Boolean);
-                w6.includes("editor-ui") || p5.setAttribute("clay", [...w6, "editor-ui"].join(" ")), p5._sapEachRow = true, $9++;
+            let E6 = e20._sapEach || /* @__PURE__ */ new Map(), S8 = /* @__PURE__ */ new Map(), $9 = 0, _7 = o3;
+            p5.forEach((l2, y6) => {
+              let h = E6.get(l2);
+              if (!h || h.parentElement !== e20) {
+                h = e20.ownerDocument.importNode(i2, true);
+                let b7 = (h.getAttribute("clay") || "").split(/\s+/).filter(Boolean);
+                b7.includes("editor-ui") || h.setAttribute("clay", [...b7, "editor-ui"].join(" ")), h._sapEachRow = true, $9++;
               }
-              p5.getAttribute("data-key") !== h && p5.setAttribute("data-key", h), _7.nextElementSibling !== p5 && (wr3(e20, p5, _7), $9++), p5._sapEachItem = g7[A6], S8.set(h, p5), _7 = p5;
+              h.getAttribute("data-key") !== l2 && h.setAttribute("data-key", l2), _7.nextElementSibling !== h && (vr4(e20, h, _7), $9++), h._sapEachItem = g7[y6], S8.set(l2, h), _7 = h;
             });
-            for (let [h, A6] of v9) S8.get(h) !== A6 && A6.parentElement === e20 && (A6.remove(), $9++);
-            return e20._sapEach = S8, Ct9(), d2.forEach((h, A6) => {
-              let p5 = S8.get(h), w6 = { root: r45.root, state: r45.state, item: g7[A6], ownerEl: p5, projection: false, view: true };
-              t2.collectEl(p5, V10(p5), w6), t2.walkScope(p5, {}, w6);
+            for (let [l2, y6] of E6) S8.get(l2) !== y6 && y6.parentElement === e20 && (y6.remove(), $9++);
+            return e20._sapEach = S8, Dt7(), p5.forEach((l2, y6) => {
+              let h = S8.get(l2), b7 = { root: r45.root, state: r45.state, item: g7[y6], ownerEl: h, projection: false, view: true };
+              t2.collectEl(h, V10(h), b7), t2.walkScope(h, {}, b7);
             }), $9;
           }
-          var gn6 = { name: "each", begin(t2) {
+          var yn5 = { name: "each", begin(t2) {
             t2.eachList = [];
           }, boundary: { each(t2, e20, r45, n3, o3) {
             t2.collectEl(e20, r45, o3), t2.eachList.push({ el: e20, ctx: o3 });
           } }, reconcile(t2) {
             let e20 = 0;
-            for (let r45 = 0; r45 < t2.eachList.length; r45++) e20 += Ar4(t2, t2.eachList[r45].el, t2.eachList[r45].ctx);
+            for (let r45 = 0; r45 < t2.eachList.length; r45++) e20 += xr4(t2, t2.eachList[r45].el, t2.eachList[r45].ctx);
             return e20;
           } };
-          function Er4(t2, e20) {
+          function Sr4(t2, e20) {
             try {
-              I6(t2.def.entry, t2.ctx.state, t2.ctx.item, t2.el, t2.ctx.root), et9(t2.el);
+              O7(t2.def.entry, t2.ctx.state, t2.ctx.item, t2.el, t2.ctx.root), rt9(t2.el);
             } catch (r45) {
-              e20.diag.error("E24", t2.el, { attr: "effect", expr: t2.def.entry && t2.def.entry.src, problem: String(r45.message) }), O7(t2.el, "E24");
+              e20.diag.error("E24", t2.el, { attr: "effect", expr: t2.def.entry && t2.def.entry.src, problem: String(r45.message) }), B8(t2.el, "E24");
             }
           }
-          var wn5 = { name: "effect", begin(t2) {
+          var An5 = { name: "effect", begin(t2) {
             t2.effects = [];
           }, collect(t2, e20, r45, n3) {
             if (r45.effects) for (let o3 of r45.effects) t2.effects.push({ def: o3, el: e20, ctx: n3 });
           }, afterPaint(t2) {
-            for (let e20 of t2.effects) Er4(e20, t2.app);
+            for (let e20 of t2.effects) Sr4(e20, t2.app);
           } };
-          function vr4(t2) {
+          function kr4(t2) {
             let e20 = "";
             try {
-              let r45 = I6(t2.def.entry, t2.ctx.state, t2.ctx.item, t2.el, t2.ctx.root);
+              let r45 = O7(t2.def.entry, t2.ctx.state, t2.ctx.item, t2.el, t2.ctx.root);
               e20 = typeof r45 == "string" ? r45 : "";
             } catch {
               e20 = "";
             }
             typeof t2.el.setCustomValidity == "function" && t2.el.setCustomValidity(e20);
           }
-          var yn5 = { name: "validation", begin(t2) {
+          var vn5 = { name: "validation", begin(t2) {
             t2.invalids = [];
           }, collect(t2, e20, r45, n3) {
             if (r45.invalids) for (let o3 of r45.invalids) t2.invalids.push({ def: o3, el: e20, ctx: n3 });
           }, afterPaint(t2) {
-            for (let e20 of t2.invalids) vr4(e20);
+            for (let e20 of t2.invalids) kr4(e20);
           } };
-          function An5(t2, e20) {
+          function En5(t2, e20) {
             if (t2 === t2.ownerDocument.activeElement) return 0;
             if (t2.type === "radio") {
               let i2 = e20 != null && String(t2.value) === String(e20);
               return t2.checked === i2 ? 0 : (t2.checked = i2, 1);
             }
-            let r45 = yt9(t2), n3 = Mt8(t2, r45), o3 = e20 ?? "";
-            return String(n3) !== String(o3) ? (qe9(t2, r45, o3), 1) : 0;
+            let r45 = At8(t2), n3 = It8(t2, r45), o3 = e20 ?? "";
+            return String(n3) !== String(o3) ? (Ve8(t2, r45, o3), 1) : 0;
           }
-          var En5 = { name: "projection", collect(t2, e20, r45, n3) {
-            if (!(r45.bind != null && (n3.view || n3.projection) && !kt9(e20))) return;
+          var xn5 = { name: "projection", collect(t2, e20, r45, n3) {
+            if (!(r45.bind != null && (n3.view || n3.projection) && !$t9(e20))) return;
             let o3 = r45.bind, i2 = t2.paints;
-            n3.view ? rt9(ae9(n3.item), o3) ? (e20._sapViewBind = "item", i2.push({ def: { kind: "projection", field: o3, from: "item" }, el: e20, ctx: n3 })) : o3 in n3.state || o3 in n3.root ? (e20._sapViewBind = "drawn", i2.push({ def: { kind: "projection", field: o3, from: "drawn" }, el: e20, ctx: n3 })) : (e20._sapViewBind = null, t2.app.diag.error("E43", e20, { attr: "bind", expr: o3, problem: `bind="${o3}" inside an each row matches no field of the row's record or of the scope the row is drawn in`, fix: "bind a field the record owns (bind, state= or items= on the [item]), or declare it with state= where the list is drawn" })) : i2.push({ def: { kind: "projection", field: o3, from: null }, el: e20, ctx: n3 });
+            n3.view ? it9(ce8(n3.item), o3) ? (e20._sapViewBind = "item", i2.push({ def: { kind: "projection", field: o3, from: "item" }, el: e20, ctx: n3 })) : o3 in n3.state || o3 in n3.root ? (e20._sapViewBind = "drawn", i2.push({ def: { kind: "projection", field: o3, from: "drawn" }, el: e20, ctx: n3 })) : (e20._sapViewBind = null, t2.app.diag.error("E43", e20, { attr: "bind", expr: o3, problem: `bind="${o3}" inside an each row matches no field of the row's record or of the scope the row is drawn in`, fix: "bind a field the record owns (bind, state= or items= on the [item]), or declare it with state= where the list is drawn" })) : i2.push({ def: { kind: "projection", field: o3, from: null }, el: e20, ctx: n3 });
           }, paintKinds: { projection(t2) {
             let e20 = t2.def;
             if (e20.from === "drawn") {
               let r45 = e20.field in t2.ctx.state ? t2.ctx.state : t2.ctx.root;
-              return An5(t2.el, r45[e20.field]);
+              return En5(t2.el, r45[e20.field]);
             }
-            return An5(t2.el, t2.ctx.item ? t2.ctx.item[e20.field] : "");
+            return En5(t2.el, t2.ctx.item ? t2.ctx.item[e20.field] : "");
           } } };
-          function vn5() {
-            for (let t2 of [mn5, bn5, gn6, wn5, yn5, En5]) Ye8(t2);
+          function Sn5() {
+            for (let t2 of [bn5, wn5, yn5, An5, vn5, xn5]) Ke8(t2);
           }
-          vn5();
-          Je8((t2, e20, r45) => {
+          Sn5();
+          Ze9((t2, e20, r45) => {
             for (let n3 of t2.attributes) {
-              let o3 = ln5(n3.name);
+              let o3 = pn5(n3.name);
               o3 && (e20("E01", t2, { attr: n3.name, expr: n3.value, problem: `"${n3.name}" is a foreign-dialect attribute; Sap has no ${n3.name.split(/[:=]/)[0]} directive`, fix: o3 + " \u2014 or wrap the subtree in sap-ignore if intentional" }), r45(n3.name));
             }
           });
-          var { Sap: Wt6, mountAll: xn5, mount: xr4, runtime: Sr4 } = on6({ createAccessor: un5, debugExtras: pn5, installInput(t2, e20, r45) {
-            let n3 = fn5(t2), o3 = cn5(t2, e20);
+          var { Sap: jt7, mountAll: kn5, mount: $r4, runtime: _r4 } = an5({ createAccessor: fn5, debugExtras: hn5, installInput(t2, e20, r45) {
+            let n3 = dn5(t2), o3 = ln5(t2, e20);
             n3.addRouter(o3.routeInput), n3.install(r45), o3.install(r45);
-          } }), At8 = typeof window < "u" ? window.Sap : null;
-          At8 && At8 !== Wt6 && At8.core && typeof At8.unmount == "function" && At8.unmount();
-          sn5(xn5);
-          typeof window < "u" && (window.Sap = Wt6);
-          var kr4 = Wt6;
-          return Ln5($r4);
+          } }), vt7 = typeof window < "u" ? window.Sap : null;
+          vt7 && vt7 !== jt7 && vt7.core && typeof vt7.unmount == "function" && vt7.unmount();
+          un5(kn5);
+          typeof window < "u" && (window.Sap = jt7);
+          var Tr4 = jt7;
+          return Cn5(Nr4);
         })();
         if (typeof window !== "undefined" && Sap && Sap.default) window.Sap = Sap.default;
         var sapDefault = Sap.default;
@@ -90084,17 +90972,17 @@ ${t2}` : `"use strict"; return (${t2});`;
     const visited = /* @__PURE__ */ new Set();
     function checkDeep(root3) {
       if (!root3 || visited.has(root3)) return null;
-      const queue = [root3];
+      const queue2 = [root3];
       const localVisited = /* @__PURE__ */ new Set();
-      while (queue.length > 0) {
-        const node = queue.shift();
+      while (queue2.length > 0) {
+        const node = queue2.shift();
         if (!node || localVisited.has(node) || visited.has(node)) continue;
         visited.add(node);
         localVisited.add(node);
         if (node.matches(selector)) {
           return node;
         }
-        queue.push(...node.children);
+        queue2.push(...node.children);
       }
       return null;
     }
@@ -90107,21 +90995,21 @@ ${t2}` : `"use strict"; return (${t2});`;
       }
       return null;
     }
-    let current4 = startElem;
-    while (current4) {
-      if (!visited.has(current4)) {
-        visited.add(current4);
-        if (current4.matches(selector)) {
-          return elementFoundReturnValue(current4);
+    let current5 = startElem;
+    while (current5) {
+      if (!visited.has(current5)) {
+        visited.add(current5);
+        if (current5.matches(selector)) {
+          return elementFoundReturnValue(current5);
         }
       }
-      for (const child of current4.children) {
+      for (const child of current5.children) {
         const found2 = checkDeep(child);
         if (found2) return elementFoundReturnValue(found2);
       }
-      const found = checkSiblings(current4, "previousElementSibling") || checkSiblings(current4, "nextElementSibling");
+      const found = checkSiblings(current5, "previousElementSibling") || checkSiblings(current5, "nextElementSibling");
       if (found) return elementFoundReturnValue(found);
-      current4 = current4.parentElement;
+      current5 = current5.parentElement;
     }
     return null;
   }
@@ -91012,9 +91900,9 @@ ${t2}` : `"use strict"; return (${t2});`;
     const params = parseHash(location.hash);
     mirrorRoot(params);
     const unmatched = document.body ? stamp2(params) : [];
-    const previous = current3;
+    const previous = current4;
     const changed2 = [.../* @__PURE__ */ new Set([...Object.keys(previous), ...Object.keys(params)])].filter((name) => previous[name] !== params[name]);
-    current3 = params;
+    current4 = params;
     const unmatchedKey = unmatched.join(" ");
     if (!changed2.length && unmatchedKey === lastUnmatched) return;
     lastUnmatched = unmatchedKey;
@@ -91023,7 +91911,7 @@ ${t2}` : `"use strict"; return (${t2});`;
     }));
   }
   function get4() {
-    return { ...current3 };
+    return { ...current4 };
   }
   function set2(patch, { replace: replace3 = false } = {}) {
     const next = parseHash(location.hash);
@@ -91086,7 +91974,7 @@ ${t2}` : `"use strict"; return (${t2});`;
   }
   function stop3() {
     started4 = false;
-    current3 = {};
+    current4 = {};
     lastUnmatched = "";
     window.removeEventListener("hashchange", apply2);
     document.removeEventListener("clay:sync-applied", queueApply);
@@ -91095,14 +91983,14 @@ ${t2}` : `"use strict"; return (${t2});`;
     if (observer) observer.disconnect();
     observer = null;
   }
-  var NAME2, PREFIX, ACTIVE, SPEC, current3, lastUnmatched, started4, observer, queued2, route, clay4, route_default;
+  var NAME2, PREFIX, ACTIVE, SPEC, current4, lastUnmatched, started4, observer, queued2, route, clay4, route_default;
   var init_route = __esm({
     "src/route/route.js"() {
       NAME2 = /^[a-z][a-z0-9-]*$/;
       PREFIX = "route-";
       ACTIVE = "route-active";
       SPEC = /^\s*([a-z][a-z0-9-]*)(?:\s+by\s+(\S+))?\s*$/;
-      current3 = {};
+      current4 = {};
       lastUnmatched = "";
       started4 = false;
       observer = null;
@@ -91327,6 +92215,10 @@ ${t2}` : `"use strict"; return (${t2});`;
     always: [
       "lib/mutation.js",
       // first: everything hangs off the hub; cms/sync need it in view mode too
+      // Second: records what the served file wrote for the attributes edit mode rewrites,
+      // and the authored contents of [freeze] regions, while the page is still in view.
+      // Read-only, and the one thing a view to edit to view cycle has to hand back.
+      "core/preserve-authored.js",
       "core/edit-mode.js",
       // both modes — matches today: 'edit-mode' is NOT in EDIT_MODE_ONLY
       // (hyperclay.js:251-273 lists 'edit-mode-helpers', not 'edit-mode');
@@ -91427,6 +92319,7 @@ ${t2}` : `"use strict"; return (${t2});`;
     "core/mode-key.js": () => Promise.resolve().then(() => (init_mode_key(), mode_key_exports)),
     "core/stale-host-notice.js": () => Promise.resolve().then(() => (init_stale_host_notice(), stale_host_notice_exports)),
     "core/page-data.js": () => Promise.resolve().then(() => (init_page_data(), page_data_exports)),
+    "core/preserve-authored.js": () => Promise.resolve().then(() => (init_preserve_authored(), preserve_authored_exports)),
     "core/snapshot.js": () => Promise.resolve().then(() => (init_snapshot(), snapshot_exports)),
     "core/save-core.js": () => Promise.resolve().then(() => (init_save_core(), save_core_exports)),
     "core/save.js": () => Promise.resolve().then(() => (init_save(), save_exports)),
@@ -91760,7 +92653,7 @@ ${t2}` : `"use strict"; return (${t2});`;
     const meta = document.querySelector('meta[name="hyper-source"]');
     return meta ? meta.getAttribute("content") : null;
   }
-  async function boot(base2, params, readyResolve, manifest = null, supplement = null) {
+  async function boot(base2, params, readyResolve, manifest = null, supplement = null, loadEditHints = null) {
     initTheme();
     const draftMode = await MODULES["core/draft-mode.js"]();
     draftMode.noteBootParams(params);
@@ -91775,13 +92668,19 @@ ${t2}` : `"use strict"; return (${t2});`;
     const hasSapJs = Boolean(document.querySelector('script[src*="sap.js"]'));
     bootPhase.holdSettle = hasSap && isEditMode2;
     const plan = resolveModules(params, isEditMode2, { isDraftMode: isDraftMode2, hasSap, canEdit: canEdit2, templateSource: templateSource() });
+    if (plan.plugins.includes("plugins/demo.js")) editMode.commitModeFacts({ destination: "demo" });
     preloadEntries(mergeManifests(manifest, supplement), [...plan.core, ...plan.plugins], { isEditMode: isEditMode2, isDraftMode: isDraftMode2, hasSapJs });
+    if ((isEditMode2 || isDraftMode2) && !supplement && loadEditHints) {
+      loadEditHints().then((hints) => preloadEntries(mergeManifests(manifest, hints), [...plan.core, ...plan.plugins], { isEditMode: isEditMode2, isDraftMode: isDraftMode2, hasSapJs })).catch(() => {
+      });
+    }
     const loaded = {};
     const readerOptions = { sync: plan.plugins.includes("sync/live-sync.js") };
     for (const path of plan.core) {
       loaded[path] = await MODULES[path]();
     }
-    assembleCore(loaded, { isDraftMode: isDraftMode2, isEditMode: isEditMode2, isOwner: isOwner2, siteVisibility: siteVisibility2, canEdit: canEdit2, mode: mode3 }, regionPolicy);
+    assembleCore(loaded, { isDraftMode: isDraftMode2, isOwner: isOwner2, siteVisibility: siteVisibility2 }, regionPolicy);
+    await loaded["core/edit-mode.js"].activateInitialMode();
     window.clay.plugins = Object.freeze([...plan.plugins, ...plan.late].map((path) => PLUGIN_NAMES[path]));
     for (const path of plan.plugins) {
       let mod;
@@ -91837,22 +92736,23 @@ ${t2}` : `"use strict"; return (${t2});`;
     }
     if (save && fileSignature != null) save.schedulePaintHeal(fileSignature);
   }
-  function assembleCore(loaded, { isDraftMode: isDraftMode2, isEditMode: isEditMode2, isOwner: isOwner2, siteVisibility: siteVisibility2, canEdit: canEdit2, mode: mode3 }, regionPolicy) {
+  function assembleCore(loaded, { isDraftMode: isDraftMode2, isOwner: isOwner2, siteVisibility: siteVisibility2 }, regionPolicy) {
     const clay5 = window.clay;
     const mutation = loaded["lib/mutation.js"];
     const editModeMod = loaded["core/edit-mode.js"];
     Object.assign(clay5, {
       toggleEditMode: editModeMod.toggleEditMode,
       setMode: editModeMod.setMode,
+      modeLifecycle: editModeMod.modeLifecycle,
       isDraftMode: isDraftMode2,
-      isEditMode: isEditMode2,
-      canEdit: canEdit2,
-      mode: mode3,
       isOwner: isOwner2,
       siteVisibility: siteVisibility2,
       Mutation: mutation.default,
       region: regionPolicy.windowRegionShape
     });
+    for (const key3 of ["mode", "isEditMode", "canEdit"]) {
+      Object.defineProperty(clay5, key3, { get: () => editModeMod[key3], enumerable: true, configurable: true });
+    }
     clay5.assets = assets;
     const snapshot = loaded["core/snapshot.js"];
     const save = loaded["core/save.js"];

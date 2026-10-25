@@ -177,20 +177,13 @@ function entriesOf(descriptor) {
   return descriptor.entries.filter((entry) => entry && typeof entry === "object");
 }
 
-function descriptorAliasesOf(descriptor) {
-  if (!descriptor || typeof descriptor !== "object") return null;
-  const aliases = descriptor.aliases;
-  if (!aliases || typeof aliases !== "object") return null;
-  return aliases;
-}
-
 function originalMatchesRelease(original, version, releases) {
   if (!releases) return true;
   const files = filesOf(releases, version);
   return Boolean(files && Object.hasOwn(files, original.path));
 }
 
-export function canonicalizeRuntimeURL(value, { descriptor, releases, documentURL } = {}) {
+export function canonicalizeRuntimeURL(value, { descriptor, releases, documentURL, aliases } = {}) {
   const local = parseRuntimeURL(value, { documentURL });
   if (!local || local.kind !== "local") return value;
 
@@ -199,12 +192,9 @@ export function canonicalizeRuntimeURL(value, { descriptor, releases, documentUR
 
   for (const entry of entries) {
     if (entry.local !== value || typeof entry.original !== "string") continue;
-    const aliases = releases?.[local.version]?.aliases;
-    if (aliases && Object.hasOwn(aliases, entry.original) && aliases[entry.original] === local.path &&
-        !local.search && !local.hash) return entry.original;
-    const declared = !releases && descriptorAliasesOf(descriptor);
-    if (declared && !local.search && !local.hash && entry.original.startsWith("https://") &&
-        Object.hasOwn(declared, entry.original) && declared[entry.original] === local.path) {
+    const trusted = releases?.[local.version]?.aliases ?? aliases;
+    if (trusted && typeof trusted === "object" && !local.search && !local.hash &&
+        Object.hasOwn(trusted, entry.original) && trusted[entry.original] === local.path) {
       return entry.original;
     }
     const original = parseRuntimeURL(entry.original);

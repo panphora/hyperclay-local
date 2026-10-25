@@ -182,6 +182,31 @@ describe('a save this host did not project is canonicalized anyway', () => {
     expect(canonicalForWrite(DOC(`<script src="http://127.0.0.1${LOCAL}"></script>`)))
       .toContain(`src="${PUBLIC}"`);
   });
+
+  // Each root server listens on its own port, and a URL copied from the DOM carries it.
+  test.each(['127.0.0.1', 'localhost'])('a loopback URL carrying a port (%s) is canonicalized', (host) => {
+    const html = `<script src="http://${host}:55600/_/clayjs/${selected}/clay.js"></script>`;
+
+    expect(canonicalForWrite(html)).toContain(`src="https://clayjs.com/${selected}/clay.js"`);
+  });
+
+  // The descriptor is read once: an absolute 127.0.0.1 URL still gets its rolling original
+  // back, which a pass per origin lost once the first pass had removed the descriptor.
+  test('a port-bearing 127.0.0.1 URL with a descriptor saves its rolling original', () => {
+    const local = `http://127.0.0.1:55600/_/clayjs/${selected}/clay.js?plugins=page`;
+    const descriptor = JSON.stringify({ schema: 1, version: selected, entries: [{ original: 'https://clayjs.com/v1/clay.js?plugins=page', local }] });
+    const html = `<script type="application/json" id="clay-runtime-map" clay="no-save no-watch no-snapshot">${descriptor}</script><script src="${local}"></script>`;
+
+    expect(canonicalForWrite(html)).toBe('<script src="https://clayjs.com/v1/clay.js?plugins=page"></script>');
+  });
+
+  // A browser serializes a URL with character references inside it, and the save
+  // carries them back: the same local URL, spelled with entities.
+  test('an entity-encoded local URL is canonicalized', () => {
+    const html = '<script src="&#47;_&#47;clayjs&#47;1.15.2/clay.js"></script>';
+
+    expect(canonicalForWrite(html)).toBe(`<script src="https://clayjs.com/${selected}/clay.js"></script>`);
+  });
 });
 
 describe('a document with nothing to canonicalize is untouched', () => {
@@ -334,7 +359,9 @@ describe('the relay hands browsers projected frames and the platform canonical b
     await waitFor(() => stream.events.some((e) => e.sender === 'tab-1'), 'the projected frame');
     const frame = stream.events.find((e) => e.sender === 'tab-1');
     expect(frame.html).toContain(`src="${LOCAL}"`);
-    expect(frame.html).toContain('id="clay-runtime-map"');
+    // The receiving tab already holds a descriptor; inserting one would shift the
+    // identity map live sync merges by.
+    expect(frame.html).not.toContain('clay-runtime-map');
     expect(frame.html).not.toContain('src="https://clayjs.com');
   });
 
@@ -348,7 +375,7 @@ describe('the relay hands browsers projected frames and the platform canonical b
     await waitFor(() => stream.events.some((e) => e.sender === 'tab-2'), 'the projected frame');
     const frame = stream.events.find((e) => e.sender === 'tab-2');
     expect(frame.html).toContain(`src="${LOCAL}"`);
-    expect(frame.html).toContain('id="clay-runtime-map"');
+    expect(frame.html).not.toContain('clay-runtime-map');
     expect(getAndClearSnapshot('index.html').html).toContain(`src="${PUBLIC}"`);
   });
 });
@@ -394,5 +421,26 @@ describe('a ZIP export carries the canonical document', () => {
     expect(html).not.toContain('clay-runtime-map');
 
     expect(await fs.readFile(documentPath, 'utf8')).toBe(onDisk);
+  });
+
+  // A byte that is not valid UTF-8 cannot be decoded and re-encoded, so the document
+  // is added as a file: the entry in the zip is the document's own bytes.
+  test('a document that is not valid UTF-8 is exported byte for byte', async () => {
+    const documentPath = file('legacy.html');
+    const onDisk = Buffer.concat([
+      Buffer.from('<!DOCTYPE html>\n<html>\n<body>\n<p>caf'),
+      Buffer.from([0xe9]),
+      Buffer.from('</p>\n</body>\n</html>'),
+    ]);
+    await fs.writeFile(documentPath, onDisk);
+    const outPath = file('legacy.zip');
+
+    expect(await exportDocumentZip(documentPath, outPath)).toBe(outPath);
+
+    const entries = await readZip(outPath);
+    const document = entries.find((entry) => entry.name.endsWith('/legacy.html'));
+    expect(document).toBeTruthy();
+    expect(Buffer.compare(document.content, onDisk)).toBe(0);
+    expect(Buffer.compare(await fs.readFile(documentPath), onDisk)).toBe(0);
   });
 });

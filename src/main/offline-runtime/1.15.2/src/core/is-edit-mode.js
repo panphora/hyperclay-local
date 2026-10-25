@@ -78,7 +78,7 @@ const hostCanEdit = query.editmode
 const keptCanEdit =
   receipt?.canEdit === true && forcedEditMode !== false && !servedStaleToken() &&
   !(isViewOnlyDocument && query.editmode !== "true");
-const canEdit = hostCanEdit || keptCanEdit;
+let canEdit = hostCanEdit || keptCanEdit;
 
 // Does this tab start editing? Only when something explicit asks for it.
 const startsEditing = receipt
@@ -87,9 +87,65 @@ const startsEditing = receipt
     ? query.editmode === "true"
     : forcedEditMode === true || opensInEdit;
 
-const isEditMode = isDraftMode ? true : canEdit && startsEditing;
-const mode = isDraftMode ? "draft" : isEditMode ? "edit" : "view";
+// Live bindings, not constants: the lifecycle controller commits a transition by
+// rewriting them here, and every facade reads them through a getter, so a boolean
+// copied onto `clay` at boot can never go stale.
+let isEditMode = isDraftMode ? true : canEdit && startsEditing;
+let mode = isDraftMode ? "draft" : isEditMode ? "edit" : "view";
 const isOwner = ownerCookie;
+
+// The rest of `clay.modeLifecycle.state`: where edits land, which transition is
+// running, and why the last one refused. The controller is the only writer.
+const lifecycle = {
+  phase: "idle",
+  destination: isDraftMode ? "draft" : "host",
+  generation: 0,
+  reason: null,
+};
+
+export function commitModeFacts(next) {
+  if (next.mode !== undefined) mode = next.mode;
+  if (next.isEditMode !== undefined) isEditMode = next.isEditMode;
+  if (next.canEdit !== undefined) canEdit = next.canEdit;
+  for (const key in lifecycle) if (next[key] !== undefined) lifecycle[key] = next[key];
+}
+
+export const modeState = () => ({ mode, ...lifecycle });
+
+// The lifecycle's registration queue: the same array an application pushed onto
+// window.clay before boot, so a preboot push lands here. Registering never imports the
+// controller, which takes the queue when it starts.
+const queue = (typeof window !== "undefined" && window.clay && window.clay.modeParticipants) || [];
+const registered = new Set();
+
+const refuse = (message) => {
+  throw new TypeError(`clay.modeLifecycle: ${message}`);
+};
+
+const refuseUnlessIdleInView = () => {
+  if (lifecycle.phase !== "idle" || isEditMode) refuse("the page is not idle in view");
+};
+
+export function takeModeParticipants() {
+  registered.clear();
+  return queue.splice(0);
+}
+
+export function registerModeParticipant(participant) {
+  const id = participant && participant.id;
+  if (typeof id !== "string" || !id || typeof participant.prepare !== "function") refuse("a participant needs an id and a prepare()");
+  if (registered.has(id)) refuse(`duplicate participant id "${id}"`);
+  refuseUnlessIdleInView();
+  registered.add(id);
+  queue.push(participant);
+  return () => {
+    if (!registered.has(id)) return;
+    refuseUnlessIdleInView();
+    registered.delete(id);
+    const index = queue.indexOf(participant);
+    if (index !== -1) queue.splice(index, 1);
+  };
+}
 
 const siteVisibility = servedSiteVisibility;
 

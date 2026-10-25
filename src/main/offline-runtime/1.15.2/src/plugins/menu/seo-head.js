@@ -171,8 +171,10 @@ const TITLE_MODE = "clay-seo-title-mode";
 const titleModeField = {
   find: (doc) => metas(doc, "name", TITLE_MODE),
   read(doc) {
-    const el = metas(doc, "name", TITLE_MODE)[0];
-    return el && text(el.getAttribute("content")).trim().toLowerCase() === "custom" ? "custom" : "derived";
+    const custom = metas(doc, "name", TITLE_MODE).some(
+      (el) => text(el.getAttribute("content")).trim().toLowerCase() === "custom",
+    );
+    return custom ? "custom" : "derived";
   },
   write(doc, value) {
     const els = metas(doc, "name", TITLE_MODE);

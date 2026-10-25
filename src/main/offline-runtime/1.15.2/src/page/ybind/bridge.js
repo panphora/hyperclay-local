@@ -271,12 +271,12 @@ export function createBridge({ pd, onNotice = () => {}, ownedTokens = [], author
   };
   const portMove = (tr, move) => {
     const result = moveBlocks({ pd, view, um, origins, render }, move);
-    if (result.status === "refused") {
-      stats.moveFallbacks = (stats.moveFallbacks ?? 0) + 1;
-      return false;
+    if (result.status !== "moved") {
+      if (result.status === "refused") stats.moveRefusals = (stats.moveRefusals ?? 0) + 1;
+      return result;
     }
     const sel = tr.selection;
-    if (sel instanceof pmState.TextSelection) return true;
+    if (sel instanceof pmState.TextSelection) return result;
     const doc = view.state.doc;
     let from = null, to = null;
     doc.forEach((node, pos) => {
@@ -284,13 +284,13 @@ export function createBridge({ pd, onNotice = () => {}, ownedTokens = [], author
       if (from === null) from = pos;
       to = pos + node.nodeSize;
     });
-    if (from === null) return true;
+    if (from === null) return result;
     const next = sel instanceof pmState.NodeSelection
       ? pmState.NodeSelection.create(doc, from)
       : sel.anchor <= sel.head ? new BlockSelection(doc.resolve(from), doc.resolve(to)) : new BlockSelection(doc.resolve(to), doc.resolve(from));
     const reselect = view.state.tr.setSelection(next).setMeta(REMOTE_META, true).setMeta("addToHistory", false);
     view.dispatch(tr.scrolledIntoView ? reselect.scrollIntoView() : reselect);
-    return true;
+    return result;
   };
   const board = createBoardCommands({ pd, um, origins, render: () => (view ? render() : refresh()) });
   pd.ydoc.on("beforeTransaction", onBefore);
@@ -327,7 +327,10 @@ export function createBridge({ pd, onNotice = () => {}, ownedTokens = [], author
     },
     dispatch(tr) {
       const move = tr.getMeta(MOVE);
-      if (move && portMove(tr, move)) return;
+      if (move) {
+        portMove(tr, move);
+        return;
+      }
       const { state, transactions } = view.state.applyTransaction(tr);
       const local = transactions.filter((t) => t.docChanged && !t.getMeta(REMOTE_META));
       view.updateState(state);

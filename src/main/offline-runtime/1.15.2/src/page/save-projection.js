@@ -7,6 +7,8 @@ import "../attrs/save-freeze.js";
 import { addDocumentTransform } from "../core/snapshot.js";
 import { parseJsonRelaxed } from "../vendor/hyper-morph-json.vendor.js";
 import { fragmentCleaner, project, renderModel, revOf } from "./projection.js";
+import { documentTitle } from "./document-title.js";
+import { customTitle, writeTitle } from "./document-title-dom.js";
 import { blocksFromPageValues } from "./ybind/decode.js";
 import { YDecodeError } from "./ybind/provider.js";
 
@@ -36,7 +38,7 @@ export function renderFromTags(texts) {
     const html = blocks[id]?.artifact?.fallbackHtml;
     return typeof html === "string" ? html : "";
   };
-  memo = { key, html: renderModel(model, { fallbackOf, clean: fragmentCleaner(document) }), rev: revOf(model) };
+  memo = { key, html: renderModel(model, { fallbackOf, clean: fragmentCleaner(document) }), rev: revOf(model), model, title: documentTitle(model) };
   return memo;
 }
 
@@ -45,9 +47,10 @@ export function projectInto(clone) {
   if (!article) return;
   const tags = pageTags(clone);
   if (!tags.length) return;
-  const { html, rev } = renderFromTags(tags.map((el) => el.textContent));
+  const { html, rev, title } = renderFromTags(tags.map((el) => el.textContent));
   if (article.innerHTML !== html) article.innerHTML = html;
   article.setAttribute("data-rev", rev);
+  if (!customTitle(clone)) writeTitle(clone, title);
 }
 
 addDocumentTransform(projectInto);

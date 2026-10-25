@@ -32,7 +32,7 @@ async function htmlFiles(root, rel = '') {
   for (const entry of entries) {
     const child = rel ? path.posix.join(rel, entry.name) : entry.name;
     if (entry.isDirectory()) found.push(...await htmlFiles(root, child));
-    else if (entry.isFile() && entry.name.endsWith('.html')) found.push(child);
+    else if (entry.isFile() && /\.(?:html|htmlclay)$/i.test(entry.name)) found.push(child);
   }
   return found;
 }

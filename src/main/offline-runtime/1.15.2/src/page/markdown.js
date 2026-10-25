@@ -8,6 +8,7 @@ import { retype, replaceWithDivider } from "./items.js";
 import { asStep } from "./blocksel.js";
 import { insertTableNode } from "./table.js";
 import { tableFromGrid } from "./table-paste.js";
+import { safeHref } from "./address.js";
 
 const { InputRule } = inputrules;
 const N = schema.nodes;
@@ -29,6 +30,87 @@ const dividerRule = new InputRule(/^---$/, (st, match, start, end) => {
   return asStep(replaceWithDivider(st.tr, $s.index(0)));
 });
 
+// Inline shortcuts typed around text: **bold** and __bold__ to strong, *italic*
+// and _italic_ to em, `code`, ~~strike~~, and [label](address) to a link. The
+// delimiters are deleted and the mark is added over the body, which stays where
+// it is, so the marks it already carries survive. Backspace right after puts the
+// delimiter characters back through the input rule's own undo.
+const OPENS = "\\s\\(\\[\\{'\u2018\u201C\u0022";
+const OPENS_ONE = new RegExp(`[${OPENS}]`);
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const bodyRe = (exclude) => `([^\\s${exclude}](?:[\\s\\S]*?[^\\s${exclude}])?)`;
+
+export const composing = (event, view) => !!event?.isComposing || event?.keyCode === 229 || !!view?.composing;
+
+const trailingBackslashes = (text) => {
+  let n = 0;
+  for (let i = text.length - 1; i >= 0 && text[i] === "\\"; i--) n++;
+  return n;
+};
+
+// An opening delimiter needs the start of a textblock or whitespace and opening
+// punctuation before it, and neither delimiter may be escaped.
+const opensAt = (st, at) => {
+  const $at = st.doc.resolve(at);
+  if (!$at.parent.inlineContent) return false;
+  if (trailingBackslashes($at.parent.textBetween(0, $at.parentOffset, null, "\uFFFC")) % 2) return false;
+  return $at.parentOffset === 0 || OPENS_ONE.test($at.parent.textBetween($at.parentOffset - 1, $at.parentOffset));
+};
+
+const inline = (st, match, start, end, markOf) => {
+  const mark = markOf(match);
+  if (!mark || !st.selection.empty) return null;
+  if (start < 0 || start > end || end > st.doc.content.size) return null;
+  const $start = st.doc.resolve(start), $end = st.doc.resolve(end);
+  if (!$start.sameParent($end) || !$start.parent.inlineContent) return null;
+  const [all, prefix, body, close] = match;
+  if (inlineCode(st, start, end)) return null;
+  const open = all.slice(prefix.length, all.length - body.length - close.length);
+  const from = start + prefix.length;
+  if (!opensAt(st, from)) return null;
+  if (trailingBackslashes(all.slice(0, all.length - close.length)) % 2) return null;
+  const pending = all.length - (end - start);
+  if (pending < 0) return null;
+  const tr = st.tr;
+  if (pending) tr.insertText(all.slice(-pending), end, end);
+  const bodyStart = from + open.length;
+  const bodyEnd = bodyStart + body.length;
+  tr.delete(bodyEnd, start + all.length);
+  tr.delete(from, bodyStart);
+  tr.addMark(from, from + body.length, mark);
+  tr.removeStoredMark(mark.type);
+  return asStep(tr);
+};
+
+const inlineRule = (re, markOf) => new InputRule(
+  re,
+  (st, match, start, end) => inline(st, match, start, end, markOf),
+  { inCodeMark: false },
+);
+
+const markRule = (open, close, type) => inlineRule(
+  new RegExp(`(^|[${OPENS}])${escapeRe(open)}${bodyRe(escapeRe(close))}(${escapeRe(close)})$`),
+  () => type.create(),
+);
+
+const linkRule = inlineRule(
+  new RegExp(`(^|[${OPENS}])\\[${bodyRe("\\[\\]")}(\\]\\([^()\\s]*\\))$`),
+  (match) => {
+    const href = safeHref(match[3].slice(2, -1));
+    return href ? schema.marks.link.create({ href }) : null;
+  },
+);
+
+const INLINE_RULES = [
+  markRule("**", "**", schema.marks.strong),
+  markRule("__", "__", schema.marks.strong),
+  markRule("*", "*", schema.marks.em),
+  markRule("_", "_", schema.marks.em),
+  markRule("`", "`", schema.marks.code),
+  markRule("~~", "~~", schema.marks.strike),
+  linkRule,
+];
+
 const LISTS = ["paragraph", "list_item"];
 
 export const MARKDOWN_RULES = [
@@ -39,6 +121,7 @@ export const MARKDOWN_RULES = [
   blockRule(/^>\s$/, { type: "toggle", attrs: { open: true } }),
   blockRule(/^```$/, { type: "code_block" }, ["paragraph"], true),
   dividerRule,
+  ...INLINE_RULES,
 ];
 
 export const markdownPlugin = () => inputrules.inputRules({ rules: MARKDOWN_RULES });
@@ -59,7 +142,9 @@ export function tableFromMarkdownRow(st, dispatch) {
   return insertTableNode(st, dispatch, table, { from: $from.start(), to: $from.end() });
 }
 
-export const markdownKeys = () => keymap.keymap({ Enter: tableFromMarkdownRow });
+export const markdownKeys = () => keymap.keymap({
+  Enter: (st, dispatch, view) => !composing(null, view) && tableFromMarkdownRow(st, dispatch),
+});
 
 export function backspaceToParagraph(st, dispatch) {
   const { $from, empty } = st.selection;

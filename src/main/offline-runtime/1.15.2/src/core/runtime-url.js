@@ -4,6 +4,7 @@ import {
   canonicalizeRuntimeURL,
   parseRuntimeURL,
 } from "../lib/offline-runtime.js";
+import { RUNTIME_ALIASES } from "./runtime-aliases.js";
 
 export const RUNTIME_MAP_ID = "clay-runtime-map";
 
@@ -90,7 +91,7 @@ export function canonicalizeRuntimeClone(clone) {
     const value = element.getAttribute(name);
     const parsed = parseRuntimeURL(value, { documentURL });
     if (!parsed || parsed.kind !== "local") continue;
-    element.setAttribute(name, canonicalizeRuntimeURL(value, { descriptor, documentURL }));
+    element.setAttribute(name, canonicalizeRuntimeURL(value, { descriptor, documentURL, aliases: RUNTIME_ALIASES }));
   }
 }
 

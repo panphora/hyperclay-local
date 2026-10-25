@@ -22,9 +22,6 @@ import { hostMeta, hostMetaOutcome } from "../core/host-meta.js";
 import { isEditMode } from "../core/is-edit-mode.js";
 
 const editing = () => (window.clay && "isEditMode" in window.clay ? !!window.clay.isEditMode : isEditMode);
-import { bevelDialog, dismissOf, keepFocusIn } from "../ui/bevel-dialog.js";
-import { bevelBox, bevelButton, bevelInput, bevelText } from "../ui/bevel-controls.js";
-import { resolveTheme } from "../ui/theme.js";
 import { colorIndexOf, initialsOf } from "../lib/person-face.js";
 
 const ID = /^[A-Za-z0-9_-]{8,64}$/;
@@ -41,6 +38,7 @@ let asking = null;
 let askingRoot = null;
 let cancelAsking = null;
 let lastRegistry = "";
+let dialogLoad = null;
 
 function clean(person) {
   if (!person || typeof person !== "object") return null;
@@ -247,12 +245,38 @@ export async function author(el, attr = "data-by") {
   return me;
 }
 
+// The dialog and the theme it paints with are this page's first-use download: a
+// reader is nobody and is asked nothing, so it never fetches them.
+function loadDialogUI() {
+  dialogLoad ??= Promise.all([
+    import("../ui/bevel-dialog.js"),
+    import("../ui/bevel-controls.js"),
+    import("../ui/theme.js"),
+  ]).then(([dialog, controls, theme]) => ({ ...dialog, ...controls, resolveTheme: theme.resolveTheme }))
+    .catch((error) => {
+      dialogLoad = null;
+      throw error;
+    });
+  return dialogLoad;
+}
+
 function askName() {
-  if (asking && askingRoot?.isConnected) return asking;
+  if (asking && (askingRoot ? askingRoot.isConnected : true)) return asking;
   if (asking) cancelAsking();
-  asking = new Promise((resolve) => {
-    const theme = resolveTheme();
-    const { root, overlay, panel, heading, body, footer, close } = bevelDialog({
+  asking = promptForName().catch((error) => {
+    asking = null;
+    askingRoot = null;
+    cancelAsking = null;
+    throw error;
+  });
+  return asking;
+}
+
+async function promptForName() {
+  const ui = await loadDialogUI();
+  return new Promise((resolve) => {
+    const theme = ui.resolveTheme();
+    const { root, overlay, panel, heading, body, footer, close } = ui.bevelDialog({
       zIndex: "2147483001", width: "420px", closable: true, titled: true, theme, surface: "people",
     });
     askingRoot = root;
@@ -260,27 +284,27 @@ function askName() {
     heading.textContent = "What name should appear on your changes?";
     panel.setAttribute("aria-label", "Your name");
 
-    const input = bevelInput("input", { rules: ["display:block", "width:100%", "margin:0"], theme, parts: ["dialog.input", "people.input"] });
+    const input = ui.bevelInput("input", { rules: ["display:block", "width:100%", "margin:0"], theme, parts: ["dialog.input", "people.input"] });
     input.setAttribute("aria-label", "Your name");
     input.maxLength = MAX_NAME;
     input.autocomplete = "name";
-    const hint = bevelText("p", ["display:block", "margin:10px 0 0", "font-size:13px", "opacity:.8"],
+    const hint = ui.bevelText("p", ["display:block", "margin:10px 0 0", "font-size:13px", "opacity:.8"],
       "Saved in this browser. Everyone who can read this page will see it.", { theme, parts: ["dialog.hint", "people.hint"], role: "mutedText" });
     const hintText = hint.textContent;
     body.append(input, hint);
 
     const known = list().slice(0, 8);
     if (known.length) {
-      const label = bevelText("p", ["display:block", "margin:18px 0 8px", "font-size:13px"], "Or continue as someone already in this page:", { theme, parts: ["people.choiceLabel"], role: "mutedText" });
-      const row = bevelBox("div", ["display:flex", "flex-wrap:wrap", "gap:8px"], { theme, parts: ["people.choices"] });
+      const label = ui.bevelText("p", ["display:block", "margin:18px 0 8px", "font-size:13px"], "Or continue as someone already in this page:", { theme, parts: ["people.choiceLabel"], role: "mutedText" });
+      const row = ui.bevelBox("div", ["display:flex", "flex-wrap:wrap", "gap:8px"], { theme, parts: ["people.choices"] });
       for (const person of known) {
-        row.append(bevelButton(person.name, { small: true, onClick: () => finish({ id: person.id, name: person.name }), theme, parts: ["dialog.button", "people.button", "people.choice"], labelParts: ["dialog.buttonLabel", "people.buttonLabel"] }));
+        row.append(ui.bevelButton(person.name, { small: true, onClick: () => finish({ id: person.id, name: person.name }), theme, parts: ["dialog.button", "people.button", "people.choice"], labelParts: ["dialog.buttonLabel", "people.buttonLabel"] }));
       }
       body.append(label, row);
     }
 
-    const cancel = bevelButton("Cancel", { onClick: () => finish(null), theme, parts: ["dialog.button", "people.button"], labelParts: ["dialog.buttonLabel", "people.buttonLabel"] });
-    const ok = bevelButton("Continue", { variant: "primary", onClick: () => submit(), theme, parts: ["dialog.button", "people.button"], labelParts: ["dialog.buttonLabel", "people.buttonLabel"] });
+    const cancel = ui.bevelButton("Cancel", { onClick: () => finish(null), theme, parts: ["dialog.button", "people.button"], labelParts: ["dialog.buttonLabel", "people.buttonLabel"] });
+    const ok = ui.bevelButton("Continue", { variant: "primary", onClick: () => submit(), theme, parts: ["dialog.button", "people.button"], labelParts: ["dialog.buttonLabel", "people.buttonLabel"] });
     footer.append(cancel, ok);
 
     const submit = () => {
@@ -314,7 +338,7 @@ function askName() {
     const onKey = (event) => {
       if (event.key === "Tab") {
         event.stopPropagation();
-        keepFocusIn(panel, event);
+        ui.keepFocusIn(panel, event);
         return;
       }
       if (event.key === "Escape") {
@@ -343,13 +367,12 @@ function askName() {
       cancelAsking = null;
       resolve(person);
     }
-    dismissOf.set(root, () => finish(null));
+    ui.dismissOf.set(root, () => finish(null));
 
     root.setAttribute("aria-hidden", "false");
     modalHost().append(root);
     input.focus();
   });
-  return asking;
 }
 
 // A page's own modal <dialog> makes everything outside it inert, so the prompt goes inside

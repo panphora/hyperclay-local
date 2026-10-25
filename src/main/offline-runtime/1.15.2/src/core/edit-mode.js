@@ -1,12 +1,35 @@
 // Edit mode system - combines the editmode toggle with page type setting.
 // Loads in BOTH view and edit mode: setMode must exist in view mode
 // (it's the way IN), and setPageTypeOnPageLoad marks <html> in either mode.
-import { canEdit, isDraftMode, isEditMode, isOwner, mode } from "./is-edit-mode.js";
+import { canEdit, isDraftMode, isEditMode, isOwner, mode, modeState, registerModeParticipant } from "./is-edit-mode.js";
 import { writeReceipt } from "./mode-receipt.js";
 import onDomReady from "../lib/dom-ready.js";
 import { addDocumentTransform } from "./snapshot.js";
 
 let leaving = false;
+
+export const modeLifecycle = {
+  register: registerModeParticipant,
+  canWrite: () => modeState().phase === "idle" && isEditMode,
+  get state() {
+    return Object.freeze(modeState());
+  },
+};
+
+// The lazy dispatcher. The controller is a dynamic target, fetched by an explicit
+// initial edit or the first live switch — never because a live declaration, a menu or
+// a participant exists — and a rejected fetch is retried on the next ask.
+let controller = null;
+
+export async function activateInitialMode() {
+  if (!isEditMode) return;
+  try {
+    controller ||= await import("./mode-lifecycle.js");
+    await controller.activateInitial();
+  } catch (err) {
+    console.error("clayjs: the mode lifecycle failed to start:", err);
+  }
+}
 
 export async function setMode(next) {
   if (next !== "edit" && next !== "view") throw new TypeError(`clay.setMode: unknown mode "${next}"`);

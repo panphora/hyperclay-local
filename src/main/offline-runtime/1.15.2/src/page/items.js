@@ -116,22 +116,40 @@ export function insertDivider(st, index, tr = st.tr) {
   return tr.setSelection(TextSelection.create(tr.doc, to + 2));
 }
 
+// The skipped letters between a query and a candidate it can be read out of,
+// or Infinity when it cannot. Only queries of 2 to 32 letters count, so a single
+// letter never drags in half the menu.
+function subsequenceCost(query, candidate) {
+  if (query.length < 2 || query.length > 32) return Infinity;
+  let at = -1;
+  let cost = 0;
+  for (const ch of query) {
+    const next = candidate.indexOf(ch, at + 1);
+    if (next < 0) return Infinity;
+    cost += next - at - 1;
+    at = next;
+  }
+  return cost;
+}
+
 // Exact name or alias first, then label prefix, word or alias prefix,
-// substring; equal ranks keep menu order. No fuzzy matching.
+// substring, description word, and last a fuzzy subsequence of the label, key
+// or aliases. Equal tiers keep the lower cost, then menu order.
 export function rankItems(items, query) {
   const q = query.trim().toLowerCase();
   if (!q) return items;
   const rank = (it) => {
     const label = it.label.toLowerCase();
     const names = [it.key, ...(it.aliases || []), ...(it.hint ? [it.hint] : [])].map((s) => s.toLowerCase());
-    if (label === q || names.includes(q)) return 0;
-    if (label.startsWith(q)) return 1;
-    if ([...label.split(/\s+/), ...names].some((s) => s.startsWith(q))) return 2;
-    if ([label, ...names].some((s) => s.includes(q))) return 3;
-    if (q.length >= 3 && it.description && it.description.toLowerCase().split(/[^a-z0-9]+/).some((w) => w.startsWith(q))) return 4;
-    return Infinity;
+    if (label === q || names.includes(q)) return [0, 0];
+    if (label.startsWith(q)) return [1, 0];
+    if ([...label.split(/\s+/), ...names].some((s) => s.startsWith(q))) return [2, 0];
+    if ([label, ...names].some((s) => s.includes(q))) return [3, 0];
+    if (q.length >= 3 && it.description && it.description.toLowerCase().split(/[^a-z0-9]+/).some((w) => w.startsWith(q))) return [4, 0];
+    const cost = Math.min(...[label, it.key, ...(it.aliases || [])].map((s) => subsequenceCost(q, s.toLowerCase())));
+    return cost === Infinity ? null : [5, cost];
   };
-  return items.map((it, order) => ({ it, order, rank: rank(it) })).filter((x) => x.rank !== Infinity).sort((a, b) => a.rank - b.rank || a.order - b.order).map((x) => x.it);
+  return items.map((it, order) => ({ it, order, rank: rank(it) })).filter((x) => x.rank).sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1] || a.order - b.order).map((x) => x.it);
 }
 
 // What a pick does in the insert menu for the block at `index`. A divider and

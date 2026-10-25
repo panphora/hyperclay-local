@@ -1,0 +1,1 @@
+var i="Untitled";function u(n,{custom:e=!1,currentTitle:r=""}={}){if(e)return r;let l=n.find(t=>t.t==="heading"&&(t.level??2)===1&&t.parent==null);return String(l?.c??"").replace(/[\s\uFFFC]+/gu," ").trim()||i}export{u as a};

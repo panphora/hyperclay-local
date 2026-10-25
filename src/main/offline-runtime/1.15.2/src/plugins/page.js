@@ -19,6 +19,7 @@ import { saveStateFor, BLOCKED_TEXT, RETRY_TEXT, downloadPageCopy, downloadSnaps
 import toast, { toastPersistent, dismissPersistent } from "../ui/toast.js";
 import { createRecoverList, focusBlock } from "../page/recover.js";
 import { claim } from "../page/runtime-owner.js";
+import { observeDocumentTitle } from "../page/document-title-runtime.js";
 import { createInstall, disposeInstall, addDisposer, finishError, isCurrent, ownsView, runBoot } from "../page/boot.js";
 import { capabilityAdvertised } from "../page/tool-capability.js";
 import { toolViews } from "../page/tool-views.js";
@@ -275,6 +276,8 @@ function abandonEditor(inst) {
   if (inst.view) toolViews.delete(inst.view);
   const shell = inst.article?.querySelector(".page-shell");
   if (shell) shell.remove();
+  inst.titleObserver?.dispose();
+  inst.titleObserver = null;
   clearLoadingStatus(inst);
   restoreArticle(inst);
 }
@@ -301,6 +304,8 @@ function dispose() {
   }
   try { inst.adoption?.dispose(); } catch (error) { console.error("clayjs: page plugin adoption failed to dispose", error); }
   try { inst.recover?.destroy(); } catch (error) { console.error("clayjs: page plugin recover list failed to dispose", error); }
+  inst.titleObserver?.dispose();
+  inst.titleObserver = null;
   clearLoadingStatus(inst);
   if (inst.view && !inst.view.isDestroyed) {
     try { inst.view.destroy(); } catch (error) { console.error("clayjs: page plugin view failed to destroy", error); }
@@ -662,6 +667,7 @@ function createSteps(inst, options) {
       onRestored: (id) => focusBlock(view, id),
       onStale: () => toast("That change was updated. The list now shows the latest version.", "warning"),
     });
+    inst.titleObserver = observeDocumentTitle(view);
     return { ok: true, view };
   }
 

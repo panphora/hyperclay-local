@@ -7,8 +7,10 @@ import { canon, fragmentCleaner, renderBlocks } from '../../page/projection.js';
 import { classifyFile, readBack } from '../../page/adopt.js';
 import { merge3, mergeJson } from 'hyper-morph';
 import { mergePageModels } from '../../page/merge.js';
+import { documentTitle } from '../../page/document-title.js';
 
 const PAGE = /^page(\.[0-9]+)?$/;
+const TITLE_MODE = 'clay-seo-title-mode';
 const NAME = /^[A-Za-z0-9_.:-]{1,64}$/;
 const attr = (node, name) => node.attrs.find((item) => item.name === name)?.value;
 const escapeAttr = (value) => value.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
@@ -36,9 +38,19 @@ function inspect(html) {
   const tags = new Map();
   const duplicates = new Set();
   const articles = [];
+  const titleModes = [];
+  let head = null;
+  let body = null;
+  let title = null;
   function visit(node, inert = false) {
     if (!node.tagName) { for (const child of node.childNodes ?? []) visit(child, inert); return; }
     const blocked = inert || node.tagName === 'template' || node.tagName === 'noscript';
+    if (!blocked && node.tagName === 'head') head = node;
+    if (!blocked && node.tagName === 'body') body = node;
+    if (!blocked && node.parentNode === head && node.tagName === 'title' && !title) title = node;
+    if (!blocked && node.parentNode === head && node.tagName === 'meta' && (attr(node, 'name') ?? '').trim().toLowerCase() === TITLE_MODE) {
+      titleModes.push(attr(node, 'content'));
+    }
     if (!blocked && node.tagName === 'article' && attr(node, 'data-page') !== undefined) articles.push(node);
     if (!blocked && node.tagName === 'script' && attr(node, 'src') === undefined &&
       (attr(node, 'clay') ?? '').split(/\s+/).includes('live')) {
@@ -54,7 +66,7 @@ function inspect(html) {
   }
   visit(root);
   for (const name of duplicates) tags.delete(name);
-  return { article: articles.length === 1 ? articles[0] : null, tags };
+  return { article: articles.length === 1 ? articles[0] : null, tags, head, body, title, titleModes };
 }
 
 function startTag(html, node, store) {
@@ -87,7 +99,7 @@ function projection(capture) {
 }
 
 function placements(html, capture) {
-  const { article, tags } = inspect(html);
+  const { article, tags, head, body, title, titleModes } = inspect(html);
   if (!article?.sourceCodeLocation?.startTag || !article.sourceCodeLocation.endTag ||
     capture.stores.some((store) => !tags.get(store.name)?.sourceCodeLocation?.endTag ||
       (attr(tags.get(store.name), 'clay') ?? '').split(/\s+/).includes('ephemeral'))) return null;
@@ -97,12 +109,52 @@ function placements(html, capture) {
     const tag = tags.get(store.name).sourceCodeLocation;
     return tag.startOffset < articleEnd && tag.endOffset > articleStart;
   })) return null;
-  return { article, tags };
+  return { article, tags, head, body, title, titleModes };
 }
 
 function replace(html, edits) {
   return edits.sort((a, b) => b.start - a.start).reduce((out, edit) =>
     out.slice(0, edit.start) + edit.text + out.slice(edit.end), html);
+}
+
+const customTitleOf = (titleModes) =>
+  titleModes.some((content) => String(content ?? '').trim().toLowerCase() === 'custom');
+
+const escapeTitle = (value) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+function titleTextOf(node) {
+  let out = '';
+  const walk = (current) => {
+    for (const child of current.childNodes ?? []) {
+      if (child.nodeName === '#text') out += child.value;
+      else walk(child);
+    }
+  };
+  if (node) walk(node);
+  return out;
+}
+
+// A title with no element of its own goes after the head's start tag, else before its
+// first child, else before the body starts.
+function titleAt(placement) {
+  const head = placement.head?.sourceCodeLocation;
+  if (head?.startTag) return head.startTag.endOffset;
+  const inside = (placement.head?.childNodes ?? []).find((node) => node.sourceCodeLocation);
+  if (inside) return inside.sourceCodeLocation.startOffset;
+  const body = placement.body?.sourceCodeLocation;
+  if (body?.startTag) return body.startTag.startOffset;
+  const first = (placement.body?.childNodes ?? []).find((node) => node.sourceCodeLocation);
+  return first ? first.sourceCodeLocation.startOffset : null;
+}
+
+function titleEdit(placement, title) {
+  if (placement.title) {
+    const loc = placement.title.sourceCodeLocation;
+    if (!loc?.startTag || !loc.endTag) return null;
+    return { start: loc.startTag.endOffset, end: loc.endTag.startOffset, text: escapeTitle(title) };
+  }
+  const at = titleAt(placement);
+  return at === null ? null : { start: at, end: at, text: `<title>${escapeTitle(title)}</title>` };
 }
 
 // Whether the room's blocks already carry everything the hand-edited article
@@ -196,6 +248,10 @@ export function renderCheckpoint(currentHtml, capture, { createDocument, recover
     articleOpen.slice(revLoc.endOffset - articleLoc.startTag.startOffset) : articleOpen;
   edits.push({ start: articleLoc.startTag.startOffset, end: articleLoc.startTag.endOffset, text: articleStart.slice(0, -1) + rev + '>' });
   edits.push({ start: articleLoc.startTag.endOffset, end: articleLoc.endTag.startOffset, text: rendered.html });
+  if (!customTitleOf(placement.titleModes)) {
+    const edit = titleEdit(placement, documentTitle(rendered.model));
+    if (edit) edits.push(edit);
+  }
   return { kind: 'ok', html: replace(currentHtml, edits), revision: rendered.rev };
 }
 
@@ -208,6 +264,7 @@ export function isCheckpointCurrent(currentHtml, capture) {
   const articleLoc = placement.article.sourceCodeLocation;
   if (attr(placement.article, 'data-rev') !== rendered.rev ||
     currentHtml.slice(articleLoc.startTag.endOffset, articleLoc.endTag.startOffset) !== rendered.html) return false;
+  if (!customTitleOf(placement.titleModes) && titleTextOf(placement.title) !== documentTitle(rendered.model)) return false;
   return capture.stores.every((store) => {
     const node = placement.tags.get(store.name);
     const loc = node.sourceCodeLocation;

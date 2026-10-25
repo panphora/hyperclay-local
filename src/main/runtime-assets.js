@@ -52,14 +52,19 @@ async function readAsset(version, publicPath) {
   return fs.readFile(asset.file);
 }
 
-// Parsing a large document costs seconds, and most documents name no runtime URL at all.
-// A projection only rewrites clayjs.com URLs, and a canonicalization only undoes this
-// host's /_/clayjs/ addresses and descriptor, so a document with neither is returned as is.
-const MAY_PROJECT = /clayjs\.com/i;
-const MAY_CANONICALIZE = /\/_\/clayjs\/|clay-runtime-map/i;
+const selectedAliases = releases[manifest.selected]?.aliases ?? {};
+const aliasHosts = [...new Set(Object.keys(selectedAliases).map((url) => new URL(url).host.toLowerCase()))];
+const MAY_CANONICALIZE = /\/_\/clayjs\/|clay-runtime-map|&#|&sol;|&lowbar;/i;
+
+// A document can only need projecting when it names clayjs (possibly with a character
+// reference inside the URL) or the host of one of the release's exact aliases.
+function mayProject(html) {
+  const lower = html.toLowerCase();
+  return lower.includes('clayjs') || lower.includes('&#') || aliasHosts.some((host) => lower.includes(host));
+}
 
 function projectHTML(html, options) {
-  if (!MAY_PROJECT.test(html)) return { html, mappings: [], skipped: [], unavailable: [] };
+  if (!mayProject(html)) return { html, mappings: [], skipped: [], unavailable: null };
   return projectRuntimeHTML(html, options);
 }
 

@@ -19,42 +19,12 @@
 import { onSnapshot, addDocumentTransform } from "../core/snapshot.js";
 import { isEditMode } from "../core/is-edit-mode.js";
 import { FREEZE_SELECTOR } from "../lib/region-policy.js";
-import { ROUTE_ACTIVE_ATTR } from "../lib/root-attrs.js";
-import { stripEphemeral } from "../lib/ephemeral.js";
-import Mutation from "../lib/mutation.js";
-
-const originals = new WeakMap();
+import { captureAll, frozenOriginal } from "../core/preserve-authored.js";
 
 const saveFreeze = { debug: false };
 
 function log(...args) {
   if (saveFreeze.debug) console.log('[save-freeze]', ...args);
-}
-
-// The captured original is what the file keeps, so it must hold no router stamp
-// and no ephemeral state: either can be set on a child before this capture runs.
-function authoredInnerHTML(el) {
-  const html = el.innerHTML;
-  if (!el.querySelector(`[${ROUTE_ACTIVE_ATTR}]`) && !html.includes("ephemeral") && !html.includes("<dialog")) return html;
-  const copy = el.cloneNode(true);
-  for (const s of copy.querySelectorAll(`[${ROUTE_ACTIVE_ATTR}]`)) s.removeAttribute(ROUTE_ACTIVE_ATTR);
-  for (const child of copy.children) stripEphemeral(child);
-  return copy.innerHTML;
-}
-
-function capture(el) {
-  if (!originals.has(el)) {
-    originals.set(el, authoredInnerHTML(el));
-    log('captured original', originals.get(el).substring(0, 80) + '...');
-  }
-}
-
-function captureAll() {
-  const els = document.querySelectorAll(FREEZE_SELECTOR);
-  log('captureAll found', els.length, 'elements');
-  for (const el of els) {
-    capture(el);
-  }
 }
 
 // Which cloned element holds which authored innerHTML, for the current snapshot.
@@ -76,8 +46,9 @@ function freezeSnapshot(clone, provenance) {
 
   for (const cloneElement of cloneElements) {
     const liveElement = provenance.original(cloneElement);
-    if (!liveElement || !originals.has(liveElement)) continue;
-    const original = originals.get(liveElement);
+    if (!liveElement) continue;
+    const original = frozenOriginal(liveElement);
+    if (original === undefined) continue;
     pending.set(cloneElement, original);
     if (cloneElement.innerHTML !== original) {
       log('restoring original');
@@ -102,23 +73,9 @@ function init() {
   log('init, isEditMode:', isEditMode);
   if (!isEditMode) return;
 
+  // The always wave's preservation foundation already recorded every region, in view
+  // mode and before any paint; this only covers a boot that skipped that wave.
   captureAll();
-
-  // Capture the original innerHTML of dynamically added [freeze]/[save-freeze]
-  // regions. Folded onto the single Mutation observer (Phase 2 — was its own).
-  // debounce:0 so we snapshot the authored content before any runtime edit
-  // mutates it; the callback is a pure read into a WeakMap (no DOM writes).
-  // require:'observed' (skip only no-watch); pausable:false so a morphed-in
-  // freeze region is still captured. Mutation observes document.documentElement,
-  // so a [freeze] added directly to <head> at runtime is captured like any other.
-  Mutation.onAddElement({
-    selectorFilter: FREEZE_SELECTOR,
-    require: 'observed',
-    pausable: false,
-    debounce: 0
-  }, (changes) => {
-    changes.forEach(({ element }) => capture(element));
-  });
 
   // Phase 2: Freeze in snapshot — before snapshot-ready fires.
   // This prevents live-sync from writing unfrozen content to disk.

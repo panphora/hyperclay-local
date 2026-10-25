@@ -39,15 +39,38 @@
 import { hostSupports } from '../core/host-meta.js';
 import { make, set } from '../lib/hostile-css.js';
 import { initialsOf, personColor } from '../lib/person-face.js';
-import { pageScheme, RUNTIME_ONLY } from '../ui/bevel-controls.js';
-import { TOKENS, FONT_MONO, SHADOW } from '../ui/bevel.js';
 
 // Two initials at 11px need about 15px of the square, so the overlap has to
 // leave that much clear or the neighbouring square eats the second letter.
 const SIZE = 30;
 const OVERLAP = 6;
-const FONT = `600 11px/1 ${FONT_MONO}`;
-const LABEL_FONT = `500 11px/1.4 ${FONT_MONO}`;
+
+// The palette, the marking token and the two faces are the Bevel subset, which is a
+// first-use download: a reader alone on a document never draws a square, so it never
+// fetches them. Everything here is read after loadUI() resolves.
+let ui = null;
+let uiLoad = null;
+
+function loadUI() {
+  uiLoad ??= Promise.all([import('../ui/bevel-controls.js'), import('../ui/bevel.js')])
+    .then(([controls, bevel]) => (ui = {
+      pageScheme: controls.pageScheme,
+      RUNTIME_ONLY: controls.RUNTIME_ONLY,
+      TOKENS: bevel.TOKENS,
+      SHADOW: bevel.SHADOW,
+      FONT: `600 11px/1 ${bevel.FONT_MONO}`,
+      LABEL_FONT: `500 11px/1.4 ${bevel.FONT_MONO}`,
+    }))
+    .catch((error) => {
+      uiLoad = null;
+      throw error;
+    });
+  return uiLoad;
+}
+
+// A roster frame never rejects its way back to the stream: a chunk that failed to
+// arrive leaves the corner empty and the next frame asks again.
+const uiReady = () => loadUI().then(() => true, () => false);
 
 // all:initial first on every element, so a page rule has nothing left to reach; it
 // resets color-scheme and direction too, which are put back straight after.
@@ -60,7 +83,7 @@ const FACE = '#FFFCF6';
 
 /** Every element this module creates, marked the same way. */
 function runtimeRoot(el) {
-  el.setAttribute('clay', RUNTIME_ONLY);
+  el.setAttribute('clay', ui.RUNTIME_ONLY);
   return el;
 }
 
@@ -120,10 +143,10 @@ class Presence {
     this.roster = next;
     if (!(await this.supported())) return;
     if (same) {
-      set(this.root, 'color-scheme', pageScheme());
+      set(this.root, 'color-scheme', ui.pageScheme());
       return;
     }
-    this.render();
+    await this.render();
   }
 
   /** The stream went away, so the roster is no longer true about anything. */
@@ -137,7 +160,7 @@ class Presence {
     this.tip = null;
   }
 
-  render() {
+  async render() {
     const { people, anonymous } = this.roster;
 
     // A person alone on a document is told nothing at all. The count is the
@@ -148,10 +171,11 @@ class Presence {
       this.hide();
       return;
     }
+    if (!(await uiReady())) return;
     if (!this.build()) return;
 
     this.hideTip();
-    set(this.root, 'color-scheme', pageScheme());
+    set(this.root, 'color-scheme', ui.pageScheme());
     this.stack.textContent = '';
     for (const person of people) {
       this.stack.appendChild(this.avatar(person));
@@ -184,14 +208,14 @@ class Presence {
 
     this.root = runtimeRoot(make('div', [
       ...RESET,
-      `color-scheme:${pageScheme()}`,
+      `color-scheme:${ui.pageScheme()}`,
       'position:fixed',
       'top:calc(12px + env(safe-area-inset-top,0px))',
       'right:calc(12px + env(safe-area-inset-right,0px))',
       'z-index:2147483000',
       'display:flex', 'align-items:center', 'gap:8px',
       'max-width:calc(100vw - 24px)',
-      `font:${LABEL_FONT}`, `color:${TOKENS.ink}`,
+      `font:${ui.LABEL_FONT}`, `color:${ui.TOKENS.ink}`,
       // Only the squares take a pointer. A fixed corner that swallowed clicks
       // would take a bite out of whatever the page put underneath it.
       'pointer-events:none',
@@ -202,10 +226,10 @@ class Presence {
       ...RESET,
       'box-sizing:border-box', 'flex:none', 'white-space:nowrap',
       'padding:3px 8px', 'border-radius:0',
-      `background:${TOKENS.surface}`, `color:${TOKENS.muted}`,
-      `border:1px solid ${TOKENS['line-2']}`,
-      `font:${LABEL_FONT}`, 'letter-spacing:.02em',
-      `box-shadow:${SHADOW}`,
+      `background:${ui.TOKENS.surface}`, `color:${ui.TOKENS.muted}`,
+      `border:1px solid ${ui.TOKENS['line-2']}`,
+      `font:${ui.LABEL_FONT}`, 'letter-spacing:.02em',
+      `box-shadow:${ui.SHADOW}`,
       'display:none',
       'pointer-events:none',
     ]));
@@ -224,9 +248,9 @@ class Presence {
       'position:absolute', 'top:100%', 'right:0', 'margin-top:6px',
       'box-sizing:border-box', 'white-space:nowrap', 'pointer-events:none',
       'padding:5px 9px', 'border-radius:0',
-      `background:${TOKENS.ink}`, `color:${TOKENS.ground}`,
-      `font:${LABEL_FONT}`, 'letter-spacing:.02em',
-      `box-shadow:${SHADOW}`,
+      `background:${ui.TOKENS.ink}`, `color:${ui.TOKENS.ground}`,
+      `font:${ui.LABEL_FONT}`, 'letter-spacing:.02em',
+      `box-shadow:${ui.SHADOW}`,
       'display:none',
     ]));
     this.tip.setAttribute('data-clay-presence-tip', '');
@@ -245,10 +269,10 @@ class Presence {
       'box-sizing:border-box', 'flex:none',
       `width:${SIZE}px`, `height:${SIZE}px`, 'border-radius:0',
       'display:flex', 'align-items:center', 'justify-content:center',
-      `font:${FONT}`, 'letter-spacing:.02em',
+      `font:${ui.FONT}`, 'letter-spacing:.02em',
       `margin-left:-${OVERLAP}px`,
       'border-width:2px', 'border-style:solid', 'background-image:none',
-      `box-shadow:${SHADOW}`,
+      `box-shadow:${ui.SHADOW}`,
       'user-select:none', 'cursor:default', 'pointer-events:auto',
       ...skin,
     ], initialsOf(person.name)));

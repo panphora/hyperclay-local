@@ -4,6 +4,7 @@
 // Apply: opening and cancelling change only the sheet.
 import { applyHead, FIELDS, readHead } from "./seo-head.js";
 import { hostMeta } from "../../core/host-meta.js";
+import { documentTitle } from "../../page/document-title.js";
 
 const STYLE_ID = "clay-seo-style";
 const REOPEN_KEY = "reopen-seo";
@@ -356,11 +357,46 @@ function isDocumentPage() {
   return document.querySelectorAll("article[data-page]").length === 1;
 }
 
-function firstHeadingText() {
+const ATOM = "\uFFFC";
+
+const rootHeading = (c) => [{ t: "heading", level: 1, parent: null, c }];
+
+// The first root H1's items as the projection orders them: a heading that names a
+// parent is nested and is not a title, marks flatten away and a hard break is one
+// character. A mounted editor keeps its blocks flat, so its model holds the parents;
+// a saved article nests them inside the container that holds them.
+function titleItems(view) {
+  if (view && !view.isDestroyed) {
+    const doc = view.state.doc;
+    for (let i = 0; i < doc.childCount; i++) {
+      const node = doc.child(i);
+      if (node.type.name !== "heading" || node.attrs.level !== 1 || (node.attrs.parent ?? null) !== null) continue;
+      let c = "";
+      node.forEach((child) => { c += child.isText ? child.text : child.type.name === "hard_break" ? ATOM : ""; });
+      return rootHeading(c);
+    }
+    return [];
+  }
   const article = document.querySelector("article[data-page]");
-  if (!article) return "";
-  const heading = article.querySelector("h1") || article.querySelector("h1, h2, h3, h4, h5, h6");
-  return heading ? text(heading.textContent).trim() : "";
+  const heading = article && [...article.children].find((node) => node.tagName === "H1");
+  if (!heading) return [];
+  let c = "";
+  const walk = (parent) => {
+    for (const child of parent.childNodes) {
+      if (child.nodeType === 3) c += child.data;
+      else if (child.tagName === "BR") c += ATOM;
+      else walk(child);
+    }
+  };
+  walk(heading);
+  return rootHeading(c);
+}
+
+// The same rule the runtime and the checkpoint use: the first root H1, and Untitled
+// when it is empty or missing.
+function firstHeadingText() {
+  const view = window.clay && window.clay.page && window.clay.page.view;
+  return documentTitle(titleItems(view));
 }
 
 function hostOf(value) {

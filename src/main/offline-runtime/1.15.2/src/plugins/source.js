@@ -110,7 +110,7 @@ async function fetchSource(url) {
   const type = (res.headers.get('content-type') || '').toLowerCase();
   if (!type.startsWith('text/html')) throw new Error(`source fetch: content-type ${type || 'missing'}`);
   const text = await res.text();
-  if (text.includes('id="clay-runtime-map"')) throw new Error('source fetch: projected response');
+  if (text.includes('<script type="application/json" id="clay-runtime-map"')) throw new Error('source fetch: projected response');
   return text;
 }
 

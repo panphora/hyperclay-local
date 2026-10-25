@@ -297,6 +297,8 @@ async function serveHtml(req, res, filePath, frame = null, baseDir = null, name 
 // those URLs pointing at this host's own copy of the bundled release, so it starts
 // with no network. Only the response changes: the file keeps its bytes, and the
 // stamp below still describes the bytes on disk.
+const warnedUnavailable = new Set();
+
 function projectServed(req, html) {
   const text = html.toString('utf8');
   // Never re-encode a file that is not valid UTF-8: decoding would replace every
@@ -307,6 +309,15 @@ function projectServed(req, html) {
     selectedVersion: runtimeAssets.selectedVersion,
     documentURL: `http://${req.get('host')}${req.originalUrl}`,
   });
+  if (result.unavailable) {
+    const detail = `${result.unavailable.reason} ${result.unavailable.versions.join(',')}`.trim();
+    req.res.set('Clay-Runtime-Unavailable', detail);
+    const key = `${req.path}\n${detail}`;
+    if (!warnedUnavailable.has(key)) {
+      warnedUnavailable.add(key);
+      console.warn(`[offline-runtime] ${req.path} is served with public runtime URLs: ${detail}`);
+    }
+  }
   if (!result.mappings.length) return html;
   return Buffer.from(result.html, 'utf8');
 }
@@ -317,20 +328,16 @@ function projectServed(req, html) {
 // version or an incoming relay frame can all carry `/_/clayjs/` URLs or the descriptor.
 // Bytes like that only work on this host, and platform sync would upload them. Every
 // authoritative write turns them back into the public URLs and drops the descriptor
-// first. Both loopback spellings this server accepts are tried, because the origin is
-// read off the document URL: a root-relative `/_/clayjs/` URL resolves without one.
-const CANONICAL_ORIGINS = ['http://localhost/', 'http://127.0.0.1/'];
+// first. One pass, so the descriptor is read once: the document URL is the first loopback
+// origin the text names before `/_/clayjs/` (any port, since each root server listens on
+// its own), and a root-relative `/_/clayjs/` URL resolves under any origin.
+const LOOPBACK_RUNTIME = /\bhttps?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{1,5})?(?=\/_\/clayjs\/)/i;
 
 function canonicalForWrite(html) {
-  let text = html;
-  let changed = false;
-  for (const documentURL of CANONICAL_ORIGINS) {
-    const result = canonicalizeRuntimeHTML(text, { releases: runtimeAssets.releases, documentURL });
-    if (result.changed === 0 && !result.descriptorRemoved) continue;
-    text = result.html;
-    changed = true;
-  }
-  return changed ? text : html;
+  const origin = html.match(LOOPBACK_RUNTIME);
+  const documentURL = origin ? `${origin[0].toLowerCase()}/` : 'http://localhost/';
+  const result = canonicalizeRuntimeHTML(html, { releases: runtimeAssets.releases, documentURL });
+  return result.changed === 0 && !result.descriptorRemoved ? html : result.html;
 }
 
 // Translate a data-api result object ({ status, headers?, json?, raw? }) into a
