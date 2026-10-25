@@ -210,6 +210,17 @@ function verifyUiPass() {
   throw Object.assign(new Error(`The Electron UI suite did not pass: ${verdict.reason}`), { code: 'RELEASE_UI_FAILED' });
 }
 
+// The host ships a ClayJS runtime it did not build. scripts/check-offline-runtime-release.mjs
+// proves the bundled tree is byte-identical to the published npm release of the locked version.
+function verifyOfflineRuntimeRelease() {
+  logSection('Bundled ClayJS runtime');
+  const result = spawnSync(process.execPath, [path.join(ROOT_DIR, 'scripts/check-offline-runtime-release.mjs')], { cwd: ROOT_DIR, stdio: 'inherit' });
+  if (result.status !== 0) {
+    throw Object.assign(new Error('The bundled ClayJS runtime is not the published release of its locked version'), { code: 'RELEASE_OFFLINE_RUNTIME_UNPUBLISHED' });
+  }
+  logSuccess('Bundled ClayJS runtime is the published release');
+}
+
 // The running app updates itself through its own updater; scripts/update-canary.js falls
 // back to the old DMG copy only when it cannot. A release is already published by this
 // point, and failing to update one machine is not a failed release.
@@ -280,6 +291,7 @@ async function newBuildGates({ kind }) {
   }
   verifyLicenseAblation();
   verifyUiPass();
+  verifyOfflineRuntimeRelease();
 }
 
 function writeChangelogSection(version) {

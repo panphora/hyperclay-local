@@ -188,7 +188,7 @@ function replaceHumanAdapters(source) {
 
 testPosix('caller fresh worktree gate preserves porcelain columns', async () => {
   const source = fs.readFileSync(path.join(SOURCE_SCRIPTS, 'release.js'), 'utf8');
-  const begin = source.indexOf('async function newBuildGates({ kind }) {');
+  const begin = source.indexOf('function verifyOfflineRuntimeRelease() {');
   const end = source.indexOf('async function main() {', begin);
   if (begin < 0 || end <= begin) throw new Error('caller fresh worktree gate was not found');
   const gateSource = source.slice(begin, end);
@@ -211,12 +211,17 @@ testPosix('caller fresh worktree gate preserves porcelain columns', async () => 
 
   async function runGate() {
     const calls = {
-      dotenv: [], status: 0, statusOutput: '', auth: 0, license: 0, ui: 0, logs: []
+      dotenv: [], status: 0, statusOutput: '', auth: 0, license: 0, ui: 0, runtime: 0, logs: []
     };
     const context = vm.createContext({
       path,
+      process: { execPath: process.execPath },
       ROOT_DIR: repo,
       FILES_TO_UPDATE: allowedPaths,
+      spawnSync() {
+        calls.runtime += 1;
+        return { status: 0 };
+      },
       require(request) {
         if (request !== 'dotenv') throw new Error(`unexpected require ${request}`);
         return {
@@ -332,6 +337,7 @@ testPosix('caller fresh worktree gate preserves porcelain columns', async () => 
       expect(result.calls.auth).toBe(1);
       expect(result.calls.license).toBe(1);
       expect(result.calls.ui).toBe(1);
+      expect(result.calls.runtime).toBe(1);
       expect(fs.readFileSync(path.join(repo, result.relative))).toEqual(fixtureBytes.get(result.relative));
     }
     for (const result of refusalResults) {
