@@ -20,7 +20,7 @@ const busboy = require('busboy');
 const { scopeTailwindLink } = require('./utils/tailwind-scoping.js');
 const { stripSaveToken, injectDocumentEtag } = require('./utils/root-attrs.js');
 const runtimeAssets = require('./runtime-assets');
-const { projectRuntimeHTML } = runtimeAssets;
+const { projectRuntimeHTML, canonicalizeRuntimeHTML } = runtimeAssets;
 const { createRootLive } = require('./utils/root-live.js');
 const { replayStore } = require('./sync-replay.js');
 const { VERSIONS_DIR, RECOVERED_DIR, TAILWIND_DIR } = require('./utils/artifact-paths.js');
@@ -309,6 +309,28 @@ function projectServed(req, html) {
   });
   if (!result.mappings.length) return html;
   return Buffer.from(result.html, 'utf8');
+}
+
+// The other direction, for the bytes that become the document. A browser holding a
+// projected document saves what it holds, and nothing guarantees the client puts the
+// public URLs back: an older ClayJS, a hand-written save, the JSON data API, a restored
+// version or an incoming relay frame can all carry `/_/clayjs/` URLs or the descriptor.
+// Bytes like that only work on this host, and platform sync would upload them. Every
+// authoritative write turns them back into the public URLs and drops the descriptor
+// first. Both loopback spellings this server accepts are tried, because the origin is
+// read off the document URL: a root-relative `/_/clayjs/` URL resolves without one.
+const CANONICAL_ORIGINS = ['http://localhost/', 'http://127.0.0.1/'];
+
+function canonicalForWrite(html) {
+  let text = html;
+  let changed = false;
+  for (const documentURL of CANONICAL_ORIGINS) {
+    const result = canonicalizeRuntimeHTML(text, { releases: runtimeAssets.releases, documentURL });
+    if (result.changed === 0 && !result.descriptorRemoved) continue;
+    text = result.html;
+    changed = true;
+  }
+  return changed ? text : html;
 }
 
 // Translate a data-api result object ({ status, headers?, json?, raw? }) into a
@@ -1713,8 +1735,8 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // relaying one hands another tab a credential that is not theirs, and a peer that
       // stores what it received then writes it to disk. HTML Clay strips on this path
       // too, for the same reason.
-      const snapshotHtml = lane === 'snapshot' ? stripSaveToken(html) : null;
-      const documentHtml = lane === 'document' ? stripSaveToken(html) : null;
+      const snapshotHtml = lane === 'snapshot' ? canonicalForWrite(stripSaveToken(html)) : null;
+      const documentHtml = lane === 'document' ? canonicalForWrite(stripSaveToken(html)) : null;
 
       const validated = validateAndResolvePath(file, baseDir);
       if (validated.error) {
@@ -1963,7 +1985,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // Normalized once, and before anything is admitted or backed up: the page
       // admission below has to decide against the exact bytes this call would
       // store, and a refusal must leave no backup and no written byte behind.
-      content = formatHtml(scopeTailwindLink(name, content));
+      content = canonicalForWrite(formatHtml(scopeTailwindLink(name, content)));
 
       // The logical document keeps the page editor's merge state and is what every
       // admission, stamp, broadcast and answer below describes. Only the file part
@@ -2303,7 +2325,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // served by one that does carries the attribute in what the browser sends back,
       // and nothing else on this path would take it out. See utils/root-attrs.js for
       // what a token on disk costs.
-      content = stripSaveToken(content);
+      content = canonicalForWrite(stripSaveToken(content));
 
       const userDriven = dataGuard.userDrivenFromHeader(req);
 
@@ -2569,7 +2591,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // comes back from clients and from a stored version, and none of it belongs in
       // the bytes this writes: stripped here, once, so the data-loss writeBack and the
       // restore route cannot each forget it.
-      html = stripSaveToken(html);
+      html = canonicalForWrite(stripSaveToken(html));
       const backupName = name.replace(/\.(html|htmlclay)$/, '');
       const formatted = formatHtml(scopeTailwindLink(name, html));
       const write = await splitWrite(baseDir, name, formatted);
@@ -3876,6 +3898,7 @@ module.exports = {
   isLoopbackOrigin,
   isLoopbackHostHeader,
   isLoopbackHostname,
+  canonicalForWrite,
   escapeHtml,
   encodePathSegments,
   addWordBreaks,

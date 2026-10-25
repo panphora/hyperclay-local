@@ -1,6 +1,6 @@
 const fs = require('fs').promises;
 const path = require('path');
-const { resolveRuntimeURL, parseRuntimeURL, projectRuntimeHTML } = require('./offline-runtime/resolver.cjs');
+const { resolveRuntimeURL, parseRuntimeURL, projectRuntimeHTML, canonicalizeRuntimeHTML } = require('./offline-runtime/resolver.cjs');
 
 const manifest = require('./offline-runtime/manifest.json');
 const root = path.join(__dirname, 'offline-runtime');
@@ -52,4 +52,4 @@ async function readAsset(version, publicPath) {
   return fs.readFile(asset.file);
 }
 
-module.exports = { releases, selectedVersion: manifest.selected, resolve, resolveLocal, projectRuntimeHTML, assetFor, readAsset };
+module.exports = { releases, selectedVersion: manifest.selected, resolve, resolveLocal, projectRuntimeHTML, canonicalizeRuntimeHTML, assetFor, readAsset };
