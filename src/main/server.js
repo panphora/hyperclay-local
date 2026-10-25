@@ -2670,6 +2670,12 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
             body.document = {
               writable: true,
               maxBytes: SAVE_MAX_BYTES,
+              // Every save leaves the bytes it replaced in `.hyperclay/versions`, and
+              // /_/versions, /_/version and /_/restore put them back, so the version a
+              // whole-document save replaces is recoverable. This host has no per-user
+              // model: whoever the document block is answered for is the person running
+              // the app, so the claim is the same for every caller that gets a block.
+              versions: true,
               upload: { allowed: true, maxBytes: UPLOAD_MAX_BYTES, access: UPLOAD_ACCESS },
               // The stamp of what is on disk right now. A client that loaded the page
               // before this host announced `conditional`, or that reloaded from cache,
