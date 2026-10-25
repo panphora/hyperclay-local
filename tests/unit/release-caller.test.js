@@ -186,41 +186,20 @@ function replaceHumanAdapters(source) {
   ].join('\n') + source.slice(end);
 }
 
-testPosix('caller fresh worktree gate preserves porcelain columns', async () => {
-  const source = fs.readFileSync(path.join(SOURCE_SCRIPTS, 'release.js'), 'utf8');
-  const begin = source.indexOf('function verifyOfflineRuntimeRelease() {');
-  const end = source.indexOf('async function main() {', begin);
-  if (begin < 0 || end <= begin) throw new Error('caller fresh worktree gate was not found');
-  const gateSource = source.slice(begin, end);
-  const owner = fs.mkdtempSync(path.join(os.tmpdir(), 'release-caller-worktree-'));
-  const repo = path.join(owner, 'repo');
-  const allowedPaths = ['package.json', 'README.md', 'website/index.html'];
-  const fixtureBytes = new Map([
-    ['package.json', Buffer.from('{"version":"1.2.3"}\n')],
-    ['README.md', Buffer.from('# Fixture\n')],
-    ['website/index.html', Buffer.from('<h1>Fixture</h1>\n')],
-    ['notes.txt', Buffer.from('notes\n')],
-    ['README.md ', Buffer.from('trailing space\n')]
-  ]);
-
-  function writeFixtureFile(relative, bytes) {
-    const file = path.join(repo, relative);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, bytes);
-  }
-
-  async function runGate() {
+function freshWorktreeGate(gateSource, { repo, allowedPaths }) {
+  return async function runGate({ runtimeStatus = 0 } = {}) {
     const calls = {
-      dotenv: [], status: 0, statusOutput: '', auth: 0, license: 0, ui: 0, runtime: 0, logs: []
+      dotenv: [], status: 0, statusOutput: '', auth: 0, license: 0, ui: 0, runtime: 0, spawns: [], logs: []
     };
     const context = vm.createContext({
       path,
       process: { execPath: process.execPath },
       ROOT_DIR: repo,
       FILES_TO_UPDATE: allowedPaths,
-      spawnSync() {
+      spawnSync(command, args) {
         calls.runtime += 1;
-        return { status: 0 };
+        calls.spawns.push([command, args]);
+        return { status: runtimeStatus };
       },
       require(request) {
         if (request !== 'dotenv') throw new Error(`unexpected require ${request}`);
@@ -277,7 +256,33 @@ testPosix('caller fresh worktree gate preserves porcelain columns', async () => 
     } catch (error) {
       return { calls, error };
     }
+  };
+}
+
+testPosix('caller fresh worktree gate preserves porcelain columns', async () => {
+  const source = fs.readFileSync(path.join(SOURCE_SCRIPTS, 'release.js'), 'utf8');
+  const begin = source.indexOf('function verifyOfflineRuntimeRelease() {');
+  const end = source.indexOf('async function main() {', begin);
+  if (begin < 0 || end <= begin) throw new Error('caller fresh worktree gate was not found');
+  const gateSource = source.slice(begin, end);
+  const owner = fs.mkdtempSync(path.join(os.tmpdir(), 'release-caller-worktree-'));
+  const repo = path.join(owner, 'repo');
+  const allowedPaths = ['package.json', 'README.md', 'website/index.html'];
+  const fixtureBytes = new Map([
+    ['package.json', Buffer.from('{"version":"1.2.3"}\n')],
+    ['README.md', Buffer.from('# Fixture\n')],
+    ['website/index.html', Buffer.from('<h1>Fixture</h1>\n')],
+    ['notes.txt', Buffer.from('notes\n')],
+    ['README.md ', Buffer.from('trailing space\n')]
+  ]);
+
+  function writeFixtureFile(relative, bytes) {
+    const file = path.join(repo, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, bytes);
   }
+
+  const runGate = freshWorktreeGate(gateSource, { repo, allowedPaths });
 
   try {
     fs.mkdirSync(repo);
@@ -356,6 +361,41 @@ testPosix('caller fresh worktree gate preserves porcelain columns', async () => 
       cwd: repo,
       encoding: 'utf8'
     })).toBe('');
+  } finally {
+    fs.rmSync(owner, { recursive: true, force: true });
+  }
+});
+
+testPosix('caller fresh worktree gate stops the release when the offline runtime gate fails', async () => {
+  const source = fs.readFileSync(path.join(SOURCE_SCRIPTS, 'release.js'), 'utf8');
+  const begin = source.indexOf('function verifyOfflineRuntimeRelease() {');
+  const end = source.indexOf('async function main() {', begin);
+  if (begin < 0 || end <= begin) throw new Error('caller fresh worktree gate was not found');
+  const gateSource = source.slice(begin, end);
+  const owner = fs.mkdtempSync(path.join(os.tmpdir(), 'release-caller-runtime-'));
+  const repo = path.join(owner, 'repo');
+  const allowedPaths = ['package.json'];
+  try {
+    fs.mkdirSync(repo);
+    fs.writeFileSync(path.join(repo, 'package.json'), '{"version":"1.2.3"}\n');
+    childProcess.execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+    childProcess.execFileSync('git', ['add', '--all'], { cwd: repo });
+    childProcess.execFileSync('git', [
+      '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com',
+      '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'fixture'
+    ], { cwd: repo });
+
+    const result = await freshWorktreeGate(gateSource, { repo, allowedPaths })({ runtimeStatus: 1 });
+    record('release-caller-cli-cases.log', { case: 'offline-runtime-refused', runtime: result.calls.runtime, code: result.error && result.error.code });
+    expect(result.error).toMatchObject({ code: 'RELEASE_OFFLINE_RUNTIME_UNPUBLISHED' });
+    expect(result.calls.runtime).toBe(1);
+    expect(result.calls.spawns).toEqual([
+      [process.execPath, [path.join(repo, 'scripts', 'check-offline-runtime-release.mjs')]]
+    ]);
+    expect(result.calls.license).toBe(1);
+    expect(result.calls.ui).toBe(1);
+    expect(result.calls.auth).toBe(1);
+    expect(result.calls.logs.filter(([kind, message]) => kind === 'success' && message.includes('Bundled ClayJS runtime'))).toEqual([]);
   } finally {
     fs.rmSync(owner, { recursive: true, force: true });
   }

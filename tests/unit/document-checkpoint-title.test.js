@@ -12,8 +12,17 @@ console.log('clayjs under test:', version, checkpointPath);
 
 let hasHelper = true;
 try { require.resolve('@panphora/clayjs/src/page/document-title.js'); } catch { hasHelper = false; }
-const maybe = hasHelper ? test : test.skip;
-const skipped = `(skipped until hypersave installs a ClayJS release with the shared title helper; installed ${version} predates it)`;
+const skip = !hasHelper && version === '1.15.2';
+const maybe = skip ? test.skip : test;
+const skipped = skip
+  ? ' (skipped until hypersave installs a ClayJS release with the shared title helper; installed 1.15.2 predates it)'
+  : '';
+
+// A release past 1.15.2 must carry the helper: if it does not, the case below fails saying so.
+function requireHelper() {
+  if (hasHelper) return;
+  throw new Error(`@panphora/clayjs ${version} does not ship src/page/document-title.js, the shared title helper these checkpoint cases need`);
+}
 
 const tag = (name, value) =>
   `<script type="application/json" clay="live" merge="${name}">${serializeLive(value)}</script>`;
@@ -48,7 +57,8 @@ test('the installed ClayJS package resolves inside this repository', () => {
   expect(checkpointPath.startsWith(packageRoot + path.sep)).toBe(true);
 });
 
-maybe(`renderCheckpoint derives the title from the first root H1 ${skipped}`, () => {
+maybe(`renderCheckpoint derives the title from the first root H1${skipped}`, () => {
+  requireHelper();
   const { capture, render } = roomOf([{ id: 'h', t: 'heading', text: 'Built & titled', attrs: { level: 1 } }]);
   const pinned = capture();
   const result = render();
@@ -57,7 +67,8 @@ maybe(`renderCheckpoint derives the title from the first root H1 ${skipped}`, ()
   expect(isCheckpointCurrent(result.html, pinned)).toBe(true);
 });
 
-maybe(`a custom-mode page keeps its own title and stays current ${skipped}`, () => {
+maybe(`a custom-mode page keeps its own title and stays current${skipped}`, () => {
+  requireHelper();
   const { capture, render } = roomOf(
     [{ id: 'h', t: 'heading', text: 'Built & titled', attrs: { level: 1 } }],
     '<meta name="clay-seo-title-mode" content="custom">',

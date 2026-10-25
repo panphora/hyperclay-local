@@ -47,12 +47,20 @@ function fixture() {
   const versionDir = path.join(bundle, VERSION);
   for (const [publicPath, bytes] of Object.entries(contents)) write(path.join(versionDir, publicPath), bytes);
   write(path.join(versionDir, 'offline-manifest.json'), JSON.stringify(indexFor(VERSION, contents), null, 2) + '\n');
+  write(path.join(bundle, 'manifest.json'), JSON.stringify({ schema: 1, selected: VERSION, versions: [VERSION] }, null, 2) + '\n');
   write(path.join(bundle, 'resolver.cjs'), RESOLVER);
   const pack = path.join(root, 'pack');
   const packageRoot = path.join(pack, VERSION, 'package');
   write(path.join(packageRoot, 'dist/offline-manifest.json'), JSON.stringify(indexFor(VERSION, contents), null, 2) + '\n');
+  for (const [publicPath, entry] of Object.entries(FILES)) write(path.join(packageRoot, entry.source), contents[publicPath]);
   write(path.join(packageRoot, 'dist/server/offline-runtime.cjs'), RESOLVER);
   return { root, bundle, pack, packageRoot, versionDir, contents };
+}
+
+function writeIndexFiles(tree, value) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2) + '\n';
+  fs.writeFileSync(path.join(tree.versionDir, 'offline-manifest.json'), text);
+  fs.writeFileSync(path.join(tree.packageRoot, 'dist/offline-manifest.json'), text);
 }
 
 function run(tree) {
@@ -113,6 +121,105 @@ describe('check-offline-runtime-release', () => {
     expect(result.status).toBe(1);
     expect(problems(result)).toEqual([
       `${NAME}: the bundled ClayJS ${VERSION} all.js does not match its offline index sha256.`
+    ]);
+  });
+
+  test('refuses a shipped selector that names a version the lock does not', () => {
+    const made = tree();
+    write(path.join(made.bundle, 'manifest.json'),
+      JSON.stringify({ schema: 1, selected: '9.9.9', versions: ['9.9.9'] }, null, 2) + '\n');
+    const result = run(made);
+    expect(result.status).toBe(1);
+    expect(problems(result)).toEqual([
+      `${NAME}: the shipped offline runtime manifest.json does not match offline-runtime.lock.json (selected "9.9.9", versions ["9.9.9"]).`
+    ]);
+  });
+
+  test('refuses an index that is null', () => {
+    const made = tree();
+    writeIndexFiles(made, 'null\n');
+    const result = run(made);
+    expect(result.status).toBe(1);
+    expect(problems(result)).toEqual([
+      `${NAME}: the published ClayJS ${VERSION} offline index is not a JSON object.`
+    ]);
+  });
+
+  test('refuses an index that is a directory', () => {
+    const made = tree();
+    fs.rmSync(path.join(made.packageRoot, 'dist/offline-manifest.json'));
+    fs.mkdirSync(path.join(made.packageRoot, 'dist/offline-manifest.json'));
+    const result = run(made);
+    expect(result.status).toBe(1);
+    expect(problems(result)).toEqual([
+      `${NAME}: the published ClayJS ${VERSION} offline index is not a regular file.`
+    ]);
+  });
+
+  test('refuses an index that lists no files', () => {
+    const made = tree();
+    const index = indexFor(VERSION, made.contents);
+    index.files = {};
+    writeIndexFiles(made, index);
+    const result = run(made);
+    expect(result.status).toBe(1);
+    expect(problems(result)).toEqual([
+      `${NAME}: the published ClayJS ${VERSION} offline index lists no files.`
+    ]);
+  });
+
+  test('refuses an index whose schema is not 1', () => {
+    const made = tree();
+    const index = indexFor(VERSION, made.contents);
+    index.schema = 999;
+    writeIndexFiles(made, index);
+    const result = run(made);
+    expect(result.status).toBe(1);
+    expect(problems(result)).toEqual([
+      `${NAME}: the published ClayJS ${VERSION} offline index has schema 999, not 1.`
+    ]);
+  });
+
+  test('refuses an extra file the index does not list', () => {
+    const made = tree();
+    write(path.join(made.versionDir, 'page/extra.html'), Buffer.from('<!-- extra -->\n'));
+    const result = run(made);
+    expect(result.status).toBe(1);
+    expect(problems(result)).toEqual([
+      `${NAME}: ClayJS ${VERSION} carries page/extra.html, which its offline index does not list.`
+    ]);
+  });
+
+  test('refuses a listed file that is a symlink', () => {
+    const made = tree();
+    const outside = path.join(made.root, 'outside-all.js');
+    fs.copyFileSync(path.join(made.versionDir, 'all.js'), outside);
+    fs.rmSync(path.join(made.versionDir, 'all.js'));
+    fs.symlinkSync(outside, path.join(made.versionDir, 'all.js'));
+    const result = run(made);
+    expect(result.status).toBe(1);
+    expect(problems(result)).toEqual([
+      `${NAME}: ClayJS ${VERSION} carries all.js, which is not a regular file.`
+    ]);
+  });
+
+  test('refuses published bytes that differ from an unchanged index', () => {
+    const made = tree();
+    write(path.join(made.packageRoot, 'dist/all.js'), Buffer.from('/* not the published release */\n'));
+    const result = run(made);
+    expect(result.status).toBe(1);
+    expect(problems(result)).toEqual([
+      `${NAME}: the published ClayJS ${VERSION} all.js does not match its offline index sha256.`
+    ]);
+  });
+
+  test('refuses a published file that is missing', () => {
+    const made = tree();
+    fs.rmSync(path.join(made.packageRoot, 'dist/all.js'));
+    const result = run(made);
+    expect(result.status).toBe(1);
+    expect(problems(result)).toEqual([
+      `${NAME}: ClayJS ${VERSION} as published is missing dist/all.js, which its offline index lists for all.js.`
     ]);
   });
 

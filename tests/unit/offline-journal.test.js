@@ -30,7 +30,9 @@ const LOCAL = `/_/clayjs/${selected}/`;
 const FONT_HINTS = new Set(['fonts.googleapis.com', 'fonts.gstatic.com']);
 const CLASSIC = Object.entries(lock.aliases).filter(([, entry]) => entry.path.endsWith('.js'));
 
-const withoutEscapedAmpersands = (html) => html.replace(/&amp;/g, '&');
+const GOOGLE_FONTS_URL = /https:\/\/fonts\.googleapis\.com\/css2\?[^"']*/;
+const withoutEscapedAmpersands = (html) =>
+  html.replace(GOOGLE_FONTS_URL, (url) => url.replace(/&amp;/g, '&'));
 const digest = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const fixture = (name) => fs.readFile(path.join(FIXTURES, name), 'utf8');
 const isAbsolute = (url) => /^https?:\/\//i.test(url);
@@ -280,9 +282,11 @@ describe('the Electron workspace session answers the old CDN URLs without the ne
 
     for (const [originalURL, locked] of Object.entries(lock.aliases)) {
       const response = await handler({ url: originalURL });
+      const type = index.files[locked.path].type;
 
       expect([originalURL, response.status]).toEqual([originalURL, 200]);
-      expect([originalURL, response.headers.get('content-type')]).toEqual([originalURL, index.files[locked.path].type]);
+      if (/^text\/css\b/.test(type)) continue;
+      expect([originalURL, response.headers.get('content-type')]).toEqual([originalURL, type]);
       expect([originalURL, digest(Buffer.from(await response.arrayBuffer()))]).toEqual([originalURL, locked.sha256]);
     }
     expect(net.fetch).not.toHaveBeenCalled();
@@ -291,6 +295,36 @@ describe('the Electron workspace session answers the old CDN URLs without the ne
     const queried = await handler({ url: `${exact}?x=1` }).then(() => 'answered', () => 'threw');
     expect(queried).toBe('threw');
     expect(net.fetch.mock.calls.map(([asked]) => asked.url)).toEqual([`${exact}?x=1`]);
+  });
+});
+
+describe('the Google Fonts alias answers the packaged stylesheet with its fonts pointing at the release', () => {
+  test('every url() in it is an absolute release URL the session answers', async () => {
+    const dedicated = offlineSession();
+    const handler = dedicated.protocol.handle.mock.calls[0][1];
+    net.fetch.mockClear();
+
+    const alias = Object.keys(lock.aliases).find((url) => url.startsWith('https://fonts.googleapis.com/'));
+    expect(alias).toBeTruthy();
+    const publicPath = lock.aliases[alias].path;
+    const canonical = `https://clayjs.com/${selected}/${publicPath}`;
+
+    const stylesheet = await handler({ url: alias });
+    expect(stylesheet.status).toBe(200);
+    expect(stylesheet.headers.get('content-type')).toBe(index.files[publicPath].type);
+    const body = await stylesheet.text();
+
+    const references = [...body.matchAll(/url\(\s*['"]?([^'")]+)['"]?\s*\)/g)].map((match) => match[1]);
+    expect(references.length).toBeGreaterThan(0);
+    const fontBase = new URL('.', canonical).href;
+    for (const reference of references) {
+      expect([reference, reference.startsWith(fontBase)]).toEqual([reference, true]);
+      const font = new URL(reference, alias).href;
+      const answered = await handler({ url: font });
+      expect([reference, answered.status]).toEqual([reference, 200]);
+      expect([reference, /^font\//.test(answered.headers.get('content-type'))]).toEqual([reference, true]);
+    }
+    expect(net.fetch).not.toHaveBeenCalled();
   });
 });
 

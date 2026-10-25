@@ -18,6 +18,11 @@ const INDEX = 'offline-manifest.json';
 const RESOLVER = 'resolver.cjs';
 const PUBLISHED_RESOLVER = 'dist/server/offline-runtime.cjs';
 
+// The app reads exactly these files out of the bundle root: src/main/runtime-assets.js
+// requires resolver.cjs, manifest.json and each listed version's offline-manifest.json.
+const SHIPPED_MANIFEST = 'manifest.json';
+const BUNDLE_ROOT_FILES = [SHIPPED_MANIFEST, RESOLVER];
+
 function fail(message) {
   throw new Error(message);
 }
@@ -71,30 +76,168 @@ function deepEqual(a, b) {
   return keys.every(key => Object.prototype.hasOwnProperty.call(b, key) && deepEqual(a[key], b[key]));
 }
 
-function insideBundle(versionDir, publicPath) {
-  if (!publicPath || path.isAbsolute(publicPath) || publicPath.includes('\\')) return null;
-  const file = path.resolve(versionDir, publicPath);
-  const rel = path.relative(versionDir, file);
+function inside(container, relative) {
+  if (!relative || typeof relative !== 'string' || path.isAbsolute(relative) || relative.includes('\\')) return null;
+  const file = path.resolve(container, relative);
+  const rel = path.relative(container, file);
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
   return file;
 }
 
-function sha256(file) {
-  return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+function insideBundle(versionDir, publicPath) {
+  return inside(versionDir, publicPath);
 }
 
-function readIndex(file, label, problems) {
-  let raw;
+function insidePackage(packageDir, source) {
+  return inside(packageDir, source);
+}
+
+function sha256(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function regularFile(file) {
   try {
-    raw = fs.readFileSync(file, 'utf8');
+    return fs.lstatSync(file).isFile();
   } catch {
+    return false;
+  }
+}
+
+// The shipped selector is what the app actually reads: src/main/runtime-assets.js requires
+// <bundle-root>/manifest.json. It must agree with the lock the gate just verified.
+function checkShippedManifest(options, lock, problems) {
+  const file = path.join(options.bundleRoot, SHIPPED_MANIFEST);
+  if (!regularFile(file)) {
+    problems.push(fs.existsSync(file)
+      ? `the shipped offline runtime ${SHIPPED_MANIFEST} is not a regular file.`
+      : `the shipped offline runtime has no ${SHIPPED_MANIFEST}, so the release the app selects is unrecorded.`);
+    return;
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    problems.push(`the shipped offline runtime ${SHIPPED_MANIFEST} is not readable JSON.`);
+    return;
+  }
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    problems.push(`the shipped offline runtime ${SHIPPED_MANIFEST} is not a JSON object.`);
+    return;
+  }
+  if (!deepEqual(manifest.selected, lock.selected) || !deepEqual(manifest.versions, lock.versions)) {
+    problems.push(`the shipped offline runtime ${SHIPPED_MANIFEST} does not match offline-runtime.lock.json (selected ${JSON.stringify(manifest.selected)}, versions ${JSON.stringify(manifest.versions)}).`);
+  }
+  if (!Array.isArray(manifest.versions) || !manifest.versions.includes(manifest.selected)) {
+    problems.push(`the shipped offline runtime ${SHIPPED_MANIFEST} selects ${JSON.stringify(manifest.selected)}, which its versions list omits.`);
+  }
+}
+
+// Nothing may sit beside the versions the app serves: only the manifest and resolver it reads.
+function checkBundleRoot(options, lock, problems) {
+  let entries;
+  try {
+    entries = fs.readdirSync(options.bundleRoot, { withFileTypes: true });
+  } catch {
+    problems.push(`the offline runtime bundle at ${options.bundleRoot} is not a readable directory.`);
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile())) {
+      problems.push(`the offline runtime bundle carries ${entry.name}, which is not a regular file or directory.`);
+      continue;
+    }
+    if (entry.isDirectory()) {
+      if (!lock.versions.includes(entry.name)) {
+        problems.push(`the bundle carries the directory ${entry.name}/, which offline-runtime.lock.json does not list as a version.`);
+      }
+      continue;
+    }
+    if (!BUNDLE_ROOT_FILES.includes(entry.name)) {
+      problems.push(`the bundle carries ${entry.name}, which src/main/runtime-assets.js does not read.`);
+    }
+  }
+}
+
+function readIndex(file, version, label, problems) {
+  if (!regularFile(file)) {
+    problems.push(`${label} is not a regular file.`);
     return null;
   }
+  let value;
   try {
-    return JSON.parse(raw);
+    value = JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch {
     problems.push(`${label} is not readable JSON.`);
     return null;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    problems.push(`${label} is not a JSON object.`);
+    return null;
+  }
+  if (value.schema !== 1) {
+    problems.push(`${label} has schema ${JSON.stringify(value.schema)}, not 1.`);
+    return null;
+  }
+  if (value.version !== version) {
+    problems.push(`${label} declares version ${JSON.stringify(value.version)}, not ${version}.`);
+    return null;
+  }
+  const files = value.files;
+  if (!files || typeof files !== 'object' || Array.isArray(files) || Object.keys(files).length === 0) {
+    problems.push(`${label} lists no files.`);
+    return null;
+  }
+  return value;
+}
+
+// Every regular file under the version is either listed by the index or the index itself.
+function checkVersionTree(version, versionDir, bundled, problems) {
+  const listed = new Set(Object.keys(bundled.files));
+  listed.add(INDEX);
+  const visit = (directory, prefix) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile())) {
+        problems.push(`ClayJS ${version} carries ${relative}, which is not a regular file.`);
+        continue;
+      }
+      if (entry.isDirectory()) {
+        visit(path.join(directory, entry.name), relative);
+        continue;
+      }
+      if (!listed.has(relative)) {
+        problems.push(`ClayJS ${version} carries ${relative}, which its offline index does not list.`);
+      }
+    }
+  };
+  visit(versionDir, '');
+}
+
+// Each listed entry names its source inside the published package. Those bytes are the ones
+// the index describes, so a package that carries something else is not the release.
+function checkPublishedAssets(version, packageDir, entries, problems) {
+  for (const [publicPath, entry] of entries) {
+    const source = entry && typeof entry.source === 'string' ? entry.source : null;
+    const file = source ? insidePackage(packageDir, source) : null;
+    if (!file) {
+      problems.push(`ClayJS ${version} lists ${publicPath} with source ${JSON.stringify(entry && entry.source)}, which is not a relative path inside the published package.`);
+      continue;
+    }
+    let bytes;
+    try {
+      bytes = fs.readFileSync(file);
+    } catch {
+      problems.push(`ClayJS ${version} as published is missing ${source}, which its offline index lists for ${publicPath}.`);
+      continue;
+    }
+    if (sha256(bytes) !== entry.sha256) {
+      problems.push(`the published ClayJS ${version} ${publicPath} does not match its offline index sha256.`);
+      continue;
+    }
+    if (Number.isInteger(entry.bytes) && bytes.length !== entry.bytes) {
+      problems.push(`the published ClayJS ${version} ${publicPath} is ${bytes.length} bytes, but its offline index records ${entry.bytes}.`);
+    }
   }
 }
 
@@ -104,23 +247,24 @@ function checkVersion(version, selected, options, problems) {
   const packed = packedPackage(version, options.packDir);
   try {
     const publishedFile = path.join(packed.dir, 'dist', INDEX);
-    const published = fs.existsSync(publishedFile) ? readIndex(publishedFile, `the published ClayJS ${version} offline index`, problems) : null;
-    if (!published) {
-      if (!fs.existsSync(publishedFile)) {
-        problems.push(`ClayJS ${version} as published has no offline index. Publish a ClayJS release that carries dist/offline-manifest.json, then re-vendor this host from it.`);
-      }
+    if (!fs.existsSync(publishedFile)) {
+      problems.push(`ClayJS ${version} as published has no offline index. Publish a ClayJS release that carries dist/offline-manifest.json, then re-vendor this host from it.`);
       return 0;
     }
+    const published = readIndex(publishedFile, version, `the published ClayJS ${version} offline index`, problems);
+    if (!published) return 0;
     const bundledFile = path.join(versionDir, INDEX);
-    const bundled = fs.existsSync(bundledFile) ? readIndex(bundledFile, `the bundled ClayJS ${version} offline index`, problems) : null;
-    if (!bundled) {
-      if (!fs.existsSync(bundledFile)) problems.push(`the bundled ClayJS ${version} has no ${INDEX}.`);
+    if (!fs.existsSync(bundledFile)) {
+      problems.push(`the bundled ClayJS ${version} has no ${INDEX}.`);
       return 0;
     }
+    const bundled = readIndex(bundledFile, version, `the bundled ClayJS ${version} offline index`, problems);
+    if (!bundled) return 0;
     if (!deepEqual(published, bundled)) {
       problems.push(`the bundled ClayJS ${version} is not the published release (its offline index differs). Re-vendor from the published package.`);
+      return 0;
     }
-    const entries = Object.entries(bundled.files || {});
+    const entries = Object.entries(bundled.files);
     for (const [publicPath, entry] of entries) {
       const file = insideBundle(versionDir, publicPath);
       if (!file) {
@@ -129,7 +273,7 @@ function checkVersion(version, selected, options, problems) {
       }
       let actual;
       try {
-        actual = sha256(file);
+        actual = sha256(fs.readFileSync(file));
       } catch {
         problems.push(`ClayJS ${version} is missing ${publicPath}, which its offline index lists.`);
         continue;
@@ -137,14 +281,18 @@ function checkVersion(version, selected, options, problems) {
       if (actual !== entry.sha256) problems.push(`the bundled ClayJS ${version} ${publicPath} does not match its offline index sha256.`);
     }
     files = entries.length;
+    checkVersionTree(version, versionDir, bundled, problems);
+    checkPublishedAssets(version, packed.dir, entries, problems);
     if (version === selected) {
       const publishedResolver = path.join(packed.dir, PUBLISHED_RESOLVER);
       const bundledResolver = path.join(options.bundleRoot, RESOLVER);
       let same = false;
-      try {
-        same = Buffer.compare(fs.readFileSync(bundledResolver), fs.readFileSync(publishedResolver)) === 0;
-      } catch {
-        same = false;
+      if (regularFile(bundledResolver)) {
+        try {
+          same = Buffer.compare(fs.readFileSync(bundledResolver), fs.readFileSync(publishedResolver)) === 0;
+        } catch {
+          same = false;
+        }
       }
       if (!same) problems.push(`the bundled resolver is not the published ClayJS ${version}'s dist/server/offline-runtime.cjs`);
     }
@@ -159,6 +307,8 @@ function main() {
   const lock = readLock();
   const problems = [];
   const results = [];
+  checkBundleRoot(options, lock, problems);
+  checkShippedManifest(options, lock, problems);
   for (const version of lock.versions) {
     let files = 0;
     try {
