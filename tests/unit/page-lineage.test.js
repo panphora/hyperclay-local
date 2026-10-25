@@ -6,8 +6,7 @@ const {
 const { createDocument } = require('../../src/main/page-rebase.js');
 
 const version = require('@panphora/clayjs/package.json').version;
-const packageRoot = path.dirname(require.resolve('@panphora/clayjs/package.json'));
-const fixturePath = path.join(packageRoot, 'tests', 'fixtures', 'offline-runtime', 'page-lineage.json');
+const fixturePath = path.join(__dirname, '..', 'fixtures', 'page-lineage', 'page-lineage.json');
 console.log('clayjs under test:', version, require.resolve('@panphora/clayjs/server/rooms'));
 
 let hasLineage = true;
