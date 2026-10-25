@@ -1945,6 +1945,8 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       'ambiguous-source': [409, 'page-conversion-refused'],
       'room-page-authority': [409, 'page-conversion-refused'],
       'implicit-conversion': [409, 'page-conversion-required'],
+      'seed-lineage': [409, 'page-lineage-stale'],
+      'nothing-to-write': [409, 'page-nothing-to-write'],
       'source-changed': [409, 'page-conversion-stale'],
       'room-changed': [409, 'page-conversion-stale'],
       'room-required': [409, 'page-conversion-stale'],
@@ -1981,6 +1983,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     async function commitDocument({
       name, filePath, content, dataLossPrev, userDriven, saveId, origin = 'save',
       target = null, token = null, ifMatch = undefined, pageConversion = undefined,
+      pageWrite = undefined,
       persistentToken = null, readIdentity = null, answer = null,
     }) {
       // ANCILLARY DISK CONVENTION: versions dir and backups use baseName without
@@ -2026,20 +2029,24 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           // reservation is held across the backup and the atomic write so no
           // frame can change the room while the disk result is pending.
           const { checkPageWriteAdmission, pageLineageLost } = require('@panphora/clayjs/server/rooms');
+          const { createDocument } = require('./page-rebase.js');
           const rooms = authority.rooms;
           const open = rooms.get(filePath);
           const room = open && String(open.nodeId) === String(target.identity) ? open : null;
           const currentHtml = dataLossPrev ?? '';
           const admission = checkPageWriteAdmission({
             currentHtml, html: content, header: pageConversion ?? null, ifMatch, room,
+            pageWrite: pageWrite ?? null, createDocument,
           });
           if (admission === 'initial') {
             pageToken = rooms.reservePageInitial(filePath, {
               nodeId: target.identity, currentHtml, html: content, ifMatch,
+              pageWrite: pageWrite ?? null, createDocument,
             });
           } else if (admission === 'conversion') {
             pageToken = rooms.reservePage(filePath, {
               nodeId: target.identity, header: pageConversion, currentHtml, html: content, ifMatch,
+              pageWrite: pageWrite ?? null, createDocument,
             });
           } else if (admission === 'ordinary' && room && pageLineageLost(room, content)) {
             // The open room still holds the article this save replaces, and the
@@ -2486,6 +2493,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         content = await commitDocument({
           name, filePath: canonicalPath, content, dataLossPrev, userDriven, saveId,
           target, token, ifMatch, pageConversion: req.headers['page-conversion'], answer,
+          pageWrite: req.headers['page-write'],
         });
         });
 

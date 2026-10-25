@@ -20,6 +20,21 @@ jest.mock('livesync-hyperclay', () => ({
   }
 }));
 
+// The installed 1.15.2 cannot raise a lineage refusal of its own, so the two
+// refusals the host answers by reason alone are raised from the shared package's
+// own error class, through the one call the save path makes to it.
+const mockPageWriteRefusal = { reason: null };
+jest.mock('@panphora/clayjs/server/rooms', () => {
+  const actual = jest.requireActual('@panphora/clayjs/server/rooms');
+  return {
+    ...actual,
+    checkPageWriteAdmission: (options) => {
+      if (mockPageWriteRefusal.reason) throw new actual.PageConversionError(mockPageWriteRefusal.reason);
+      return actual.checkPageWriteAdmission(options);
+    }
+  };
+});
+
 const fs = require('fs');
 const fsp = fs.promises;
 const os = require('os');
@@ -125,6 +140,7 @@ const countClaims = (authority) => {
 describe('B3a: the browser save through the shared boundary', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockPageWriteRefusal.reason = null;
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -229,6 +245,34 @@ describe('B3a: the browser save through the shared boundary', () => {
     expect(h.fileWrittenCalls).toHaveLength(0);
     expect(savedBroadcasts()).toHaveLength(0);
   });
+
+  for (const [reason, code] of [
+    ['seed-lineage', 'page-lineage-stale'],
+    ['nothing-to-write', 'page-nothing-to-write']
+  ]) {
+    test(`a ${reason} refusal writes nothing and answers 409 ${code}`, async () => {
+      const h = harness();
+      const indexPath = path.join(h.dir, 'index.html');
+      fs.writeFileSync(indexPath, DOC(0));
+      const a = await startApp({ dir: h.dir, rootId: 'root-a', authority: h.authority });
+      const before = await fsp.readFile(indexPath);
+      mockPageWriteRefusal.reason = reason;
+
+      const res = await save(a.server, 'index.html', DOC(1));
+
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({
+        msg: `Page conversion refused: ${reason}`,
+        msgType: 'error',
+        code,
+        reason
+      });
+      expect(await fsp.readFile(indexPath)).toEqual(before);
+      await expect(fsp.access(path.join(h.dir, '.hyperclay', 'versions'))).rejects.toThrow();
+      expect(h.fileWrittenCalls).toHaveLength(0);
+      expect(savedBroadcasts()).toHaveLength(0);
+    });
+  }
 
   test('an authorized page initialization commits one page transition', async () => {
     const h = harness();
