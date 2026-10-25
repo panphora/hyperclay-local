@@ -1,0 +1,1 @@
+function c(t){let e=document.createElement("textarea");e.value=t,e.style.position="fixed",e.style.opacity="0",document.body.appendChild(e),e.select(),e.setSelectionRange(0,99999);try{let o=document.execCommand("copy");console.log(o?"Copied to clipboard":"Copy failed")}catch(o){console.error("Unable to copy:",o)}document.body.removeChild(e)}var l=c;export{l as a};

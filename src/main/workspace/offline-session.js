@@ -1,10 +1,8 @@
 const fs = require('fs').promises;
-const path = require('upath');
-const manifest = require('../offline-runtime/manifest.json');
+const runtimeAssets = require('../runtime-assets');
 
 const LOCAL_PROTOCOL = 1;
 const installed = new WeakSet();
-const assets = new Map(manifest.files.map(file => [file.url, file]));
 
 function protocolMismatch(workspaceProtocol = require('@panphora/hyperclay-workspace/local-app/manifest.json').protocol) {
   return workspaceProtocol !== LOCAL_PROTOCOL;
@@ -15,13 +13,14 @@ function offlineSession() {
   const dedicated = session.fromPartition('persist:hyperclay-workspace');
   if (!installed.has(dedicated)) {
     dedicated.protocol.handle('https', async request => {
-      const asset = assets.get(request.url);
+      const hit = runtimeAssets.resolve(request.url);
+      const asset = hit?.available && runtimeAssets.assetFor(hit.version, hit.path);
       if (!asset) return net.fetch(request, { bypassCustomProtocolHandlers: true });
-      const bytes = await fs.readFile(path.join(__dirname, '../offline-runtime', asset.path));
+      const bytes = await fs.readFile(asset.file);
       return new Response(bytes, {
         status: 200,
         headers: {
-          'Content-Type': asset.contentType,
+          'Content-Type': asset.type,
           'ETag': `"${asset.sha256}"`,
           'Cache-Control': 'public, max-age=31536000, immutable',
           'X-Content-Type-Options': 'nosniff',

@@ -8,94 +8,147 @@ jest.mock('electron', () => {
 const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
-const cheerio = require('cheerio');
-const { execFileSync } = require('child_process');
-const { pathToFileURL } = require('url');
 const { session, net } = require('electron');
 const { offlineSession, protocolMismatch } = require('../../src/main/workspace/offline-session');
+const runtimeAssets = require('../../src/main/runtime-assets');
 const manifest = require('../../src/main/offline-runtime/manifest.json');
-const clayjsRoot = path.dirname(require.resolve('@panphora/clayjs/package.json'));
+const lock = require('../../offline-runtime.lock.json');
 
-const viewPlans = new Map();
-function viewModules(search) {
-  if (!viewPlans.has(search)) {
-    const loader = pathToFileURL(path.join(clayjsRoot, 'src/loader-logic.js')).href;
-    const script = `import { resolveModules } from ${JSON.stringify(loader)};`
-      + `const plan = resolveModules(new URLSearchParams(process.argv[1]), false);`
-      + `console.log(JSON.stringify([...plan.core, ...plan.plugins]));`;
-    viewPlans.set(search, JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script, search], { encoding: 'utf8' })));
-  }
-  return viewPlans.get(search);
+const root = path.join(__dirname, '../../src/main/offline-runtime');
+const templates = path.join(__dirname, '../../src/main/document-templates');
+const indexOf = version => require(path.join(root, version, 'offline-manifest.json'));
+const selected = manifest.selected;
+const index = indexOf(selected);
+const bytesOf = new Map();
+
+function bundledBytes(version, publicPath) {
+  const key = `${version}/${publicPath}`;
+  if (!bytesOf.has(key)) bytesOf.set(key, fs.readFile(path.join(root, version, publicPath)));
+  return bytesOf.get(key);
 }
 
-async function shippedByClayjs(rel) {
-  try {
-    await fs.access(path.join(clayjsRoot, 'src', rel));
-    return true;
-  } catch {
-    return false;
-  }
+function protocolHandler() {
+  const dedicated = offlineSession();
+  return dedicated.protocol.handle.mock.calls[0][1];
 }
 
-test('the manifest resolves every ClayJS URL in the five templates and every selected module import', async () => {
-  const byUrl = new Map(manifest.files.map(file => [file.url, file]));
-  expect(byUrl.size).toBe(manifest.files.length);
-  const loaderSearches = [];
-  for (const id of ['page', 'blank', 'devlog', 'kanban', 'landing']) {
-    const html = await fs.readFile(path.join(__dirname, '../../src/main/document-templates', `${id}.html`), 'utf8');
-    const $ = cheerio.load(html);
-    $('[src], [href]').each((_, element) => {
-      const url = $(element).attr('src') || $(element).attr('href');
-      if (!url?.startsWith('https://clayjs.com/v1/')) return;
-      expect(byUrl.has(url)).toBe(true);
-      if (new URL(url).pathname === '/v1/clay.js') loaderSearches.push(new URL(url).searchParams.toString());
-    });
-  }
-  for (const search of loaderSearches) {
-    for (const rel of viewModules(search)) {
-      if (!(await shippedByClayjs(rel))) continue;
-      expect(byUrl.has(`https://clayjs.com/v1/src/${rel}`)).toBe(true);
+test('the bundle carries every release the lock names, byte for byte', async () => {
+  expect(manifest.schema).toBe(1);
+  expect(manifest.versions).toEqual(lock.versions);
+  expect(manifest.selected).toBe(lock.selected);
+  expect(manifest.versions[0]).toBe(manifest.selected);
+  let count = 0;
+  for (const version of lock.versions) {
+    const release = indexOf(version);
+    expect(release.version).toBe(version);
+    expect(release.schema).toBe(1);
+    for (const [publicPath, entry] of Object.entries(release.files)) {
+      const bytes = await bundledBytes(version, publicPath);
+      expect(bytes.length).toBe(entry.bytes);
+      expect(crypto.createHash('sha256').update(bytes).digest('hex')).toBe(entry.sha256);
+      count += 1;
     }
   }
-  const fakeFetch = async url => {
-    const file = byUrl.get(url);
-    expect(file).toBeDefined();
-    return fs.readFile(path.join(__dirname, '../../src/main/offline-runtime', file.path), 'utf8');
-  };
-  for (const file of manifest.files) {
-    const bytes = await fs.readFile(path.join(__dirname, '../../src/main/offline-runtime', file.path));
-    expect(crypto.createHash('sha256').update(bytes).digest('hex')).toBe(file.sha256);
-    if (!file.path.endsWith('.js') || file.path === 'src/loader-logic.js') continue;
-    const source = await fakeFetch(file.url);
-    const imports = [...source.matchAll(/(?:from\s*|import\s*\(\s*|import\s*)["'](\.{1,2}\/[^"']+)["']/g)];
-    for (const [, specifier] of imports) {
-      const target = new URL(specifier, file.url).href;
-      expect(byUrl.has(target)).toBe(true);
-    }
-  }
-  expect(byUrl.has('https://clayjs.com/v1/src/vendor/prosemirror.vendor.js')).toBe(true);
-  expect(byUrl.has('https://clayjs.com/v1/src/vendor/yjs.vendor.js')).toBe(true);
-  expect(byUrl.has('https://clayjs.com/v1/src/page/themes/light-1.css')).toBe(true);
-  expect(manifest.clayjsVersion).toBe(require('@panphora/clayjs/package.json').version);
+  expect(count).toBe(manifest.files);
+  expect(count).toBeGreaterThan(400);
 });
 
-test('the dedicated session serves exact manifest URLs and lets other URLs use the network', async () => {
+test('the dedicated session answers every URL in the release index and nothing else', async () => {
   const dedicated = offlineSession();
   expect(offlineSession()).toBe(dedicated);
   expect(session.fromPartition).toHaveBeenCalledWith('persist:hyperclay-workspace');
   expect(dedicated.protocol.handle).toHaveBeenCalledTimes(1);
   expect(dedicated.protocol.handle.mock.calls[0][0]).toBe('https');
   expect(session.defaultSession.protocol.handle).not.toHaveBeenCalled();
-  const handler = dedicated.protocol.handle.mock.calls[0][1];
-  const item = manifest.files.find(file => file.url.includes('clay.js?plugins=page'));
-  const response = await handler({ url: item.url });
-  expect(Buffer.from(await response.arrayBuffer())).toEqual(
-    await fs.readFile(path.join(__dirname, '../../src/main/offline-runtime', item.path)));
-  expect(response.headers.get('content-type')).toBe(item.contentType);
-  expect(response.headers.get('etag')).toBe(`"${item.sha256}"`);
-  const unknown = { url: 'https://clayjs.com/v1/clay.js?plugins=unknown' };
-  expect(await (await handler(unknown)).text()).toBe('network');
-  expect(net.fetch).toHaveBeenCalledWith(unknown, { bypassCustomProtocolHandlers: true });
   expect(protocolMismatch()).toBe(false);
   expect(protocolMismatch(2)).toBe(true);
+
+  net.fetch.mockImplementation(async request => {
+    throw new Error(`network fetch for ${request.url}`);
+  });
+  const handler = protocolHandler();
+  const answered = new Set();
+  for (const [publicPath, entry] of Object.entries(index.files)) {
+    const bytes = await bundledBytes(selected, publicPath);
+    for (const url of [`https://clayjs.com/v1/${publicPath}`, `https://clayjs.com/${selected}/${publicPath}`]) {
+      const response = await handler({ url });
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toBe(entry.type);
+      expect(response.headers.get('etag')).toBe(`"${entry.sha256}"`);
+      expect(Buffer.from(await response.arrayBuffer()).equals(bytes)).toBe(true);
+      answered.add(publicPath);
+    }
+  }
+  expect(answered.size).toBe(Object.keys(index.files).length);
+  expect([...answered].some(publicPath => publicPath.startsWith('m/'))).toBe(true);
+  expect([...answered].some(publicPath => publicPath.startsWith('fonts/'))).toBe(true);
+  expect(net.fetch).not.toHaveBeenCalled();
+});
+
+test('a loader query is answered with the bundled clay.js', async () => {
+  const entry = index.files['clay.js'];
+  const response = await protocolHandler()({
+    url: 'https://clayjs.com/v1/clay.js?plugins=sortable,people,upload,sync,visitor-drafts,unsent,menu&exclude=richclay',
+  });
+  expect(response.status).toBe(200);
+  expect(response.headers.get('content-type')).toBe(entry.type);
+  expect(Buffer.from(await response.arrayBuffer()).equals(await bundledBytes(selected, 'clay.js'))).toBe(true);
+});
+
+test('every clayjs.com URL in the five templates resolves to a bundled asset', async () => {
+  const urls = new Set();
+  for (const id of ['page', 'blank', 'devlog', 'kanban', 'landing']) {
+    const html = await fs.readFile(path.join(templates, `${id}.html`), 'utf8');
+    for (const match of html.matchAll(/https:\/\/clayjs\.com\/v1\/[^"'\s)<>]+/g)) urls.add(match[0]);
+  }
+  expect(urls.size).toBeGreaterThan(5);
+  for (const url of urls) {
+    const hit = runtimeAssets.resolve(url);
+    expect([url, hit?.available]).toEqual([url, true]);
+    expect([url, Boolean(runtimeAssets.assetFor(hit.version, hit.path))]).toEqual([url, true]);
+  }
+});
+
+test('URLs outside the bundled release use the network', async () => {
+  net.fetch.mockReset();
+  net.fetch.mockImplementation(async () => new Response('network'));
+  const handler = protocolHandler();
+  const unknowns = [
+    'https://clayjs.com/docs/',
+    'https://clayjs.com/v2/clay.js',
+    'https://clayjs.com/1.14.0/clay.js',
+    'https://example.com/x.js',
+  ];
+  for (const url of unknowns) {
+    const response = await handler({ url });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('network');
+  }
+  expect(net.fetch.mock.calls.map(([request]) => request.url)).toEqual(unknowns);
+  expect(net.fetch).toHaveBeenCalledWith(expect.anything(), { bypassCustomProtocolHandlers: true });
+});
+
+test('assetFor only names paths the index carries', async () => {
+  const spellings = [
+    '../package.json',
+    '../../package.json',
+    'm/../../package.json',
+    '..\\package.json',
+    '/etc/passwd',
+    'clay.js/../package.json',
+    'constructor',
+    '__proto__',
+    'toString',
+  ];
+  for (const spelling of spellings) {
+    expect([spelling, runtimeAssets.assetFor(selected, spelling)]).toEqual([spelling, null]);
+    await expect(runtimeAssets.readAsset(selected, spelling)).rejects.toThrow(/No bundled ClayJS asset/);
+  }
+  expect(runtimeAssets.assetFor('0.0.0', 'clay.js')).toBeNull();
+  expect(runtimeAssets.assetFor(selected, 'clay.js')).toEqual({
+    file: path.join(root, selected, 'clay.js'),
+    type: index.files['clay.js'].type,
+    sha256: index.files['clay.js'].sha256,
+    bytes: index.files['clay.js'].bytes,
+  });
 });

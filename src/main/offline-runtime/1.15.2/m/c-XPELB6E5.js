@@ -1,0 +1,1 @@
+import{a as r}from"./c-JAX2667S.js";import"./c-VHNSBD2M.js";var a=[{match:e=>e.hasAttribute("data-rules-name"),identity:e=>{let t=(e.getAttribute("data-rules-name")||"").split(/\s+/).filter(Boolean).sort().join(" ");return t?"rules:"+(e.getAttribute("data-rules-version")||"")+":"+t:null},parse:r.parseRulesRelaxed}],n=a;export{n as default,a as mergeTagRecognizers};

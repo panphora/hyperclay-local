@@ -1,106 +1,138 @@
 import { createHash } from 'node:crypto';
-import { readFile, mkdir, writeFile, readdir, unlink } from 'node:fs/promises';
-import { dirname, extname, join, relative, resolve } from 'node:path';
+import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { load } from 'cheerio';
 
 const require = createRequire(import.meta.url);
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const packageRoot = dirname(require.resolve('@panphora/clayjs/package.json'));
 const destination = join(repo, 'src/main/offline-runtime');
-const templates = join(repo, 'src/main/document-templates');
-const { version: clayjsVersion } = require('@panphora/clayjs/package.json');
-const { resolveModules } = await import(pathToFileURL(join(packageRoot, 'src/loader-logic.js')));
-const ids = ['page', 'blank', 'devlog', 'kanban', 'landing'];
-const urls = new Set();
-const paths = new Set();
-const queue = [];
-const plans = [];
+const lock = JSON.parse(await readFile(join(repo, 'offline-runtime.lock.json'), 'utf8'));
 
-function add(rel) {
-  if (paths.has(rel)) return;
-  paths.add(rel);
-  queue.push(rel);
+function fail(message) {
+  throw new Error(message);
 }
 
-function packagePath(urlPath) {
-  const rel = urlPath.replace(/^\/v1\//, '');
-  if (rel.startsWith('src/')) return rel;
-  if (rel === 'clay.standalone.js') return `dist/${rel}`;
-  return `entries/${rel}`;
+function parseRoots(argv) {
+  const roots = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg !== '--package-root') fail(`unknown argument ${arg}`);
+    const value = argv[i + 1];
+    if (!value || value.startsWith('--')) fail('--package-root needs a directory');
+    roots.push(resolve(value));
+    i += 1;
+  }
+  return roots;
 }
 
-for (const id of ids) {
-  const $ = load(await readFile(join(templates, `${id}.html`), 'utf8'));
-  $('[src], [href]').each((_, element) => {
-    const value = $(element).attr('src') || $(element).attr('href');
-    if (!value?.startsWith('https://clayjs.com/v1/')) return;
-    const url = new URL(value);
-    urls.add(url.href);
-    add(packagePath(url.pathname));
-    if (url.pathname.endsWith('/clay.js')) plans.push(resolveModules(url.searchParams, true), resolveModules(url.searchParams, false));
-  });
+async function versionOf(root) {
+  try {
+    return JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).version;
+  } catch {
+    return fail(`${root} is not a ClayJS package (no readable package.json)`);
+  }
 }
 
-add('src/loader.js');
-add('src/core/draft-mode.js');
-add('src/core/is-edit-mode.js');
-add('src/lib/region-policy.js');
-for (const plan of plans) for (const rel of [...plan.core, ...plan.plugins]) add(`src/${rel}`);
-for (const theme of await readdir(join(packageRoot, 'src/page/themes'))) {
-  if (theme.endsWith('.css')) add(`src/page/themes/${theme}`);
+function checkLock() {
+  if (!lock.selected || !Array.isArray(lock.versions) || !lock.versions.length) fail('offline-runtime.lock.json needs selected and versions');
+  if (lock.versions[0] !== lock.selected) fail('offline-runtime.lock.json lists the selected version first');
+  if (!lock.versions.includes(lock.selected)) fail('offline-runtime.lock.json selected is not in versions');
 }
 
-function references(source) {
-  const found = [];
-  const literal = /\b(?:from\s*|import\s*\(\s*|import\s*|export\s+[^;]*?from\s*)["'](\.{1,2}\/[^"']+)["']/g;
-  for (const match of source.matchAll(literal)) found.push(match[1]);
-  for (const match of source.matchAll(/\bbase\s*\+\s*["']\/(src\/[^"']+)["']/g)) found.push(`/${match[1]}`);
-  for (const match of source.matchAll(/\bimport\(\s*([A-Za-z_$][\w$]*)\s*\)/g)) {
-    const assignment = new RegExp(`\\b(?:const|let)\\s+${match[1]}\\s*=\\s*["'](\\.{1,2}\\/[^"']+)["']`).exec(source);
-    if (!assignment) throw new Error(`Unresolved dynamic import ${match[1]}`);
-    found.push(assignment[1]);
+async function rootsByVersion() {
+  const found = new Map();
+  for (const root of parseRoots(process.argv.slice(2))) {
+    const version = await versionOf(root);
+    if (found.has(version)) fail(`two --package-root directories declare ClayJS ${version}`);
+    found.set(version, root);
+  }
+  const installed = dirname(require.resolve('@panphora/clayjs/package.json'));
+  const installedVersion = JSON.parse(await readFile(join(installed, 'package.json'), 'utf8')).version;
+  for (const version of lock.versions) {
+    if (found.has(version)) continue;
+    if (installedVersion === version) found.set(version, installed);
+    else fail(`ClayJS ${version} is locked but no --package-root provides it (the installed @panphora/clayjs is ${installedVersion})`);
   }
   return found;
 }
 
-while (queue.length) {
-  const rel = queue.shift();
-  const source = await readFile(join(packageRoot, rel), 'utf8');
-  if (rel === 'src/loader-logic.js') continue;
-  if (!rel.endsWith('.js')) continue;
-  for (const specifier of references(source)) {
-    const next = specifier.startsWith('/') ? specifier.slice(1) : join(dirname(rel), specifier);
-    const normalized = relative(packageRoot, resolve(packageRoot, next));
-    if (normalized.startsWith('..') || normalized === '') throw new Error(`Import escapes ClayJS: ${rel} -> ${specifier}`);
-    add(normalized);
-  }
+function insideStaging(directory, publicPath) {
+  if (!publicPath || isAbsolute(publicPath) || publicPath.includes('\\')) fail(`public path ${JSON.stringify(publicPath)} is not relative`);
+  const file = resolve(directory, publicPath);
+  const rel = relative(directory, file);
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) fail(`public path ${JSON.stringify(publicPath)} escapes the release directory`);
+  return file;
 }
 
-await mkdir(destination, { recursive: true });
-const files = [];
-const contentType = rel => extname(rel) === '.css' ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8';
-for (const rel of [...paths].sort()) {
-  const bytes = await readFile(join(packageRoot, rel));
-  const served = rel.startsWith('src/') ? rel : rel.replace(/^(entries|dist)\//, '');
-  const url = `https://clayjs.com/v1/${served}`;
-  const variants = [...urls].filter(value => new URL(value).pathname === new URL(url).pathname);
-  if (!variants.length) variants.push(url);
-  await mkdir(dirname(join(destination, served)), { recursive: true });
-  await writeFile(join(destination, served), bytes);
-  const sha256 = createHash('sha256').update(bytes).digest('hex');
-  for (const variant of variants) files.push({ url: variant, path: served, sha256, contentType: contentType(served) });
-}
-files.sort((a, b) => a.url.localeCompare(b.url));
-await writeFile(join(destination, 'manifest.json'), JSON.stringify({ clayjsVersion, files }, null, 2) + '\n');
-
-async function removeStale(directory) {
-  for (const item of await readdir(directory, { withFileTypes: true })) {
-    const file = join(directory, item.name);
-    if (item.isDirectory()) await removeStale(file);
-    else if (relative(destination, file) !== 'manifest.json' && ![...paths].some(rel =>
-      (rel.startsWith('src/') ? rel : rel.replace(/^(entries|dist)\//, '')) === relative(destination, file))) await unlink(file);
+async function stageRelease(version, packageRoot, versionStaging) {
+  const indexFile = join(packageRoot, 'dist/offline-manifest.json');
+  let index;
+  try {
+    index = JSON.parse(await readFile(indexFile, 'utf8'));
+  } catch {
+    fail(`ClayJS ${version} has no offline index; pass --package-root <built checkout>`);
   }
+  if (index.version !== version) fail(`ClayJS ${version}'s offline index declares ${index.version}`);
+  if (index.schema !== 1) fail(`ClayJS ${version}'s offline index has schema ${index.schema}, not 1`);
+  let bytes = 0;
+  for (const [publicPath, entry] of Object.entries(index.files)) {
+    const target = insideStaging(versionStaging, publicPath);
+    const sourceFile = insideStaging(packageRoot, entry.source);
+    let source;
+    try {
+      source = await readFile(sourceFile);
+    } catch {
+      fail(`ClayJS ${version}'s index names ${entry.source} for ${publicPath}, which the package does not carry`);
+    }
+    const sha256 = createHash('sha256').update(source).digest('hex');
+    if (sha256 !== entry.sha256) fail(`ClayJS ${version}/${publicPath}: bytes do not match the index`);
+    if (source.length !== entry.bytes) fail(`ClayJS ${version}/${publicPath}: ${source.length} bytes, index says ${entry.bytes}`);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, source);
+    bytes += source.length;
+  }
+  await writeFile(join(versionStaging, 'offline-manifest.json'), JSON.stringify(index, null, 2) + '\n');
+  const { verifyOfflineClosure } = await import(pathToFileURL(join(packageRoot, 'scripts/verify-offline-closure.mjs')).href);
+  const result = await verifyOfflineClosure({ publishedRoot: versionStaging });
+  if (result.problems.length) fail(`ClayJS ${version} is not an offline closure:\n  ${result.problems.join('\n  ')}`);
+  return { files: Object.keys(index.files).length, bytes };
 }
-await removeStale(destination);
+
+async function main() {
+  checkLock();
+  const roots = await rootsByVersion();
+  let staging = join(destination, `.staging-${process.pid}`);
+  await rm(staging, { recursive: true, force: true });
+  const totals = { files: 0, bytes: 0 };
+  for (const version of lock.versions) {
+    const staged = await stageRelease(version, roots.get(version), join(staging, version));
+    totals.files += staged.files;
+    totals.bytes += staged.bytes;
+    console.log(`ClayJS ${version}: ${staged.files} files, ${(staged.bytes / 1024 / 1024).toFixed(2)} MB`);
+  }
+  await copyFile(join(roots.get(lock.selected), 'dist/server/offline-runtime.cjs'), join(staging, 'resolver.cjs'));
+  await writeFile(join(staging, 'manifest.json'), JSON.stringify({
+    schema: 1,
+    selected: lock.selected,
+    versions: lock.versions,
+    files: totals.files,
+  }, null, 2) + '\n');
+
+  const aside = join(repo, `src/main/offline-runtime.old-${process.pid}`);
+  await rename(destination, aside);
+  staging = join(aside, `.staging-${process.pid}`);
+  try {
+    await rename(staging, destination);
+  } catch (err) {
+    await rename(aside, destination);
+    throw err;
+  }
+  await rm(aside, { recursive: true, force: true });
+  console.log(`offline runtime: ${totals.files} files, ${(totals.bytes / 1024 / 1024).toFixed(2)} MB, selected ${lock.selected}`);
+}
+
+main().catch(err => {
+  console.error(`build-offline-runtime: ${err.message}`);
+  process.exit(1);
+});
