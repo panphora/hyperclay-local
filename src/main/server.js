@@ -334,6 +334,7 @@ function resolveResourceFromHref(href) {
 const SAVE_MAX_BYTES = 20 * 1024 * 1024;
 const API_WRITE_MAX_BYTES = 1024 * 1024;
 const UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
+const UPLOAD_ACCESS = 'local';
 
 // Refused by type. A document or a script stored beside a document and served
 // from the same origin is stored XSS: the file the person "just uploaded"
@@ -2669,7 +2670,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
             body.document = {
               writable: true,
               maxBytes: SAVE_MAX_BYTES,
-              upload: { allowed: true, maxBytes: UPLOAD_MAX_BYTES },
+              upload: { allowed: true, maxBytes: UPLOAD_MAX_BYTES, access: UPLOAD_ACCESS },
               // The stamp of what is on disk right now. A client that loaded the page
               // before this host announced `conditional`, or that reloaded from cache,
               // has no stamp of its own; this is where it gets one without a save.
@@ -2843,7 +2844,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         return res.json({
           msg: 'Uploaded',
           msgType: 'success',
-          uploads: [{ name: stored.name, url, bytes: stored.bytes }]
+          uploads: [{ name: stored.name, url, bytes: stored.bytes, access: UPLOAD_ACCESS }]
         });
       } catch (error) {
         const status = error.status || error.statusCode;
