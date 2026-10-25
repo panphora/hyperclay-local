@@ -19,6 +19,8 @@ const crypto = require('crypto');
 const busboy = require('busboy');
 const { scopeTailwindLink } = require('./utils/tailwind-scoping.js');
 const { stripSaveToken, injectDocumentEtag } = require('./utils/root-attrs.js');
+const runtimeAssets = require('./runtime-assets');
+const { projectRuntimeHTML } = runtimeAssets;
 const { createRootLive } = require('./utils/root-live.js');
 const { replayStore } = require('./sync-replay.js');
 const { VERSIONS_DIR, RECOVERED_DIR, TAILWIND_DIR } = require('./utils/artifact-paths.js');
@@ -263,13 +265,18 @@ async function resolveWriteTarget(paths, name) {
 // the attribute cannot describe a version other than the one being served. The
 // file itself is untouched, and every response gets it, in view and edit mode:
 // the repair fetch needs it as much as the navigation that preceded it.
-async function serveHtml(res, filePath, frame = null, baseDir = null, name = null) {
+async function serveHtml(req, res, filePath, frame = null, baseDir = null, name = null) {
   // The document served is the logical one: the bytes on disk with the page
   // editor's merge state put back. A document with no such state is served from
   // the bytes exactly as read, so nothing outside a page editor is re-encoded.
   const html = await logicalBytes(baseDir, name, await fs.readFile(filePath));
+  const etag = documentEtag(html);
+  // ClayJS's source plugin asks for the canonical bytes with this header; it must
+  // get them unprojected, or it would save this host's local URLs back to disk.
+  const served = req.get('Clay-Source') === '1' ? html : projectServed(req, html);
   res.set('Content-Type', 'text/html');
-  const stamped = injectDocumentEtag(html, documentEtag(html));
+  res.set('Vary', 'Clay-Source');
+  const stamped = injectDocumentEtag(served, etag);
   if (!frame) return res.send(stamped);
   const { injectWorkspaceBridge } = require('@panphora/hyperclay-workspace/server');
   const raw = stamped.toString('latin1');
@@ -284,6 +291,24 @@ async function serveHtml(res, filePath, frame = null, baseDir = null, name = nul
   return res.send(Buffer.concat([
     stamped.subarray(0, at), Buffer.from(bridged.slice(at, at + added), 'utf8'), stamped.subarray(at),
   ]));
+}
+
+// A document that names the public runtime (`https://clayjs.com/v1/...`) is served with
+// those URLs pointing at this host's own copy of the bundled release, so it starts
+// with no network. Only the response changes: the file keeps its bytes, and the
+// stamp below still describes the bytes on disk.
+function projectServed(req, html) {
+  const text = html.toString('utf8');
+  // Never re-encode a file that is not valid UTF-8: decoding would replace every
+  // bad byte, and the response would no longer be the document that is stored.
+  if (!Buffer.from(text, 'utf8').equals(html)) return html;
+  const result = projectRuntimeHTML(text, {
+    releases: runtimeAssets.releases,
+    selectedVersion: runtimeAssets.selectedVersion,
+    documentURL: `http://${req.get('host')}${req.originalUrl}`,
+  });
+  if (!result.mappings.length) return html;
+  return Buffer.from(result.html, 'utf8');
 }
 
 // Translate a data-api result object ({ status, headers?, json?, raw? }) into a
@@ -499,7 +524,7 @@ function stripSystemRouteMarker(url) {
 
 // Known `/_/` system routes on this host. Anything else under the marker is reserved
 // and 404s, so `/_/foo.html` can never reach the static catch-all and serve a document.
-const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'sync', 'wire', 'data-loss', 'api', 'meta', 'upload', 'uploads', 'versions', 'version', 'restore']);
+const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'sync', 'wire', 'data-loss', 'api', 'meta', 'upload', 'uploads', 'versions', 'version', 'restore', 'clayjs']);
 
 // Spec §3's code registry, keyed by the status this host answers with, so a
 // status and its code can never drift apart. A status the registry does not name
@@ -3217,6 +3242,33 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         ...(req.headers['if-match'] !== undefined ? { etag: restoredEtag } : {}) });
     });
 
+    // GET /_/clayjs/<version>/<path> — the bundled ClayJS release, so a document
+    // served to a plain browser gets its runtime from this host rather than from
+    // clayjs.com. Public bytes, read-only: no Origin check, and the Host check above
+    // already bounds who can ask.
+    app.get(/^\/clayjs\/(.*)$/, async (req, res, next) => {
+      if (!req.fromSystemRoute) return next();
+      const origin = `http://${req.get('host')}`;
+      const hit = runtimeAssets.resolveLocal(req.originalUrl, { documentURL: `${origin}/` });
+      const asset = hit?.kind === 'local' && hit.available && runtimeAssets.assetFor(hit.version, hit.path);
+      if (!asset) {
+        res.set('Cache-Control', 'no-store');
+        res.set('Content-Type', 'text/plain; charset=utf-8');
+        return res.status(404).send('Not found');
+      }
+      const etag = `"${asset.sha256}"`;
+      // The index's own type, with nothing appended to it.
+      res.setHeader('Content-Type', asset.type);
+      res.set('ETag', etag);
+      res.set('Cache-Control', 'public, max-age=31536000, immutable');
+      res.set('X-Content-Type-Options', 'nosniff');
+      const ifNoneMatch = req.get('If-None-Match');
+      if (ifNoneMatch && ifNoneMatch.includes(etag)) return res.status(304).end();
+      // Express routes HEAD through this handler and sends it without a body,
+      // keeping the same headers.
+      return res.status(200).send(await fs.readFile(asset.file));
+    });
+
     // Tailwind CSS — serve from disk or auto-generate on first request.
     // Regex route so the captured name can include slashes (nested paths like
     // "blog/post"). A traditional /tailwindcss/:name.css route only matches a
@@ -3648,7 +3700,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           const wireId = Number(req.query['workspace-frame']);
           const frame = Number.isSafeInteger(wireId) && wireId > 0 && ctx.workspaceFrame
             ? ctx.workspaceFrame(ctx.root.id, htmlMatch[1], wireId) : null;
-          return await serveHtml(res, realPath, frame, baseDir, htmlMatch[1]);
+          return await serveHtml(req, res, realPath, frame, baseDir, htmlMatch[1]);
         }
         // An SVG is a document: it can carry <script>, and served inline from
         // this origin it runs with the same authority as the page beside it.

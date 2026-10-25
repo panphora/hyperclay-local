@@ -1,6 +1,6 @@
 const fs = require('fs').promises;
 const path = require('path');
-const { resolveRuntimeURL } = require('./offline-runtime/resolver.cjs');
+const { resolveRuntimeURL, parseRuntimeURL, projectRuntimeHTML } = require('./offline-runtime/resolver.cjs');
 
 const manifest = require('./offline-runtime/manifest.json');
 const root = path.join(__dirname, 'offline-runtime');
@@ -27,10 +27,29 @@ function assetFor(version, publicPath) {
   };
 }
 
+// The same resolution for a URL that is already one of this host's own:
+// `resolveRuntimeURL` answers null to a `/_/clayjs/` URL because there is nothing to
+// project, and the route serving those bytes needs the opposite answer.
+function resolveLocal(rawURL, { documentURL } = {}) {
+  const parsed = parseRuntimeURL(rawURL, { documentURL });
+  if (!parsed || parsed.kind !== 'local') return null;
+  const files = Object.hasOwn(releases, parsed.version) ? releases[parsed.version].files : null;
+  return {
+    kind: 'local',
+    version: parsed.version,
+    path: parsed.path,
+    search: parsed.search,
+    hash: parsed.hash,
+    available: Boolean(files && Object.hasOwn(files, parsed.path)),
+    canonicalURL: rawURL,
+    localURL: `/_/clayjs/${parsed.version}/${parsed.rawPath}${parsed.search}${parsed.hash}`,
+  };
+}
+
 async function readAsset(version, publicPath) {
   const asset = assetFor(version, publicPath);
   if (!asset) throw new Error(`No bundled ClayJS asset ${version}/${publicPath}`);
   return fs.readFile(asset.file);
 }
 
-module.exports = { releases, selectedVersion: manifest.selected, resolve, assetFor, readAsset };
+module.exports = { releases, selectedVersion: manifest.selected, resolve, resolveLocal, projectRuntimeHTML, assetFor, readAsset };
