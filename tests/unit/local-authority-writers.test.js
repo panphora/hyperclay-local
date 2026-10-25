@@ -1223,7 +1223,7 @@ describe('B6: the authority upload and standalone Tailwind cache miss', () => {
     const res = await uploadRequest(a.server, { origin: a.origin, docName: 'doc.html', filename: 'photo.png', bytes });
 
     expect(res.status).toBe(200);
-    expect(res.body.uploads).toEqual([{ name, url: `/_/uploads/assets-doc/${name}`, bytes: bytes.length }]);
+    expect(res.body.uploads).toEqual([{ name, url: `/_/uploads/assets-doc/${name}`, bytes: bytes.length, access: 'local' }]);
     expect(opens).toBe(1);
     expect(fs.readFileSync(candidate)).toEqual(bytes);
 
