@@ -31,6 +31,10 @@ async function cleanup(dir) {
   await fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 }
 
+// Each boundary case saves a 20 MiB body, which takes seconds on a loaded machine; the
+// default 5 s timeout measures the machine, not the limit.
+jest.setTimeout(30_000);
+
 describe('the advertised save limit is the one the save path enforces', () => {
   let dir;
   let app;

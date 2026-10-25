@@ -52,4 +52,21 @@ async function readAsset(version, publicPath) {
   return fs.readFile(asset.file);
 }
 
-module.exports = { releases, selectedVersion: manifest.selected, resolve, resolveLocal, projectRuntimeHTML, canonicalizeRuntimeHTML, assetFor, readAsset };
+// Parsing a large document costs seconds, and most documents name no runtime URL at all.
+// A projection only rewrites clayjs.com URLs, and a canonicalization only undoes this
+// host's /_/clayjs/ addresses and descriptor, so a document with neither is returned as is.
+const MAY_PROJECT = /clayjs\.com/i;
+const MAY_CANONICALIZE = /\/_\/clayjs\/|clay-runtime-map/i;
+
+function projectHTML(html, options) {
+  if (!MAY_PROJECT.test(html)) return { html, mappings: [], skipped: [], unavailable: [] };
+  return projectRuntimeHTML(html, options);
+}
+
+function canonicalizeHTML(html, options) {
+  if (!MAY_CANONICALIZE.test(html)) return { html, changed: 0, descriptorRemoved: false };
+  return canonicalizeRuntimeHTML(html, options);
+}
+
+module.exports = { releases, selectedVersion: manifest.selected, resolve, resolveLocal,
+  projectRuntimeHTML: projectHTML, canonicalizeRuntimeHTML: canonicalizeHTML, assetFor, readAsset };
