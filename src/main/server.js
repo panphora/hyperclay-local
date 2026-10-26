@@ -2384,6 +2384,8 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // this route gives.
       let conflict = null;
 
+      let refusedStamp = null;
+
       // Filled by the commit below with the clean file part, which is what a
       // `Prefer: return=representation` caller may be handed.
       const answer = {};
@@ -2427,6 +2429,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           if (e.code !== 'ENOENT') unreadable = e;
         }
         const dataLossPrev = storedBytes === null ? null : storedBytes.toString('utf8');
+        if (storedBytes !== null) refusedStamp = documentEtag(storedBytes);
 
         // A zero-byte file that something is still emptying is not a document, and
         // writing over it loses what the page is about to be told is there.
@@ -2549,12 +2552,17 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         const failure = pageWriteFailure(error);
         if (failure) {
           if (failure.retryAfter !== undefined) res.set('Retry-After', String(failure.retryAfter));
+          const stamp = failure.code === 'page-lineage-stale' || failure.code === 'page-nothing-to-write'
+            ? refusedStamp
+            : null;
+          if (stamp) res.set('ETag', stamp);
           console.log(`Refused a save of ${name}: ${failure.code}`);
           return res.status(failure.statusCode).json({
             msg: failure.message,
             msgType: 'error',
             code: failure.code,
             ...(failure.reason === undefined ? {} : { reason: failure.reason }),
+            ...(stamp ? { etag: stamp } : {}),
           });
         }
         if (error && error.code === 'moved-or-deleted') {

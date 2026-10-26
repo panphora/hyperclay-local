@@ -16,14 +16,14 @@ const entries = { ...supplement.entries, ...manifest.entries };
 
 const plan = resolveModules(new URLSearchParams(query), true, { isDraftMode: false, hasSap: false, canEdit: true });
 const logical = [...plan.core, ...plan.plugins, ...(plan.late ?? [])];
-logical.push(...logical.flatMap((path) => BOOT_IMPORTS[path] ?? []), ...EDIT_BOOT_IMPORTS, 'core/mode-lifecycle.js');
+logical.push(...logical.flatMap((path) => BOOT_IMPORTS[path] ?? []), ...EDIT_BOOT_IMPORTS);
 if (plan.plugins.includes('plugins/page.js')) {
   logical.push(...EDITOR_BOOT_IMPORTS, ...Object.values(FEATURES).map((feature) => feature.module));
 }
 
 const files = new Set(['clay.js', `m/${manifest.edit}`]);
 const missing = [];
-const stack = [];
+const stack = [manifest.runtime, manifest.entries['loader.js']];
 for (const path of logical) {
   if (entries[path]) stack.push(entries[path]);
   else missing.push(path);

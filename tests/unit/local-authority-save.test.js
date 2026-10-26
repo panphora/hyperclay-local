@@ -261,12 +261,15 @@ describe('B3a: the browser save through the shared boundary', () => {
       const res = await save(a.server, 'index.html', DOC(1));
 
       expect(res.status).toBe(409);
+      const stamp = documentEtag(before);
       expect(res.body).toEqual({
         msg: `Page conversion refused: ${reason}`,
         msgType: 'error',
         code,
-        reason
+        reason,
+        etag: stamp
       });
+      expect(res.headers.etag).toBe(stamp);
       expect(await fsp.readFile(indexPath)).toEqual(before);
       await expect(fsp.access(path.join(h.dir, '.hyperclay', 'versions'))).rejects.toThrow();
       expect(h.fileWrittenCalls).toHaveLength(0);

@@ -38,7 +38,8 @@ const editSetScript = path.join(__dirname, '../fixtures/offline-mode/edit-set.mj
 
 const selected = require('../../src/main/offline-runtime/manifest.json').selected;
 const index = require(path.join(releaseRoot, selected, 'offline-manifest.json'));
-const chunks = require(path.join(releaseRoot, selected, 'm/manifest.json')).entries;
+const manifest = require(path.join(releaseRoot, selected, 'm/manifest.json'));
+const chunks = manifest.entries;
 const releaseDir = path.join(releaseRoot, selected);
 
 const TEMPLATES = ['page', 'kanban', 'blank'];
@@ -145,6 +146,8 @@ describe('a switch to edit has every file it loads, offline', () => {
     const pageSet = new Set(editSet('page').files);
     expect(pageSet.has(`m/${chunks['page/editor.js']}`)).toBe(true);
     expect(pageSet.has(`m/${chunks['core/mode-lifecycle.js']}`)).toBe(true);
+    expect(pageSet.has(`m/${manifest.runtime}`)).toBe(true);
+    expect(pageSet.has(`m/${manifest.entries['loader.js']}`)).toBe(true);
   });
 
   test('HTTP and the Electron offline session answer the same bytes for every file', async () => {
