@@ -1,0 +1,1 @@
+import{b as i,d as n}from"./c-66O32MV3.js";var{Plugin:g,PluginKey:c}=i,{DecorationSet:p}=n,e=new c("page-highlight");function h(){return new g({key:e,state:{init:()=>p.empty,apply(t,a){let o=t.getMeta(e);return o?p.create(t.doc,o):a.map(t.mapping,t.doc)}},props:{decorations:t=>e.getState(t)}})}export{e as a,h as b};

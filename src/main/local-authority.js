@@ -867,6 +867,27 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     return member;
   }
 
+  function notePageFormat(member, capability) {
+    const record = registry.get(member.target.canonicalPath);
+    if (!record || !record.members.has(member)) return null;
+    member.pageFormat = capability;
+    return member;
+  }
+
+  // Every connected editor's declared page capability, participating or not. A
+  // tab that never declared counts as 0, so a floor cannot rise under a tab that
+  // has not said it can read it.
+  function admittedFormats(canonicalPath) {
+    const record = registry.get(canonicalPath);
+    if (!record) return [];
+    return [...record.members].map((member) => member.pageFormat ?? 0);
+  }
+
+  // The floor of the bytes this authority confirmed for one canonical file.
+  function pageFormatFloorOf(canonicalPath) {
+    return core.pageFormatFloor(confirmedDocument(canonicalPath) ?? '');
+  }
+
   function hasParticipatingEditors(canonicalPath) {
     const record = registry.get(canonicalPath);
     return Boolean(record && [...record.members].some((member) => member.participating));
@@ -884,9 +905,11 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     if (!EVENT_NAMES.has(event)) return 0;
     const record = registry.get(canonicalPath);
     if (!record) return 0;
+    const floor = pageFormatFloorOf(canonicalPath);
     let sent = 0;
     for (const member of [...record.members]) {
       if (!record.members.has(member) || typeof member.send !== 'function') continue;
+      if ((member.pageFormat ?? 0) < floor) continue;
       try {
         member.send(event, payload);
         sent += 1;
@@ -1386,6 +1409,9 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     newestEditor,
     connectedIds,
     markParticipating,
+    notePageFormat,
+    admittedFormats,
+    pageFormatFloorOf,
     hasParticipatingEditors,
     wakeCheckpoint(key) { checkpointService?.wake(key); },
     hasUnjoinedEditors,

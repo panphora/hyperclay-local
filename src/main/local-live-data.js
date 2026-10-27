@@ -24,6 +24,7 @@ const CORE_ERROR_STATUS = {
   'receipt-expired': 409,
   'page-generation': 409,
   'page-format': 409,
+  'page-format-upgrade-required': 409,
   'page-conversion-required': 409,
   'page-converting': 503,
   checkpointing: 503,
@@ -39,6 +40,7 @@ const MESSAGE = {
   'receipt-expired': 'Live update refused: receipt-expired.',
   'page-generation': 'Live update refused: page-generation.',
   'page-format': 'Live update refused: page-format.',
+  'page-format-upgrade-required': 'This document uses a newer page format; update the editor to keep writing.',
   'page-conversion-required': 'Live update refused: page-conversion-required.',
   'page-converting': 'This document is being converted.',
   checkpointing: 'This document is being saved. Try again shortly.',
@@ -149,6 +151,12 @@ function createLocalLiveData({ authority, resolveTarget } = {}) {
       // connected ids immediately before the single synchronous apply.
       const member = authority.currentEditor(target, clientId, body.conn);
       if (!member) return fail(res, 503, 'not-connected', MESSAGE['not-connected'], 1);
+      const { formatCapability } = require('@panphora/clayjs/server/rooms');
+      const capability = formatCapability(req.get('X-Clay-Page-Format'));
+      authority.notePageFormat(member, capability);
+      if (capability < authority.pageFormatFloorOf(target.canonicalPath)) {
+        return fail(res, 409, 'page-format-upgrade-required', MESSAGE['page-format-upgrade-required']);
+      }
       const connected = authority.connectedIds(target.canonicalPath);
       authority.markParticipating(member);
 
@@ -221,6 +229,12 @@ function createLocalLiveData({ authority, resolveTarget } = {}) {
       // The cold read may have outlived the target it opened the room for.
       if (!authority.isCurrentTarget(target)) return failWith(res, NOT_FOUND);
 
+      const { formatCapability } = require('@panphora/clayjs/server/rooms');
+      const capability = formatCapability(req.get('X-Clay-Page-Format'));
+      if (capability < authority.pageFormatFloorOf(target.canonicalPath)) {
+        return fail(res, 409, 'page-format-upgrade-required', MESSAGE['page-format-upgrade-required']);
+      }
+
       // The newest still-current connection for this exact proof, chosen after
       // any cold read. Without one there is no personal receipt and no conn: a
       // supplied client id that is not on the stream reads the shared state only.
@@ -229,6 +243,7 @@ function createLocalLiveData({ authority, resolveTarget } = {}) {
       if (typeof supplied === 'string') {
         const member = authority.newestEditor(target, supplied);
         if (member) {
+          authority.notePageFormat(member, capability);
           rooms.touch(room, supplied);
           authority.markParticipating(member);
           mine = supplied;

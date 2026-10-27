@@ -50,9 +50,11 @@ const { createLocalAuthority } = require('../../src/main/local-authority');
 const { withDocumentWrite, withStructureChange } = require('../../src/main/utils/write-queue');
 const { createRootLive } = require('../../src/main/utils/root-live');
 const { documentEtag } = require('../../src/main/spec-wire');
+const { pageFixture } = require('../helpers/page-fixture');
 
 const DOC = (value) => `<!DOCTYPE html><html><body><script type="application/json" merge="count" clay="live">${JSON.stringify({ n: value })}</script></body></html>`;
 const PAGE = (value) => `<!DOCTYPE html><html><body><script type="application/json" merge="page" clay="live">${JSON.stringify({ v: 1, y: { doc: value } })}</script></body></html>`;
+const PAGE_VALUE = pageFixture().update;
 
 const dirs = [];
 function tempDir() {
@@ -296,7 +298,7 @@ describe('B3a: the browser save through the shared boundary', () => {
     expect(room).toBeTruthy();
     const before = await fsp.readFile(indexPath);
 
-    const res = await save(a.server, 'index.html', PAGE('AAAA'), { 'If-Match': documentEtag(before) });
+    const res = await save(a.server, 'index.html', PAGE(PAGE_VALUE), { 'If-Match': documentEtag(before) });
 
     expect(res.status).toBe(200);
     const written = await fsp.readFile(indexPath, 'utf8');
@@ -305,7 +307,7 @@ describe('B3a: the browser save through the shared boundary', () => {
     // into the room this document already had.
     const committed = h.core.get(indexPath);
     expect(committed.pageTransition.format).toBe('yjs');
-    expect(h.core.state(committed).stores.page.value).toEqual({ v: 1, y: { doc: 'AAAA' } });
+    expect(h.core.state(committed).stores.page.value).toEqual({ v: 1, y: { doc: PAGE_VALUE } });
     expect(h.fileWrittenCalls).toEqual([{ key: indexPath, html: written }]);
     expect(savedBroadcasts()).toHaveLength(1);
   });
@@ -317,7 +319,7 @@ describe('B3a: the browser save through the shared boundary', () => {
     const a = await startApp({ dir: h.dir, rootId: 'root-a', authority: h.authority });
     const before = await fsp.readFile(indexPath);
 
-    const res = await save(a.server, 'index.html', PAGE('AAAA'));
+    const res = await save(a.server, 'index.html', PAGE(PAGE_VALUE));
 
     expect(res.status).toBe(428);
     expect(res.body).toEqual({

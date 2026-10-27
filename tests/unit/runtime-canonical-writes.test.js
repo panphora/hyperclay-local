@@ -203,7 +203,7 @@ describe('a save this host did not project is canonicalized anyway', () => {
   // A browser serializes a URL with character references inside it, and the save
   // carries them back: the same local URL, spelled with entities.
   test('an entity-encoded local URL is canonicalized', () => {
-    const html = '<script src="&#47;_&#47;clayjs&#47;1.15.2/clay.js"></script>';
+    const html = `<script src="&#47;_&#47;clayjs&#47;${selected}/clay.js"></script>`;
 
     expect(canonicalForWrite(html)).toBe(`<script src="https://clayjs.com/${selected}/clay.js"></script>`);
   });

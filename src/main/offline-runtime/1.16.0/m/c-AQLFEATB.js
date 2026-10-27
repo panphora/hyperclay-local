@@ -1,0 +1,1 @@
+var s={"permission-denied":"You don't have permission to edit this document.","save-failed":"Couldn't save, so this page stays in edit mode.","host-timeout":"The workspace didn't answer, so this page stays as it was."},o=new Set(["busy","cancelled"]);function t(e){return!e||e.ok!==!1||o.has(e.code)?null:s[e.code]||e.message||"Couldn't switch modes."}export{t as a};

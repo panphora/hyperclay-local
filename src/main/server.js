@@ -64,6 +64,15 @@ async function splitWrite(baseDir, name, html, { keepState = true } = {}) {
   return { file, logical: keepState ? await logicalDocument(baseDir, name, file) : file };
 }
 
+// Document 11 §6b: the `page-format-v1` extension is advertised only when both
+// halves exist — the shared rooms package can admit a page format, and the offline
+// runtime this app serves to documents carries the core that reads the marker.
+function pageFormatSupported({ rooms, runtimeDir } = {}) {
+  if (!rooms || typeof rooms.checkPageFormatAdmission !== 'function') return false;
+  if (!runtimeDir) return false;
+  return require('fs').existsSync(path.join(runtimeDir, 'src', 'core', 'page-format.js'));
+}
+
 // Spec §3: `/_/save` takes the document as text, so a JSON body is refused
 // rather than guessed at. Compares the media type only, ignoring parameters like
 // `; charset=utf-8`, and covers the `+json` structured suffix.
@@ -1861,6 +1870,24 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         return res.status(400).json({ error: validated.error });
       }
 
+      // Doc 11 §6b: the relay hands whole documents between tabs and never writes,
+      // but a tab that cannot read a floor-raised document must not receive one.
+      // The authority's confirmed bytes are the floor; a file no room has confirmed
+      // falls back to the bytes on disk, and an unreadable file is floor 0.
+      const { formatCapability, pageFormatFloor, PAGE_FORMAT_UPGRADE } = roomsPackage();
+      const confirmed = ctx.localAuthority ? ctx.localAuthority.confirmedDocument(validated.resolvedPath) : null;
+      let relayFloor = 0;
+      if (typeof confirmed === 'string') relayFloor = pageFormatFloor(confirmed);
+      else {
+        try { relayFloor = pageFormatFloor(await fs.readFile(validated.resolvedPath, 'utf8')); } catch { relayFloor = 0; }
+      }
+      if (relayFloor > formatCapability(req.get('X-Clay-Page-Format'))) {
+        return res.status(409).json({
+          code: PAGE_FORMAT_UPGRADE,
+          msg: 'This document uses a newer page format; update the editor to keep writing.',
+        });
+      }
+
       try {
         if (documentHtml !== null) {
           // Viewers only, and nothing else happens: this artifact is not a
@@ -2068,7 +2095,13 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
 
     const pageWriteFailure = (error) => {
       if (!error) return null;
-      const { PageConversionError, PageFormatError } = require('@panphora/clayjs/server/rooms');
+      const { PageConversionError, PageFormatError, PAGE_FORMAT_UPGRADE } = require('@panphora/clayjs/server/rooms');
+      if (error && error.code === PAGE_FORMAT_UPGRADE) {
+        return { statusCode: 409, code: PAGE_FORMAT_UPGRADE, reason: PAGE_FORMAT_UPGRADE, minimum: error.minimum, message: error.message };
+      }
+      if (error.code === 'invalid-update') {
+        return { statusCode: 422, code: 'page-conversion-refused', reason: 'invalid-capture', message: 'The page content could not be read.' };
+      }
       if (error instanceof PageFormatError) {
         return { statusCode: 409, code: 'page-format', message: error.message };
       }
@@ -2094,7 +2127,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
     async function commitDocument({
       name, filePath, content, dataLossPrev, userDriven, saveId, origin = 'save',
       target = null, token = null, ifMatch = undefined, pageConversion = undefined,
-      pageWrite = undefined,
+      pageWrite = undefined, pageFormat = undefined,
       persistentToken = null, readIdentity = null, answer = null,
     }) {
       // ANCILLARY DISK CONVENTION: versions dir and backups use baseName without
@@ -2123,7 +2156,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         if (rebased) content = rebased.html;
       }
       const write = await splitWrite(baseDir, name, content, { keepState: !pageConversion });
-      const fileContent = write.file;
+      let fileContent = write.file;
       content = write.logical;
       // A caller that has to hand a client the document it can safely edit asks for
       // the file part here: the composed form above carries merge state that belongs
@@ -2139,7 +2172,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           // conversion is admitted here, before the first backup, and its
           // reservation is held across the backup and the atomic write so no
           // frame can change the room while the disk result is pending.
-          const { checkPageWriteAdmission, pageLineageLost } = require('@panphora/clayjs/server/rooms');
+          const { checkPageWriteAdmission, pageLineageLost, checkPageFormatAdmission, formatCapability, withPageFormatFloor, PAGE_FORMAT, PAGE_FORMAT_UPGRADE } = require('@panphora/clayjs/server/rooms');
           const { createDocument } = require('./page-rebase.js');
           const rooms = authority.rooms;
           const open = rooms.get(filePath);
@@ -2149,6 +2182,12 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
             currentHtml, html: content, header: pageConversion ?? null, ifMatch, room,
             pageWrite: pageWrite ?? null, createDocument,
           });
+          const capability = origin === 'checkpoint' ? PAGE_FORMAT : formatCapability(pageFormat);
+          const admitted = authority.admittedFormats(filePath);
+          const format = checkPageFormatAdmission({ currentHtml, html: content, capability, admitted });
+          content = format.html;
+          fileContent = withPageFormatFloor(fileContent, format.floor);
+          if (answer) answer.html = fileContent;
           if (admission === 'initial') {
             pageToken = rooms.reservePageInitial(filePath, {
               nodeId: target.identity, currentHtml, html: content, ifMatch,
@@ -2611,7 +2650,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         content = await commitDocument({
           name, filePath: canonicalPath, content, dataLossPrev, userDriven, saveId,
           target, token, ifMatch, pageConversion: req.headers['page-conversion'], answer,
-          pageWrite: req.headers['page-write'],
+          pageWrite: req.headers['page-write'], pageFormat: req.get('X-Clay-Page-Format'),
         });
         });
 
@@ -2677,6 +2716,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
             msgType: 'error',
             code: failure.code,
             ...(failure.reason === undefined ? {} : { reason: failure.reason }),
+            ...(failure.minimum === undefined ? {} : { minimum: failure.minimum }),
             ...(stamp ? { etag: stamp } : {}),
           });
         }
@@ -2841,6 +2881,10 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // `people` (§9) when the app supplies a person: one app-wide profile, so the
       // answer is the same in every root. Never `members`: a profile is not a directory.
       if (ctx.person) body.extensions.push('people');
+      if (pageFormatSupported({
+        rooms: roomsPackage(),
+        runtimeDir: path.join(__dirname, 'offline-runtime', runtimeAssets.selectedVersion),
+      })) body.extensions.push(roomsPackage().PAGE_FORMAT_EXTENSION);
       body.extensions.sort();
       const href = documentUrlHeader(req);
       if (href) {
@@ -3394,9 +3438,16 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         // disk, wherever the version's bytes came from.
         let html = stripSaveToken(data.toString('utf8'));
         const state = await readPageState(baseDir, rel);
-        const stamped = state && !roomsPackage().splitPage(html).state ? roomsPackage().stampPageRev(html, state.rev) : null;
+        const { pageFormatFloor, withPageFormatFloor } = roomsPackage();
+        // A restore is a person's explicit choice, so it is never refused; it only
+        // keeps the floor the document already established.
+        const storedFloor = pageFormatFloor(current ? current.toString('utf8') : '');
+        const stamped = state && !roomsPackage().splitPage(html).state
+          ? roomsPackage().stampPageRev(html, state.rev, Math.max(storedFloor, pageFormatFloor(html)))
+          : null;
         const edit = Boolean(stamped);
         if (stamped) html = stamped;
+        else html = withPageFormatFloor(html, storedFloor);
         if (!hasHtmlRoot(html)) {
           console.error(`Refusing to restore ${versionName} of ${rel}: not a complete HTML document`);
           refusal = { status: 422, message: 'version is not a complete HTML document' };
@@ -3742,6 +3793,7 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
                   const written = result.html === previous ? previous : await commitDocument({
                     name, filePath: target.canonicalPath, content: result.html, dataLossPrev: previous,
                     userDriven: false, saveId: '', origin: 'api', target, token, persistentToken: held,
+                    pageFormat: req.get('X-Clay-Page-Format'),
                   });
                   const fresh = await readPageDocument(cheerio.load, written, options);
                   return { status: 200, headers: { ETag: documentEtag(Buffer.from(written, 'utf8')),
@@ -3762,7 +3814,8 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
                 ...(query.present ? { dataParam: query.text } : {}),
                 commit: (html, previous) => commitDocument({
                   name, filePath: target.canonicalPath, content: html, dataLossPrev: previous,
-                  userDriven: false, saveId: '', origin: 'api', target, token
+                  userDriven: false, saveId: '', origin: 'api', target, token,
+                  pageFormat: req.get('X-Clay-Page-Format')
                 })
               });
             })
@@ -3771,7 +3824,8 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
               ifMatch: req.headers['if-match'],
               ...(query.present ? { dataParam: query.text } : {}),
               commit: (html, previous) => commitDocument({
-                name, filePath: sourcePath, content: html, dataLossPrev: previous, userDriven: false, saveId: '', origin: 'api'
+                name, filePath: sourcePath, content: html, dataLossPrev: previous, userDriven: false, saveId: '', origin: 'api',
+                pageFormat: req.get('X-Clay-Page-Format')
               })
             });
         if (result.status === 200) console.log(`Wrote data into ${name}`);
@@ -3783,6 +3837,15 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         if (error?.name === 'PersistentReservationError') {
           const status = error.code === 'checkpointing' ? 503 : 409;
           return res.status(status).json({ code: error.code, error: error.message });
+        }
+        const formatFailure = pageWriteFailure(error);
+        if (formatFailure) {
+          return res.status(formatFailure.statusCode).json({
+            code: formatFailure.code,
+            reason: formatFailure.reason,
+            minimum: formatFailure.minimum,
+            msg: formatFailure.message,
+          });
         }
         console.error('Site API write error:', error);
         return res.status(500).json({ error: 'Internal server error', message: 'An unexpected error occurred' });
@@ -4103,6 +4166,7 @@ module.exports = {
   sweepExpiredSnapshots,
   // Exported for testing
   createApp,
+  pageFormatSupported,
   boundedWriter,
   handleSharedSyncStreamV2,
   handleAuthorityLiveStream,
