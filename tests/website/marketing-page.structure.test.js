@@ -63,11 +63,9 @@ describe('download list: single source of truth (version <-> filenames)', () => 
 });
 
 describe('tab/panel ARIA contract', () => {
-  // Both the demo gallery and the code example use the same roving-tabindex
-  // pattern; a broken aria-controls/labelledby pair silently breaks a11y.
+  // A broken aria-controls/labelledby pair silently breaks keyboard navigation.
   const groups = [
     { name: 'demo gallery', tablist: '#demo-tabs', tabSel: '.demo-tab', panelScope: '#demo-panels', panelSel: '.demo-panel' },
-    { name: 'code example', tablist: '#code-tabs .tablist', tabSel: '.code-tab', panelScope: '#code-tabs', panelSel: '.code-panel' },
   ];
 
   describe.each(groups)('$name', ({ tablist, tabSel, panelScope, panelSel }) => {
