@@ -44,6 +44,7 @@ const { documentEtag, ifMatchSatisfied } = require('./spec-wire');
 const { MAX_EXTERNAL_HTML } = require('./root-observer');
 const { buildEnvelope } = require('../sync-engine/control-lane-core.cjs');
 const { createLocalLiveData } = require('./local-live-data.js');
+const { PRESENCE_VERSION } = require('./presence-target');
 const { hasPageStore, loadPageModules, authoritativePageHtml } = require('./utils/page-api');
 const { logicalDocument, logicalBytes, storePageState, readPageState } = require('./page-state-store.js');
 const { rebaseStaleSave, needsAdoption, newestVersionFiles } = require('./page-rebase.js');
@@ -553,7 +554,7 @@ function stripSystemRouteMarker(url) {
 
 // Known `/_/` system routes on this host. Anything else under the marker is reserved
 // and 404s, so `/_/foo.html` can never reach the static catch-all and serve a document.
-const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'sync', 'wire', 'data-loss', 'api', 'meta', 'upload', 'uploads', 'versions', 'version', 'restore', 'clayjs']);
+const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'sync', 'wire', 'data-loss', 'api', 'meta', 'upload', 'uploads', 'versions', 'version', 'restore', 'clayjs', 'presence']);
 
 // Spec §3's code registry, keyed by the status this host answers with, so a
 // status and its code can never drift apart. A status the registry does not name
@@ -1066,6 +1067,88 @@ function boundedWriter(res, onDrop) {
 const LIVE_DOCUMENT_PATH = /\.(?:html|htmlclay)$/i;
 const LIVE_CLIENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
+// Presence's write half takes exactly two body shapes, and the two are two explicit
+// branches so the older one keeps the bytes it always sent. `{ v: 1, session, n, editing }`
+// is the extended envelope: the token names THIS tab's admitted stream and `n` orders its
+// frames. `{ editing }` alone is the legacy report, which can offer a dotted path or a
+// record and never a page target, whose coordinates need the envelope. An unknown key is
+// refused rather than ignored, so neither shape can be spelled half one half the other.
+const PRESENCE_SESSION_KEYS = new Set(['v', 'session', 'n', 'editing']);
+const PRESENCE_BODY_LIMIT = '16kb';
+
+function presenceSessionRequest(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  for (const key of Object.keys(body)) if (!PRESENCE_SESSION_KEYS.has(key)) return null;
+  if (body.v !== PRESENCE_VERSION) return null;
+  if (typeof body.session !== 'string' || body.session === '') return null;
+  if (!Number.isSafeInteger(body.n) || body.n < 0) return null;
+  if (!Object.prototype.hasOwnProperty.call(body, 'editing')) return null;
+  return { session: body.session, n: body.n, editing: body.editing };
+}
+
+function presenceReportRequest(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const keys = Object.keys(body);
+  if (keys.length !== 1 || keys[0] !== 'editing') return null;
+  return { editing: body.editing };
+}
+
+const presenceRefusal = (res, status, message, code) => res.status(status).json({ msg: message, msgType: 'error', code });
+
+// POST /_/presence: the caret this tab is standing on, accepted only from the stream the
+// token was issued to. Identity, document and tab all come from the admitted connection --
+// nothing in the body is read as a name, a colour or a person.
+async function handleAuthorityPresence(ctx, req, res, { resolveTarget }) {
+  const authority = ctx.localAuthority;
+  const body = req.body === null || req.body === undefined ? null : req.body;
+  const extended = Boolean(body) && typeof body === 'object' && !Array.isArray(body) &&
+    Object.prototype.hasOwnProperty.call(body, 'v');
+  const clientId = req.query?.['client-id'];
+  let request = extended ? presenceSessionRequest(body) : presenceReportRequest(body);
+  if (!request) {
+    return presenceRefusal(res, 400, extended
+      ? 'Send { v: 1, session, n, editing } with a client-id.'
+      : 'Send { editing } with a client-id.', 'invalid-request');
+  }
+  if (typeof clientId !== 'string' || !LIVE_CLIENT_ID.test(clientId)) {
+    return presenceRefusal(res, 400, extended
+      ? 'Send { v: 1, session, n, editing } with a client-id.'
+      : 'Send { editing } with a client-id.', 'invalid-request');
+  }
+  if (!documentUrlHeader(req)) {
+    return presenceRefusal(res, 400, 'Document-URL header required.', 'invalid-request');
+  }
+
+  let target;
+  try {
+    // Not fresh: presence is admitted on the document this tab already opened a stream on,
+    // so the warm binding is what proves the file exists and that this origin may have it.
+    target = await resolveTarget(req, { fresh: false });
+  } catch (err) {
+    const status = Number(err && err.status);
+    if (status === 403) return presenceRefusal(res, 403, 'Access denied', 'forbidden');
+    if (status === 400) return presenceRefusal(res, 400, 'Bad Request', 'invalid-request');
+    return presenceRefusal(res, 404, 'File not found', 'not-found');
+  }
+  if (!target || !authority.isCurrentTarget(target)) {
+    return presenceRefusal(res, 409, 'This tab has no open live stream on this document.', 'not-connected');
+  }
+
+  const result = extended
+    ? authority.presence.setTarget(target.canonicalPath, { clientId, ...request })
+    : authority.presence.report(target.canonicalPath, { clientId, ...request });
+  if (result.status === 'not-connected') {
+    return presenceRefusal(res, 409, 'This tab has no open live stream on this document.', 'not-connected');
+  }
+  if (result.status === 'forbidden') return presenceRefusal(res, 403, 'That session is not this tab\u2019s.', 'forbidden');
+  if (result.status === 'rate-limited') return presenceRefusal(res, 429, 'Too many presence updates.', 'rate-limited');
+  if (result.status === 'invalid') return presenceRefusal(res, 400, 'That is not a presence target.', 'invalid-request');
+  // `stale` lands here with `ok`: a number at or below the last one accepted changes
+  // nothing, and saying so would tell the sender which of its frames this host kept.
+  res.set('Cache-Control', 'no-store');
+  return res.status(204).end();
+}
+
 // The direct stream once a Local room registry exists. The bytes a consumer
 // already reads are unchanged -- the same resume, cursor and snapshot frames --
 // and a live subscription with a client id additionally carries the room's
@@ -1110,6 +1193,7 @@ async function handleAuthorityLiveStream(ctx, req, res, { file, lane, resolveTar
   let torn = false;
   let keepAlive = null;
   let member = null;
+  let presence = null;
   let disposeSnapshot = () => {};
   const writer = boundedWriter(res, () => teardown());
   const sink = { write: (message) => writer.write(message) };
@@ -1135,6 +1219,15 @@ async function handleAuthorityLiveStream(ctx, req, res, { file, lane, resolveTar
       send: (name, payload) => writer.write(`event: ${name}\ndata: ${JSON.stringify(payload)}\n\n`),
     })
     : null;
+  // Presence rides this same stream: every connection is a participant of the document
+  // it was admitted for, and a live tab that names itself is the one kind of connection
+  // that can hold a session. A saved-lane reader is told the roster and no coordinate.
+  presence = authority.presence.connect({
+    canonicalPath: target.canonicalPath,
+    lane,
+    clientId: clientId === undefined ? null : clientId,
+    send: (name, payload) => writer.write(`event: ${name}\ndata: ${JSON.stringify(payload)}\n\n`),
+  });
 
   keepAlive = setInterval(() => writer.write(': ping\n\n'), 30000);
 
@@ -1145,6 +1238,7 @@ async function handleAuthorityLiveStream(ctx, req, res, { file, lane, resolveTar
     torn = true;
     writer.stop();
     if (keepAlive) clearInterval(keepAlive);
+    if (presence) presence.close();
     if (member) member.close();
     disposeSnapshot();
     ctx.live.unsubscribe(file, sink);
@@ -1509,6 +1603,23 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       const markedOnly = (req, res, next) => (req.fromSystemRoute ? next() : next('route'));
       app.post('/sync/data', markedOnly, parseLiveDataBody, (req, res) => liveData.post(req, res));
       app.get('/sync/data', markedOnly, (req, res) => liveData.state(req, res));
+    }
+
+    // Presence, on the exact `/_/presence` address hyperclay spells. Registered only on
+    // the marker, so a user folder named `presence` keeps the static lane to itself, and
+    // only when a presence relay is installed: a host without one advertises nothing and
+    // answers nothing, which is the rollback a ClayJS client already detects.
+    if (ctx.localAuthority && ctx.localAuthority.presence) {
+      const presenceBody = express.json({ limit: PRESENCE_BODY_LIMIT });
+      const parsePresenceBody = (req, res, next) => presenceBody(req, res, (err) => {
+        if (!err) return next();
+        if (err.type === 'entity.too.large') {
+          return res.status(413).json({ msg: 'Presence update refused: too-large.', msgType: 'error', code: 'too-large' });
+        }
+        return res.status(400).json({ msg: 'Bad request.', msgType: 'error', code: 'invalid-request' });
+      });
+      app.post('/presence', (req, res, next) => (req.fromSystemRoute ? next() : next('route')), parsePresenceBody,
+        (req, res) => handleAuthorityPresence(ctx, req, res, { resolveTarget: resolveLiveTarget }));
     }
 
     const apiWriteBody = (req, res, next) => express.text({ type: () => true, limit: API_WRITE_MAX_BYTES })(req, res, (err) => {
@@ -2716,6 +2827,13 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // the `htmlclay wire` CLI can drive a local process from a document here.
       const body = { spec: 1, extensions: ['conditional', 'data-read', 'data-write', 'format', 'receipts', 'scoped-stylesheet', 'sync', 'sync-worker', 'upload', 'wire'] };
       if (ctx.localAuthority) body.extensions.push('live-data', 'live-provenance', 'page');
+      // Presence is announced only by the host that actually runs the relay. `presence`
+      // is the legacy editing marker; the two versioned names are what a client needs
+      // before it publishes a record or a page target, so they are never advertised
+      // beside an implementation that would not accept one.
+      if (ctx.localAuthority && ctx.localAuthority.presence) {
+        body.extensions.push('presence', 'page-awareness-v1', 'record-awareness-v1');
+      }
       // `people` (§9) when the app supplies a person: one app-wide profile, so the
       // answer is the same in every root. Never `members`: a profile is not a directory.
       if (ctx.person) body.extensions.push('people');

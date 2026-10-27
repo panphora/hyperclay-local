@@ -7,6 +7,7 @@ const { publishRecoveredCopy } = require('./utils/backup');
 const { compatibleContinuation, renderRecovered } = require('./external-recovery');
 const { logicalDocument } = require('./page-state-store');
 const { needsAdoption } = require('./page-rebase.js');
+const { createPresenceRelay } = require('./presence');
 
 const EVENT_NAMES = new Set(['data', 'data-state', 'data-writer']);
 const RATE_LIMIT = Object.freeze({ rate: 25, burst: 40, idleMs: 60 * 1000 });
@@ -43,6 +44,9 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
   };
 
   let checkpointService = null;
+  // Presence is ephemeral and belongs to no room: sessions, their targets and their TTL
+  // live in this closure and are never written to a room value, a checkpoint or a sidecar.
+  const presence = createPresenceRelay({ now, newId });
 
   const registry = new Map();
   const buckets = new Map();
@@ -1365,6 +1369,7 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
 
   return {
     rooms,
+    presence,
     setCheckpointService(service) { checkpointService = service; },
     roomIsDirty,
     checkpointTargets,
