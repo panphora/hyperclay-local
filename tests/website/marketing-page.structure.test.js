@@ -195,8 +195,10 @@ describe('local assets resolve on disk (self-contained bundle)', () => {
   });
 
   test('the page references its local assets', () => {
-    expect(refs.has('mirk.css')).toBe(true);
-    expect(refs.has('mirk.js')).toBe(true);
+    expect(refs.has('vendor/bevel/bevel.css')).toBe(true);
+    expect(refs.has('vendor/bevel/bevel-fonts.css')).toBe(true);
+    expect(refs.has('site.css')).toBe(true);
+    expect(refs.has('vendor/bevel/bevel.js')).toBe(true);
     expect(refs.has('sap.min.js')).toBe(true);
     expect(refs.has('assets/app-popover.png')).toBe(true);
   });
@@ -205,8 +207,8 @@ describe('local assets resolve on disk (self-contained bundle)', () => {
     expect(fs.existsSync(path.join(WEBSITE_DIR, ref))).toBe(true);
   });
 
-  test('the @font-face url in mirk.css resolves', () => {
-    const css = fs.readFileSync(path.join(WEBSITE_DIR, 'mirk.css'), 'utf8');
+  test('the headline font in site.css resolves', () => {
+    const css = fs.readFileSync(path.join(WEBSITE_DIR, 'site.css'), 'utf8');
     const m = /url\(['"]?([^'")]+\.woff2)['"]?\)/.exec(css);
     expect(m).not.toBeNull();
     expect(fs.existsSync(path.join(WEBSITE_DIR, m[1]))).toBe(true);
@@ -256,9 +258,9 @@ describe('progressive-enhancement baseline (works before JS runs)', () => {
 });
 
 describe('theme system static invariants', () => {
-  test('the flash-of-wrong-theme guard runs before mirk.css loads', () => {
+  test('the flash-of-wrong-theme guard runs before Bevel loads', () => {
     const guardIdx = html.indexOf("localStorage.getItem('hcl-theme')");
-    const cssIdx = html.indexOf('href="mirk.css"');
+    const cssIdx = html.indexOf('href="vendor/bevel/bevel.css"');
     expect(guardIdx).toBeGreaterThan(-1);
     expect(cssIdx).toBeGreaterThan(-1);
     expect(guardIdx).toBeLessThan(cssIdx);

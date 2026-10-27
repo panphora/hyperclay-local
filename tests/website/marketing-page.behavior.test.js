@@ -119,8 +119,8 @@ describe('theme toggle', () => {
   test('with no stored choice, the initial icon follows the OS and storage stays untouched', () => {
     const { els, localStorage } = run({ osDark: true }); // OS = dark, nothing saved
     expect(els.btn.getAttribute('aria-pressed')).toBe('true');
-    expect(els.sun.hidden).toBe(false); // dark mode shows the sun (what you'd switch to)
-    expect(els.moon.hidden).toBe(true);
+    expect(els.sun.hasAttribute('hidden')).toBe(false); // dark mode shows the sun (what you'd switch to)
+    expect(els.moon.hasAttribute('hidden')).toBe(true);
     expect(localStorage.dump()).not.toHaveProperty('hcl-theme'); // never writes on load
   });
 
@@ -131,8 +131,8 @@ describe('theme toggle', () => {
     expect(els.root.classList.contains('dark')).toBe(false);
     expect(localStorage.dump()['hcl-theme']).toBe('light');
     expect(els.btn.getAttribute('aria-pressed')).toBe('false');
-    expect(els.sun.hidden).toBe(true);
-    expect(els.moon.hidden).toBe(false);
+    expect(els.sun.hasAttribute('hidden')).toBe(true);
+    expect(els.moon.hasAttribute('hidden')).toBe(false);
   });
 
   test('a stored choice overrides the OS preference', () => {

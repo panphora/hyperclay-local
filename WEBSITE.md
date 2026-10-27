@@ -5,14 +5,14 @@
 ## What It Includes
 
 - A static, no-build page in `website/`.
-- Local UI/runtime assets: `mirk.css`, `mirk.js`, `sap.min.js`, `assets/app-popover.png`, and the vendored Departure Mono font files.
+- Local UI/runtime assets: `vendor/bevel/` (styles, runtime, icons and IBM Plex fonts), `site.css`, `sap.min.js`, `assets/app-popover.png`, and Departure Mono for major headlines.
 - SEO and social metadata for `https://hyperclaylocal.com/`.
-- A sticky header with section navigation, GitHub link, and persisted light/dark toggle.
+- A header with the docs mascot, a plain light/dark icon, GitHub and Docs.
 - An OS-aware hero download button backed by the canonical download list.
 - An interactive hero: transparent hotspots over the popover screenshot let visitors click the Serve and Sync switches and the bell to swap between the five captured UI states.
 - Live in-page SAP demos for example single-file apps.
-- Example malleable document snippets for HyperclayJS and plain JavaScript.
-- FAQ and troubleshooting content for installation, source builds, saving, and safety.
+- Canonical documentation links for creating and saving malleable documents.
+- FAQ answers and links to the canonical setup, saving and troubleshooting documentation.
 
 ## How To Use It
 
@@ -38,8 +38,8 @@ These Jest tests parse the shipped HTML and execute the page's inline behavior s
 The download list in `#downloads` is the single source of truth. When bumping the page to a new app release, update:
 
 - `#downloads[data-version]`
-- the four download filenames and `href` values
-- the four visible file sizes
+- the five download filenames and `href` values
+- the five visible file sizes
 
 The hero download button reads that static list at runtime. It chooses macOS, Windows, or desktop Linux from the user agent; macOS defaults to Apple Silicon and switches to Intel only when `navigator.userAgentData` reports an x86 architecture. Mobile and unknown platforms fall back to the full download list.
 
@@ -69,9 +69,9 @@ The hero `#hero-shot` frame holds one `<img id="hero-img">` plus four transparen
 
 ## Design Notes
 
-The page is intentionally self-contained. `mirk.css` supplies the UI kit and theme tokens, while `index.html` owns the page-specific layout and copy. The root element uses `data-theme="full-volume"` to align the page palette with the app popover screenshot.
+The page is intentionally self-contained. `vendor/bevel/bevel.css` supplies the UI kit and light/dark tokens. `site.css` owns the page layout, `index.html` the content and interactions. Body and UI text use IBM Plex Sans, code and numbers use IBM Plex Mono, and major headlines retain Departure Mono. The vendored files are exact copies from the sibling `bevel` repo, with its font licenses.
 
-Theme state uses the `hcl-theme` localStorage key. A small guard script runs before `mirk.css` loads to avoid a wrong-theme flash; the footer script updates the toggle icon, ARIA state, and persisted mode. With no saved choice, the page follows the OS color scheme.
+Theme state uses the `hcl-theme` localStorage key. A small guard script runs before Bevel loads to avoid a wrong-theme flash; the footer script updates the toggle icon, ARIA state, and persisted mode. With no saved choice, the page follows the OS color scheme.
 
 The SAP demos are embedded examples, not separate app files. Their collection templates, `trigger-add` forms, detail panes, computed totals, and tab/panel ARIA relationships are covered by `tests/website/marketing-page.structure.test.js`.
 
@@ -79,6 +79,6 @@ The SAP demos are embedded examples, not separate app files. Their collection te
 
 - Keep local references in `index.html` resolvable inside `website/`.
 - Preserve the `#downloads` source-of-truth contract when changing release links.
-- Preserve tab and panel ARIA pairings for both demo tabs and code-example tabs.
+- Preserve tab and panel ARIA pairings for the seven demo tabs.
 - Keep `target="_blank"` links paired with `rel="noopener"`.
 - Run `npm test -- tests/website` after changing markup, downloads, theme behavior, or live demos.

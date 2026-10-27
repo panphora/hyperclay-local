@@ -173,8 +173,9 @@ function makeDownloadDom({ version, hrefs }) {
 
 /** Build the DOM surface the theme-toggle script touches. */
 function makeThemeDom({ rootClasses = [] } = {}) {
-  const sun = makeEl({ hidden: true });
-  const moon = makeEl({ hidden: false });
+  const sun = makeEl();
+  sun.setAttribute('hidden', '');
+  const moon = makeEl();
   const btn = makeEl();
   btn.querySelector = (sel) => {
     if (sel.includes('sun')) return sun;
