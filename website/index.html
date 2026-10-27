@@ -451,6 +451,7 @@
     <div class="header-inner">
       <a class="wordmark" href="#top"><img class="wm-mark" src="mark.svg" alt="" width="21" height="24">Hyperclay&nbsp;Local</a>
       <nav class="header-nav" aria-label="Primary">
+        <a class="header-link" href="/docs/">Docs</a>
         <button id="theme-toggle" class="theme-toggle mirk-button mirk-button--round" type="button" aria-label="Switch to light mode" aria-pressed="false">
           <span class="mirk-button__label">
             <svg data-icon="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
@@ -492,21 +493,14 @@
         <span class="mirk-button__label" id="download-btn-text">Download</span>
       </a>
       <p class="dl-subtext" id="download-subtext"><a href="#downloads">See all downloads</a></p>
+      <p class="dl-subtext"><a href="/docs/guide/quick-start/">Get started</a></p>
     </div>
 
     <!-- 2. Point it at a folder -->
     <section class="section">
       <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Getting started</p>
       <h2 class="section-h">Point it at a folder</h2>
-      <div class="prose">
-        <ul>
-          <li>Pick a folder on your machine.</li>
-          <li>Click start in the tray, and the app serves that folder on localhost.</li>
-          <li>Open a page in your browser and edit the file using its own UI.</li>
-          <li>Hit save, and the page writes its new HTML back to the real file on disk.</li>
-        </ul>
-        <p class="result-line"><span class="result-label">Result:</span> You have a real desktop application in a single HTML file.</p>
-      </div>
+      <div class="prose"><p>Pick a folder inside your home folder. On first setup, Hyperclay Local starts serving it automatically. Open a malleable document in the workspace or your browser, edit it, and save back to disk. <a href="/docs/guide/quick-start/">Get started</a>.</p></div>
     </section>
 
     <!-- 3. A file that remembers -->
@@ -525,11 +519,7 @@
     <section class="section" id="how-it-saves">
       <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>How it works</p>
       <h2 class="section-h">What the app actually does</h2>
-      <div class="prose">
-        <p>Browsers can open an HTML file, but the sandbox stops them from writing back to disk. Hyperclay Local closes that gap. It runs a small local Express server with a single endpoint:</p>
-        <div class="code-block"><pre>POST /_/save</pre></div>
-        <p>When a page saves, it posts its own HTML to that endpoint with a <code class="inline">Document-URL</code> header naming the page, and the server maps it to the right file inside the folder you chose. It writes the file and keeps the previous version as a backup. That is the whole system. You can read the server in an afternoon.</p>
-      </div>
+      <div class="prose"><p>ClayJS prepares your page's HTML and sends it to Hyperclay Local. The local server writes the document back to its file and keeps version history on disk. <a href="/docs/saving/">Read how saving works</a>.</p></div>
     </section>
 
     <!-- 5. Interactive demos (the star) -->
@@ -742,80 +732,7 @@
     </section>
 
     <!-- 6. Example malleable document -->
-    <section class="section">
-      <p class="eyebrow"><span class="eyebrow-led" aria-hidden="true"></span>Under the hood</p>
-      <h2 class="section-h">Example malleable document</h2>
-      <p class="demo-lead">Here is a complete malleable document. Ten lines with HyperclayJS, or the same idea hand-rolled in plain JavaScript so you can see there is nothing hidden.</p>
-      <div class="code-tabs" id="code-tabs">
-        <div class="tablist" role="tablist" aria-label="Example code">
-          <button class="code-tab" role="tab" id="ctab-hyperclayjs" aria-controls="cpanel-hyperclayjs" aria-selected="true" tabindex="0" type="button">With HyperclayJS</button>
-          <button class="code-tab" role="tab" id="ctab-plainjs" aria-controls="cpanel-plainjs" aria-selected="false" tabindex="-1" type="button">Plain JavaScript</button>
-        </div>
-        <div class="code-panel" role="tabpanel" id="cpanel-hyperclayjs" aria-labelledby="ctab-hyperclayjs" tabindex="0">
-          <div class="code-block"><pre><code>&lt;!DOCTYPE html&gt;
-&lt;html lang="en"&gt;
-&lt;head&gt;
-  &lt;meta charset="utf-8"&gt;
-  &lt;meta name="viewport" content="width=device-width, initial-scale=1.0"&gt;
-  &lt;title&gt;Notes&lt;/title&gt;
-  &lt;script src="https://cdn.jsdelivr.net/npm/hyperclayjs@latest/src/hyperclay.js?preset=minimal&amp;features=autosave" type="module"&gt;&lt;/script&gt;
-&lt;/head&gt;
-&lt;body&gt;
-  &lt;h1 editmode:contenteditable&gt;Notes&lt;/h1&gt;
-  &lt;p editmode:contenteditable&gt;Start typing here. Everything saves to disk automatically.&lt;/p&gt;
-&lt;/body&gt;
-&lt;/html&gt;</code></pre></div>
-          <p class="code-note">This example loads HyperclayJS from a CDN so it is easy to try. For a fully offline file, vendor the script next to your HTML instead.</p>
-          <div class="code-features">
-            <b>HyperclayJS handles the rest:</b>
-            <ul>
-              <li>autosave</li>
-              <li>prevent leaving before saving</li>
-              <li>save keyboard shortcut</li>
-              <li>toast notification on save</li>
-              <li>edit mode</li>
-            </ul>
-            <p class="code-note">Edit mode is how these files become editable in place: click text to change it, then press Cmd+S or let autosave write it to disk.</p>
-          </div>
-        </div>
-        <div class="code-panel" role="tabpanel" id="cpanel-plainjs" aria-labelledby="ctab-plainjs" tabindex="0" hidden>
-          <div class="code-block"><pre><code>&lt;!DOCTYPE html&gt;
-&lt;html lang="en"&gt;
-&lt;head&gt;
-  &lt;meta charset="utf-8"&gt;
-  &lt;meta name="viewport" content="width=device-width, initial-scale=1.0"&gt;
-  &lt;title&gt;Notes&lt;/title&gt;
-&lt;/head&gt;
-&lt;body&gt;
-  &lt;h1 contenteditable&gt;Notes&lt;/h1&gt;
-  &lt;p contenteditable&gt;Start typing here. Everything saves to disk automatically.&lt;/p&gt;
-  &lt;script&gt;
-    // This code handles saving the file whenever it changes
-    let saving = false, again = false
-    async function save() {
-      if (saving) { again = true; return }
-      saving = true
-      try {
-        do {
-          again = false
-          await fetch('/_/save', {
-            method: 'POST',
-            headers: { 'Content-Type': 'text/html; charset=utf-8', 'Document-URL': location.href },
-            body: '&lt;!DOCTYPE html&gt;\n' + document.documentElement.outerHTML
-          })
-        } while (again)
-      } finally { saving = false }
-    }
-    document.addEventListener('input', save)
-    new MutationObserver(save).observe(document, {
-      childList: true, subtree: true, attributes: true, characterData: true
-    })
-  &lt;/script&gt;
-&lt;/body&gt;
-&lt;/html&gt;</code></pre></div>
-        </div>
-      </div>
-    </section>
+    
 
     <!-- Compared to what? -->
     <section class="section">
@@ -847,7 +764,7 @@
       <ul class="features">
         <li><b>Tailwind CSS on save.</b> <span class="prose-line">Point a stylesheet at <code class="inline">/tailwindcss/{yourFileName}.css</code> and the server compiles Tailwind on every save, including only the utilities that file actually uses. No build step to run yourself.</span></li>
         <li><b>Cloud sync, if you want it.</b> <span class="prose-line">Turn on sync to mirror your folder to your hyperclay.com account and back. It is off by default, the API key is encrypted with your OS keychain, and your files work exactly the same with it off.</span></li>
-        <li><b><a href="https://github.com/panphora/hyperclayjs" target="_blank" rel="noopener">HyperclayJS</a>.</b> <span class="prose-line">A modular toolkit for malleable documents: autosave, edit mode, sortable lists, toasts, dialogs, and more. Load a ready-made preset or pick the exact features you want.</span></li>
+        <li><b><a href="https://clayjs.com/docs/">ClayJS</a>.</b> <span class="prose-line">Type directly into a heading, format a note, or fill in a form. ClayJS can save the text and field values as part of the document. <a href="https://clayjs.com/docs/guide/quick-start/">Build your first editable file</a>.</span></li>
       </ul>
     </section>
 
@@ -897,9 +814,7 @@
 
       <details>
         <summary>How does the saving actually work?</summary>
-        <div class="faq__body">
-          <p>Your HTML file includes a small script that serializes a prepared clone of the page and posts it to the local server at <code class="inline">POST /_/save</code>, with a <code class="inline">Document-URL</code> header naming the page. The server maps that to the right file, writes it to disk, and keeps a backup of the previous version in a <code class="inline">sites-versions/</code> folder. <a href="https://github.com/panphora/hyperclayjs" target="_blank" rel="noopener">HyperclayJS</a> handles this for you. The minimal preset includes saving, snapshots, and edit mode out of the box.</p>
-        </div>
+        <div class="faq__body"><p>ClayJS prepares your page's HTML and sends it to Hyperclay Local. The local server writes the document back to its file and keeps version history on disk. <a href="/docs/saving/">Read how saving works</a>.</p></div>
       </details>
 
       <details>
@@ -924,46 +839,13 @@
         </div>
       </details>
 
-      <details>
-        <summary>Do I have to use HyperclayJS?</summary>
-        <div class="faq__body">
-          <p>No. HyperclayJS is a convenience. Any file that posts a prepared document to <code class="inline">/_/save</code> with a <code class="inline">Document-URL</code> header will save. The Plain JavaScript tab above is a complete, working example in under twenty lines.</p>
-        </div>
-      </details>
+      <details><summary>Do I have to use ClayJS?</summary><div class="faq__body"><p>No. <a href="https://clayjs.com/docs/">ClayJS</a> provides editing and saving, but you can write your own client using the same <a href="/docs/saving/">save endpoint</a>. Your document stays an HTML file.</p></div></details>
 
-      <details>
-        <summary>How do I build from source?</summary>
-        <div class="faq__body">
-          <p>Clone the repo and install dependencies:</p>
-          <div class="code-block"><pre>git clone https://github.com/panphora/hyperclay-local.git
-cd hyperclay-local
-npm install</pre></div>
-          <p>Run it in development mode with live reload:</p>
-          <div class="code-block"><pre>npm run dev</pre></div>
-          <p>Build a distributable for your current platform:</p>
-          <div class="code-block"><pre>npm run build</pre></div>
-          <p>For signed, platform-specific installers, see <a href="https://github.com/panphora/hyperclay-local/blob/main/BUILD.md" target="_blank" rel="noopener">BUILD.md</a>.</p>
-        </div>
-      </details>
+      
 
-      <details>
-        <summary>Port 4321 is already in use</summary>
-        <div class="faq__body">
-          <p>The server binds to port 4321 by default. If another process is using that port, the app shows an error. Kill the other process or wait for it to release the port.</p>
-        </div>
-      </details>
+      
 
-      <details>
-        <summary>The server won't start</summary>
-        <div class="faq__body">
-          <p>Check that:</p>
-          <ul>
-            <li>The folder you selected actually contains files</li>
-            <li>The folder path does not contain unusual special characters</li>
-            <li>Try selecting the folder again using the folder picker</li>
-          </ul>
-        </div>
-      </details>
+      <details><summary>Setup and troubleshooting</summary><div class="faq__body"><p>For installation and saving issues, see <a href="/docs/troubleshooting/">Troubleshooting</a>. For folder setup and port conflicts, see <a href="/docs/folders-and-ports/">Folders and ports</a>.</p></div></details>
 
       <details>
         <summary>Linux says permission denied</summary>
@@ -988,6 +870,7 @@ npm install</pre></div>
   <footer>
     <p>Source: <a href="https://github.com/panphora/hyperclay-local" target="_blank" rel="noopener">github.com/panphora/hyperclay-local</a></p>
     <p>Part of <a href="https://hyperclay.com" target="_blank" rel="noopener">Hyperclay</a></p>
+    <p><a href="/docs/">Documentation</a> · <a href="/docs/guide/sync/">Cloud sync</a> · <a href="/docs/troubleshooting/">Troubleshooting</a></p>
     <p>For agents: <a href="/llms.txt">llms.txt</a></p>
   </footer>
 
