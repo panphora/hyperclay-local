@@ -174,7 +174,8 @@ describe('the offline fixture server', () => {
     expect(onDisk).not.toContain('documentetag');
   });
 
-  test('SIGTERM shuts it down with exit 0 and the port stops answering, and stdout held one line', async () => {
+  // Windows cannot deliver SIGTERM to a child; the graceful exit is checked on macOS and Linux.
+  (process.platform === 'win32' ? test.skip : test)('SIGTERM shuts it down with exit 0 and the port stops answering, and stdout held one line', async () => {
     const port = Number(new URL(ready.baseURL).port);
     const exited = new Promise((resolve) => child.once('exit', (code) => resolve(code)));
 
