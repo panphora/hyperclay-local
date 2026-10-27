@@ -127,7 +127,12 @@ describe('a page document is stored clean and read composed', () => {
     const state = await readPageState(dir, NAME);
     expect(state).toEqual({ v: 1, rev: SPLIT.state.rev, tag: SPLIT.state.tag });
     const raw = await fs.readFile(pageStatePath(dir, NAME), 'utf8');
-    expect(JSON.parse(raw)).toEqual({ v: 1, rev: SPLIT.state.rev, tag: SPLIT.state.tag });
+    expect(JSON.parse(raw)).toEqual({
+      v: 1,
+      rev: SPLIT.state.rev,
+      tag: SPLIT.state.tag,
+      generation: expect.stringMatching(/^[0-9a-f]{32}$/)
+    });
 
     // The save route formats the body and stamps the result. This fixture opts into
     // neither formatHtml nor a Tailwind link rewrite, so the formatted body is the

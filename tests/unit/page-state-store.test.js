@@ -46,13 +46,19 @@ describe('page state sidecar store', () => {
     });
     const file = path.join(dir, '.hyperclay', 'page-state', 'notes.html.json');
     const text = await fs.readFile(file, 'utf8');
-    expect(JSON.parse(text)).toEqual({ v: 1, rev: 'r1', tag: '<script merge="page"></script>' });
+    expect(JSON.parse(text)).toEqual({
+      v: 1,
+      rev: 'r1',
+      tag: '<script merge="page"></script>',
+      generation: expect.stringMatching(/^[0-9a-f]{32}$/)
+    });
   });
 
   test('a nested name keeps its subdirectories', async () => {
     await writePageState(dir, 'a/b/c.htmlclay', { rev: 'r2', tag: 't' });
     const file = path.join(dir, '.hyperclay', 'page-state', 'a', 'b', 'c.htmlclay.json');
-    await expect(fs.readFile(file, 'utf8')).resolves.toBe(JSON.stringify({ v: 1, rev: 'r2', tag: 't' }));
+    const stored = JSON.parse(await fs.readFile(file, 'utf8'));
+    expect(stored).toEqual({ v: 1, rev: 'r2', tag: 't', generation: expect.stringMatching(/^[0-9a-f]{32}$/) });
   });
 
   test('corrupt JSON reads as null', async () => {

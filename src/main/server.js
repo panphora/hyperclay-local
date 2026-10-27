@@ -46,7 +46,7 @@ const { buildEnvelope } = require('../sync-engine/control-lane-core.cjs');
 const { createLocalLiveData } = require('./local-live-data.js');
 const { PRESENCE_VERSION } = require('./presence-target');
 const { hasPageStore, loadPageModules, authoritativePageHtml } = require('./utils/page-api');
-const { logicalDocument, logicalBytes, storePageState, readPageState } = require('./page-state-store.js');
+const { logicalDocument, logicalBytes, storePageState, readPageState, readPageRecord } = require('./page-state-store.js');
 const { rebaseStaleSave, needsAdoption, newestVersionFiles } = require('./page-rebase.js');
 const roomsPackage = () => require('@panphora/clayjs/server/rooms');
 const cheerio = require('cheerio');
@@ -554,7 +554,7 @@ function stripSystemRouteMarker(url) {
 
 // Known `/_/` system routes on this host. Anything else under the marker is reserved
 // and 404s, so `/_/foo.html` can never reach the static catch-all and serve a document.
-const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'sync', 'wire', 'data-loss', 'api', 'meta', 'upload', 'uploads', 'versions', 'version', 'restore', 'clayjs', 'presence']);
+const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'sync', 'wire', 'data-loss', 'api', 'meta', 'upload', 'uploads', 'versions', 'version', 'restore', 'clayjs', 'presence', 'page-state']);
 
 // Spec §3's code registry, keyed by the status this host answers with, so a
 // status and its code can never drift apart. A status the registry does not name
@@ -2868,7 +2868,10 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
               // The stamp of what is on disk right now. A client that loaded the page
               // before this host announced `conditional`, or that reloaded from cache,
               // has no stamp of its own; this is where it gets one without a save.
-              etag: documentEtag(stored)
+              etag: documentEtag(stored),
+              // The conditional read of the page state stored for these exact bytes, so a
+              // crash recovery can prove a checkpoint covers its journaled edits.
+              pageState: { href: '/_/page-state' }
             };
             // §6: the id of the save that produced exactly these bytes, when this
             // host can still prove the pairing. This is the surface a client asks
@@ -2891,6 +2894,73 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         res.set('Cache-Control', 'private, no-store');
       }
       return res.json(body);
+    });
+
+    // GET /_/page-state — the page state this host stored for the exact document bytes a
+    // client accepted, and the page lineage (generation) it belongs to. That is the whole
+    // question a crash recovery asks before it can prove a checkpoint covers its journaled
+    // edits and clear them. Document-scoped and conditional exactly as /_/save is: If-Match
+    // names the bytes whose state is being asked for, so a stamp that has moved on is a 412
+    // and never a state paired with bytes the client does not hold.
+    app.get('/page-state', async (req, res, next) => {
+      if (!req.originalUrl.startsWith('/_/page-state')) return next();
+      res.set('Cache-Control', 'no-store');
+      const refuse = (status, code, etag) => {
+        if (etag) res.set('ETag', etag);
+        res.status(status).json({ error: 'page state unavailable', code, ...(etag && { etag }) });
+      };
+      const href = documentUrlHeader(req);
+      const ifMatch = req.get('if-match');
+      if (!href) return refuse(404, 'no-page-state');
+      if (!ifMatch || !ifMatch.trim()) return refuse(428, 'precondition-required');
+      let name, filePath;
+      try {
+        name = resolveResourceFromHref(href);
+        filePath = await resolveWriteTarget(paths, name);
+      } catch {
+        return refuse(404, 'no-page-state');
+      }
+      try {
+        // Read, compare and select under the file's own lock, the one the save path takes,
+        // so a save landing in between cannot pair one revision's stamp with another's state.
+        return await withFileLock(filePath, async () => {
+          let raw;
+          try {
+            const stats = await fs.stat(filePath);
+            if (!stats.isFile()) return refuse(404, 'no-page-state');
+            raw = await fs.readFile(filePath);
+          } catch {
+            return refuse(404, 'no-page-state');
+          }
+          // The same document /_/meta stamps, so the stamp a client read there is the one
+          // this route compares, and the one it names back with a 412.
+          const logical = await logicalBytes(baseDir, name, raw);
+          const etag = documentEtag(logical);
+          const field = ifMatch.trim();
+          if (field === '*' || field.includes(',') || !ifMatchSatisfied(field, logical)) {
+            return refuse(412, 'etag-mismatch', etag);
+          }
+          // The stored file's own article revision: the state that belongs to THESE bytes,
+          // never the newest record in the sidecar. A record written before this host kept
+          // generations proves no lineage, so it is not served as proven state.
+          const record = await readPageRecord(baseDir, name, roomsPackage().pageRev(raw.toString('utf8')));
+          if (!record) return refuse(404, 'no-page-state', etag);
+          res.set('ETag', etag);
+          return res.status(200).json({
+            version: 1,
+            // This host mints no document id; the shape is the one HTML Clay answers.
+            documentId: null,
+            generation: record.generation,
+            etag,
+            // The digest of the tag a client holds, so proving a checkpoint covers the
+            // journal never means shipping the state back.
+            stateHash: crypto.createHash('sha256').update(record.tag, 'utf8').digest('hex'),
+            tag: record.tag,
+          });
+        });
+      } catch (error) {
+        return next(error);
+      }
     });
 
     // POST /_/upload — store a file in this root's uploads folder instead of

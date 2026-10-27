@@ -2,6 +2,7 @@
 // A record is { v: 1, rev, tag }, the shape splitPage and composePage use.
 const fs = require('fs').promises;
 const path = require('path');
+const crypto = require('crypto');
 const rooms = () => require('@panphora/clayjs/server/rooms');
 const { PAGE_STATE_DIR } = require('./utils/artifact-paths');
 const { atomicWriteFile } = require('./utils/write-queue');
@@ -34,12 +35,23 @@ function legacyPageStatePath(baseDir, name) {
 
 const validRecord = (state) => !!state && state.v === 1 && typeof state.rev === 'string' && typeof state.tag === 'string';
 
+const GENERATION = /^[0-9a-f]{32}$/;
+const newGeneration = () => crypto.randomBytes(16).toString('hex');
+
+const validGeneration = (generation) => typeof generation === 'string' && GENERATION.test(generation);
+
 function parseState(text) {
   try {
     const state = JSON.parse(text);
     if (!validRecord(state)) return null;
-    const prev = state.prev && validRecord({ v: 1, ...state.prev }) ? { rev: state.prev.rev, tag: state.prev.tag } : null;
-    return { v: 1, rev: state.rev, tag: state.tag, ...(prev && { prev }) };
+    const prev = state.prev && validRecord({ v: 1, ...state.prev })
+      ? { rev: state.prev.rev, tag: state.prev.tag, ...(validGeneration(state.prev.generation) && { generation: state.prev.generation }) }
+      : null;
+    return {
+      v: 1, rev: state.rev, tag: state.tag,
+      ...(validGeneration(state.generation) && { generation: state.generation }),
+      ...(prev && { prev })
+    };
   } catch {
     return null;
   }
@@ -90,6 +102,16 @@ async function readStored(baseDir, name) {
   return parseState(text);
 }
 
+// The stored record for one article revision, generation included: the answer a
+// crash recovery reads, and only ever for a record that names its page lineage.
+async function readPageRecord(baseDir, name, rev) {
+  const stored = await readStored(baseDir, name);
+  if (!stored || !rev) return null;
+  const slot = stored.rev === rev ? stored : stored.prev && stored.prev.rev === rev ? stored.prev : null;
+  if (!slot || !validGeneration(slot.generation)) return null;
+  return { rev: slot.rev, tag: slot.tag, generation: slot.generation };
+}
+
 // The record that belongs to one article revision, or null when the sidecar keeps none for it.
 function recordFor(state, rev) {
   if (!state || !rev) return null;
@@ -120,10 +142,20 @@ async function writePageState(baseDir, name, state) {
   // The record kept beside the new one is the one for the file on disk: the newest record
   // may be for a write that never landed, and the file still needs its own.
   const onDisk = await diskRev(baseDir, name);
+  const slotFor = (rev) => !existing || !rev ? null
+    : existing.rev === rev ? existing : existing.prev && existing.prev.rev === rev ? existing.prev : null;
   const kept = onDisk && onDisk !== state.rev ? recordFor(existing, onDisk) : null;
-  const prev = kept ? { rev: kept.rev, tag: kept.tag }
-    : existing && existing.rev !== state.rev ? { rev: existing.rev, tag: existing.tag } : existing?.prev;
-  await atomicWriteFile(file, JSON.stringify({ v: 1, rev: state.rev, tag: state.tag, ...(prev && { prev }) }));
+  const prevSlot = kept ? slotFor(kept.rev)
+    : existing && existing.rev !== state.rev ? existing : existing?.prev;
+  const prev = prevSlot && {
+    rev: prevSlot.rev, tag: prevSlot.tag,
+    ...(validGeneration(prevSlot.generation) && { generation: prevSlot.generation })
+  };
+  // The new record descends from the one for the file on disk, so it keeps that page's
+  // lineage; a file replaced from outside descends from nothing and starts a new one.
+  const base = slotFor(onDisk) || slotFor(state.rev);
+  const generation = base && base.generation ? base.generation : newGeneration();
+  await atomicWriteFile(file, JSON.stringify({ v: 1, rev: state.rev, tag: state.tag, generation, ...(prev && { prev }) }));
 }
 
 async function dropPageState(baseDir, name) {
@@ -192,6 +224,6 @@ async function storePageState(baseDir, name, html) {
 }
 
 module.exports = {
-  pageStatePath, readPageState, writePageState, dropPageState, dropPageStateDir,
+  pageStatePath, readPageState, readPageRecord, writePageState, dropPageState, dropPageStateDir,
   movePageState, movePageStateDir, logicalDocument, logicalBytes, storePageState
 };
