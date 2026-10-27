@@ -20,6 +20,17 @@ LAB="$(mktemp -d /tmp/hyperclay-local-lab.XXXXXX)"
 pass() { echo "ok   [$CHECK] $*"; }
 keep() { cp -r "$@" "$OUT/$CHECK/" 2>/dev/null || true; }
 
+# Reads "<pid>/fd/<n> <link>" lines and prints, for each pipe a group pid holds, every pid holding it.
+pipe_holders() {
+  awk -v group="$1" '
+    $2 ~ /^pipe:/ {
+      split($1, a, "/")
+      if (!seen[$2, a[1]]++) held[$2] = held[$2] " " a[1]
+      if (index(group, " " a[1] " ")) mine[$2] = 1
+    }
+    END { for (p in mine) print p ":" held[p] }' | sort
+}
+
 capture_failure() {
   local pid=""
   [ ! -f "$LAB/app.pid" ] || pid="$(cat "$LAB/app.pid")"
@@ -40,10 +51,20 @@ capture_failure() {
       # sockets it holds. A launch that never reaches app ready shows here and nowhere else.
       if [ -d /proc ]; then
         echo "--- wait channels and open files, before cleanup"
-        for p in $(ps -eo pid,pgid | awk -v pid="$pid" '$2 == pid { print $1 }'); do
+        local group; group="$(ps -eo pid,pgid | awk -v pid="$pid" '$2 == pid { print $1 }')"
+        for p in $group; do
           echo "pid $p wchan=$(cat "/proc/$p/wchan" 2>/dev/null || echo ?)"
           ls -l "/proc/$p/fd" 2>/dev/null | awk 'NR > 1 { print "  " $NF }' | sort | uniq -c | sort -rn | head -15
         done
+        echo "--- kernel stacks, before cleanup"
+        for p in $group; do
+          echo "pid $p"
+          { sudo -n cat "/proc/$p/stack" 2>/dev/null || echo "(unavailable)"; } | sed 's/^/  /'
+        done
+        # A process in anon_pipe_write waits on whoever holds the read end, so name every holder of each pipe.
+        echo "--- every process holding a pipe the group holds"
+        sudo -n sh -c 'for f in /proc/[0-9]*/fd/*; do l=$(readlink "$f" 2>/dev/null) && echo "${f#/proc/} $l"; done' 2>/dev/null \
+          | pipe_holders " $(echo $group) "
       fi
     else
       echo "launcher_status=not recorded"
