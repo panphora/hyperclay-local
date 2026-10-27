@@ -23,7 +23,7 @@ const PERSON = { id: 'personAAAA1', name: 'Ada' };
 
 // The ten capabilities a host without a person already announced, and the same list
 // with `people` in it. Sorted, because that is the order the route publishes.
-const EXTENSIONS = ['conditional', 'data-read', 'data-write', 'format', 'receipts', 'scoped-stylesheet', 'sync', 'sync-worker', 'upload', 'wire'];
+const EXTENSIONS = ['conditional', 'data-read', 'data-write', 'format', 'page-format-v1', 'receipts', 'scoped-stylesheet', 'sync', 'sync-worker', 'upload', 'wire'];
 const WITH_PEOPLE = [...EXTENSIONS, 'people'].sort();
 
 let dirs;

@@ -60,6 +60,9 @@ const apiClient = require('../../src/sync-engine/api-client');
 
 const tag = (name, value) => `<script type="application/json" merge="${name}" clay="live">${JSON.stringify(value)}</script>`;
 const DOC = (value) => `<!DOCTYPE html><html><body>${tag('count', { n: value })}</body></html>`;
+const { pageFixture } = require('../helpers/page-fixture');
+const BIG_PAGE = pageFixture('x'.repeat(8000)).update;
+const SMALL_PAGE = pageFixture('ok').update;
 const PAGE = (value) => `<!DOCTYPE html><html><body>${tag('page', { v: 1, y: { doc: value } })}</body></html>`;
 const HYBRID = (blocks) => `<!DOCTYPE html><html><body>${tag('page', { blocks })}</body></html>`;
 const STYLED = (value) => '<!DOCTYPE html><html><head>'
@@ -444,7 +447,7 @@ describe('L0.fixtures: the write-ordering schedules through their real callers',
     const baseline = pageBaseline(inspectPage(hybrid).tags);
     const before = await fsp.readFile(file);
 
-    const res = await save(a.server, 'page.html', PAGE('x'.repeat(8000)), {
+    const res = await save(a.server, 'page.html', PAGE(BIG_PAGE), {
       'If-Match': documentEtag(before),
       'Page-Conversion': `v1; source=room; base=${baseline}; epoch=${room.epoch}`
     });
@@ -467,12 +470,12 @@ describe('L0.fixtures: the write-ordering schedules through their real callers',
     expect(savedBroadcasts()).toHaveLength(0);
 
     // The same path still accepts a page that does fit its budget.
-    const fits = await save(a.server, 'page.html', PAGE('ok'), {
+    const fits = await save(a.server, 'page.html', PAGE(SMALL_PAGE), {
       'If-Match': documentEtag(before),
       'Page-Conversion': `v1; source=room; base=${baseline}; epoch=${room.epoch}`
     });
     expect(fits.status).toBe(200);
-    expect(fs.readFileSync(file, 'utf8')).toContain('"ok"');
+    expect(fs.readFileSync(file, 'utf8')).toContain(`"${SMALL_PAGE}"`);
     expect(room.seq).toBe(1);
     expect(h.fileWrittenCalls).toHaveLength(1);
     expect(savedBroadcasts()).toHaveLength(1);
@@ -504,7 +507,7 @@ describe('L0.fixtures: the write-ordering schedules through their real callers',
       return realRename.call(fsp, from, to);
     });
 
-    const res = await save(a.server, 'page.html', PAGE('AAAA'), { 'If-Match': documentEtag(before) });
+    const res = await save(a.server, 'page.html', PAGE(SMALL_PAGE), { 'If-Match': documentEtag(before) });
 
     expect(failed).toEqual([file]);
     expect(res.status).toBe(500);
@@ -519,13 +522,13 @@ describe('L0.fixtures: the write-ordering schedules through their real callers',
 
     // The released reservation is what lets the next save reserve again.
     refuse = false;
-    const retry = await save(a.server, 'page.html', PAGE('AAAA'), { 'If-Match': documentEtag(before) });
+    const retry = await save(a.server, 'page.html', PAGE(SMALL_PAGE), { 'If-Match': documentEtag(before) });
 
     expect(retry.status).toBe(200);
-    expect(fs.readFileSync(file, 'utf8')).toContain('AAAA');
+    expect(fs.readFileSync(file, 'utf8')).toContain(SMALL_PAGE);
     expect(room.seq).toBe(1);
     expect(room.pageTransition.format).toBe('yjs');
-    expect(h.core.state(room).stores.page.value).toEqual({ v: 1, y: { doc: 'AAAA' } });
+    expect(h.core.state(room).stores.page.value).toEqual({ v: 1, y: { doc: SMALL_PAGE } });
     expect(h.core.pageReserved(file)).toBe(false);
     expect(h.fileWrittenCalls).toHaveLength(1);
     expect(savedBroadcasts()).toHaveLength(1);
