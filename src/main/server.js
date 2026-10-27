@@ -2250,8 +2250,12 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
           }
         } : null;
         // The sidecar lands before the file, and only the file part reaches disk.
-        const storedContent = await storePageState(baseDir, name, content);
-        await atomicWriteFile(filePath, storedContent, 'utf8', beforeRename);
+        // A checkpoint is the write ClayJS is told contains a person's edits, so it
+        // is the one write that must fail rather than report a rename the disk may
+        // not keep.
+        const durable = origin === 'checkpoint' ? { durable: true } : undefined;
+        const storedContent = await storePageState(baseDir, name, content, durable);
+        await atomicWriteFile(filePath, storedContent, 'utf8', beforeRename, durable);
 
         // Mark as browser save so file watcher doesn't send redundant notification.
         // Key is full path with extension so it matches engine-watcher's wasBrowserSave check.

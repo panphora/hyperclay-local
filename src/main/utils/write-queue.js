@@ -151,6 +151,20 @@ async function renameWithRetry(tmpPath, filePath, beforeRename = null) {
   }
 }
 
+// Codes a directory fsync gives where the platform cannot sync a directory at all
+// (Windows, some network and FUSE filesystems): not a durability failure, just no promise to keep.
+const DIR_SYNC_UNSUPPORTED = new Set(['EISDIR', 'EPERM', 'EINVAL', 'ENOTSUP', 'EBADF', 'EACCES']);
+
+async function syncDirectory(dir) {
+  let handle;
+  try {
+    handle = await fs.open(dir, 'r');
+    await handle.sync();
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
+}
+
 /**
  * Write via a same-directory temp file + rename, so a crash, a full disk, or a
  * killed process can never leave partial bytes at `filePath`. The rename also
@@ -160,8 +174,9 @@ async function renameWithRetry(tmpPath, filePath, beforeRename = null) {
  * @param {string|Buffer} content
  * @param {string|null} encoding - null for Buffer content
  * @param {Function|null} beforeRename - optional target check after the temp is durable
+ * @param {{durable?: boolean}} [options] - durable rejects when the rename itself may not survive a crash
  */
-async function atomicWriteFile(filePath, content, encoding = 'utf8', beforeRename = null) {
+async function atomicWriteFile(filePath, content, encoding = 'utf8', beforeRename = null, { durable = false } = {}) {
   const dir = path.dirname(filePath);
   await fs.mkdir(dir, { recursive: true });
 
@@ -186,6 +201,11 @@ async function atomicWriteFile(filePath, content, encoding = 'utf8', beforeRenam
     await handle.close();
     handle = null;
     await renameWithRetry(tmpPath, filePath, beforeRename);
+    try {
+      await module.exports.syncDirectory(path.dirname(filePath));
+    } catch (error) {
+      if (durable && !DIR_SYNC_UNSUPPORTED.has(error && error.code)) throw error;
+    }
   } catch (error) {
     if (handle) {
       try { await handle.close(); } catch {}
@@ -208,5 +228,6 @@ module.exports = {
   assertStructureContext,
   assertOutsideWriteBoundary,
   atomicWriteFile,
+  syncDirectory,
   pendingKeys,
 };

@@ -135,7 +135,7 @@ async function diskRev(baseDir, name) {
   }
 }
 
-async function writePageState(baseDir, name, state) {
+async function writePageState(baseDir, name, state, options) {
   const file = pageStatePath(baseDir, name);
   await fs.mkdir(path.dirname(file), { recursive: true });
   const existing = await readStored(baseDir, name).catch(() => null);
@@ -155,7 +155,7 @@ async function writePageState(baseDir, name, state) {
   // lineage; a file replaced from outside descends from nothing and starts a new one.
   const base = slotFor(onDisk) || slotFor(state.rev);
   const generation = base && base.generation ? base.generation : newGeneration();
-  await atomicWriteFile(file, JSON.stringify({ v: 1, rev: state.rev, tag: state.tag, generation, ...(prev && { prev }) }));
+  await atomicWriteFile(file, JSON.stringify({ v: 1, rev: state.rev, tag: state.tag, generation, ...(prev && { prev }) }), 'utf8', null, options);
 }
 
 async function dropPageState(baseDir, name) {
@@ -217,9 +217,9 @@ async function logicalBytes(baseDir, name, stored) {
 }
 
 // Writes the sidecar (before the caller writes the file) and returns the file to store.
-async function storePageState(baseDir, name, html) {
+async function storePageState(baseDir, name, html, options) {
   const { file, state } = rooms().splitPage(html);
-  if (state) await writePageState(baseDir, name, state);
+  if (state) await writePageState(baseDir, name, state, options);
   return file;
 }
 
