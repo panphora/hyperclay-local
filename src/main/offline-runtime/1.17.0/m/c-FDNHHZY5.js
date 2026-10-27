@@ -1,0 +1,1 @@
+async function a(t,e){if(typeof t.runFormatCommand!="function")return{ok:!1,code:"page-format-unsupported"};let r=await t.runFormatCommand(e);return r?.status==="applied"?r.result:{ok:!1,code:r?.code??r?.status??"page-format-refused",retry:r?.retry===!0}}export{a};

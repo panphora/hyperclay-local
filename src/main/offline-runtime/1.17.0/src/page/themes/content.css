@@ -1,0 +1,70 @@
+@layer page {
+  article[data-page] {
+    --page-link: #164583;
+    --page-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --page-color-gray: #5B5953; --page-color-brown: #8A5A1E; --page-color-orange: #B4531A; --page-color-yellow: #7A6210; --page-color-green: #3E6A28;
+    --page-color-blue: #1F5A8A; --page-color-purple: #5E4596; --page-color-pink: #A23E6E; --page-color-red: #9E3B2F;
+    --page-mark-bg-gray: rgba(35, 34, 31, 0.12); --page-mark-bg-brown: rgba(138, 90, 30, 0.20); --page-mark-bg-orange: rgba(180, 83, 26, 0.20);
+    --page-mark-bg-yellow: rgba(122, 98, 16, 0.22); --page-mark-bg-green: rgba(62, 106, 40, 0.20); --page-mark-bg-blue: rgba(31, 90, 138, 0.18);
+    --page-mark-bg-purple: rgba(94, 69, 150, 0.18); --page-mark-bg-pink: rgba(162, 62, 110, 0.18); --page-mark-bg-red: rgba(158, 59, 47, 0.18);
+    min-height: 100vh;
+    box-sizing: border-box;
+    padding: var(--page-pad-top) 16px 30vh;
+    background: var(--page-bg);
+    color: var(--page-ink);
+    font-family: var(--page-font);
+    font-size: var(--page-font-size);
+    line-height: var(--page-line-height);
+    overflow-wrap: break-word;
+  }
+  article[data-page] ::selection { background: var(--page-selection); }
+  article[data-page] > * { max-width: var(--page-measure); margin: var(--page-block-gap) auto; }
+  article[data-page] > h1 { font-family: var(--page-font-display); font-size: var(--page-h1-size); font-weight: var(--page-h1-weight); letter-spacing: var(--page-h1-tracking); line-height: var(--page-h1-line); color: var(--page-ink-strong); margin-block: 0 0.6em; }
+  article[data-page] > h2 { font-family: var(--page-font-heading); font-size: var(--page-h2-size); font-weight: var(--page-h2-weight); color: var(--page-ink-strong); line-height: 1.35; margin-block-start: 1.4em; }
+  article[data-page] > h3 { font-family: var(--page-font-heading); font-size: var(--page-h3-size); font-weight: var(--page-h3-weight); color: var(--page-ink-strong); margin-block-start: 1.2em; }
+  article[data-page] a { color: var(--page-link, var(--page-accent)); }
+  article[data-page] code { font-family: var(--page-font-mono); font-size: 0.88em; background: var(--page-code-bg); color: var(--page-code-ink); border-radius: 4px; padding: 0.1em 0.3em; }
+  article[data-page] pre { position: relative; padding: 32px 14px 12px; font-family: var(--page-font-mono); font-size: 0.88em; background: var(--page-code-bg); color: var(--page-code-ink); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  article[data-page] pre[data-lang] { white-space: pre; overflow-wrap: normal; }
+  article[data-page] pre code { display: block; overflow-x: auto; background: none; padding: 0; font-size: inherit; }
+  article[data-page] .page-callout { background: var(--page-callout-bg); border: 1px solid var(--page-callout-line); border-radius: 8px; padding: 10px 14px; }
+  article[data-page] hr { border: 0; border-top: 1px solid var(--page-rule); margin-block: 1.2em; }
+  article[data-page] ul, article[data-page] ol { padding-inline-start: var(--page-indent); }
+  article[data-page] li { padding-inline-start: 0; }
+  article[data-page] li::marker { color: var(--page-marker); }
+  article[data-page] li:has(> input[type="checkbox"]) { list-style: none; }
+  article[data-page] li > input[type="checkbox"] { appearance: none; width: var(--page-check-size); height: var(--page-check-size); margin: 0 calc(var(--page-indent) - var(--page-check-size)) 0 0; vertical-align: -0.12em; border: 1px solid var(--page-check-border); border-radius: var(--page-check-radius); }
+  article[data-page] li > input[type="checkbox"]:checked { background: var(--page-check-fill); border-color: var(--page-check-fill); }
+  article[data-page] li > input[type="checkbox"]:checked::after { content: ""; display: block; width: 100%; height: 100%; background: var(--page-check-ink); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.8 8.4l2.9 2.9 5.5-6.4' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 72% no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.8 8.4l2.9 2.9 5.5-6.4' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 72% no-repeat; }
+  article[data-page] li:has(> input[type="checkbox"]:checked) { color: var(--page-done-ink); text-decoration: line-through; }
+  article[data-page] details { padding-inline-start: var(--page-indent); }
+  article[data-page] summary { color: var(--page-toggle-ink); cursor: pointer; }
+  article[data-page] figure { max-width: var(--page-measure); }
+  article[data-page] figure img, article[data-page] figure svg { display: block; max-width: 100%; height: auto; }
+  article[data-page] figcaption { color: var(--page-ink-soft); font-size: 0.88em; text-align: center; }
+  article[data-page] [data-type="file"] { padding: 8px 12px; border: 1px solid var(--page-rule); border-radius: 8px; }
+  article[data-page] table { width: 100%; border-collapse: collapse; border: 1px solid var(--page-rule); border-radius: 8px; }
+  article[data-page] th, article[data-page] td { min-width: 120px; padding: 6px 10px; border-inline-end: 1px solid var(--page-rule); border-block-end: 1px solid var(--page-rule); text-align: start; white-space: pre-wrap; }
+  article[data-page] th { background: var(--page-code-bg); color: var(--page-ink-soft); font-weight: 600; }
+  article[data-page] th[data-kind="number"], article[data-page] td[data-kind="number"] { text-align: end; }
+  article[data-page] blockquote { color: var(--page-ink-soft); padding-inline-start: var(--page-indent); }
+  article[data-page] span[data-color="gray"] { color: var(--page-color-gray); }
+  article[data-page] span[data-color="brown"] { color: var(--page-color-brown); }
+  article[data-page] span[data-color="orange"] { color: var(--page-color-orange); }
+  article[data-page] span[data-color="yellow"] { color: var(--page-color-yellow); }
+  article[data-page] span[data-color="green"] { color: var(--page-color-green); }
+  article[data-page] span[data-color="blue"] { color: var(--page-color-blue); }
+  article[data-page] span[data-color="purple"] { color: var(--page-color-purple); }
+  article[data-page] span[data-color="pink"] { color: var(--page-color-pink); }
+  article[data-page] span[data-color="red"] { color: var(--page-color-red); }
+  article[data-page] mark[data-color="gray"] { background: var(--page-mark-bg-gray); }
+  article[data-page] mark[data-color="brown"] { background: var(--page-mark-bg-brown); }
+  article[data-page] mark[data-color="orange"] { background: var(--page-mark-bg-orange); }
+  article[data-page] mark[data-color="yellow"] { background: var(--page-mark-bg-yellow); }
+  article[data-page] mark[data-color="green"] { background: var(--page-mark-bg-green); }
+  article[data-page] mark[data-color="blue"] { background: var(--page-mark-bg-blue); }
+  article[data-page] mark[data-color="purple"] { background: var(--page-mark-bg-purple); }
+  article[data-page] mark[data-color="pink"] { background: var(--page-mark-bg-pink); }
+  article[data-page] mark[data-color="red"] { background: var(--page-mark-bg-red); }
+  article[data-page] mark { color: inherit; }
+}

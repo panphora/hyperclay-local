@@ -1,0 +1,1 @@
+import{d as t}from"./c-SDAXDM2D.js";var s=r=>Number.isSafeInteger(r)&&r>0?r:0;function b({floor:r=0,required:f=0,capability:l=0,admitted:c=[]}={}){let o=s(r),e=Math.max(s(f),o),i=n=>({ok:!1,activate:!1,floor:o,required:e,minimum:n});if(t(l)<e)return i(e);let a=e>o;return a&&c.some(n=>t(n)<e)?i(e):{ok:!0,activate:a,floor:e,required:e}}export{b as a};
