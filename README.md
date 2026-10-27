@@ -4,7 +4,7 @@
 >
 > | Always free | Competing offerings | Becomes MIT |
 > |---|---|---|
-> | Internal use and noncompeting offerings | First $1M/year free; 3% of excess revenue attributable to this software | 2028-04-27 (development snapshot) |
+> | Internal use and noncompeting offerings | First $1M/year free; 3% of excess revenue attributable to this software | 2028-04-27 (this version) |
 >
 > Plain answers: [hyperclay.com/host-program](https://hyperclay.com/host-program) · binding text in [LICENSE](LICENSE) · questions: license@hyperclay.com
 
