@@ -2870,7 +2870,9 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       // `wire` because this host serves §11's two routes, so `clay.wire` pages and
       // the `htmlclay wire` CLI can drive a local process from a document here.
       const body = { spec: 1, extensions: ['conditional', 'data-read', 'data-write', 'format', 'receipts', 'scoped-stylesheet', 'sync', 'sync-worker', 'upload', 'wire'] };
-      if (ctx.localAuthority) body.extensions.push('live-data', 'live-provenance', 'page');
+      // `page-recovery-v1`: the document block's `pageState.href` answers the page state
+      // stored for these exact bytes, so a client may retire journaled page work against it.
+      if (ctx.localAuthority) body.extensions.push('live-data', 'live-provenance', 'page', 'page-recovery-v1');
       // Presence is announced only by the host that actually runs the relay. `presence`
       // is the legacy editing marker; the two versioned names are what a client needs
       // before it publishes a record or a page target, so they are never advertised

@@ -257,13 +257,13 @@ describe('the conditional page-state read', () => {
     expect(await etagOf(app)).toBe(etag);
   });
 
-  test('meta names the resource and keeps the capability off', async () => {
+  test('meta names the resource and announces the capability', async () => {
     const app = await startApp();
     expect((await save(app, FIXTURE)).status).toBe(200);
 
     const res = await meta(app);
 
     expect(res.body.document.pageState).toEqual({ href: '/_/page-state' });
-    expect(res.body.extensions).not.toContain('page-recovery-v1');
+    expect(res.body.extensions).toContain('page-recovery-v1');
   });
 });
