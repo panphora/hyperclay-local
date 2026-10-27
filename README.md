@@ -1,10 +1,10 @@
 # Hyperclay™ Local Server (Electron App)
 
-> **License: First Million Stays Yours License.** Free to use, no matter who you are or what you use it for. It only ever costs money if you sell or host a product built on this software and that product makes you more than $1M in a year. Under that line you owe nothing, sign nothing, register nowhere.
+> **License: First Million of Revenue from Building a Competing Service Stays Yours License.** Free to use, fork, and modify. Even competing products built with this code are free up to $1 million in revenue a year, with only a small 3% fee beyond that $1 million.
 >
-> | Free under | Above it | Becomes MIT |
+> | Always free | Competing offerings | Becomes MIT |
 > |---|---|---|
-> | $1M/year from products built on it | 3% of the excess | 2028-02-20 (this version) |
+> | Internal use and noncompeting offerings | First $1M/year free; 3% of excess revenue attributable to this software | 2028-04-27 (development snapshot) |
 >
 > Plain answers: [hyperclay.com/host-program](https://hyperclay.com/host-program) · binding text in [LICENSE](LICENSE) · questions: license@hyperclay.com
 

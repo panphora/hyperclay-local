@@ -155,7 +155,7 @@ jobs:
 
 
   # ── License gate ──
-  # The First Million Stays Yours License promises each version converts to plain
+  # The First Million of Revenue from Building a Competing Service Stays Yours License promises each version converts to plain
   # MIT by deleting a labelled clause list. A release whose residue is no longer
   # MIT would ship a promise it cannot keep.
   license:

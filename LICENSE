@@ -1,4 +1,4 @@
-First Million Stays Yours License
+First Million of Revenue from Building a Competing Service Stays Yours License
 Version 1.0
 
 Copyright (c) 2026 Hyperspace Systems LLC
@@ -6,31 +6,55 @@ Copyright (c) 2026 Hyperspace Systems LLC
 ----------------------------------------------------------------------
 LICENSE DETAILS FOR THIS RELEASE
 
-  Software:             Hyperclay Local 1.21.0
-  Released:             2026-08-20
-  MIT Conversion Date:  2028-02-20  (18 months after release)
+  Software:             Hyperclay Local development snapshot 2026-10-27
+  Released:             2026-10-27
+  MIT Conversion Date:  2028-04-27  (18 months after release)
 
   Licensor:             Hyperspace Systems LLC, and its successors
                         and assigns
   Payment, program, plain answers:  https://hyperclay.com/host-program
   Questions, notices, Coverage Certificates:  license@hyperclay.com
-  SPDX identifier:      LicenseRef-First-Million-Stays-Yours-1.0
+  SPDX identifier:      LicenseRef-First-Million-Competing-Service-1.0
                         (MIT after the Conversion Date)
   Where to start:       Section 1.
 ----------------------------------------------------------------------
 
 
-1. THE CONDITION, AND WHO IT NEVER REACHES
+1. Free to use, fork, and modify. Even competing products built with this code are free up to $1 million in revenue a year, with only a small 3% fee beyond that $1 million.
 
-This license gives You every right the MIT License gives You,
-granted in Section 2, on one condition beyond MIT's: if products
-and services that contain the Software, derive from it, or provide
-its functionality to others by running it bring You, together with
-every entity under common control with You, more than
-US $1,000,000 in a calendar year, You pay Licensor 3% of the
-amount above US $1,000,000. Almost nobody owes it. Where the
-Software is one component of something larger, only the share
-fairly attributable to it counts.
+Use it freely
+
+Use this software for personal projects or inside your business,
+regardless of your company's size or revenue. Copy it, modify it,
+and keep your modifications private. None of that requires payment,
+registration, or reporting.
+
+You can also sell work you create using this software. Using it as
+a tool does not, by itself, make that work subject to this license
+or require you to share its revenue. Selling noncompeting products
+and services is also free of the payment condition below. Section
+2 defines what counts as competing.
+
+Compete with us, too
+
+You may sell this software, build products from it, or offer its
+functionality as a hosted service. You may compete directly with us.
+You do not need separate permission, and you do not have to publish
+your source code.
+
+We welcome competition. We also want to keep working on this
+software without being driven out of business by someone selling
+it against us. So there is one additional condition: the first
+US $1,000,000 in annual Covered Revenue from competing products and
+services is yours. Above that, you pay us 3% of the excess.
+
+Keep the notices
+
+Keep the copyright and license notices with copies of this
+software, including substantial portions incorporated into other
+software. This does not apply to work merely created using it.
+
+The details
 
 Under that line You owe nothing and condition (b) of Section 2 is
 satisfied for the year with no act on Your part: nothing to pay,
@@ -66,12 +90,24 @@ Software is furnished to do so, subject to the following conditions:
       entity under common control with You exceeds US $1,000,000,
       You shall pay Licensor 3% of the amount above US $1,000,000,
       as Section 6 provides. "Covered Revenue" is receipts from
-      products and services You supply that themselves contain the
-      Software, are derived from it, or provide its functionality
-      to others by running it, less refunds, chargebacks, and
-      transaction taxes, attributed as Section 4 provides.
-      Otherwise this condition is satisfied for the year with no
-      act on Your part.
+      competing products and services You supply, less refunds,
+      chargebacks, and transaction taxes, attributed as Section 4
+      provides. For this license, a competing product or service
+      meets both of these tests:
+
+      (i) It contains the Software, is derived from it, or provides
+          its functionality to others by running it.
+
+      (ii) Customers can use it in place of the Software, or in
+           place of a product or service Licensor offered using
+           the Software when this version was released.
+
+      A different name or target market does not, by itself, make
+      a product or service noncompeting. Revenue from noncompeting
+      products and services is not Covered Revenue.
+
+      If Covered Revenue does not exceed US $1,000,000, this
+      condition is satisfied for the year with no act on Your part.
 
 Both (a) and (b) are conditions of this grant, not independent
 covenants. Exercising the rights granted here without satisfying
@@ -151,8 +187,8 @@ discharges condition (b) and Section 6 for all of them.
 The fee is charged at most once for a product or service. It never
 stacks across Licensor's other packages under this License used
 together in one offering, across versions of the Software, or across
-copies and instances, and revenue counted once under this or any other
-First Million Stays Yours License is never counted again.
+copies and instances. Revenue counted once under this license or
+under the First Million Stays Yours License is never counted again.
 
 If the Software, a work derived from it, or a product or service
 that contains it is one component of a larger product, service,

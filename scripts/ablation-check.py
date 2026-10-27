@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the First Million Stays Yours License's conversion-by-ablation clause.
+"""Verify the license's conversion-by-ablation clause.
 
 Applies Section 3's deletion list to a license file and diffs the residue
 (Section 2 as amended + Section 7) against the canonical MIT
