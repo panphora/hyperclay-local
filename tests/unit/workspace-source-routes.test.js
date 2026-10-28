@@ -69,3 +69,20 @@ test('a lost upstream save response is unknown and the shell does not replay it'
   expect(dispatched).toBe(1);
   expect(await fs.readFile(path.join(h.dir, 'A.html'), 'utf8')).toBe(page('after'));
 });
+
+test('the Code tab declares page format 1, so a floor-1 document still saves from it', async () => {
+  h = await fixture();
+  await fs.writeFile(path.join(h.dir, 'A.html'), page('before'));
+  await h.startRoot();
+  const request = await h.start();
+  const original = global.fetch;
+  let declared = null;
+  jest.spyOn(global, 'fetch').mockImplementation(async (url, options) => {
+    if (String(url).endsWith('/_/save')) declared = options.headers['x-clay-page-format'];
+    return original(url, options);
+  });
+  const response = await put(request, { path: 'A.html', html: page('after'),
+    etag: documentEtag(page('before')), operationId: 'floor-1' });
+  expect(response.status).toBe(200);
+  expect(declared).toBe('1');
+});

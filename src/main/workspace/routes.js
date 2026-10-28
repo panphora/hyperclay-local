@@ -98,7 +98,8 @@ async function handleWorkspaceRoute({ req, res, url, root, route, settings, sync
     const response = await upstream(root, req, '/_/save', {
       method: 'POST',
       headers: { 'content-type': 'text/html; charset=utf-8', 'document-url': rootUrl(root, `/${encoded(rel)}`),
-        'if-match': request.etag, 'save-id': request.operationId, prefer: 'return=representation' },
+        'if-match': request.etag, 'save-id': request.operationId, prefer: 'return=representation',
+        'x-clay-page-format': '1' },
       body: request.html,
     });
     if (!response.ok) return relayRefusal(res, response);
