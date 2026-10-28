@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-10-27
+
+### Added
+- Documents that point at ClayJS runtime URLs load them from the bundled release served at `/_/clayjs/`, so they work with no network.
+- Switching a page into edit mode works offline: every file the edit boot loads comes from the bundled release, and the first edit saves and reopens projected.
+- A page save that fails its lineage checks answers `409 page-lineage-stale` or `409 page-nothing-to-write`, carrying the ETag of the document the save was judged against.
+- The page format floor is checked at every write boundary: saves, the data API, checkpoints, restore, live data and the relay. An editor's `X-Clay-Page-Format` is recorded, data frames skip a tab below the floor, and an undecodable capture refuses `422 invalid-capture`. `page-format-v1` is advertised only with a bundled runtime that supports it.
+- Upload replies carry `access: local`, so a caller can tell a local upload from a hosted one.
+- Metadata reports `document.maxBytes`, the save limit, and `document.versions`, whether the host keeps version history.
+- A `/_/page-state` resource returns the state stored for the exact bytes a client accepted, conditional on `If-Match`, announced as `page-recovery-v1`.
+- Presence sessions for records and pages, over the same stream and contract as Hyperclay, advertised when the relay is installed.
+- A document created from the untagged template takes its page tag on the first save.
+
+### Changed
+- The bundled offline runtime is ClayJS 1.17.0, which carries the format floor client and keeps an author's own head title.
+- Writes, the relay's sync snapshot, live frames and ZIP export turn projected `/_/clayjs/` URLs back into public ones.
+- Saves of documents that name no ClayJS URL skip the runtime rewrite, so a 20 MiB save no longer spends seconds on it.
+- Every atomic write syncs its directory after the rename. A live-room checkpoint fails rather than reporting success when that sync fails, while ordinary saves tolerate it.
+- Bundled templates: Kanban 1.1.0 and the current Document, which loads `plugins=page,menu`.
+- Workspace 0.5.0: a fresh generic open uses the visitor default through `freshOpenMode`.
+- Workspace 0.5.1: the Kanban card shows its real size.
+- Old Journal 1.0.0 and 1.1.0 documents open, late-load their libraries, languages and fonts, then save and reopen offline, and their old CDN URLs answer with the exact classic builds.
+
+### Fixed
+- On Windows, document roots are registered under the forward-slash path the app looks up, so documents in them resolve.
+- A rename that only changes letter case compares exact file IDs, so it cannot treat the destination as the source and overwrite it.
+- A document that cannot be projected says why in the `Clay-Runtime-Unavailable` header.
+- ZIP export keeps a non-UTF-8 file's bytes.
+- The Electron workspace session points an old Journal's Google Fonts alias at the bundled font copies.
+
 ## [1.32.0] - 2026-10-23
 
 ### Added
