@@ -287,6 +287,22 @@ function liveSnapshot(repoRoot) {
   };
 }
 
+function trackingRefs(text) {
+  return Object.fromEntries(text.split('\n').filter(Boolean).map((line) => {
+    const [oid, , ref] = line.split(/\s+/);
+    return [ref, oid];
+  }));
+}
+
+// Git 2.56 moves the tracking ref of the configured remote whose URL a push names; older git leaves
+// it. Either is fine, and nothing else in the checkout may change.
+function expectOnlyTrackingMoved(repoRoot, before, commit) {
+  const after = liveSnapshot(repoRoot);
+  const was = trackingRefs(before.remoteRefs);
+  expect([was, { ...was, 'refs/remotes/origin/main': commit }]).toContainEqual(trackingRefs(after.remoteRefs));
+  expect({ ...after, remoteRefs: before.remoteRefs }).toEqual(before);
+}
+
 function readJournal(journalFile) {
   return JSON.parse(fs.readFileSync(journalFile, 'utf8'));
 }
@@ -387,7 +403,7 @@ describe('release docs push', () => {
       expect(pushes(deps)).toBe(1);
       expect(remoteMain(remote)).toBe(applied.commit);
       expect(git(repoRoot, ['rev-parse', 'HEAD']).trim()).toBe(applied.commit);
-      expect(liveSnapshot(repoRoot)).toEqual(before);
+      expectOnlyTrackingMoved(repoRoot, before, applied.commit);
       expect(fs.existsSync(path.join(repoRoot, '.git', 'FETCH_HEAD'))).toBe(false);
     }
   });
@@ -414,7 +430,7 @@ describe('release docs push', () => {
     expect(remoteHas(remote, localHead)).toBe(false);
     expect(git(repoRoot, ['rev-parse', 'HEAD']).trim()).toBe(localHead);
     expect(commitCount(repoRoot)).toBe(beforeCommits);
-    expect(liveSnapshot(repoRoot)).toEqual(before);
+    expectOnlyTrackingMoved(repoRoot, before, ctx.applied.commit);
   });
 
   testPosix('reads and updates only the push destination', async () => {
@@ -439,8 +455,7 @@ describe('release docs push', () => {
     expect(configValue(repoRoot, 'branch.main.remote')).toBeNull();
     expect(configValue(repoRoot, 'branch.main.merge')).toBeNull();
     expect(fs.existsSync(path.join(repoRoot, '.git', 'FETCH_HEAD'))).toBe(false);
-    expect(git(repoRoot, ['for-each-ref', 'refs/remotes']).trim()).toBe(before.remoteRefs);
-    expect(liveSnapshot(repoRoot)).toEqual(before);
+    expectOnlyTrackingMoved(repoRoot, before, ctx.applied.commit);
   });
 
   testPosix('completes an already reachable commit under a remote descendant with no push', async () => {

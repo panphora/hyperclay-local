@@ -298,6 +298,13 @@ function attemptRoot(fixture, repo, attemptId) {
   return attemptPaths(fixture.runDir, repo, attemptId).root;
 }
 
+function trackingRefs(text) {
+  return Object.fromEntries(text.split('\n').filter(Boolean).map((line) => {
+    const [oid, , ref] = line.split(/\s+/);
+    return [ref, oid];
+  }));
+}
+
 function liveSnapshot(root) {
   const reflog = path.join(root, '.git', 'logs', 'HEAD');
   return {
@@ -460,7 +467,10 @@ describe('documentation updater', () => {
       expect(after.head).not.toBe(before.get(repo).head);
       expect(after.status).toBe(before.get(repo).status);
       expect(after.untracked).toBe(before.get(repo).untracked);
-      expect(after.remoteRefs).toBe(before.get(repo).remoteRefs);
+      // Git 2.56 moves the pushed remote's tracking ref to what it pushed; older git leaves it.
+      const was = trackingRefs(before.get(repo).remoteRefs);
+      const pushed = { ...was, 'refs/remotes/origin/main': remoteMain(fixture.remotes.get(repo).push) };
+      expect([was, pushed]).toContainEqual(trackingRefs(after.remoteRefs));
       expect(after.worktree.length).toBe(before.get(repo).worktree.length);
       expect(fs.existsSync(path.join(root, '.git', 'FETCH_HEAD'))).toBe(false);
     }
