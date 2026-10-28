@@ -63,7 +63,8 @@ capture_failure() {
         done
         # A process in anon_pipe_write waits on whoever holds the read end, so name every holder of each pipe.
         echo "--- every process holding a pipe the group holds"
-        sudo -n sh -c 'for f in /proc/[0-9]*/fd/*; do l=$(readlink "$f" 2>/dev/null) && echo "${f#/proc/} $l"; done' 2>/dev/null \
+        # One find, not a readlink per descriptor: this runs inside exit cleanup's deadline.
+        sudo -n find /proc/[0-9]*/fd -maxdepth 1 -lname 'pipe:*' -printf '%h/x %l\n' 2>/dev/null | sed 's|^/proc/||' \
           | pipe_holders " $(echo $group) "
       fi
     else
