@@ -563,7 +563,7 @@ function stripSystemRouteMarker(url) {
 
 // Known `/_/` system routes on this host. Anything else under the marker is reserved
 // and 404s, so `/_/foo.html` can never reach the static catch-all and serve a document.
-const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'sync', 'wire', 'data-loss', 'api', 'meta', 'upload', 'uploads', 'versions', 'version', 'restore', 'clayjs', 'presence', 'page-state']);
+const SYSTEM_ROUTES = new Set(['save', 'live-sync', 'sync', 'wire', 'data-loss', 'api', 'meta', 'upload', 'uploads', 'versions', 'version', 'restore', 'clayjs', 'presence', 'page-state', 'reveal', 'versions-folder', 'export', 'code-editor', 'duplicate']);
 
 // Spec §3's code registry, keyed by the status this host answers with, so a
 // status and its code can never drift apart. A status the registry does not name
@@ -2914,6 +2914,15 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
               // model: whoever the document block is answered for is the person running
               // the app, so the claim is the same for every caller that gets a block.
               versions: true,
+              ...(ctx.documentActions ? {
+                actions: {
+                  reveal: { post: '/_/reveal' },
+                  versions: { post: '/_/versions-folder' },
+                  export: { post: '/_/export' },
+                  codeEditor: { post: '/_/code-editor' },
+                  duplicate: { post: '/_/duplicate' },
+                },
+              } : {}),
               upload: { allowed: true, maxBytes: UPLOAD_MAX_BYTES, access: UPLOAD_ACCESS },
               // The stamp of what is on disk right now. A client that loaded the page
               // before this host announced `conditional`, or that reloaded from cache,
@@ -3170,6 +3179,45 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
         });
       }
     });
+
+    // The page menu's per-document actions. Each names its document with Document-URL
+    // and resolves it exactly as /_/meta does, then runs in main through
+    // ctx.documentActions: this server holds no Electron access of its own. Only the
+    // `/_/` marker form answers, so a user file named `reveal` stays a document.
+    const documentActionRoute = (segment, action, argumentOf) => {
+      app.post(`/${segment}`, async (req, res, next) => {
+        if (!req.originalUrl.startsWith(`/_/${segment}`)) return next();
+        const href = documentUrlHeader(req);
+        if (!href) return res.status(400).json({ ok: false, message: 'No document named.' });
+        let name, filePath;
+        try {
+          name = resolveResourceFromHref(href);
+          filePath = await resolveWriteTarget(paths, name);
+          if (!(await fs.stat(filePath)).isFile()) {
+            return res.status(404).json({ ok: false, message: 'No document named.' });
+          }
+        } catch {
+          return res.status(404).json({ ok: false, message: 'No document named.' });
+        }
+        if (!ctx.documentActions || typeof ctx.documentActions[action] !== 'function') {
+          return res.status(404).json({ ok: false, message: 'These actions are not available.' });
+        }
+        let answer;
+        try {
+          answer = await ctx.documentActions[action](ctx.root.id, argumentOf(name, filePath));
+        } catch {
+          answer = { ok: false };
+        }
+        if (!answer || typeof answer !== 'object') answer = { ok: false };
+        return res.status(answer.ok ? 200 : 500).json(answer);
+      });
+    };
+
+    documentActionRoute('reveal', 'reveal', (name, filePath) => filePath);
+    documentActionRoute('versions-folder', 'versions', name => name);
+    documentActionRoute('export', 'export', (name, filePath) => filePath);
+    documentActionRoute('code-editor', 'codeEditor', name => name);
+    documentActionRoute('duplicate', 'duplicate', name => name);
 
     // GET /_/uploads/<folder>/<name>: the host path every upload answers (spec §9).
     // It names a file in this root's `uploads/`, so it resolves on any port this root

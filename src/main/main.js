@@ -24,6 +24,7 @@ const { RootObserver } = require('./root-observer');
 const { createRootLive } = require('./utils/root-live');
 const { getAndClearSnapshot } = require('./server');
 const { exportDocumentZip } = require('./export-zip');
+const { createDocumentActions } = require('./document-actions');
 const { realpathNearestParent } = require('./utils/path-resolver');
 const { VERSIONS_DIR } = require('./utils/artifact-paths');
 const { servedRootsPath, writeServedRoots, removeServedRoots } = require('./served-roots-file');
@@ -136,6 +137,11 @@ const pool = new RootServerPool({
       return null;
     }
   },
+  documentActions: createDocumentActions({
+    roots: () => settings.roots,
+    shellServer: () => shellServer,
+    workspaceWindow: () => workspaceWindow,
+  }),
 });
 
 const shellServer = createShellServer({

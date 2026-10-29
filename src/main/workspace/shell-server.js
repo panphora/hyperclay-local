@@ -6,6 +6,7 @@ const { getConsentRegistry, resolveReadPath } = require('../utils/path-resolver'
 const { RootTree, entryFor } = require('./tree');
 const { executeCommand, safePath, refusal } = require('./commands');
 const { createAutoNamer } = require('./auto-name');
+const { freeCopyName } = require('../utils/free-name');
 const { SearchIndex } = require('./search-index');
 const { handleWorkspaceRoute } = require('./routes');
 
@@ -370,6 +371,17 @@ function createShellServer({ authority, rootPool, observerFor, settings, appVers
     get origin() { return origin; },
     frame(rootId, rel, wireId) {
       return origin && wires.get(`${rootId}:${rel}`) === wireId ? { wireId, shellOrigin: origin } : null;
+    },
+    async duplicate(rootId, rel) {
+      const root = (settings().roots || []).find(item => item.id === rootId);
+      if (!root || rootPool.get(rootId)?.state !== 'running') throw refusal('missing', 'Root is not running', 404);
+      const source = safePath(rel);
+      const name = await freeCopyName(path.dirname(path.join(root.path, source)), path.basename(source));
+      const request = { command: 'duplicate', path: source, name };
+      const result = await executeCommand({ root, authority, engine: rootPool.get(rootId)?.deps?.syncEngineFor?.(),
+        request, tree: await treeFor(root), moved, changed });
+      await autoNamer?.command(root, request, result.path);
+      return { path: result.path };
     },
     entryUrl(rootId) {
       if (!origin || !(settings().roots || []).some(root => root.id === rootId)) return null;
