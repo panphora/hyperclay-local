@@ -74,6 +74,7 @@
     ],
     "extraFiles": [],
     "asarUnpack": [
+      "node_modules/@panphora/clayjs/dist/server/page-compaction-worker.cjs",
       "node_modules/tailwind-hyperclay/**",
       "node_modules/tailwindcss/**",
       "node_modules/@tailwindcss/**",

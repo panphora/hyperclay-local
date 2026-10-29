@@ -55,6 +55,18 @@ const MESSAGE = {
 };
 const KNOWN_CODES = new Set([...Object.keys(CORE_ERROR_STATUS), ...Object.values(STATUS_CODE), 'not-connected', 'rate-limited', 'busy']);
 
+// The room package stays optional at boot, so its own refusal codes join the
+// hosted table the first time a frame is answered against it.
+let roomErrorStatus = null;
+function coreErrorStatus() {
+  if (!roomErrorStatus) {
+    const { ROOM_ERROR_STATUS } = require('@panphora/clayjs/server/rooms');
+    roomErrorStatus = { ...CORE_ERROR_STATUS, ...ROOM_ERROR_STATUS };
+    for (const code of Object.keys(ROOM_ERROR_STATUS)) KNOWN_CODES.add(code);
+  }
+  return roomErrorStatus;
+}
+
 const NOT_FOUND = { status: 404, code: 'not-found', msg: MESSAGE['not-found'] };
 const FORBIDDEN = { status: 403, code: 'forbidden', msg: MESSAGE.forbidden };
 const UNEXPECTED = { status: 500, code: 'internal-error', msg: MESSAGE['internal-error'] };
@@ -170,7 +182,7 @@ function createLocalLiveData({ authority, resolveTarget } = {}) {
         return fail(res, 503, 'busy', message, 60);
       }
       if (result.error) {
-        const status = CORE_ERROR_STATUS[result.error] || 503;
+        const status = coreErrorStatus()[result.error] || 503;
         const retryAfter = RETRY_AFTER_ONE.has(result.error) ? 1 : undefined;
         return fail(res, status, result.error, result.message || MESSAGE[result.error] || `Live update refused: ${result.error}.`, retryAfter);
       }
@@ -255,8 +267,12 @@ function createLocalLiveData({ authority, resolveTarget } = {}) {
       const match = SINCE.exec(typeof source === 'string' ? source : '');
       const since = match ? { epoch: match[1], seq: Number(match[2]) } : null;
 
+      // The capability is what the tab declares on its state read: a tab that
+      // does not name this room's compaction version keeps seeing save speed.
+      const compaction = Number(req.query && req.query.compaction) || 0;
+
       res.setHeader('Cache-Control', 'no-store');
-      return res.json({ ...rooms.state(room, mine, since), conn });
+      return res.json({ ...rooms.state(room, mine, since, { compaction }), conn });
     } catch {
       return failWith(res, UNEXPECTED);
     }
@@ -265,4 +281,4 @@ function createLocalLiveData({ authority, resolveTarget } = {}) {
   return { post, state };
 }
 
-module.exports = { createLocalLiveData };
+module.exports = { createLocalLiveData, coreErrorStatus };

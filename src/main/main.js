@@ -2271,6 +2271,8 @@ function shutdownForQuit() {
         await pool.stopAll();
       }
 
+      localAuthority.close();
+
       await stopObservers();
       workspaceWindow.destroy();
       await shellServer.stop();

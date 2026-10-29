@@ -1,5 +1,6 @@
 const fs = require('fs');
 const { randomUUID } = require('crypto');
+const { fileURLToPath, pathToFileURL } = require('url');
 const upath = require('upath');
 const { assertWriteContext, assertStructureContext } = require('./utils/write-queue');
 const { documentEtag } = require('./spec-wire');
@@ -11,6 +12,14 @@ const { createPresenceRelay } = require('./presence');
 
 const EVENT_NAMES = new Set(['data', 'data-state', 'data-writer']);
 const RATE_LIMIT = Object.freeze({ rate: 25, burst: 40, idleMs: 60 * 1000 });
+
+// electron-builder packs node_modules into app.asar, and a worker_threads Worker
+// cannot load a file from inside the archive: the copy that stays beside it under
+// app.asar.unpacked is the one the compactor may start.
+function unpackedWorkerUrl(url) {
+  const file = url instanceof URL ? fileURLToPath(url) : String(url);
+  return pathToFileURL(file.includes('app.asar') ? file.replace('app.asar', 'app.asar.unpacked') : file);
+}
 
 /** A cold room load failed in a way the transport maps to 404 or 409, not 500. */
 class LocalAuthorityError extends Error {
@@ -28,13 +37,13 @@ class LocalAuthorityError extends Error {
  * Pure in memory: the caller owns the disk boundary (withDocument), time and
  * the room sweep timer.
  */
-function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered = publishRecoveredCopy, now = Date.now, newId = randomUUID } = {}) {
+function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered = publishRecoveredCopy, now = Date.now, newId = randomUUID, pageCompaction = process.env.HYPERCLAY_PAGE_COMPACTION === '1' } = {}) {
   if (typeof withDocument !== 'function') throw new Error('createLocalAuthority requires withDocument');
 
   // Required here, never at module load: the server package stays Optional for
   // callers that only touch the other Local modules.
   const core = require('@panphora/clayjs/server/rooms');
-  if (!rooms) rooms = core.createRooms({ now });
+  if (!rooms) rooms = core.createRooms({ now, ...(pageCompaction ? { compaction: true } : {}) });
   // The saved document a room is seeded from is the logical one: the file on disk
   // with the page editor's merge state put back, which is what the editor holds.
   if (!readSaved) readSaved = async (target) => {
@@ -922,6 +931,31 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
 
   const publish = (canonicalPath, event, payload) => sendTo(canonicalPath, event, payload);
 
+  // D13: a finished compaction reaches editors through the same frame path as an
+  // admitted one, so a tab applies it exactly as it applies a tab's own frame.
+  function broadcastCompaction(room, answer) {
+    if (!answer || answer.seq === undefined) return 0;
+    const frame = {
+      epoch: answer.epoch,
+      seq: answer.seq,
+      name: answer.name,
+      ops: answer.ops,
+      from: 'compactor',
+      n: 0,
+      receiptGeneration: room.receiptGeneration ?? 0,
+    };
+    if (answer.pageGeneration !== undefined) frame.pageGeneration = answer.pageGeneration;
+    const sent = publish(room.key, 'data', frame);
+    if (answer.landed === answer.seq) publish(room.key, 'data-writer', { landed: { page: answer.seq } });
+    return sent;
+  }
+
+  // One compactor per authority, and only when page rooms run in host mode: with
+  // the setting off nothing here is built and no worker can start.
+  const compactor = pageCompaction
+    ? core.createPageCompactor({ rooms, onCommit: broadcastCompaction, workerUrl: unpackedWorkerUrl(core.pageCompactionWorkerUrl()) })
+    : null;
+
   function publishState(canonicalPath) {
     const record = registry.get(canonicalPath);
     if (!record) return 0;
@@ -1393,6 +1427,8 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
   return {
     rooms,
     presence,
+    compactor,
+    broadcastCompaction,
     setCheckpointService(service) { checkpointService = service; },
     roomIsDirty,
     checkpointTargets,
@@ -1414,6 +1450,7 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     pageFormatFloorOf,
     hasParticipatingEditors,
     wakeCheckpoint(key) { checkpointService?.wake(key); },
+    close() { compactor?.close(); },
     hasUnjoinedEditors,
     roomFor,
     publish,
@@ -1441,4 +1478,4 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
   };
 }
 
-module.exports = { createLocalAuthority, LocalAuthorityError };
+module.exports = { createLocalAuthority, LocalAuthorityError, unpackedWorkerUrl };
