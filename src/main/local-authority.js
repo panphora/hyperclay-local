@@ -946,7 +946,7 @@ function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered
     };
     if (answer.pageGeneration !== undefined) frame.pageGeneration = answer.pageGeneration;
     const sent = publish(room.key, 'data', frame);
-    if (answer.landed === answer.seq) publish(room.key, 'data-writer', { landed: { page: answer.seq } });
+    if (answer.landed === answer.seq) publish(room.key, 'data-writer', { epoch: room.epoch, writer: room.writer, landed: { page: answer.seq } });
     return sent;
   }
 
