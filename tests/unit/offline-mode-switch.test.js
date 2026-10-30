@@ -195,7 +195,7 @@ describe('a switch to edit has every file it loads, offline', () => {
 
     const served = await send('/index.html');
     const servedHtml = text(served);
-    expect(servedHtml).toContain(`src="/_/clayjs/${selected}/clay.js?plugins=page,menu"`);
+    expect(servedHtml).toContain(`src="/_/clayjs/${selected}/clay.js?plugins=page,menu,indicator"`);
     expect(servedHtml).toContain('id="clay-runtime-map"');
 
     const edited = servedHtml.replace('<p data-id="p1"></p>', '<p data-id="p1">edited offline</p>');
@@ -212,7 +212,7 @@ describe('a switch to edit has every file it loads, offline', () => {
 
     const reopened = await send('/index.html');
     expect(reopened.status).toBe(200);
-    expect(text(reopened)).toContain(`src="/_/clayjs/${selected}/clay.js?plugins=page,menu"`);
+    expect(text(reopened)).toContain(`src="/_/clayjs/${selected}/clay.js?plugins=page,menu,indicator"`);
     expect(text(reopened)).toContain('edited offline');
     expect(text(reopened)).toContain('id="clay-runtime-map"');
   });
