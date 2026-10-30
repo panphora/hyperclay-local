@@ -12,7 +12,7 @@ async function run() {
   const file = path.join(dir, 'doc.html');
   const fixture = pageFixture('abc');
   fs.writeFileSync(file, await storePageState(dir, 'doc.html', fixture.html));
-  const authority = createLocalAuthority({ withDocument: withDocumentWrite });
+  const authority = createLocalAuthority({ withDocument: withDocumentWrite, pageCompaction: false });
   authority.registerRoot({ id: 'root-a', path: dir, canonicalPath: dir });
   const checkpoint = createLocalCheckpoint({ authority, withDocument: withDocumentWrite, logError: () => {} });
   authority.setCheckpointService(checkpoint);

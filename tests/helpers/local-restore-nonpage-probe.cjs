@@ -17,7 +17,7 @@ async function run() {
   const file = path.join(dir, 'todo.html');
   await fs.writeFile(file, current);
   const copy = await publishRecoveredCopy(dir, 'todo.html', recovered);
-  const authority = createLocalAuthority({ withDocument: withDocumentWrite });
+  const authority = createLocalAuthority({ withDocument: withDocumentWrite, pageCompaction: false });
   const checkpoint = createLocalCheckpoint({ authority, withDocument: withDocumentWrite });
   authority.setCheckpointService(checkpoint);
   const root = { id: 'root-a', kind: 'personal', path: dir, port: 0 };

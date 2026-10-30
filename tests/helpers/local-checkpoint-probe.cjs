@@ -17,7 +17,7 @@ async function run() {
   const fixture = pageFixture();
   const html = fixture.html.replace('</head>', '<script type="application/json" merge="game" clay="live">{"score":0}</script></head>');
   await fs.writeFile(file, html);
-  const authority = createLocalAuthority({ withDocument: withDocumentWrite });
+  const authority = createLocalAuthority({ withDocument: withDocumentWrite, pageCompaction: false });
   await withStructureChange(() => authority.registerRoot({ id: 'root-a', path: dir, canonicalPath: dir }));
   const tasks = [];
   const checkpoint = createLocalCheckpoint({

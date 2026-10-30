@@ -86,7 +86,7 @@ describe('a live-room checkpoint is only reported done once its bytes are durabl
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
     const root = { id: 'root-a', kind: 'personal', path: dir, port: 0 };
-    authority = createLocalAuthority({ withDocument: withDocumentWrite });
+    authority = createLocalAuthority({ withDocument: withDocumentWrite, pageCompaction: false });
     authority.registerRoot({ id: root.id, path: dir, canonicalPath: dir });
     checkpoint = createLocalCheckpoint({
       authority, withDocument: withDocumentWrite, logError: () => {},

@@ -16,7 +16,7 @@ async function run() {
   const page = pageFixture();
   await fs.writeFile(file, page.html);
   const recovered = await publishRecoveredCopy(dir, 'A.html', page.html);
-  const authority = createLocalAuthority({ withDocument: withDocumentWrite });
+  const authority = createLocalAuthority({ withDocument: withDocumentWrite, pageCompaction: false });
   const checkpoint = createLocalCheckpoint({ authority, withDocument: withDocumentWrite });
   authority.setCheckpointService(checkpoint);
   const root = { id: 'root-a', kind: 'personal', path: dir, port: 0 };

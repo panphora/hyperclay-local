@@ -25,7 +25,7 @@ async function run() {
   assert.notEqual(rev, splitPage(older.html).state.rev);
 
   const published = [];
-  const authority = createLocalAuthority({ withDocument: withDocumentWrite });
+  const authority = createLocalAuthority({ withDocument: withDocumentWrite, pageCompaction: false });
   const checkpoint = createLocalCheckpoint({ authority, withDocument: withDocumentWrite });
   authority.setCheckpointService(checkpoint);
   const root = { id: 'root-a', kind: 'personal', path: dir, port: 0 };

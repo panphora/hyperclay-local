@@ -15,7 +15,7 @@ async function run() {
   const file = path.join(dir, 'doc.html');
   const fixture = pageFixture();
   await fs.writeFile(file, fixture.html);
-  const authority = createLocalAuthority({ withDocument: withDocumentWrite });
+  const authority = createLocalAuthority({ withDocument: withDocumentWrite, pageCompaction: false });
   const root = { id: 'root-a', kind: 'team', path: dir, port: 0 };
   const server = require('node:http').createServer(createApp({ root, localAuthority: authority, devHooks: null }));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));

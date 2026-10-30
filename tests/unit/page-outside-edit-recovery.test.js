@@ -37,7 +37,7 @@ async function run(mode, { second = false } = {}) {
   await createBackup(dir, 'A', splitPage(older.html).file);
   await fs.writeFile(file, await storePageState(dir, 'A.html', stored.html));
   await createBackup(dir, 'A', splitPage(stored.html).file);
-  const authority = createLocalAuthority({ withDocument: withDocumentWrite });
+  const authority = createLocalAuthority({ withDocument: withDocumentWrite, pageCompaction: false });
   const checkpoint = createLocalCheckpoint({ authority, withDocument: withDocumentWrite });
   authority.setCheckpointService(checkpoint);
   const root = { id: 'root-a', kind: 'personal', path: dir, port: 0 };
