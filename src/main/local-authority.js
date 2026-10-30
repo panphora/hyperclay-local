@@ -37,7 +37,7 @@ class LocalAuthorityError extends Error {
  * Pure in memory: the caller owns the disk boundary (withDocument), time and
  * the room sweep timer.
  */
-function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered = publishRecoveredCopy, now = Date.now, newId = randomUUID, pageCompaction = process.env.HYPERCLAY_PAGE_COMPACTION === '1' } = {}) {
+function createLocalAuthority({ rooms, withDocument, readSaved, publishRecovered = publishRecoveredCopy, now = Date.now, newId = randomUUID, pageCompaction = process.env.HYPERCLAY_PAGE_COMPACTION !== '0' } = {}) {
   if (typeof withDocument !== 'function') throw new Error('createLocalAuthority requires withDocument');
 
   // Required here, never at module load: the server package stays Optional for
