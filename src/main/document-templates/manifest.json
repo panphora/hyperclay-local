@@ -2,8 +2,8 @@
   {
     "id": "page",
     "file": "page.html",
-    "bytes": 821,
-    "sha256": "e47c4fe6d1f4c73f8bfaf430a1243750d0570a54b67dc18044b3c514fc1e6685"
+    "bytes": 853,
+    "sha256": "7600991bd09e54a9957270c792f76a855a2410f519c42b7e67184dbaf28ccbcc"
   },
   {
     "id": "blank",
@@ -20,8 +20,8 @@
   {
     "id": "kanban",
     "file": "kanban.html",
-    "bytes": 229805,
-    "sha256": "baa0fba452d9f01a3cfb08ab66815eee258a69dbe7db3164cbc1ccaf0935acfc"
+    "bytes": 39897,
+    "sha256": "7bbe7fdbd7b1c99b1268e1723a263207b1fe31831f612313728a95fe4223a35d"
   },
   {
     "id": "landing",
