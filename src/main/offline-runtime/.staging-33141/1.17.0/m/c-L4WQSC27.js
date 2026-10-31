@@ -1,0 +1,1 @@
+var n=new WeakMap;function a(e,r){if(!e||e.nodeType!==1)throw new TypeError("clayjs: claim needs an element to own");if(n.has(e))throw new Error(`clayjs: the article already has a ${n.get(e).kind} runtime`);let t={kind:String(r??"runtime"),active:!0};return n.set(e,t),function(){return t.active?(t.active=!1,n.get(e)===t&&n.delete(e),!0):!1}}export{a};

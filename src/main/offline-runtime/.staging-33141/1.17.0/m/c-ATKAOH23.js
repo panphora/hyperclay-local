@@ -1,0 +1,1 @@
+var n=[];function l(e){n.push(e)}function r(e,c,o=null){for(let p of n)try{p(e,o?{captureId:c??null,artifact:o}:{captureId:c??null})}catch(t){console.error("clayjs: onSaveAccepted hook failed:",t)}}export{l as a,r as b};

@@ -212,7 +212,7 @@
   },
   "dependencies": {
     "@panphora/clayjs": "^1.17.0",
-    "@panphora/hyperclay-workspace": "^0.5.1",
+    "@panphora/hyperclay-workspace": "^0.6.0",
     "@tanstack/react-query": "^5.104.5",
     "busboy": "^1.6.0",
     "cheerio": "1.2.0",
@@ -222,7 +222,7 @@
     "eventsource": "^3.0.6",
     "express": "^4.22.2",
     "htmlparser2": "10.1.0",
-    "hyper-html-api": "^0.12.0",
+    "hyper-html-api": "^0.13.0",
     "js-beautify": "^1.15.4",
     "jsdom": "^26.1.0",
     "lightningcss": "^1.30.1",

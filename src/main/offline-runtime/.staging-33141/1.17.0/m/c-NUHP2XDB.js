@@ -1,0 +1,1 @@
+function r(n,o){for(let t of o){let e=t.indexOf(":");n.style.setProperty(t.slice(0,e).trim(),t.slice(e+1).trim(),"important")}}function i(n,o,t){n.style.setProperty(o,t,"important")}function s(n,o,t){let e=document.createElement(n);return r(e,o),t&&(e.textContent=t),e}export{r as a,i as b,s as c};

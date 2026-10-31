@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "aliases": {
+    "https://cdn.jsdelivr.net/npm/overtype@2.6.1/dist/overtype.min.js": {
+      "path": "compat/overtype-2.6.1.min.js",
+      "sha256": "d40f5ee8d04c563861bf38a0883af27c6884514d8224220cabc47dfc98557198",
+      "license": "compat/overtype-LICENSE",
+      "source": "https://cdn.jsdelivr.net/npm/overtype@2.6.1/dist/overtype.min.js"
+    },
+    "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js": {
+      "path": "compat/highlight-11.9.0.min.js",
+      "sha256": "837a6fa5b0c736b52bbde2b2b6190f305da3fc9ed41681db5321507057b5c846",
+      "license": "compat/highlight-LICENSE",
+      "source": "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"
+    },
+    "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;0,600;1,400;1,500&family=IBM+Plex+Sans:wght@400;500;600&display=swap": {
+      "path": "fonts/ibm-plex.css",
+      "sha256": "16eb56766ef1c90af57dbc00898cfa7ef224abef4e2ad71fa6402e88c797ac52",
+      "note": "IBM Plex Mono 500 italic is not bundled; the browser uses the nearest italic, 400"
+    }
+  }
+}
