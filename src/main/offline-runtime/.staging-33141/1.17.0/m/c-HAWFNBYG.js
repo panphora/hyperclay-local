@@ -1,1 +1,0 @@
-var r="Untitled";function s(i,{custom:l=!1,currentTitle:n="",keepWithoutHeading:f=!1}={}){if(l)return n;let e=i.find(t=>t.t==="heading"&&(t.level??2)===1&&t.parent==null);return!e&&f&&!["",r].includes(String(n).trim())?n:String(e?.c??"").replace(/[\s\uFFFC]+/gu," ").trim()||r}export{r as a,s as b};

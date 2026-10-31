@@ -303,7 +303,7 @@ function B(e) {
 }
 var T = u;
 var ge = { [E.HTML]: /* @__PURE__ */ new Set([T.ADDRESS, T.APPLET, T.AREA, T.ARTICLE, T.ASIDE, T.BASE, T.BASEFONT, T.BGSOUND, T.BLOCKQUOTE, T.BODY, T.BR, T.BUTTON, T.CAPTION, T.CENTER, T.COL, T.COLGROUP, T.DD, T.DETAILS, T.DIR, T.DIV, T.DL, T.DT, T.EMBED, T.FIELDSET, T.FIGCAPTION, T.FIGURE, T.FOOTER, T.FORM, T.FRAME, T.FRAMESET, T.H1, T.H2, T.H3, T.H4, T.H5, T.H6, T.HEAD, T.HEADER, T.HGROUP, T.HR, T.HTML, T.IFRAME, T.IMG, T.INPUT, T.LI, T.LINK, T.LISTING, T.MAIN, T.MARQUEE, T.MENU, T.META, T.NAV, T.NOEMBED, T.NOFRAMES, T.NOSCRIPT, T.OBJECT, T.OL, T.P, T.PARAM, T.PLAINTEXT, T.PRE, T.SCRIPT, T.SECTION, T.SELECT, T.SOURCE, T.STYLE, T.SUMMARY, T.TABLE, T.TBODY, T.TD, T.TEMPLATE, T.TEXTAREA, T.TFOOT, T.TH, T.THEAD, T.TITLE, T.TR, T.TRACK, T.UL, T.WBR, T.XMP]), [E.MATHML]: /* @__PURE__ */ new Set([T.MI, T.MO, T.MN, T.MS, T.MTEXT, T.ANNOTATION_XML]), [E.SVG]: /* @__PURE__ */ new Set([T.TITLE, T.FOREIGN_OBJECT, T.DESC]), [E.XLINK]: /* @__PURE__ */ new Set(), [E.XML]: /* @__PURE__ */ new Set(), [E.XMLNS]: /* @__PURE__ */ new Set() };
-var U = /* @__PURE__ */ new Set([T.H1, T.H2, T.H3, T.H4, T.H5, T.H6]);
+var F = /* @__PURE__ */ new Set([T.H1, T.H2, T.H3, T.H4, T.H5, T.H6]);
 var Va = /* @__PURE__ */ new Set([c.STYLE, c.SCRIPT, c.XMP, c.IFRAME, c.NOEMBED, c.NOFRAMES, c.PLAINTEXT]);
 var i;
 (function(e) {
@@ -313,14 +313,14 @@ var I = { DATA: i.DATA, RCDATA: i.RCDATA, RAWTEXT: i.RAWTEXT, SCRIPT_DATA: i.SCR
 function Rt(e) {
   return e >= s.DIGIT_0 && e <= s.DIGIT_9;
 }
-function F(e) {
+function y(e) {
   return e >= s.LATIN_CAPITAL_A && e <= s.LATIN_CAPITAL_Z;
 }
 function Dt(e) {
   return e >= s.LATIN_SMALL_A && e <= s.LATIN_SMALL_Z;
 }
 function x(e) {
-  return Dt(e) || F(e);
+  return Dt(e) || y(e);
 }
 function Pe(e) {
   return x(e) || Rt(e);
@@ -337,7 +337,7 @@ function Me(e) {
 function gt(e) {
   return e === s.NULL ? o.nullCharacterReference : e > 1114111 ? o.characterReferenceOutsideUnicodeRange : j(e) ? o.surrogateCharacterReference : $(e) ? o.noncharacterCharacterReference : J(e) || e === s.CARRIAGE_RETURN ? o.controlCharacterReference : null;
 }
-var y = class {
+var w = class {
   constructor(t, a) {
     this.options = t, this.handler = a, this.paused = false, this.inLoop = false, this.inForeignNode = false, this.lastStartTagName = "", this.active = false, this.state = i.DATA, this.returnState = i.DATA, this.entityStartPos = 0, this.consumedAfterSnapshot = -1, this.currentCharacterToken = null, this.currentToken = null, this.currentAttr = { name: "", value: "" }, this.preprocessor = new Z(a), this.currentLocation = this.getCurrentLocation(-1), this.entityDecoder = new ue(te, (r, d) => {
       this.preprocessor.pos = this.entityStartPos + d - 1, this._flushCodePointConsumedAsCharacterReference(r);
@@ -940,7 +940,7 @@ var y = class {
         break;
       }
       default:
-        a.tagName += String.fromCodePoint(F(t) ? ae(t) : t);
+        a.tagName += String.fromCodePoint(y(t) ? ae(t) : t);
     }
   }
   _stateRcdataLessThanSign(t) {
@@ -1219,7 +1219,7 @@ var y = class {
         break;
       }
       default:
-        this.currentAttr.name += String.fromCodePoint(F(t) ? ae(t) : t);
+        this.currentAttr.name += String.fromCodePoint(y(t) ? ae(t) : t);
     }
   }
   _stateAfterAttributeName(t) {
@@ -1578,7 +1578,7 @@ var y = class {
     }
   }
   _stateBeforeDoctypeName(t) {
-    if (F(t)) this._createDoctypeToken(String.fromCharCode(ae(t))), this.state = i.DOCTYPE_NAME;
+    if (y(t)) this._createDoctypeToken(String.fromCharCode(ae(t))), this.state = i.DOCTYPE_NAME;
     else switch (t) {
       case s.SPACE:
       case s.LINE_FEED:
@@ -1628,7 +1628,7 @@ var y = class {
         break;
       }
       default:
-        a.name += String.fromCodePoint(F(t) ? ae(t) : t);
+        a.name += String.fromCodePoint(y(t) ? ae(t) : t);
     }
   }
   _stateAfterDoctypeName(t) {
@@ -2063,7 +2063,7 @@ var re = class {
     this.shortenToLength(Math.max(r, 0));
   }
   popUntilNumberedHeaderPopped() {
-    this.popUntilPopped(U, E.HTML);
+    this.popUntilPopped(F, E.HTML);
   }
   popUntilTableCellPopped() {
     this.popUntilPopped(kt, E.HTML);
@@ -2140,7 +2140,7 @@ var re = class {
       let a = this.tagIDs[t];
       switch (this.treeAdapter.getNamespaceURI(this.items[t])) {
         case E.HTML: {
-          if (U.has(a)) return true;
+          if (F.has(a)) return true;
           if (se.has(a)) return false;
           break;
         }
@@ -2430,9 +2430,9 @@ var n;
 var Zt = { startLine: -1, startCol: -1, startOffset: -1, endLine: -1, endCol: -1, endOffset: -1 };
 var $e = /* @__PURE__ */ new Set([u.TABLE, u.TBODY, u.TFOOT, u.THEAD, u.TR]);
 var ze = { scriptingEnabled: true, sourceCodeLocationInfo: false, treeAdapter: L, onParseError: null };
-var X = class {
+var k = class {
   constructor(t, a, r = null, d = null) {
-    this.fragmentContext = r, this.scriptHandler = d, this.currentToken = null, this.stopped = false, this.insertionMode = n.INITIAL, this.originalInsertionMode = n.INITIAL, this.headElement = null, this.formElement = null, this.currentNotInHTML = false, this.tmplInsertionModeStack = [], this.pendingCharacterTokens = [], this.hasNonWhitespacePendingCharacterToken = false, this.framesetOk = true, this.skipNextNewLine = false, this.fosterParentingEnabled = false, this.options = { ...ze, ...t }, this.treeAdapter = this.options.treeAdapter, this.onParseError = this.options.onParseError, this.onParseError && (this.options.sourceCodeLocationInfo = true), this.document = a ?? this.treeAdapter.createDocument(), this.tokenizer = new y(this.options, this), this.activeFormattingElements = new ie(this.treeAdapter), this.fragmentContextID = r ? B(this.treeAdapter.getTagName(r)) : u.UNKNOWN, this._setContextModes(r ?? this.document, this.fragmentContextID), this.openElements = new re(this.document, this.treeAdapter, this);
+    this.fragmentContext = r, this.scriptHandler = d, this.currentToken = null, this.stopped = false, this.insertionMode = n.INITIAL, this.originalInsertionMode = n.INITIAL, this.headElement = null, this.formElement = null, this.currentNotInHTML = false, this.tmplInsertionModeStack = [], this.pendingCharacterTokens = [], this.hasNonWhitespacePendingCharacterToken = false, this.framesetOk = true, this.skipNextNewLine = false, this.fosterParentingEnabled = false, this.options = { ...ze, ...t }, this.treeAdapter = this.options.treeAdapter, this.onParseError = this.options.onParseError, this.onParseError && (this.options.sourceCodeLocationInfo = true), this.document = a ?? this.treeAdapter.createDocument(), this.tokenizer = new w(this.options, this), this.activeFormattingElements = new ie(this.treeAdapter), this.fragmentContextID = r ? B(this.treeAdapter.getTagName(r)) : u.UNKNOWN, this._setContextModes(r ?? this.document, this.fragmentContextID), this.openElements = new re(this.document, this.treeAdapter, this);
   }
   static parse(t, a) {
     let r = new this(a);
@@ -2747,27 +2747,27 @@ var X = class {
     }
     switch (this.insertionMode) {
       case n.INITIAL: {
-        w(this, t);
+        Y(this, t);
         break;
       }
       case n.BEFORE_HTML: {
-        v(this, t);
-        break;
-      }
-      case n.BEFORE_HEAD: {
         Q(this, t);
         break;
       }
-      case n.IN_HEAD: {
+      case n.BEFORE_HEAD: {
         G(this, t);
         break;
       }
-      case n.IN_HEAD_NO_SCRIPT: {
+      case n.IN_HEAD: {
         W(this, t);
         break;
       }
-      case n.AFTER_HEAD: {
+      case n.IN_HEAD_NO_SCRIPT: {
         q(this, t);
+        break;
+      }
+      case n.AFTER_HEAD: {
+        X(this, t);
         break;
       }
       case n.IN_BODY:
@@ -2815,27 +2815,27 @@ var X = class {
     }
     switch (this.insertionMode) {
       case n.INITIAL: {
-        w(this, t);
+        Y(this, t);
         break;
       }
       case n.BEFORE_HTML: {
-        v(this, t);
-        break;
-      }
-      case n.BEFORE_HEAD: {
         Q(this, t);
         break;
       }
-      case n.IN_HEAD: {
+      case n.BEFORE_HEAD: {
         G(this, t);
         break;
       }
-      case n.IN_HEAD_NO_SCRIPT: {
+      case n.IN_HEAD: {
         W(this, t);
         break;
       }
-      case n.AFTER_HEAD: {
+      case n.IN_HEAD_NO_SCRIPT: {
         q(this, t);
+        break;
+      }
+      case n.AFTER_HEAD: {
+        X(this, t);
         break;
       }
       case n.TEXT: {
@@ -2891,7 +2891,7 @@ var X = class {
         break;
       }
       case n.IN_TABLE_TEXT: {
-        Y(this, t);
+        v(this, t);
         break;
       }
       case n.AFTER_BODY: {
@@ -2920,7 +2920,7 @@ var X = class {
         break;
       }
       case n.IN_TABLE_TEXT: {
-        Y(this, t);
+        v(this, t);
         break;
       }
       default:
@@ -2935,7 +2935,7 @@ var X = class {
   _startTagOutsideForeignContent(t) {
     switch (this.insertionMode) {
       case n.INITIAL: {
-        w(this, t);
+        Y(this, t);
         break;
       }
       case n.BEFORE_HTML: {
@@ -2963,11 +2963,11 @@ var X = class {
         break;
       }
       case n.IN_TABLE: {
-        k(this, t);
+        U(this, t);
         break;
       }
       case n.IN_TABLE_TEXT: {
-        Y(this, t);
+        v(this, t);
         break;
       }
       case n.IN_CAPTION: {
@@ -3031,7 +3031,7 @@ var X = class {
   _endTagOutsideForeignContent(t) {
     switch (this.insertionMode) {
       case n.INITIAL: {
-        w(this, t);
+        Y(this, t);
         break;
       }
       case n.BEFORE_HTML: {
@@ -3067,7 +3067,7 @@ var X = class {
         break;
       }
       case n.IN_TABLE_TEXT: {
-        Y(this, t);
+        v(this, t);
         break;
       }
       case n.IN_CAPTION: {
@@ -3124,27 +3124,27 @@ var X = class {
   onEof(t) {
     switch (this.insertionMode) {
       case n.INITIAL: {
-        w(this, t);
+        Y(this, t);
         break;
       }
       case n.BEFORE_HTML: {
-        v(this, t);
-        break;
-      }
-      case n.BEFORE_HEAD: {
         Q(this, t);
         break;
       }
-      case n.IN_HEAD: {
+      case n.BEFORE_HEAD: {
         G(this, t);
         break;
       }
-      case n.IN_HEAD_NO_SCRIPT: {
+      case n.IN_HEAD: {
         W(this, t);
         break;
       }
-      case n.AFTER_HEAD: {
+      case n.IN_HEAD_NO_SCRIPT: {
         q(this, t);
+        break;
+      }
+      case n.AFTER_HEAD: {
+        X(this, t);
         break;
       }
       case n.IN_BODY:
@@ -3164,7 +3164,7 @@ var X = class {
         break;
       }
       case n.IN_TABLE_TEXT: {
-        Y(this, t);
+        v(this, t);
         break;
       }
       case n.IN_TEMPLATE: {
@@ -3304,17 +3304,17 @@ function cu(e, t) {
   let a = t.forceQuirks ? S.QUIRKS : Ge(t);
   Qe(t) || e._err(t, o.nonConformingDoctype), e.treeAdapter.setDocumentMode(e.document, a), e.insertionMode = n.BEFORE_HTML;
 }
-function w(e, t) {
+function Y(e, t) {
   e._err(t, o.missingDoctype, true), e.treeAdapter.setDocumentMode(e.document, S.QUIRKS), e.insertionMode = n.BEFORE_HTML, e._processToken(t);
 }
 function ou(e, t) {
-  t.tagID === u.HTML ? (e._insertElement(t, E.HTML), e.insertionMode = n.BEFORE_HEAD) : v(e, t);
+  t.tagID === u.HTML ? (e._insertElement(t, E.HTML), e.insertionMode = n.BEFORE_HEAD) : Q(e, t);
 }
 function du(e, t) {
   let a = t.tagID;
-  (a === u.HTML || a === u.HEAD || a === u.BODY || a === u.BR) && v(e, t);
+  (a === u.HTML || a === u.HEAD || a === u.BODY || a === u.BR) && Q(e, t);
 }
-function v(e, t) {
+function Q(e, t) {
   e._insertFakeRootElement(), e.insertionMode = n.BEFORE_HEAD, e._processToken(t);
 }
 function Eu(e, t) {
@@ -3328,14 +3328,14 @@ function Eu(e, t) {
       break;
     }
     default:
-      Q(e, t);
+      G(e, t);
   }
 }
 function Tu(e, t) {
   let a = t.tagID;
-  a === u.HEAD || a === u.BODY || a === u.HTML || a === u.BR ? Q(e, t) : e._err(t, o.endTagWithoutMatchingOpenElement);
+  a === u.HEAD || a === u.BODY || a === u.HTML || a === u.BR ? G(e, t) : e._err(t, o.endTagWithoutMatchingOpenElement);
 }
-function Q(e, t) {
+function G(e, t) {
   e._insertFakeElement(c.HEAD, u.HEAD), e.headElement = e.openElements.current, e.insertionMode = n.IN_HEAD, e._processToken(t);
 }
 function R(e, t) {
@@ -3378,7 +3378,7 @@ function R(e, t) {
       break;
     }
     default:
-      G(e, t);
+      W(e, t);
   }
 }
 function hu(e, t) {
@@ -3390,7 +3390,7 @@ function hu(e, t) {
     case u.BODY:
     case u.BR:
     case u.HTML: {
-      G(e, t);
+      W(e, t);
       break;
     }
     case u.TEMPLATE: {
@@ -3404,7 +3404,7 @@ function hu(e, t) {
 function H(e, t) {
   e.openElements.tmplCount > 0 ? (e.openElements.generateImpliedEndTagsThoroughly(), e.openElements.currentTagId !== u.TEMPLATE && e._err(t, o.closingOfElementWithOpenChildElements), e.openElements.popUntilTagNamePopped(u.TEMPLATE), e.activeFormattingElements.clearToLastMarker(), e.tmplInsertionModeStack.shift(), e._resetInsertionMode()) : e._err(t, o.endTagWithoutMatchingOpenElement);
 }
-function G(e, t) {
+function W(e, t) {
   e.openElements.pop(), e.insertionMode = n.AFTER_HEAD, e._processToken(t);
 }
 function lu(e, t) {
@@ -3428,7 +3428,7 @@ function lu(e, t) {
       break;
     }
     default:
-      W(e, t);
+      q(e, t);
   }
 }
 function fu(e, t) {
@@ -3438,14 +3438,14 @@ function fu(e, t) {
       break;
     }
     case u.BR: {
-      W(e, t);
+      q(e, t);
       break;
     }
     default:
       e._err(t, o.endTagWithoutMatchingOpenElement);
   }
 }
-function W(e, t) {
+function q(e, t) {
   let a = t.type === f.EOF ? o.openElementsLeftAfterEof : o.disallowedContentInNoscriptInHead;
   e._err(t, a), e.openElements.pop(), e.insertionMode = n.IN_HEAD, e._processToken(t);
 }
@@ -3481,7 +3481,7 @@ function mu(e, t) {
       break;
     }
     default:
-      q(e, t);
+      X(e, t);
   }
 }
 function _u(e, t) {
@@ -3489,7 +3489,7 @@ function _u(e, t) {
     case u.BODY:
     case u.HTML:
     case u.BR: {
-      q(e, t);
+      X(e, t);
       break;
     }
     case u.TEMPLATE: {
@@ -3500,7 +3500,7 @@ function _u(e, t) {
       e._err(t, o.endTagWithoutMatchingOpenElement);
   }
 }
-function q(e, t) {
+function X(e, t) {
   e._insertFakeElement(c.BODY, u.BODY), e.insertionMode = n.IN_BODY, Ee(e, t);
 }
 function Ee(e, t) {
@@ -3553,7 +3553,7 @@ function Iu(e, t) {
   e.openElements.hasInButtonScope(u.P) && e._closePElement(), e._insertElement(t, E.HTML);
 }
 function Cu(e, t) {
-  e.openElements.hasInButtonScope(u.P) && e._closePElement(), e.openElements.currentTagId !== void 0 && U.has(e.openElements.currentTagId) && e.openElements.pop(), e._insertElement(t, E.HTML);
+  e.openElements.hasInButtonScope(u.P) && e._closePElement(), e.openElements.currentTagId !== void 0 && F.has(e.openElements.currentTagId) && e.openElements.pop(), e._insertElement(t, E.HTML);
 }
 function Ou(e, t) {
   e.openElements.hasInButtonScope(u.P) && e._closePElement(), e._insertElement(t, E.HTML), e.skipNextNewLine = true, e.framesetOk = false;
@@ -4055,7 +4055,7 @@ function da(e, t) {
 function Ea(e, t) {
   !e.formElement && e.openElements.tmplCount === 0 && (e._insertElement(t, E.HTML), e.formElement = e.openElements.current, e.openElements.pop());
 }
-function k(e, t) {
+function U(e, t) {
   switch (t.tagID) {
     case u.TD:
     case u.TH:
@@ -4139,7 +4139,7 @@ function rt(e, t) {
 function it(e, t) {
   e.pendingCharacterTokens.push(t), e.hasNonWhitespacePendingCharacterToken = true;
 }
-function Y(e, t) {
+function v(e, t) {
   let a = 0;
   if (e.hasNonWhitespacePendingCharacterToken) for (; a < e.pendingCharacterTokens.length; a++) V(e, e.pendingCharacterTokens[a]);
   else for (; a < e.pendingCharacterTokens.length; a++) e._insertCharacters(e.pendingCharacterTokens[a]);
@@ -4148,7 +4148,7 @@ function Y(e, t) {
 var nt = /* @__PURE__ */ new Set([u.CAPTION, u.COL, u.COLGROUP, u.TBODY, u.TD, u.TFOOT, u.TH, u.THEAD, u.TR]);
 function Ta(e, t) {
   let a = t.tagID;
-  nt.has(a) ? e.openElements.hasInTableScope(u.CAPTION) && (e.openElements.generateImpliedEndTags(), e.openElements.popUntilTagNamePopped(u.CAPTION), e.activeFormattingElements.clearToLastMarker(), e.insertionMode = n.IN_TABLE, k(e, t)) : C(e, t);
+  nt.has(a) ? e.openElements.hasInTableScope(u.CAPTION) && (e.openElements.generateImpliedEndTags(), e.openElements.popUntilTagNamePopped(u.CAPTION), e.activeFormattingElements.clearToLastMarker(), e.insertionMode = n.IN_TABLE, U(e, t)) : C(e, t);
 }
 function ha(e, t) {
   let a = t.tagID;
@@ -4227,11 +4227,11 @@ function he(e, t) {
     case u.TBODY:
     case u.TFOOT:
     case u.THEAD: {
-      e.openElements.hasTableBodyContextInTableScope() && (e.openElements.clearBackToTableBodyContext(), e.openElements.pop(), e.insertionMode = n.IN_TABLE, k(e, t));
+      e.openElements.hasTableBodyContextInTableScope() && (e.openElements.clearBackToTableBodyContext(), e.openElements.pop(), e.insertionMode = n.IN_TABLE, U(e, t));
       break;
     }
     default:
-      k(e, t);
+      U(e, t);
   }
 }
 function Ce(e, t) {
@@ -4278,7 +4278,7 @@ function le(e, t) {
       break;
     }
     default:
-      k(e, t);
+      U(e, t);
   }
 }
 function ct(e, t) {
@@ -4421,7 +4421,7 @@ function Aa(e, t) {
     case u.TBODY:
     case u.TFOOT:
     case u.THEAD: {
-      e.tmplInsertionModeStack[0] = n.IN_TABLE, e.insertionMode = n.IN_TABLE, k(e, t);
+      e.tmplInsertionModeStack[0] = n.IN_TABLE, e.insertionMode = n.IN_TABLE, U(e, t);
       break;
     }
     case u.COL: {
@@ -4559,7 +4559,7 @@ function Ma(e, t) {
 var _s = String.prototype.codePointAt == null ? (e, t) => (e.charCodeAt(t) & 64512) === 55296 ? (e.charCodeAt(t) - 55296) * 1024 + e.charCodeAt(t + 1) - 56320 + 65536 : e.charCodeAt(t) : (e, t) => e.codePointAt(t);
 var ps = /* @__PURE__ */ new Set([c.AREA, c.BASE, c.BASEFONT, c.BGSOUND, c.BR, c.COL, c.EMBED, c.FRAME, c.HR, c.IMG, c.INPUT, c.KEYGEN, c.LINK, c.META, c.PARAM, c.SOURCE, c.TRACK, c.WBR]);
 function xa(e, t) {
-  return X.parse(e, t);
+  return k.parse(e, t);
 }
 
 // src/lib/offline-runtime.js

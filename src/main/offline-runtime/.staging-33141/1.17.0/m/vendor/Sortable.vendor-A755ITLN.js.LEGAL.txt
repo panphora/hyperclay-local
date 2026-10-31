@@ -1,1 +1,0 @@
-/*! Sortable 1.15.6 - MIT | git://github.com/SortableJS/Sortable.git */

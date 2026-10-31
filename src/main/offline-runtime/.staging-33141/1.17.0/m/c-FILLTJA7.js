@@ -1,1 +1,0 @@
-var r=null,n=null,l=()=>r;function t(){return r?Promise.resolve(r):(n??=Promise.all([import("./c-DNZ5IFM6.js"),import("./c-XPELB6E5.js")]).then(([e,o])=>r={HyperMorph:e.HyperMorph,morph:e.morph,mergeTagRecognizers:o.mergeTagRecognizers}).catch(e=>{throw n=null,e}),n)}export{l as a,t as b};

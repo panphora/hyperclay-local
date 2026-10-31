@@ -60,3 +60,4 @@ package-lock.json (optional - remove this line if you want to commit it)
 UPLOAD_REPORT.md
 .deploy
 test-box-out/
+src/main/offline-runtime/.staging-*/

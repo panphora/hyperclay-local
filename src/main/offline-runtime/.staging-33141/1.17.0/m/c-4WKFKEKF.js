@@ -1,1 +1,0 @@
-function c(t){if(typeof t!="string")return null;let n=t.trim().replace(/^v/,"");return/^\d+(\.\d+)*$/.test(n)?n.split(".").map(Number):null}function a(t,n){let r=c(t),o=c(n);if(!r||!o)return!1;let l=Math.max(r.length,o.length);for(let e=0;e<l;e++){let s=r[e]||0,i=o[e]||0;if(s!==i)return s>i}return!1}export{a};

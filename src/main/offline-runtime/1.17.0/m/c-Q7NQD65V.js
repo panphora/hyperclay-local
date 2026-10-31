@@ -1,1 +1,0 @@
-function c(e,r,a,o={},i=null){let n=e.createElement(r);a&&(n.className=a);for(let[l,t]of Object.entries(o))t!=null&&t!==!1&&n.setAttribute(l,t===!0?"":String(t));return i!==null&&(n.textContent=i),n}var f=e=>([...String(e).trim()][0]??"?").toUpperCase(),s=(e,r)=>c(e,"span","page-board-face",{"aria-hidden":"true"},f(r));export{c as a,s as b};

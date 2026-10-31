@@ -1,0 +1,20 @@
+import{b as a}from"./c-Y6F2FORL.js";import{b as p}from"./c-L7JL5TL3.js";import{a as m}from"./c-2YYDMLNZ.js";import"./c-DCFSEJZG.js";import"./c-WRBKEJD4.js";import"./c-VHNSBD2M.js";var h=`html:has(> body > .clay-intro) { height: auto !important; overflow-y: auto !important; }
+body:has(> .clay-intro) { height: auto !important; overflow: visible !important; }
+.clay-intro {
+  position: relative;
+  display: block;
+}
+@media print { .clay-intro { display: none; } }
+`,f=`:host { color: inherit !important; }
+.clay-intro__close {
+  position: absolute; top: 10px; right: 10px; z-index: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; min-height: 0; margin: 0; padding: 0;
+  border: 0; border-radius: 4px; background: none; box-shadow: none;
+  color: inherit; opacity: .55; cursor: pointer; line-height: 1;
+}
+.clay-intro__close:hover { opacity: 1; background: none; color: inherit; }
+.clay-intro__close:focus-visible { opacity: 1; outline: 2px solid currentColor; outline-offset: 2px; }
+.clay-intro__close svg { display: block; width: 12px; height: 12px; fill: currentColor; stroke: none; }
+@media (pointer: coarse) { .clay-intro__close { width: 44px; height: 44px; top: 4px; right: 4px; } }
+`;var y={close:"Hide this introduction",label:t=>`About ${t}`},x="a[href], button, input, select, textarea, [tabindex]:not([tabindex='-1'])",v="textarea, select",w=["checkbox","radio","button","submit","reset","file"];function C(t){return t.isContentEditable||t.closest(v)?!0:t.tagName!=="INPUT"?!1:w.indexOf(t.type)<0}function E(){try{return new URLSearchParams(window.location.search).get("intro")==="1"}catch{return!1}}function S(){if(document.getElementById("clay-intro-style"))return;let t=document.createElement("style");t.id="clay-intro-style",t.setAttribute("clay","editor-ui"),t.textContent=h,document.head.appendChild(t)}function _(){let t=[...document.querySelectorAll(x)].find(o=>!o.disabled&&!C(o)&&!o.closest("[clay~='editor-ui']")&&(typeof o.checkVisibility!="function"||o.checkVisibility()));t?t.focus({preventScroll:!0}):document.body.focus({preventScroll:!0})}function Y({memory:t,template:o,appName:c,hadDraft:e}){return!o||!o.content.textContent.trim()&&!o.content.querySelector("img, svg, video, canvas")||!E()&&(t.get().intro.done||e||m.servedHash||window.matchMedia&&window.matchMedia("print").matches)?null:T({memory:t,template:o,appName:c})}function T({memory:t,template:o,appName:c}){S();let e=document.createElement("section");e.className="clay-intro",e.setAttribute("clay","editor-ui"),e.setAttribute("sap-ignore",""),e.setAttribute("aria-label",y.label(c)),e.appendChild(o.content.cloneNode(!0));let i=document.createElement("button");i.type="button",i.className="clay-intro__close",i.setAttribute("aria-label",y.close),i.innerHTML='<svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><path d="M1.4 0 6 4.6 10.6 0 12 1.4 7.4 6 12 10.6 10.6 12 6 7.4 1.4 12 0 10.6 4.6 6 0 1.4z"/></svg>',i.addEventListener("click",()=>l("closed")),p({name:"intro-close",content:i,css:[f],parent:e});let d=!1,r=0;function l(n){if(d)return;d=!0,removeEventListener("scroll",u),r&&cancelAnimationFrame(r);let s=e.getBoundingClientRect().height,b=window.scrollY;if(t.get().intro.done=n,t.save(),e.remove(),n==="scrolled"){let g=/hidden|clip/.test(getComputedStyle(document.body).overflowY+getComputedStyle(document.documentElement).overflowY);window.scrollTo(0,g?0:Math.max(0,b-s))}a(),n!=="scrolled"&&_()}function u(){r||(r=requestAnimationFrame(()=>{r=0;let n=e.getBoundingClientRect().bottom,s=scrollY>0&&scrollY+innerHeight>=document.documentElement.scrollHeight-1;(n<1||s&&n<innerHeight)&&l("scrolled")}))}return e.addEventListener("click",n=>{if(n.target.closest("[visitor-intro-dismiss]")){l("closed");return}n.target.closest("[visitor-intro-start]")&&(n.preventDefault(),window.scrollTo({top:window.scrollY+e.getBoundingClientRect().bottom,behavior:"smooth"}))}),document.body.prepend(e),a(),addEventListener("scroll",u,{passive:!0}),e}export{y as COPY,Y as mountIntro};
