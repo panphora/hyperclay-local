@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [1.34.0] - 2026-10-31
+
+### Added
+- Pages can ask Hyperclay Local to act on their own file by posting to `/_/meta`: `reveal` shows the file, `versions-folder` opens its versions folder, `export` zips it into Downloads, `code-editor` opens the workspace code panel, and `duplicate` makes a copy and answers with the copy's address.
+- Live data page rooms compact the page as edits land, which keeps long editing sessions from piling up history. It is on by default, and the tab that made an edit hears back once its change lands.
+
+### Changed
+- The bundled templates follow hyperclay main: the Document template ships as version 1.0.0 with the indicator plugin loaded, and the original Kanban template is back.
+
+### Fixed
+- Saving from the Code tab works on documents set to page format 1.
+
 ## [1.33.0] - 2026-10-27
 
 ### Added
