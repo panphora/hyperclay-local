@@ -1,6 +1,7 @@
 const express = require('express');
 const fs = require('fs').promises;
 const path = require('upath');
+const nativePath = require('path');
 const { Eta } = require('eta');
 const { createBackup, publishRecoveredCopy } = require('./utils/backup.js');
 const {
@@ -3213,9 +3214,9 @@ function createApp(ctxOrDir, devHooks = null, isKnownPath = null) {
       });
     };
 
-    documentActionRoute('reveal', 'reveal', (name, filePath) => filePath);
+    documentActionRoute('reveal', 'reveal', (name, filePath) => nativePath.normalize(filePath));
     documentActionRoute('versions-folder', 'versions', name => name);
-    documentActionRoute('export', 'export', (name, filePath) => filePath);
+    documentActionRoute('export', 'export', (name, filePath) => nativePath.normalize(filePath));
     documentActionRoute('code-editor', 'codeEditor', name => name);
     documentActionRoute('duplicate', 'duplicate', name => name);
 

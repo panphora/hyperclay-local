@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 import { runPageRoomConformance } from '@panphora/clayjs/src/server/rooms/page-room-conformance.js';
 import { buildCandidate } from '@panphora/clayjs/src/live/page-compaction.js';
 
+import { pathToFileURL } from 'node:url';
 const require = createRequire(import.meta.url);
 const { createLocalPageRoomAdapter } = require('./local-page-room-conformance.cjs');
 
@@ -32,7 +33,7 @@ export function run({ seed = 1, steps = 300, tabs = 3 } = {}) {
   return { ...out, broadcasts: adapter.broadcasts };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [from = 1, to = 3, steps = 300, tabs = 3] = process.argv.slice(2).map(Number);
   const runs = [];
   for (let seed = from; seed <= to; seed++) {
