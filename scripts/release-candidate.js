@@ -30,13 +30,26 @@ function fullInventory() {
       jobs.push({ id: `linux-${arch}-${check}`, kind: 'desktop', platform: `linux-${arch}` });
     }
   }
+  jobs.push(
+    { id: 'linux-update-signing', kind: 'signing',
+      needs: ['verify', 'build-linux-x64', 'build-linux-arm64'],
+      outputs: ['executables/*.AppImage.sig'],
+      optionalKey: { name: 'HLOCAL_UPDATE_SEED', missing: 'omit-linux-feeds-and-signatures',
+        invalid: 'fail', untrusted: 'fail' } },
+    { id: 'update-feed', kind: 'prepare',
+      needs: ['verify', 'build-macos', 'build-windows', 'build-linux-x64', 'build-linux-arm64',
+        'linux-update-signing'],
+      outputs: ['executables/latest-mac.yml', 'executables/latest.yml'],
+      conditionalOutputs: { HLOCAL_UPDATE_SEED: ['executables/latest-linux.yml',
+        'executables/latest-linux-arm64.yml'] } }
+  );
   return jobs;
 }
 
 function candidateJobGraph(inventory = fullInventory()) {
   return inventory.map(job => ({ ...job,
-    needs: job.kind === 'verify' ? []
-      : job.kind === 'desktop' ? ['verify', `build-${job.platform}`] : ['verify']
+    needs: job.needs ?? (job.kind === 'verify' ? []
+      : job.kind === 'desktop' ? ['verify', `build-${job.platform}`] : ['verify'])
   }));
 }
 

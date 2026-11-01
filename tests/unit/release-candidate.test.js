@@ -14,7 +14,8 @@ const expectedIds = [
   'test-windows', 'conformance', 'license', 'audit', 'offline-runtime',
   'build-macos', 'build-windows', 'build-linux-x64', 'build-linux-arm64',
   'linux-x64-appimage-launch', 'linux-x64-server-save', 'linux-x64-popover', 'linux-x64-autostart',
-  'linux-arm64-appimage-launch', 'linux-arm64-server-save', 'linux-arm64-popover', 'linux-arm64-autostart'
+  'linux-arm64-appimage-launch', 'linux-arm64-server-save', 'linux-arm64-popover', 'linux-arm64-autostart',
+  'linux-update-signing', 'update-feed'
 ];
 const inputs = { app: 'hyperclay-local', attempt: 'attempt-3.2',
   manifest_identity: 'a'.repeat(64), candidate_sha256: 'b'.repeat(64), workflow_sha: 'c'.repeat(40) };
@@ -72,6 +73,29 @@ test('Windows signing failure leaves Linux and macOS builds reported', () => {
     expect(summary.jobs).toContainEqual({ id, status: 'passed' });
     expect(candidateJobGraph().find(job => job.id === id).needs).toEqual(['verify']);
   }
+});
+
+test('feed preparation and Linux signing require their builds and retain their outputs', () => {
+  const graph = candidateJobGraph();
+  expect(graph.find(job => job.id === 'linux-update-signing')).toMatchObject({
+    needs: ['verify', 'build-linux-x64', 'build-linux-arm64'],
+    outputs: ['executables/*.AppImage.sig'],
+    optionalKey: { name: 'HLOCAL_UPDATE_SEED', missing: 'omit-linux-feeds-and-signatures',
+      invalid: 'fail', untrusted: 'fail' }
+  });
+  expect(graph.find(job => job.id === 'update-feed')).toMatchObject({
+    needs: ['verify', 'build-macos', 'build-windows', 'build-linux-x64', 'build-linux-arm64',
+      'linux-update-signing'],
+    outputs: ['executables/latest-mac.yml', 'executables/latest.yml'],
+    conditionalOutputs: { HLOCAL_UPDATE_SEED: ['executables/latest-linux.yml',
+      'executables/latest-linux-arm64.yml'] }
+  });
+});
+
+test.each(['update-feed', 'linux-update-signing'])('failed %s makes summary red', id => {
+  expect(summarize({ ...green(), [id]: 'failed' })).toMatchObject({
+    ok: false, complete: true, failed: [id], problems: [`${id}: failed`]
+  });
 });
 
 test.each(expectedIds)('missing %s makes summary incomplete', id => {
