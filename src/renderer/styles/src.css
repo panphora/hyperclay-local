@@ -1,5 +1,9 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
 @source "../PopoverApp.jsx";
+@source "../popover-index.js";
+@source "../popover.html";
+@source "../../main";
+@source inline("!container m-8 !grid p-4 text-wrap backdrop-filter select-all");
 
 ::placeholder {
   color: #B9BFE4;
