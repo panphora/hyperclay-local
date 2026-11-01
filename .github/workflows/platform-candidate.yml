@@ -1,0 +1,1093 @@
+name: Platform candidate
+run-name: platform ${{ inputs.attempt }}
+'on':
+  workflow_dispatch:
+    inputs:
+      attempt:
+        description: Exact platform attempt ID
+        required: true
+        type: string
+      manifest_identity:
+        description: SHA256 of the platform manifest
+        required: true
+        type: string
+      candidate_sha256:
+        description: SHA256 of candidate.json inside the archive
+        required: true
+        type: string
+      app:
+        description: Application being built
+        required: true
+        type: string
+      candidate_key:
+        description: Private R2 archive key
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: .
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '26'
+    - name: Download and verify candidate before identity
+      env:
+        R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.R2_CANDIDATES_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATES_SECRET_ACCESS_KEY }}
+        CANDIDATE_KEY: ${{ inputs.candidate_key }}
+        APP: ${{ inputs.app }}
+        CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}
+        ATTEMPT: ${{ inputs.attempt }}
+        MANIFEST_IDENTITY: ${{ inputs.manifest_identity }}
+        WORKFLOW_SHA: ${{ github.workflow_sha }}
+      run: |-
+        mkdir -p transfer
+        aws --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" --region auto s3api head-object --bucket hyperclay-candidates --key "$CANDIDATE_KEY" > transfer/object.json
+        aws --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" --region auto s3api get-object --bucket hyperclay-candidates --key "$CANDIDATE_KEY" transfer/candidate.tar.gz
+        node <<'NODE'
+        const fs = require('fs'), crypto = require('crypto');
+        const object = JSON.parse(fs.readFileSync('transfer/object.json'));
+        const hash = crypto.createHash('sha256').update(fs.readFileSync('transfer/candidate.tar.gz')).digest('hex');
+        if (!/^[a-f0-9]{64}$/.test(object.Metadata?.sha256) || hash !== object.Metadata.sha256) throw Error('Candidate archive sha256 mismatch');
+        NODE
+        python3 trusted/scripts/platform-candidate-archive.py transfer/candidate.tar.gz candidate
+        node <<'NODE'
+        const fs = require('fs'), crypto = require('crypto');
+        const hash = crypto.createHash('sha256').update(fs.readFileSync('candidate/candidate.json')).digest('hex');
+        if (hash !== process.env.CANDIDATE_SHA256) throw Error('Candidate manifest sha256 mismatch');
+        const pkg = JSON.parse(fs.readFileSync('candidate/package.json'));
+        if (pkg.name !== 'hyperclay-local-electron' || !/^\d+\.\d+\.\d+$/.test(pkg.version)) throw Error('Invalid candidate app/version');
+        const lock = JSON.parse(fs.readFileSync('candidate/package-lock.json'));
+        if (lock.packages[''].version !== pkg.version || lock.packages[''].name !== pkg.name) throw Error('Candidate dependency manifest mismatch');
+        const object = JSON.parse(fs.readFileSync('transfer/object.json'));
+        fs.writeFileSync('transfer/context.json', JSON.stringify({releaseDate: new Date(object.LastModified).toISOString()}));
+        fs.writeFileSync('transfer/inputs.json', JSON.stringify({app: process.env.APP, workflow_sha: process.env.WORKFLOW_SHA, candidate_sha256: hash, attempt: process.env.ATTEMPT, manifest_identity: process.env.MANIFEST_IDENTITY}));
+        NODE
+        node trusted/scripts/release-candidate.js identity transfer/inputs.json identity
+    - uses: actions/upload-artifact@v4
+      with:
+        name: identity
+        path: identity/identity.json
+        if-no-files-found: error
+    - uses: actions/upload-artifact@v4
+      with:
+        name: candidate
+        path: transfer/
+        if-no-files-found: error
+  test-macos-1:
+    name: test-macos-1
+    runs-on: macos-14
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - run: |-
+        mkdir -p diagnostics
+        npm --silent test -- --listTests --json --runInBand > diagnostics/test-macos-1-list.json
+        npm test -- --runInBand --shard=1/3 --json --outputFile=diagnostics/test-macos-1-report.json
+    - run: node ../trusted/scripts/release-test-shard.js verify --list diagnostics/test-macos-1-list.json --report diagnostics/test-macos-1-report.json
+        --shard 1/3
+      if: always()
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-test-macos-1
+        path: candidate/diagnostics/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+  test-macos-2:
+    name: test-macos-2
+    runs-on: macos-14
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - run: |-
+        mkdir -p diagnostics
+        npm --silent test -- --listTests --json --runInBand > diagnostics/test-macos-2-list.json
+        npm test -- --runInBand --shard=2/3 --json --outputFile=diagnostics/test-macos-2-report.json
+    - run: node ../trusted/scripts/release-test-shard.js verify --list diagnostics/test-macos-2-list.json --report diagnostics/test-macos-2-report.json
+        --shard 2/3
+      if: always()
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-test-macos-2
+        path: candidate/diagnostics/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+  test-macos-3:
+    name: test-macos-3
+    runs-on: macos-14
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - run: |-
+        mkdir -p diagnostics
+        npm --silent test -- --listTests --json --runInBand > diagnostics/test-macos-3-list.json
+        npm test -- --runInBand --shard=3/3 --json --outputFile=diagnostics/test-macos-3-report.json
+    - run: node ../trusted/scripts/release-test-shard.js verify --list diagnostics/test-macos-3-list.json --report diagnostics/test-macos-3-report.json
+        --shard 3/3
+      if: always()
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-test-macos-3
+        path: candidate/diagnostics/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+  test-linux-x64-1:
+    name: test-linux-x64-1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - run: |-
+        mkdir -p diagnostics
+        npm --silent test -- --listTests --json --runInBand > diagnostics/test-linux-x64-1-list.json
+        npm test -- --runInBand --shard=1/3 --json --outputFile=diagnostics/test-linux-x64-1-report.json
+    - run: node ../trusted/scripts/release-test-shard.js verify --list diagnostics/test-linux-x64-1-list.json --report diagnostics/test-linux-x64-1-report.json
+        --shard 1/3
+      if: always()
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-test-linux-x64-1
+        path: candidate/diagnostics/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+  test-linux-x64-2:
+    name: test-linux-x64-2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - run: |-
+        mkdir -p diagnostics
+        npm --silent test -- --listTests --json --runInBand > diagnostics/test-linux-x64-2-list.json
+        npm test -- --runInBand --shard=2/3 --json --outputFile=diagnostics/test-linux-x64-2-report.json
+    - run: node ../trusted/scripts/release-test-shard.js verify --list diagnostics/test-linux-x64-2-list.json --report diagnostics/test-linux-x64-2-report.json
+        --shard 2/3
+      if: always()
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-test-linux-x64-2
+        path: candidate/diagnostics/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+  test-linux-x64-3:
+    name: test-linux-x64-3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - run: |-
+        mkdir -p diagnostics
+        npm --silent test -- --listTests --json --runInBand > diagnostics/test-linux-x64-3-list.json
+        npm test -- --runInBand --shard=3/3 --json --outputFile=diagnostics/test-linux-x64-3-report.json
+    - run: node ../trusted/scripts/release-test-shard.js verify --list diagnostics/test-linux-x64-3-list.json --report diagnostics/test-linux-x64-3-report.json
+        --shard 3/3
+      if: always()
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-test-linux-x64-3
+        path: candidate/diagnostics/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+  test-linux-arm64-1:
+    name: test-linux-arm64-1
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - run: |-
+        mkdir -p diagnostics
+        npm --silent test -- --listTests --json --runInBand > diagnostics/test-linux-arm64-1-list.json
+        npm test -- --runInBand --shard=1/3 --json --outputFile=diagnostics/test-linux-arm64-1-report.json
+    - run: node ../trusted/scripts/release-test-shard.js verify --list diagnostics/test-linux-arm64-1-list.json --report diagnostics/test-linux-arm64-1-report.json
+        --shard 1/3
+      if: always()
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-test-linux-arm64-1
+        path: candidate/diagnostics/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+  test-linux-arm64-2:
+    name: test-linux-arm64-2
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - run: |-
+        mkdir -p diagnostics
+        npm --silent test -- --listTests --json --runInBand > diagnostics/test-linux-arm64-2-list.json
+        npm test -- --runInBand --shard=2/3 --json --outputFile=diagnostics/test-linux-arm64-2-report.json
+    - run: node ../trusted/scripts/release-test-shard.js verify --list diagnostics/test-linux-arm64-2-list.json --report diagnostics/test-linux-arm64-2-report.json
+        --shard 2/3
+      if: always()
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-test-linux-arm64-2
+        path: candidate/diagnostics/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+  test-linux-arm64-3:
+    name: test-linux-arm64-3
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - run: |-
+        mkdir -p diagnostics
+        npm --silent test -- --listTests --json --runInBand > diagnostics/test-linux-arm64-3-list.json
+        npm test -- --runInBand --shard=3/3 --json --outputFile=diagnostics/test-linux-arm64-3-report.json
+    - run: node ../trusted/scripts/release-test-shard.js verify --list diagnostics/test-linux-arm64-3-list.json --report diagnostics/test-linux-arm64-3-report.json
+        --shard 3/3
+      if: always()
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-test-linux-arm64-3
+        path: candidate/diagnostics/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+  test-windows:
+    name: test-windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - run: npm test -- --runInBand
+    needs:
+    - verify
+  conformance:
+    name: conformance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - run: npx playwright install --with-deps chromium
+    - run: npm test -- --runInBand tests/integration/host-gate.test.js
+      env:
+        HOST_GATE: '1'
+        HOST_GATE_RUNNER: ${{ github.workspace }}/candidate/tests/conformance/host-test.mjs
+    needs:
+    - verify
+  license:
+    name: license
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - run: python3 scripts/ablation-check.py LICENSE
+    needs:
+    - verify
+  audit:
+    name: audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - run: |-
+        mkdir -p diagnostics
+        status=0
+        npm audit --omit=dev --audit-level=critical --json > diagnostics/audit.json || status=$?
+        node -e "const fs=require('fs'),c=require('crypto');fs.writeFileSync('diagnostics/audit.sha256',c.createHash('sha256').update(fs.readFileSync('diagnostics/audit.json')).digest('hex'));"
+        exit "$status"
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-audit
+        path: candidate/diagnostics/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+  offline-runtime:
+    name: offline-runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - run: node scripts/check-offline-runtime-release.mjs
+    needs:
+    - verify
+  build-macos:
+    name: build-macos
+    runs-on: macos-14
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - name: Import Developer ID certificate
+      env:
+        APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+        APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+      run: |
+        KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+        KPW="$(openssl rand -base64 24)"
+        security create-keychain -p "$KPW" "$KEYCHAIN"
+        security set-keychain-settings -lut 21600 "$KEYCHAIN"
+        security unlock-keychain -p "$KPW" "$KEYCHAIN"
+        echo "$APPLE_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+        security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+          -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+        security set-key-partition-list -S apple-tool:,apple:,codesign: \
+          -s -k "$KPW" "$KEYCHAIN"
+        security list-keychain -d user -s "$KEYCHAIN"
+        security default-keychain -s "$KEYCHAIN"
+        rm -f "$RUNNER_TEMP/cert.p12"
+    - name: Build, sign & notarize
+      env:
+        NOTARIZE_WAIT: 'true'
+        APPLE_ID: ${{ secrets.APPLE_ID }}
+        APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      run: npm run mac-build:run
+    - run: node build-scripts/move-executables.js mac
+    - name: Verify the DMGs and update zips carry a stapled ticket
+      run: "for dmg in executables/*.dmg; do\n  echo \"\u2500\u2500 $dmg\"\n  # The disk image's own ticket, which is what\
+        \ Gatekeeper checks on the\n  # download. Without it that check is an online one even though the app\n  # inside is\
+        \ stapled.\n  xcrun stapler validate \"$dmg\"\n  hdiutil attach \"$dmg\" -nobrowse -quiet -mountpoint /tmp/dmgcheck\n\
+        \  codesign -dv --verbose=4 /tmp/dmgcheck/*.app 2>&1 | grep -E \"Authority|TeamIdentifier\"\n  xcrun stapler validate\
+        \ /tmp/dmgcheck/*.app\n  spctl -a -vvv -t install /tmp/dmgcheck/*.app\n  hdiutil detach /tmp/dmgcheck -quiet\ndone\n\
+        # The update zip is what electron-updater installs. Squirrel checks the code\n# signature, and the stapled ticket\
+        \ lets the swapped app launch offline.\nls executables/*-mac.zip\nfor zip in executables/*-mac.zip; do\n  echo \"\u2500\
+        \u2500 $zip\"\n  rm -rf /tmp/zipcheck && mkdir /tmp/zipcheck\n  ditto -x -k \"$zip\" /tmp/zipcheck\n  codesign --verify\
+        \ --deep --strict --verbose=2 /tmp/zipcheck/*.app\n  xcrun stapler validate /tmp/zipcheck/*.app\n  spctl -a -vvv -t\
+        \ exec /tmp/zipcheck/*.app\ndone\n"
+    - name: Retain private candidate outputs
+      env:
+        R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.R2_CANDIDATES_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATES_SECRET_ACCESS_KEY }}
+        CANDIDATE_KEY: ${{ inputs.candidate_key }}
+      run: node ../trusted/scripts/platform-candidate-outputs.js retain build-macos
+    - uses: actions/upload-artifact@v4
+      with:
+        name: build-macos
+        path: retained/build-macos.tar.gz
+        if-no-files-found: error
+    needs:
+    - verify
+  build-windows:
+    name: build-windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - name: Build CSS
+      run: npm run build-css
+    - name: Build React (production)
+      run: npm run build-react-prod
+    - name: Build and sign the installer
+      run: npm run clean-windows && npx electron-builder --win --publish never
+      env:
+        NODE_ENV: production
+        AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+    - name: Verify signatures
+      run: "# Azure Trusted Signing issues three-day certificates, so an untimestamped\n# signature stops validating three\
+        \ days after the release and Windows then\n# treats the file as unsigned. Status is \"Valid\" here either way, because\n\
+        # the certificate has not expired yet on the runner, so the timestamp is the\n# only thing that proves the signature\
+        \ will still verify for a downloader.\n# electron-updater also compares the signer's CN with publisherName.\nfunction\
+        \ Assert-Signed([string]$file) {\n  $sig = Get-AuthenticodeSignature -LiteralPath $file\n  Write-Host \"\u2500\u2500\
+        \ $file\"\n  Write-Host \"Signature status: $($sig.Status)\"\n  Write-Host \"Signer: $($sig.SignerCertificate.Subject)\"\
+        \n  if ($sig.Status -ne \"Valid\") {\n    Write-Error \"Signature verification failed: $file\"\n    exit 1\n  }\n\
+        \  if ($sig.SignerCertificate.Subject -notmatch '(^|, )CN=Hyperspace Systems LLC(,|$)') {\n    Write-Error \"Signer\
+        \ CN is not Hyperspace Systems LLC, so installed apps would refuse this update: $file\"\n    exit 1\n  }\n  if (-not\
+        \ $sig.TimeStamperCertificate) {\n    Write-Error \"Signature has no RFC3161 timestamp; it would expire with the certificate:\
+        \ $file\"\n    exit 1\n  }\n  Write-Host \"Timestamped by: $($sig.TimeStamperCertificate.Subject)\"\n}\n\n$installer\
+        \ = (Resolve-Path \"dist\\HyperclayLocal-Setup-*.exe\").Path\nAssert-Signed $installer\nAssert-Signed \"dist\\win-unpacked\\\
+        HyperclayLocal.exe\"\n\n# Without publisherName in app-update.yml, electron-updater skips the\n# signature check on\
+        \ every downloaded update.\n$updateConfig = Get-Content -Raw \"dist\\win-unpacked\\resources\\app-update.yml\"\nWrite-Host\
+        \ $updateConfig\nif ($updateConfig -notmatch 'publisherName:\\s*\\r?\\n\\s*-\\s*Hyperspace Systems LLC') {\n  Write-Error\
+        \ \"app-update.yml does not name the publisher, so updates would not be signature-checked.\"\n  exit 1\n}\n\n# Install\
+        \ silently, which the one-click installer always does per user (no UAC),\n# and check what lands on disk through the\
+        \ same registry value the app reads to\n# decide it can update itself. build/installer.nsh puts a fresh install in\n\
+        # Programs\\HyperclayLocal, the folder every older per-user install already uses.\nStart-Process -FilePath $installer\
+        \ -ArgumentList \"/S\" -Wait\n$key = \"HKCU:\\Software\\56279e69-a1ca-58cc-a483-19be13420d85\"\n$dir = (Get-ItemProperty\
+        \ -Path $key -Name InstallLocation).InstallLocation\nWrite-Host \"Installed to: $dir\"\nif ($dir -ne (Join-Path $env:LOCALAPPDATA\
+        \ \"Programs\\HyperclayLocal\")) {\n  Write-Error \"The installer did not install to the per-user HyperclayLocal folder:\
+        \ $dir\"\n  exit 1\n}\nAssert-Signed (Join-Path $dir \"HyperclayLocal.exe\")\nAssert-Signed (Join-Path $dir \"Uninstall\
+        \ HyperclayLocal.exe\")\n\n# electron-updater reinstalls with --updated /S. The assisted installer must find\n# the\
+        \ per-user install through HKCU and reinstall into the same folder.\nStart-Process -FilePath $installer -ArgumentList\
+        \ \"--updated\",\"/S\" -Wait\n$again = (Get-ItemProperty -Path $key -Name InstallLocation).InstallLocation\nif ($again\
+        \ -ne $dir) {\n  Write-Error \"A silent update moved the install: $dir -> $again\"\n  exit 1\n}\nAssert-Signed (Join-Path\
+        \ $dir \"HyperclayLocal.exe\")\n"
+      shell: pwsh
+    - run: node build-scripts/move-executables.js windows
+    - name: Retain private candidate outputs
+      env:
+        R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.R2_CANDIDATES_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATES_SECRET_ACCESS_KEY }}
+        CANDIDATE_KEY: ${{ inputs.candidate_key }}
+      run: node ../trusted/scripts/platform-candidate-outputs.js retain build-windows
+    - uses: actions/upload-artifact@v4
+      with:
+        name: build-windows
+        path: retained/build-windows.tar.gz
+        if-no-files-found: error
+    needs:
+    - verify
+  build-linux-x64:
+    name: build-linux-x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - run: npm run linux-build:run
+    - run: |-
+        VERSION=$(node -p "require('./package.json').version")
+        test -f "executables/HyperclayLocal-${VERSION}.AppImage"
+    - name: Retain private candidate outputs
+      env:
+        R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.R2_CANDIDATES_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATES_SECRET_ACCESS_KEY }}
+        CANDIDATE_KEY: ${{ inputs.candidate_key }}
+      run: node ../trusted/scripts/platform-candidate-outputs.js retain build-linux-x64
+    - uses: actions/upload-artifact@v4
+      with:
+        name: build-linux-x64
+        path: retained/build-linux-x64.tar.gz
+        if-no-files-found: error
+    needs:
+    - verify
+  build-linux-arm64:
+    name: build-linux-arm64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - run: npm run linux-build:run
+    - run: |-
+        VERSION=$(node -p "require('./package.json').version")
+        test -f "executables/HyperclayLocal-${VERSION}-arm64.AppImage"
+    - name: Retain private candidate outputs
+      env:
+        R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.R2_CANDIDATES_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATES_SECRET_ACCESS_KEY }}
+        CANDIDATE_KEY: ${{ inputs.candidate_key }}
+      run: node ../trusted/scripts/platform-candidate-outputs.js retain build-linux-arm64
+    - uses: actions/upload-artifact@v4
+      with:
+        name: build-linux-arm64
+        path: retained/build-linux-arm64.tar.gz
+        if-no-files-found: error
+    needs:
+    - verify
+  linux-x64-appimage-launch:
+    name: linux-x64-appimage-launch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - uses: actions/download-artifact@v4
+      with:
+        name: build-linux-x64
+        path: incoming/build-linux-x64
+    - run: |-
+        python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-x64/build-linux-x64.tar.gz executables
+        node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
+    - run: |-
+        sudo apt-get update
+        sudo apt-get install -y xvfb dbus-x11
+        npx playwright install --with-deps chromium
+    - run: |-
+        VERSION=$(node -p "require('./package.json').version")
+        export APPIMAGE="$PWD/executables/HyperclayLocal-${VERSION}.AppImage"
+        bash tests/linux/run-all.sh
+      env:
+        SYSTEM_MUTATIONS: '1'
+        CHECKS: appimage-launch
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-linux-x64-appimage-launch
+        path: candidate/linux-check-artifacts/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+    - build-linux-x64
+  linux-x64-server-save:
+    name: linux-x64-server-save
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - uses: actions/download-artifact@v4
+      with:
+        name: build-linux-x64
+        path: incoming/build-linux-x64
+    - run: |-
+        python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-x64/build-linux-x64.tar.gz executables
+        node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
+    - run: |-
+        sudo apt-get update
+        sudo apt-get install -y xvfb dbus-x11
+        npx playwright install --with-deps chromium
+    - run: |-
+        VERSION=$(node -p "require('./package.json').version")
+        export APPIMAGE="$PWD/executables/HyperclayLocal-${VERSION}.AppImage"
+        bash tests/linux/run-all.sh
+      env:
+        SYSTEM_MUTATIONS: '1'
+        CHECKS: server-save
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-linux-x64-server-save
+        path: candidate/linux-check-artifacts/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+    - build-linux-x64
+  linux-x64-popover:
+    name: linux-x64-popover
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - uses: actions/download-artifact@v4
+      with:
+        name: build-linux-x64
+        path: incoming/build-linux-x64
+    - run: |-
+        python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-x64/build-linux-x64.tar.gz executables
+        node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
+    - run: |-
+        sudo apt-get update
+        sudo apt-get install -y xvfb dbus-x11
+        npx playwright install --with-deps chromium
+    - run: |-
+        VERSION=$(node -p "require('./package.json').version")
+        export APPIMAGE="$PWD/executables/HyperclayLocal-${VERSION}.AppImage"
+        bash tests/linux/run-all.sh
+      env:
+        SYSTEM_MUTATIONS: '1'
+        CHECKS: popover
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-linux-x64-popover
+        path: candidate/linux-check-artifacts/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+    - build-linux-x64
+  linux-x64-autostart:
+    name: linux-x64-autostart
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - uses: actions/download-artifact@v4
+      with:
+        name: build-linux-x64
+        path: incoming/build-linux-x64
+    - run: |-
+        python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-x64/build-linux-x64.tar.gz executables
+        node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
+    - run: |-
+        sudo apt-get update
+        sudo apt-get install -y xvfb dbus-x11
+        npx playwright install --with-deps chromium
+    - run: |-
+        VERSION=$(node -p "require('./package.json').version")
+        export APPIMAGE="$PWD/executables/HyperclayLocal-${VERSION}.AppImage"
+        bash tests/linux/run-all.sh
+      env:
+        SYSTEM_MUTATIONS: '1'
+        CHECKS: autostart
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-linux-x64-autostart
+        path: candidate/linux-check-artifacts/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+    - build-linux-x64
+  linux-arm64-appimage-launch:
+    name: linux-arm64-appimage-launch
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - uses: actions/download-artifact@v4
+      with:
+        name: build-linux-arm64
+        path: incoming/build-linux-arm64
+    - run: |-
+        python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-arm64/build-linux-arm64.tar.gz executables
+        node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
+    - run: |-
+        sudo apt-get update
+        sudo apt-get install -y xvfb dbus-x11
+        npx playwright install --with-deps chromium
+    - run: |-
+        VERSION=$(node -p "require('./package.json').version")
+        export APPIMAGE="$PWD/executables/HyperclayLocal-${VERSION}-arm64.AppImage"
+        bash tests/linux/run-all.sh
+      env:
+        SYSTEM_MUTATIONS: '1'
+        CHECKS: appimage-launch
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-linux-arm64-appimage-launch
+        path: candidate/linux-check-artifacts/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+    - build-linux-arm64
+  linux-arm64-server-save:
+    name: linux-arm64-server-save
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - uses: actions/download-artifact@v4
+      with:
+        name: build-linux-arm64
+        path: incoming/build-linux-arm64
+    - run: |-
+        python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-arm64/build-linux-arm64.tar.gz executables
+        node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
+    - run: |-
+        sudo apt-get update
+        sudo apt-get install -y xvfb dbus-x11
+        npx playwright install --with-deps chromium
+    - run: |-
+        VERSION=$(node -p "require('./package.json').version")
+        export APPIMAGE="$PWD/executables/HyperclayLocal-${VERSION}-arm64.AppImage"
+        bash tests/linux/run-all.sh
+      env:
+        SYSTEM_MUTATIONS: '1'
+        CHECKS: server-save
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-linux-arm64-server-save
+        path: candidate/linux-check-artifacts/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+    - build-linux-arm64
+  linux-arm64-popover:
+    name: linux-arm64-popover
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - uses: actions/download-artifact@v4
+      with:
+        name: build-linux-arm64
+        path: incoming/build-linux-arm64
+    - run: |-
+        python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-arm64/build-linux-arm64.tar.gz executables
+        node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
+    - run: |-
+        sudo apt-get update
+        sudo apt-get install -y xvfb dbus-x11
+        npx playwright install --with-deps chromium
+    - run: |-
+        VERSION=$(node -p "require('./package.json').version")
+        export APPIMAGE="$PWD/executables/HyperclayLocal-${VERSION}-arm64.AppImage"
+        bash tests/linux/run-all.sh
+      env:
+        SYSTEM_MUTATIONS: '1'
+        CHECKS: popover
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-linux-arm64-popover
+        path: candidate/linux-check-artifacts/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+    - build-linux-arm64
+  linux-arm64-autostart:
+    name: linux-arm64-autostart
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - uses: actions/download-artifact@v4
+      with:
+        name: build-linux-arm64
+        path: incoming/build-linux-arm64
+    - run: |-
+        python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-arm64/build-linux-arm64.tar.gz executables
+        node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
+    - run: |-
+        sudo apt-get update
+        sudo apt-get install -y xvfb dbus-x11
+        npx playwright install --with-deps chromium
+    - run: |-
+        VERSION=$(node -p "require('./package.json').version")
+        export APPIMAGE="$PWD/executables/HyperclayLocal-${VERSION}-arm64.AppImage"
+        bash tests/linux/run-all.sh
+      env:
+        SYSTEM_MUTATIONS: '1'
+        CHECKS: autostart
+    - uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-linux-arm64-autostart
+        path: candidate/linux-check-artifacts/
+        if-no-files-found: error
+      if: always()
+    needs:
+    - verify
+    - build-linux-arm64
+  linux-update-signing:
+    name: linux-update-signing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - uses: actions/download-artifact@v4
+      with:
+        name: build-linux-x64
+        path: incoming/build-linux-x64
+    - run: |-
+        python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-x64/build-linux-x64.tar.gz executables
+        node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
+    - uses: actions/download-artifact@v4
+      with:
+        name: build-linux-arm64
+        path: incoming/build-linux-arm64
+    - run: |-
+        python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-arm64/build-linux-arm64.tar.gz executables
+        node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
+    - run: node ../trusted/scripts/platform-candidate-outputs.js sign
+      env:
+        HLOCAL_UPDATE_SEED: ${{ secrets.HLOCAL_UPDATE_SEED }}
+    - name: Retain private candidate outputs
+      env:
+        R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.R2_CANDIDATES_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATES_SECRET_ACCESS_KEY }}
+        CANDIDATE_KEY: ${{ inputs.candidate_key }}
+      run: node ../trusted/scripts/platform-candidate-outputs.js retain linux-update-signing
+    - uses: actions/upload-artifact@v4
+      with:
+        name: linux-update-signing
+        path: retained/linux-update-signing.tar.gz
+        if-no-files-found: error
+    needs:
+    - verify
+    - build-linux-x64
+    - build-linux-arm64
+  update-feed:
+    name: update-feed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: trusted
+    - uses: ./trusted/.github/actions/candidate
+    - uses: actions/download-artifact@v4
+      with:
+        name: build-macos
+        path: incoming/build-macos
+    - run: |-
+        python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-macos/build-macos.tar.gz executables
+        node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
+    - uses: actions/download-artifact@v4
+      with:
+        name: build-windows
+        path: incoming/build-windows
+    - run: |-
+        python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-windows/build-windows.tar.gz executables
+        node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
+    - uses: actions/download-artifact@v4
+      with:
+        name: build-linux-x64
+        path: incoming/build-linux-x64
+    - run: |-
+        python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-x64/build-linux-x64.tar.gz executables
+        node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
+    - uses: actions/download-artifact@v4
+      with:
+        name: build-linux-arm64
+        path: incoming/build-linux-arm64
+    - run: |-
+        python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-arm64/build-linux-arm64.tar.gz executables
+        node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
+    - uses: actions/download-artifact@v4
+      with:
+        name: linux-update-signing
+        path: incoming/linux-update-signing
+    - run: |-
+        python ../trusted/scripts/platform-candidate-archive.py ../incoming/linux-update-signing/linux-update-signing.tar.gz signatures
+        node -e "const fs=require('fs'),c=require('crypto'); const d='signatures'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
+    - run: node ../trusted/scripts/platform-candidate-outputs.js feeds
+    - name: Retain private candidate outputs
+      env:
+        R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.R2_CANDIDATES_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATES_SECRET_ACCESS_KEY }}
+        CANDIDATE_KEY: ${{ inputs.candidate_key }}
+      run: node ../trusted/scripts/platform-candidate-outputs.js retain update-feed
+    - uses: actions/upload-artifact@v4
+      with:
+        name: update-feed
+        path: retained/update-feed.tar.gz
+        if-no-files-found: error
+    needs:
+    - verify
+    - build-macos
+    - build-windows
+    - build-linux-x64
+    - build-linux-arm64
+    - linux-update-signing

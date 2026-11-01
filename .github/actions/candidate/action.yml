@@ -1,0 +1,21 @@
+name: Install verified candidate
+description: Extract the verified archive and install its dependencies, leaving the trusted checkout separate.
+runs:
+  using: composite
+  steps:
+  - uses: actions/download-artifact@v4
+    with:
+      name: candidate
+      path: transfer
+  - uses: actions/setup-node@v4
+    with:
+      node-version: '26'
+  - run: |-
+      python "$GITHUB_WORKSPACE/trusted/scripts/platform-candidate-archive.py" "$GITHUB_WORKSPACE/transfer/candidate.tar.gz" "$GITHUB_WORKSPACE/candidate"
+      cp "$GITHUB_WORKSPACE/transfer/context.json" "$GITHUB_WORKSPACE/candidate/.platform-context.json"
+      npm i -g npm@11
+      cd "$GITHUB_WORKSPACE/candidate"
+      npm ci --foreground-scripts
+      node -e "require('electron')"
+    shell: bash
+    working-directory: ${{ github.workspace }}
