@@ -99,7 +99,7 @@ jobs:
   test-macos:
     if: ${{ inputs.promotion_record == '' }}
     needs: verify
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -180,7 +180,7 @@ jobs:
   # ── macOS: build both architectures, sign, notarize, staple ──
   build-macos:
     needs: [test-macos, license]
-    runs-on: macos-14
+    runs-on: macos-15
     # Two architectures, each waiting on Apple's notarization queue. The long pole.
     timeout-minutes: 90
     steps:
