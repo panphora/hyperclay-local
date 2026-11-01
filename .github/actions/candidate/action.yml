@@ -3,14 +3,12 @@ description: Extract the verified archive and install its dependencies, leaving 
 runs:
   using: composite
   steps:
-  - uses: actions/download-artifact@v4
-    with:
-      name: candidate
-      path: transfer
   - uses: actions/setup-node@v4
     with:
       node-version: '26'
   - run: |-
+      node "$GITHUB_WORKSPACE/trusted/scripts/platform-candidate-transfer.js" download candidate.tar.gz "$GITHUB_WORKSPACE/transfer/candidate.tar.gz"
+      node "$GITHUB_WORKSPACE/trusted/scripts/platform-candidate-transfer.js" download context.json "$GITHUB_WORKSPACE/transfer/context.json"
       python "$GITHUB_WORKSPACE/trusted/scripts/platform-candidate-archive.py" "$GITHUB_WORKSPACE/transfer/candidate.tar.gz" "$GITHUB_WORKSPACE/candidate"
       cp "$GITHUB_WORKSPACE/transfer/context.json" "$GITHUB_WORKSPACE/candidate/.platform-context.json"
       npm i -g npm@11

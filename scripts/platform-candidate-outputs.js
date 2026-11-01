@@ -5,6 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { createRequire } = require('node:module');
+const { attemptPrefix } = require('./platform-candidate-transfer');
 const fromCandidate = createRequire(path.resolve('package.json'));
 const { S3Client, PutObjectCommand } = fromCandidate('@aws-sdk/client-s3');
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -49,11 +50,9 @@ async function main() {
   fs.mkdirSync('../retained', { recursive: true });
   const archive = path.resolve(`../retained/${name}.tar.gz`);
   execFileSync('tar', ['-czf', archive, '-C', outputDir, '.'], { stdio: 'inherit' });
-  const key = process.env.CANDIDATE_KEY;
-  if (!key || !key.includes('/') || key.endsWith('/')) throw new Error('Candidate key needs a parent prefix');
-  const prefix = `${key.slice(0, key.lastIndexOf('/'))}/out`;
+  const prefix = attemptPrefix();
   const client = new S3Client({ region: 'auto', endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` });
-  for (const [file, filePath] of [[`${name}.tar.gz`, archive], ...files.map(file => [file, path.join(outputDir, file)])]) {
+  for (const [file, filePath] of [[`transfer/${name}`, archive], ...files.map(file => [`out/${file}`, path.join(outputDir, file)])]) {
     const body = fs.readFileSync(filePath);
     await client.send(new PutObjectCommand({ Bucket: 'hyperclay-candidates', Key: `${prefix}/${file}`,
       Body: body, Metadata: { sha256: digest(body) } }));

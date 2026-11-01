@@ -33,7 +33,8 @@ test('all work uses the extracted candidate and only trusted scripts come from c
     expect(actual.steps[1].uses).toBe('./trusted/.github/actions/candidate');
     expect(actual.steps.filter(step => step.uses?.startsWith('actions/checkout'))).toHaveLength(1);
   }
-  expect(action.runs.steps[0]).toMatchObject({ uses: 'actions/download-artifact@v4', with: { name: 'candidate' } });
+  expect(action.runs.steps[0]).toMatchObject({ uses: 'actions/setup-node@v4' });
+  expect(action.runs.steps.some(step => step.uses?.includes('download-artifact'))).toBe(false);
   const commands = action.runs.steps.map(step => step.run || '').join('\n');
   expect(commands).toContain('platform-candidate-archive.py');
   expect(commands).toContain('cd "$GITHUB_WORKSPACE/candidate"\nnpm ci --foreground-scripts');
@@ -47,7 +48,9 @@ test('verification precedes identity and candidate transfer', () => {
   expect(verify.run).toContain("hash !== process.env.CANDIDATE_SHA256");
   expect(verify.run).toContain('release-candidate.js identity');
   expect(verify.run.indexOf('archive sha256 mismatch')).toBeLessThan(verify.run.indexOf('release-candidate.js identity'));
-  expect(steps.slice(-2).map(step => step.with.name)).toEqual(['identity', 'candidate']);
+  expect(steps.at(-2).with.name).toBe('identity');
+  expect(steps.at(-1).run).toContain('platform-candidate-transfer.js upload candidate.tar.gz');
+  expect(steps.at(-1).run).toContain('platform-candidate-transfer.js upload context.json');
   expect(steps.slice(-2).every(step => !step.if)).toBe(true);
 });
 
@@ -64,17 +67,17 @@ test('each shard retains full discovery and runs the completion verifier even af
   }
 });
 
-test('outputs have private retention and single-file GitHub archives', () => {
+test('outputs have private retention under the binding group mapping', () => {
   for (const id of ['build-macos', 'build-windows', 'build-linux-x64', 'build-linux-arm64', 'linux-update-signing', 'update-feed']) {
     const steps = workflow.jobs[id].steps;
-    expect(steps.at(-2).run).toBe(`node ../trusted/scripts/platform-candidate-outputs.js retain ${id}`);
-    expect(steps.at(-2).env.AWS_ACCESS_KEY_ID).toBe('${{ secrets.R2_CANDIDATES_ACCESS_KEY_ID }}');
-    expect(steps.at(-1)).toMatchObject({ with: { name: id, path: `retained/${id}.tar.gz` } });
+    expect(steps.at(-1).run).toBe(`node ../trusted/scripts/platform-candidate-outputs.js retain ${id}`);
+    expect(steps.at(-1).env.AWS_ACCESS_KEY_ID).toBe('${{ secrets.R2_CANDIDATES_ACCESS_KEY_ID }}');
   }
   const helper = fs.readFileSync(path.join(root, 'scripts/platform-candidate-outputs.js'), 'utf8');
   expect(helper).toContain("Bucket: 'hyperclay-candidates'");
   expect(helper).toContain('Metadata: { sha256: digest(body) }');
-  expect(helper).toContain('/out`');
+  expect(helper).toContain('`transfer/${name}`');
+  expect(helper).toContain('`out/${file}`');
   for (const job of Object.values(workflow.jobs)) {
     for (const step of job.steps) {
       expect(step.uses || '').not.toMatch(/softprops\/action-gh-release/);
@@ -87,7 +90,8 @@ test('outputs have private retention and single-file GitHub archives', () => {
 test('desktop checks consume their exact retained build without rebuilding', () => {
   for (const job of graph.filter(job => job.kind === 'desktop')) {
     const steps = workflow.jobs[job.id].steps;
-    expect(steps.find(step => step.uses === 'actions/download-artifact@v4').with.name).toBe(`build-${job.platform}`);
+    expect(steps.find(step => step.run?.includes('platform-candidate-transfer.js download')).run)
+      .toBe(`node ../trusted/scripts/platform-candidate-transfer.js download build-${job.platform} ../incoming/build-${job.platform}/build-${job.platform}.tar.gz`);
     const command = steps.find(step => step.run?.includes('bash tests/linux/run-all.sh'));
     expect(command.env.CHECKS).toBe(job.id.replace(`${job.platform}-`, ''));
     expect(command.run).not.toMatch(/head|ls |build:run/);
@@ -135,7 +139,7 @@ test('identity verification executes, accepts exact bytes and rejects archive or
     fs.mkdirSync(path.join(temp, 'trusted/scripts'), { recursive: true });
     fs.copyFileSync(path.join(root, 'scripts/release-candidate.js'), path.join(temp, 'trusted/scripts/release-candidate.js'));
     fs.writeFileSync(path.join(temp, 'transfer/candidate.tar.gz'), 'archive-fixture');
-    const metadata = { Metadata: { sha256: hash('archive-fixture') }, LastModified: '2026-11-01T00:00:00Z' };
+    const metadata = { Metadata: { sha256: hash('archive-fixture') }, ContentLength: Buffer.byteLength('archive-fixture'), LastModified: '2026-11-01T00:00:00Z' };
     fs.writeFileSync(path.join(temp, 'transfer/object.json'), JSON.stringify(metadata));
     fs.writeFileSync(path.join(temp, 'candidate/candidate.json'), '{}');
     const pkg = { name: 'hyperclay-local-electron', version: '1.34.0' };
@@ -188,6 +192,11 @@ test('identity verification executes, accepts exact bytes and rejects archive or
     const identity = spawnSync(process.execPath, [path.join(root, 'scripts/release-candidate.js'), 'identity', 'transfer/inputs.json', 'identity'], { cwd: temp, encoding: 'utf8' });
     expect(identity.status).toBe(0);
     expect(JSON.parse(fs.readFileSync(path.join(temp, 'identity/identity.json'))).candidate_sha256).toBe(hash('{}'));
+    metadata.ContentLength += 1;
+    fs.writeFileSync(path.join(temp, 'transfer/object.json'), JSON.stringify(metadata));
+    expect(execute(blocks[0]).stderr).toContain('ContentLength mismatch');
+    metadata.ContentLength -= 1;
+    fs.writeFileSync(path.join(temp, 'transfer/object.json'), JSON.stringify(metadata));
     fs.writeFileSync(path.join(temp, 'transfer/candidate.tar.gz'), 'changed');
     expect(execute(blocks[0]).status).toBe(1);
     fs.writeFileSync(path.join(temp, 'candidate/candidate.json'), '{"changed":true}');
@@ -222,7 +231,7 @@ exports.S3Client = class { async send(command) {
     fs.writeFileSync(path.join(candidate, '.platform-context.json'), '{"payload_date":"2026-10-30T12:34:56Z"}');
     fs.writeFileSync(path.join(candidate, 'signatures/policy.json'), '{"linuxUpdates":false}');
     const run = (...args) => spawnSync(process.execPath, [path.join(root, 'scripts/platform-candidate-outputs.js'), ...args], {
-      cwd: candidate, encoding: 'utf8', env: { ...process.env, CANDIDATE_KEY: 'attempts/fixture/candidate.tar.gz' }
+      cwd: candidate, encoding: 'utf8', env: { ...process.env, APP: 'hyperclay-local', CANDIDATE_SHA256: 'a'.repeat(64), ATTEMPT: 'fixture' }
     });
     expect(run('feeds').status).toBe(0);
     expect(fs.readdirSync(path.join(candidate, 'feeds')).sort()).toEqual(['latest-mac.yml', 'latest.yml']);
@@ -233,7 +242,9 @@ exports.S3Client = class { async send(command) {
     const writes = fs.readFileSync(path.join(candidate, 'storage.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
     expect(writes).toHaveLength(3);
     expect(writes.map(write => write.Key).sort()).toEqual([
-      'attempts/fixture/out/latest-mac.yml', 'attempts/fixture/out/latest.yml', 'attempts/fixture/out/update-feed.tar.gz'
+      `candidates/hyperclay-local/${'a'.repeat(64)}/fixture/out/latest-mac.yml`,
+      `candidates/hyperclay-local/${'a'.repeat(64)}/fixture/out/latest.yml`,
+      `candidates/hyperclay-local/${'a'.repeat(64)}/fixture/transfer/update-feed`
     ]);
     for (const write of writes) {
       expect(write.Bucket).toBe('hyperclay-candidates');
@@ -260,6 +271,76 @@ test('contract CLI prints exactly the graph ids and retained artifact names', ()
   expect(graph.flatMap(job => job.artifacts || [])).toEqual(artifacts);
   for (const name of artifacts) {
     expect(Object.values(workflow.jobs).some(job => job.steps.some(step =>
-      step.uses === 'actions/upload-artifact@v4' && step.with.name === name))).toBe(true);
+      name === 'identity' ? step.uses === 'actions/upload-artifact@v4' && step.with.name === name
+        : step.run === `node ../trusted/scripts/platform-candidate-outputs.js retain ${name}`))).toBe(true);
+  }
+});
+
+
+test('GitHub artifact inventory allows only identity and check evidence, with contract job names', () => {
+  const steps = [...Object.values(workflow.jobs).flatMap(job => job.steps), ...action.runs.steps];
+  const uploads = steps.filter(step => step.uses?.startsWith('actions/upload-artifact@'));
+  expect(uploads.length).toBeGreaterThan(0);
+  for (const step of uploads) {
+    expect(step.with.name).toMatch(/^(identity|diagnostics-.+|suite-coverage|notarization-receipt)$/);
+    const paths = step.with.path.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+    for (const file of paths) {
+      expect(file).not.toMatch(/(?:candidate\.tar|\.(?:tar|gz|zip|dmg|exe|AppImage|sig|blockmap)(?:$|[/*])|(?:^|\/)(?:dist|executables|retained|transfer|feeds|signatures|build[^/]*)(?:\/|$)|latest[^/]*\.ya?ml)/i);
+      expect(file).toMatch(/^(identity\/identity\.json|candidate\/(?:diagnostics|linux-check-artifacts)\/[^*]*)$/);
+    }
+  }
+  expect(steps.filter(step => step.uses?.startsWith('actions/download-artifact@'))).toEqual([]);
+  expect(Object.values(workflow.jobs).map(job => job.name)).toEqual(candidateContract().checks);
+});
+
+test('private transfer uploads metadata and rejects corrupt or truncated downloads before use', () => {
+  const crypto = require('node:crypto');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'candidate-transfer-'));
+  const originalEnv = { ...process.env };
+  const bytes = Buffer.from('private installer fixture');
+  let metadata;
+  let stored;
+  const calls = [];
+  const aws = (program, args) => {
+    expect(program).toBe('aws');
+    calls.push(args);
+    expect(args.slice(0, 5)).toEqual(['--endpoint-url', 'https://fixture.r2.cloudflarestorage.com', '--region', 'auto', 's3api']);
+    expect(args[args.indexOf('--bucket') + 1]).toBe('hyperclay-candidates');
+    expect(args[args.indexOf('--key') + 1]).toBe(`candidates/hyperclay-local/${'a'.repeat(64)}/fixture/transfer/build-windows`);
+    if (args[5] === 'put-object') {
+      stored = fs.readFileSync(args[args.indexOf('--body') + 1]);
+      metadata = { Metadata: JSON.parse(args[args.indexOf('--metadata') + 1]), ContentLength: stored.length };
+      return '{}';
+    }
+    if (args[5] === 'head-object') return JSON.stringify(metadata);
+    if (args[5] === 'get-object') { fs.writeFileSync(args[6], stored); return '{}'; }
+    throw Error('Unexpected AWS command');
+  };
+  try {
+    Object.assign(process.env, { APP: 'hyperclay-local', CANDIDATE_SHA256: 'a'.repeat(64), ATTEMPT: 'fixture', R2_ACCOUNT_ID: 'fixture' });
+    jest.doMock('node:child_process', () => ({ execFileSync: aws }));
+    let transfer;
+    jest.isolateModules(() => { ({ transfer } = require('../../scripts/platform-candidate-transfer')); });
+    const input = path.join(temp, 'installer.exe');
+    const output = path.join(temp, 'incoming/installer.exe');
+    fs.writeFileSync(input, bytes);
+    transfer('upload', 'build-windows', input);
+    expect(metadata.Metadata.sha256).toBe(crypto.createHash('sha256').update(bytes).digest('hex'));
+    transfer('download', 'build-windows', output);
+    expect(fs.readFileSync(output)).toEqual(bytes);
+    metadata.ContentLength += 1;
+    expect(() => transfer('download', 'build-windows', output)).toThrow('ContentLength mismatch');
+    metadata.ContentLength -= 1;
+    stored = Buffer.alloc(bytes.length, 'x');
+    expect(() => transfer('download', 'build-windows', output)).toThrow('sha256');
+    metadata.Metadata = {};
+    expect(() => transfer('download', 'build-windows', output)).toThrow('sha256');
+    expect(calls.filter(args => args[5] === 'put-object')).toHaveLength(1);
+    process.env.ATTEMPT = '../escape';
+    expect(() => transfer('download', 'build-windows', output)).toThrow('identity');
+  } finally {
+    process.env = originalEnv;
+    jest.dontMock('node:child_process');
+    fs.rmSync(temp, { recursive: true, force: true });
   }
 });

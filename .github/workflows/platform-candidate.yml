@@ -25,6 +25,13 @@ run-name: platform ${{ inputs.attempt }}
         type: string
 permissions:
   contents: read
+env:
+  R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.R2_CANDIDATES_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATES_SECRET_ACCESS_KEY }}
+  APP: ${{ inputs.app }}
+  CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}
+  ATTEMPT: ${{ inputs.attempt }}
 jobs:
   verify:
     name: verify
@@ -62,6 +69,7 @@ jobs:
         const object = JSON.parse(fs.readFileSync('transfer/object.json'));
         const hash = crypto.createHash('sha256').update(fs.readFileSync('transfer/candidate.tar.gz')).digest('hex');
         if (!/^[a-f0-9]{64}$/.test(object.Metadata?.sha256) || hash !== object.Metadata.sha256) throw Error('Candidate archive sha256 mismatch');
+        if (object.ContentLength !== fs.statSync('transfer/candidate.tar.gz').size) throw Error('Candidate archive ContentLength mismatch');
         if (object.Metadata['manifest-identity'] !== process.env.MANIFEST_IDENTITY) throw Error('Candidate R2 manifest identity mismatch');
         NODE
         python3 trusted/scripts/platform-candidate-archive.py transfer/candidate.tar.gz candidate
@@ -100,11 +108,10 @@ jobs:
         name: identity
         path: identity/identity.json
         if-no-files-found: error
-    - uses: actions/upload-artifact@v4
-      with:
-        name: candidate
-        path: transfer/
-        if-no-files-found: error
+    - name: Transfer verified candidate privately
+      run: |-
+        node trusted/scripts/platform-candidate-transfer.js upload candidate.tar.gz transfer/candidate.tar.gz
+        node trusted/scripts/platform-candidate-transfer.js upload context.json transfer/context.json
   test-macos-1:
     name: test-macos-1
     runs-on: macos-14
@@ -524,11 +531,6 @@ jobs:
         AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATES_SECRET_ACCESS_KEY }}
         CANDIDATE_KEY: ${{ inputs.candidate_key }}
       run: node ../trusted/scripts/platform-candidate-outputs.js retain build-macos
-    - uses: actions/upload-artifact@v4
-      with:
-        name: build-macos
-        path: retained/build-macos.tar.gz
-        if-no-files-found: error
     needs:
     - verify
   build-windows:
@@ -594,11 +596,6 @@ jobs:
         AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATES_SECRET_ACCESS_KEY }}
         CANDIDATE_KEY: ${{ inputs.candidate_key }}
       run: node ../trusted/scripts/platform-candidate-outputs.js retain build-windows
-    - uses: actions/upload-artifact@v4
-      with:
-        name: build-windows
-        path: retained/build-windows.tar.gz
-        if-no-files-found: error
     needs:
     - verify
   build-linux-x64:
@@ -626,11 +623,6 @@ jobs:
         AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATES_SECRET_ACCESS_KEY }}
         CANDIDATE_KEY: ${{ inputs.candidate_key }}
       run: node ../trusted/scripts/platform-candidate-outputs.js retain build-linux-x64
-    - uses: actions/upload-artifact@v4
-      with:
-        name: build-linux-x64
-        path: retained/build-linux-x64.tar.gz
-        if-no-files-found: error
     needs:
     - verify
   build-linux-arm64:
@@ -658,11 +650,6 @@ jobs:
         AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATES_SECRET_ACCESS_KEY }}
         CANDIDATE_KEY: ${{ inputs.candidate_key }}
       run: node ../trusted/scripts/platform-candidate-outputs.js retain build-linux-arm64
-    - uses: actions/upload-artifact@v4
-      with:
-        name: build-linux-arm64
-        path: retained/build-linux-arm64.tar.gz
-        if-no-files-found: error
     needs:
     - verify
   linux-x64-appimage-launch:
@@ -679,10 +666,7 @@ jobs:
         ref: ${{ github.workflow_sha }}
         path: trusted
     - uses: ./trusted/.github/actions/candidate
-    - uses: actions/download-artifact@v4
-      with:
-        name: build-linux-x64
-        path: incoming/build-linux-x64
+    - run: node ../trusted/scripts/platform-candidate-transfer.js download build-linux-x64 ../incoming/build-linux-x64/build-linux-x64.tar.gz
     - run: |-
         python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-x64/build-linux-x64.tar.gz executables
         node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
@@ -720,10 +704,7 @@ jobs:
         ref: ${{ github.workflow_sha }}
         path: trusted
     - uses: ./trusted/.github/actions/candidate
-    - uses: actions/download-artifact@v4
-      with:
-        name: build-linux-x64
-        path: incoming/build-linux-x64
+    - run: node ../trusted/scripts/platform-candidate-transfer.js download build-linux-x64 ../incoming/build-linux-x64/build-linux-x64.tar.gz
     - run: |-
         python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-x64/build-linux-x64.tar.gz executables
         node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
@@ -761,10 +742,7 @@ jobs:
         ref: ${{ github.workflow_sha }}
         path: trusted
     - uses: ./trusted/.github/actions/candidate
-    - uses: actions/download-artifact@v4
-      with:
-        name: build-linux-x64
-        path: incoming/build-linux-x64
+    - run: node ../trusted/scripts/platform-candidate-transfer.js download build-linux-x64 ../incoming/build-linux-x64/build-linux-x64.tar.gz
     - run: |-
         python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-x64/build-linux-x64.tar.gz executables
         node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
@@ -802,10 +780,7 @@ jobs:
         ref: ${{ github.workflow_sha }}
         path: trusted
     - uses: ./trusted/.github/actions/candidate
-    - uses: actions/download-artifact@v4
-      with:
-        name: build-linux-x64
-        path: incoming/build-linux-x64
+    - run: node ../trusted/scripts/platform-candidate-transfer.js download build-linux-x64 ../incoming/build-linux-x64/build-linux-x64.tar.gz
     - run: |-
         python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-x64/build-linux-x64.tar.gz executables
         node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
@@ -843,10 +818,7 @@ jobs:
         ref: ${{ github.workflow_sha }}
         path: trusted
     - uses: ./trusted/.github/actions/candidate
-    - uses: actions/download-artifact@v4
-      with:
-        name: build-linux-arm64
-        path: incoming/build-linux-arm64
+    - run: node ../trusted/scripts/platform-candidate-transfer.js download build-linux-arm64 ../incoming/build-linux-arm64/build-linux-arm64.tar.gz
     - run: |-
         python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-arm64/build-linux-arm64.tar.gz executables
         node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
@@ -884,10 +856,7 @@ jobs:
         ref: ${{ github.workflow_sha }}
         path: trusted
     - uses: ./trusted/.github/actions/candidate
-    - uses: actions/download-artifact@v4
-      with:
-        name: build-linux-arm64
-        path: incoming/build-linux-arm64
+    - run: node ../trusted/scripts/platform-candidate-transfer.js download build-linux-arm64 ../incoming/build-linux-arm64/build-linux-arm64.tar.gz
     - run: |-
         python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-arm64/build-linux-arm64.tar.gz executables
         node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
@@ -925,10 +894,7 @@ jobs:
         ref: ${{ github.workflow_sha }}
         path: trusted
     - uses: ./trusted/.github/actions/candidate
-    - uses: actions/download-artifact@v4
-      with:
-        name: build-linux-arm64
-        path: incoming/build-linux-arm64
+    - run: node ../trusted/scripts/platform-candidate-transfer.js download build-linux-arm64 ../incoming/build-linux-arm64/build-linux-arm64.tar.gz
     - run: |-
         python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-arm64/build-linux-arm64.tar.gz executables
         node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
@@ -966,10 +932,7 @@ jobs:
         ref: ${{ github.workflow_sha }}
         path: trusted
     - uses: ./trusted/.github/actions/candidate
-    - uses: actions/download-artifact@v4
-      with:
-        name: build-linux-arm64
-        path: incoming/build-linux-arm64
+    - run: node ../trusted/scripts/platform-candidate-transfer.js download build-linux-arm64 ../incoming/build-linux-arm64/build-linux-arm64.tar.gz
     - run: |-
         python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-arm64/build-linux-arm64.tar.gz executables
         node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
@@ -1007,17 +970,11 @@ jobs:
         ref: ${{ github.workflow_sha }}
         path: trusted
     - uses: ./trusted/.github/actions/candidate
-    - uses: actions/download-artifact@v4
-      with:
-        name: build-linux-x64
-        path: incoming/build-linux-x64
+    - run: node ../trusted/scripts/platform-candidate-transfer.js download build-linux-x64 ../incoming/build-linux-x64/build-linux-x64.tar.gz
     - run: |-
         python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-x64/build-linux-x64.tar.gz executables
         node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
-    - uses: actions/download-artifact@v4
-      with:
-        name: build-linux-arm64
-        path: incoming/build-linux-arm64
+    - run: node ../trusted/scripts/platform-candidate-transfer.js download build-linux-arm64 ../incoming/build-linux-arm64/build-linux-arm64.tar.gz
     - run: |-
         python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-arm64/build-linux-arm64.tar.gz executables
         node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
@@ -1031,11 +988,6 @@ jobs:
         AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATES_SECRET_ACCESS_KEY }}
         CANDIDATE_KEY: ${{ inputs.candidate_key }}
       run: node ../trusted/scripts/platform-candidate-outputs.js retain linux-update-signing
-    - uses: actions/upload-artifact@v4
-      with:
-        name: linux-update-signing
-        path: retained/linux-update-signing.tar.gz
-        if-no-files-found: error
     needs:
     - verify
     - build-linux-x64
@@ -1054,38 +1006,23 @@ jobs:
         ref: ${{ github.workflow_sha }}
         path: trusted
     - uses: ./trusted/.github/actions/candidate
-    - uses: actions/download-artifact@v4
-      with:
-        name: build-macos
-        path: incoming/build-macos
+    - run: node ../trusted/scripts/platform-candidate-transfer.js download build-macos ../incoming/build-macos/build-macos.tar.gz
     - run: |-
         python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-macos/build-macos.tar.gz executables
         node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
-    - uses: actions/download-artifact@v4
-      with:
-        name: build-windows
-        path: incoming/build-windows
+    - run: node ../trusted/scripts/platform-candidate-transfer.js download build-windows ../incoming/build-windows/build-windows.tar.gz
     - run: |-
         python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-windows/build-windows.tar.gz executables
         node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
-    - uses: actions/download-artifact@v4
-      with:
-        name: build-linux-x64
-        path: incoming/build-linux-x64
+    - run: node ../trusted/scripts/platform-candidate-transfer.js download build-linux-x64 ../incoming/build-linux-x64/build-linux-x64.tar.gz
     - run: |-
         python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-x64/build-linux-x64.tar.gz executables
         node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
-    - uses: actions/download-artifact@v4
-      with:
-        name: build-linux-arm64
-        path: incoming/build-linux-arm64
+    - run: node ../trusted/scripts/platform-candidate-transfer.js download build-linux-arm64 ../incoming/build-linux-arm64/build-linux-arm64.tar.gz
     - run: |-
         python ../trusted/scripts/platform-candidate-archive.py ../incoming/build-linux-arm64/build-linux-arm64.tar.gz executables
         node -e "const fs=require('fs'),c=require('crypto'); const d='executables'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
-    - uses: actions/download-artifact@v4
-      with:
-        name: linux-update-signing
-        path: incoming/linux-update-signing
+    - run: node ../trusted/scripts/platform-candidate-transfer.js download linux-update-signing ../incoming/linux-update-signing/linux-update-signing.tar.gz
     - run: |-
         python ../trusted/scripts/platform-candidate-archive.py ../incoming/linux-update-signing/linux-update-signing.tar.gz signatures
         node -e "const fs=require('fs'),c=require('crypto'); const d='signatures'; for(const [f,h] of Object.entries(JSON.parse(fs.readFileSync(d+'/SHA256SUMS.json')))) if(c.createHash('sha256').update(fs.readFileSync(d+'/'+f)).digest('hex')!==h) throw Error(f);"
@@ -1097,11 +1034,6 @@ jobs:
         AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATES_SECRET_ACCESS_KEY }}
         CANDIDATE_KEY: ${{ inputs.candidate_key }}
       run: node ../trusted/scripts/platform-candidate-outputs.js retain update-feed
-    - uses: actions/upload-artifact@v4
-      with:
-        name: update-feed
-        path: retained/update-feed.tar.gz
-        if-no-files-found: error
     needs:
     - verify
     - build-macos
