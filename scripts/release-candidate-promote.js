@@ -9,14 +9,16 @@ const { expectedInstallerNames } = require('./release-publication');
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const need = (condition, message) => { if (!condition) throw new Error(message); };
 
-function validatePromotionRecord(record, expected) {
+function validatePromotionRecord(record, expected, { qualifiedOnly = false } = {}) {
   need(record && record.schema === 2 && record.app === 'hyperclay-local', 'Invalid Local promotion record');
   requireVersion(record.version);
   for (const field of ['manifest_identity', 'candidate_sha256']) {
     need(/^[a-f0-9]{64}$/.test(record[field]), `Invalid promotion ${field}`);
   }
   need(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(record.source_sha), 'Invalid promotion source');
-  need(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(record.release_sha), 'Invalid promotion release SHA');
+  if (!qualifiedOnly || record.release_sha !== undefined) {
+    need(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(record.release_sha), 'Invalid promotion release SHA');
+  }
   need(typeof record.payload_date === 'string' && Number.isFinite(Date.parse(record.payload_date)) &&
     /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|\+00:00)$/.test(record.payload_date), 'Invalid promotion payload date');
   need(record.bucket === 'hyperclay-candidates', 'Invalid candidate bucket');
@@ -143,7 +145,7 @@ function contentType(key) {
 async function main(argv = process.argv.slice(2)) {
   if (argv.length) {
     need(argv.length === 2 && argv[0] === '--check', 'Use --check <record>');
-    validatePromotionRecord(JSON.parse(fs.readFileSync(argv[1], 'utf8')));
+    validatePromotionRecord(JSON.parse(fs.readFileSync(argv[1], 'utf8')), undefined, { qualifiedOnly: true });
     console.log('Local promotion record valid');
     return;
   }
