@@ -6,7 +6,7 @@ const path = require('node:path');
 const IDENTITY_FIELDS = ['workflow_sha', 'candidate_sha256', 'attempt', 'manifest_identity'];
 
 function fullInventory() {
-  const jobs = [{ id: 'verify', kind: 'verify' }];
+  const jobs = [{ id: 'verify', kind: 'verify', artifacts: ['identity'] }];
   for (const platform of ['macos', 'linux-x64', 'linux-arm64']) {
     for (let index = 1; index <= 3; index += 1) {
       jobs.push({ id: `test-${platform}-${index}`, kind: 'test', platform,
@@ -23,7 +23,7 @@ function fullInventory() {
     { id: 'offline-runtime', kind: 'test', command: 'node scripts/check-offline-runtime-release.mjs' }
   );
   for (const platform of ['macos', 'windows', 'linux-x64', 'linux-arm64']) {
-    jobs.push({ id: `build-${platform}`, kind: 'build', platform });
+    jobs.push({ id: `build-${platform}`, kind: 'build', platform, artifacts: [`build-${platform}`] });
   }
   for (const arch of ['x64', 'arm64']) {
     for (const check of ['appimage-launch', 'server-save', 'popover', 'autostart']) {
@@ -31,12 +31,12 @@ function fullInventory() {
     }
   }
   jobs.push(
-    { id: 'linux-update-signing', kind: 'signing',
+    { id: 'linux-update-signing', kind: 'signing', artifacts: ['linux-update-signing'],
       needs: ['verify', 'build-linux-x64', 'build-linux-arm64'],
       outputs: ['executables/*.AppImage.sig'],
       optionalKey: { name: 'HLOCAL_UPDATE_SEED', missing: 'omit-linux-feeds-and-signatures',
         invalid: 'fail', untrusted: 'fail' } },
-    { id: 'update-feed', kind: 'prepare',
+    { id: 'update-feed', kind: 'prepare', artifacts: ['update-feed'],
       needs: ['verify', 'build-macos', 'build-windows', 'build-linux-x64', 'build-linux-arm64',
         'linux-update-signing'],
       outputs: ['executables/latest-mac.yml', 'executables/latest.yml'],
@@ -51,6 +51,11 @@ function candidateJobGraph(inventory = fullInventory()) {
     needs: job.needs ?? (job.kind === 'verify' ? []
       : job.kind === 'desktop' ? ['verify', `build-${job.platform}`] : ['verify'])
   }));
+}
+
+function candidateContract() {
+  const graph = candidateJobGraph();
+  return { checks: graph.map(job => job.id), artifacts: graph.flatMap(job => job.artifacts || []) };
 }
 
 function verifyCandidate({ identity, expected }) {
@@ -97,9 +102,9 @@ function summarize(results) {
 
 function main(argv) {
   const [command, file, directory] = argv;
-  const counts = { graph: 1, verify: 2, summarize: 2, identity: 3 };
+  const counts = { graph: 1, contract: 1, verify: 2, summarize: 2, identity: 3 };
   if (argv.length !== counts[command]) {
-    throw new Error('invalid-arguments: use graph, verify <json>, summarize <results.json>, or identity <inputs.json> <directory>');
+    throw new Error('invalid-arguments: use graph, contract, verify <json>, summarize <results.json>, or identity <inputs.json> <directory>');
   }
   const input = file ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
   if (command === 'identity') {
@@ -109,12 +114,13 @@ function main(argv) {
     return 0;
   }
   const result = command === 'graph' ? candidateJobGraph()
+    : command === 'contract' ? candidateContract()
     : command === 'verify' ? verifyCandidate(input) : summarize(input);
   console.log(JSON.stringify(result, null, 2));
   return result.ok === false ? 1 : 0;
 }
 
-module.exports = { candidateJobGraph, verifyCandidate, summarize, identityArtifact };
+module.exports = { candidateContract, candidateJobGraph, verifyCandidate, summarize, identityArtifact };
 
 if (require.main === module) {
   try {

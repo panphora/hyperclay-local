@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const yaml = require('js-yaml');
-const { candidateJobGraph } = require('../../scripts/release-candidate');
+const { candidateJobGraph, candidateContract } = require('../../scripts/release-candidate');
 const root = path.resolve(__dirname, '../..');
 const source = fs.readFileSync(path.join(root, '.github/workflows/platform-candidate.yml'), 'utf8');
 const workflow = yaml.load(source);
@@ -95,25 +95,31 @@ test('desktop checks consume their exact retained build without rebuilding', () 
   }
 });
 
-test('archive extraction executes and rejects traversal and links', () => {
+test('archive extraction preserves safe symlinks and executable bits and rejects escapes', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'candidate-workflow-'));
   try {
     const helper = path.join(root, 'scripts/platform-candidate-archive.py');
     const fixture = spawnSync('python3', ['-c', `
 import io,tarfile,pathlib
 root=pathlib.Path(${JSON.stringify(temp)})
-for name,member,kind in [('good','package.json','file'),('escape','../escape','file'),('link','link','link')]:
+for name,member,kind in [('good','package.json','file'),('escape','../escape','file'),('link','link','link'),('safe-link','bin/link','safe-link'),('link-escape','bin/link','escape-link')]:
  with tarfile.open(root/(name+'.tar.gz'),'w:gz') as archive:
   info=tarfile.TarInfo(member)
-  if kind=='link': info.type=tarfile.SYMTYPE; info.linkname='/tmp/target'; archive.addfile(info)
+  if kind in ('link','escape-link'): info.type=tarfile.SYMTYPE; info.linkname='/tmp/target' if kind=='link' else '../../outside'; archive.addfile(info)
+  elif kind=='safe-link':
+   target=tarfile.TarInfo('target'); target.size=2; target.mode=0o755; archive.addfile(target,io.BytesIO(b'{}'))
+   info.type=tarfile.SYMTYPE; info.linkname='../target'; archive.addfile(info)
   else: info.size=2; archive.addfile(info,io.BytesIO(b'{}'))
 `], { encoding: 'utf8' });
     expect(fixture.status).toBe(0);
-    for (const name of ['good', 'escape', 'link']) {
+    for (const name of ['good', 'escape', 'link', 'safe-link', 'link-escape']) {
       const result = spawnSync('python3', [helper, path.join(temp, `${name}.tar.gz`), path.join(temp, name)], { encoding: 'utf8' });
-      expect(result.status).toBe(name === 'good' ? 0 : 1);
+      expect(result.status).toBe(['good', 'safe-link'].includes(name) ? 0 : 1);
     }
     expect(fs.readFileSync(path.join(temp, 'good/package.json'), 'utf8')).toBe('{}');
+    expect(fs.readlinkSync(path.join(temp, 'safe-link/bin/link'))).toBe('../target');
+    expect(fs.readFileSync(path.join(temp, 'safe-link/bin/link'), 'utf8')).toBe('{}');
+    expect(fs.statSync(path.join(temp, 'safe-link/target')).mode & 0o777).toBe(0o755);
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }
@@ -126,6 +132,8 @@ test('identity verification executes, accepts exact bytes and rejects archive or
   try {
     fs.mkdirSync(path.join(temp, 'transfer'));
     fs.mkdirSync(path.join(temp, 'candidate'));
+    fs.mkdirSync(path.join(temp, 'trusted/scripts'), { recursive: true });
+    fs.copyFileSync(path.join(root, 'scripts/release-candidate.js'), path.join(temp, 'trusted/scripts/release-candidate.js'));
     fs.writeFileSync(path.join(temp, 'transfer/candidate.tar.gz'), 'archive-fixture');
     const metadata = { Metadata: { sha256: hash('archive-fixture') }, LastModified: '2026-11-01T00:00:00Z' };
     fs.writeFileSync(path.join(temp, 'transfer/object.json'), JSON.stringify(metadata));
@@ -134,12 +142,49 @@ test('identity verification executes, accepts exact bytes and rejects archive or
     fs.writeFileSync(path.join(temp, 'candidate/package.json'), JSON.stringify(pkg));
     fs.writeFileSync(path.join(temp, 'candidate/package-lock.json'), JSON.stringify({ packages: { '': pkg } }));
     const env = { ...process.env, APP: 'hyperclay-local', CANDIDATE_SHA256: hash('{}'),
-      ATTEMPT: 'fixture', MANIFEST_IDENTITY: 'a'.repeat(64), WORKFLOW_SHA: 'b'.repeat(40) };
+      ATTEMPT: 'fixture-é', WORKFLOW_SHA: 'b'.repeat(40) };
+    const record = { manifest: { app: env.APP, candidate_sha256: env.CANDIDATE_SHA256,
+      prepared_tree_sha256: 'c'.repeat(64), version: pkg.version, workflow_sha: env.WORKFLOW_SHA,
+      ...candidateContract(), attempt: env.ATTEMPT }, source_sha: 'd'.repeat(40), payload_date: '2026-10-30T12:34:56Z' };
+    const saveRecord = () => {
+      fs.writeFileSync(path.join(temp, 'candidate/platform-candidate.json'), JSON.stringify(record));
+      const identity = spawnSync('python3', ['-c',
+        'import hashlib,json,sys; print(hashlib.sha256(json.dumps(json.loads(sys.argv[1]),sort_keys=True,separators=(",",":")).encode()).hexdigest())',
+        JSON.stringify(record.manifest)], { encoding: 'utf8' });
+      expect(identity.status).toBe(0);
+      env.MANIFEST_IDENTITY = identity.stdout.trim();
+      metadata.Metadata['manifest-identity'] = env.MANIFEST_IDENTITY;
+      fs.writeFileSync(path.join(temp, 'transfer/object.json'), JSON.stringify(metadata));
+    };
+    saveRecord();
     const command = workflow.jobs.verify.steps.find(step => step.run?.includes('head-object')).run;
     const blocks = [...command.matchAll(/node <<'NODE'\n([\s\S]*?)\nNODE/g)].map(match => match[1]);
     expect(blocks).toHaveLength(2);
     const execute = block => spawnSync(process.execPath, ['-e', block], { cwd: temp, env, encoding: 'utf8' });
-    for (const block of blocks) expect(execute(block).status).toBe(0);
+    for (const block of blocks) {
+      const result = execute(block);
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+    }
+    expect(JSON.parse(fs.readFileSync(path.join(temp, 'transfer/context.json')))).toEqual({ payload_date: record.payload_date });
+    const goodIdentity = env.MANIFEST_IDENTITY;
+    env.MANIFEST_IDENTITY = 'a'.repeat(64);
+    expect(execute(blocks[0]).stderr).toContain('R2 manifest identity mismatch');
+    expect(execute(blocks[1]).stderr).toContain('Platform manifest identity mismatch');
+    expect(execute(blocks[1]).status).toBe(1);
+    env.MANIFEST_IDENTITY = goodIdentity;
+    record.manifest.version = '9.9.9';
+    saveRecord();
+    expect(execute(blocks[1]).stderr).toContain('Platform manifest version mismatch');
+    expect(execute(blocks[1]).status).toBe(1);
+    record.manifest.version = pkg.version;
+    record.manifest.checks.reverse();
+    saveRecord();
+    expect(execute(blocks[1]).stderr).toContain('checks do not match workflow graph');
+    expect(execute(blocks[1]).status).toBe(1);
+    record.manifest.checks.reverse();
+    saveRecord();
+    expect(execute(blocks[1]).status).toBe(0);
     const identity = spawnSync(process.execPath, [path.join(root, 'scripts/release-candidate.js'), 'identity', 'transfer/inputs.json', 'identity'], { cwd: temp, encoding: 'utf8' });
     expect(identity.status).toBe(0);
     expect(JSON.parse(fs.readFileSync(path.join(temp, 'identity/identity.json'))).candidate_sha256).toBe(hash('{}'));
@@ -174,7 +219,7 @@ exports.S3Client = class { async send(command) {
       'HyperclayLocal-Setup-1.34.0.exe', 'HyperclayLocal-1.34.0.AppImage', 'HyperclayLocal-1.34.0-arm64.AppImage']) {
       fs.writeFileSync(path.join(candidate, 'executables', file), `signed-fixture-${file}`);
     }
-    fs.writeFileSync(path.join(candidate, '.platform-context.json'), '{"releaseDate":"2026-11-01T00:00:00.000Z"}');
+    fs.writeFileSync(path.join(candidate, '.platform-context.json'), '{"payload_date":"2026-10-30T12:34:56Z"}');
     fs.writeFileSync(path.join(candidate, 'signatures/policy.json'), '{"linuxUpdates":false}');
     const run = (...args) => spawnSync(process.execPath, [path.join(root, 'scripts/platform-candidate-outputs.js'), ...args], {
       cwd: candidate, encoding: 'utf8', env: { ...process.env, CANDIDATE_KEY: 'attempts/fixture/candidate.tar.gz' }
@@ -182,7 +227,7 @@ exports.S3Client = class { async send(command) {
     expect(run('feeds').status).toBe(0);
     expect(fs.readdirSync(path.join(candidate, 'feeds')).sort()).toEqual(['latest-mac.yml', 'latest.yml']);
     const mac = fs.readFileSync(path.join(candidate, 'feeds/latest-mac.yml'), 'utf8');
-    expect(mac).toContain("releaseDate: '2026-11-01T00:00:00.000Z'");
+    expect(mac).toContain("releaseDate: '2026-10-30T12:34:56.000Z'");
     expect(mac).toContain('https://local.hyperclay.com/releases/1.34.0/');
     expect(run('retain', 'update-feed').status).toBe(0);
     const writes = fs.readFileSync(path.join(candidate, 'storage.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -203,5 +248,18 @@ exports.S3Client = class { async send(command) {
     expect(fs.readdirSync(path.join(candidate, 'feeds'))).toEqual(expect.arrayContaining(['latest-linux.yml', 'latest-linux-arm64.yml']));
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test('contract CLI prints exactly the graph ids and retained artifact names', () => {
+  const result = spawnSync(process.execPath, [path.join(root, 'scripts/release-candidate.js'), 'contract'], { encoding: 'utf8' });
+  expect(result.status).toBe(0);
+  const artifacts = ['identity', 'build-macos', 'build-windows', 'build-linux-x64',
+    'build-linux-arm64', 'linux-update-signing', 'update-feed'];
+  expect(JSON.parse(result.stdout)).toEqual({ checks: graph.map(job => job.id), artifacts });
+  expect(graph.flatMap(job => job.artifacts || [])).toEqual(artifacts);
+  for (const name of artifacts) {
+    expect(Object.values(workflow.jobs).some(job => job.steps.some(step =>
+      step.uses === 'actions/upload-artifact@v4' && step.with.name === name))).toBe(true);
   }
 });

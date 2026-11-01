@@ -62,18 +62,36 @@ jobs:
         const object = JSON.parse(fs.readFileSync('transfer/object.json'));
         const hash = crypto.createHash('sha256').update(fs.readFileSync('transfer/candidate.tar.gz')).digest('hex');
         if (!/^[a-f0-9]{64}$/.test(object.Metadata?.sha256) || hash !== object.Metadata.sha256) throw Error('Candidate archive sha256 mismatch');
+        if (object.Metadata['manifest-identity'] !== process.env.MANIFEST_IDENTITY) throw Error('Candidate R2 manifest identity mismatch');
         NODE
         python3 trusted/scripts/platform-candidate-archive.py transfer/candidate.tar.gz candidate
         node <<'NODE'
         const fs = require('fs'), crypto = require('crypto');
         const hash = crypto.createHash('sha256').update(fs.readFileSync('candidate/candidate.json')).digest('hex');
         if (hash !== process.env.CANDIDATE_SHA256) throw Error('Candidate manifest sha256 mismatch');
+        const { candidateContract } = require('./trusted/scripts/release-candidate');
+        const record = JSON.parse(fs.readFileSync('candidate/platform-candidate.json'));
+        const manifest = record.manifest;
+        const canonical = value => Array.isArray(value) ? value.map(canonical)
+          : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+        const bytes = JSON.stringify(canonical(manifest)).replace(/[\u0080-\uffff]/g, char => '\\u' + char.charCodeAt(0).toString(16).padStart(4, '0'));
+        const identity = crypto.createHash('sha256').update(bytes).digest('hex');
+        if (identity !== process.env.MANIFEST_IDENTITY) throw Error('Platform manifest identity mismatch');
+        for (const field of ['app', 'attempt', 'candidate_sha256', 'workflow_sha']) {
+          if (manifest[field] !== process.env[field.toUpperCase()]) throw Error(field + ' does not match dispatch');
+        }
+        const contract = candidateContract();
+        if (JSON.stringify(manifest.checks) !== JSON.stringify(contract.checks)) throw Error('Platform manifest checks do not match workflow graph');
+        if (JSON.stringify(manifest.artifacts) !== JSON.stringify(contract.artifacts)) throw Error('Platform manifest artifacts do not match workflow graph');
+        if (!/^[a-f0-9]{40}$/.test(record.source_sha)) throw Error('Invalid candidate source_sha');
+        if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(record.payload_date) ||
+            new Date(record.payload_date).toISOString() !== record.payload_date.replace('Z', '.000Z')) throw Error('Invalid candidate payload_date');
         const pkg = JSON.parse(fs.readFileSync('candidate/package.json'));
         if (pkg.name !== 'hyperclay-local-electron' || !/^\d+\.\d+\.\d+$/.test(pkg.version)) throw Error('Invalid candidate app/version');
+        if (manifest.version !== pkg.version) throw Error('Platform manifest version mismatch');
         const lock = JSON.parse(fs.readFileSync('candidate/package-lock.json'));
         if (lock.packages[''].version !== pkg.version || lock.packages[''].name !== pkg.name) throw Error('Candidate dependency manifest mismatch');
-        const object = JSON.parse(fs.readFileSync('transfer/object.json'));
-        fs.writeFileSync('transfer/context.json', JSON.stringify({releaseDate: new Date(object.LastModified).toISOString()}));
+        fs.writeFileSync('transfer/context.json', JSON.stringify({payload_date: record.payload_date}));
         fs.writeFileSync('transfer/inputs.json', JSON.stringify({app: process.env.APP, workflow_sha: process.env.WORKFLOW_SHA, candidate_sha256: hash, attempt: process.env.ATTEMPT, manifest_identity: process.env.MANIFEST_IDENTITY}));
         NODE
         node trusted/scripts/release-candidate.js identity transfer/inputs.json identity

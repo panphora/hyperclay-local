@@ -31,7 +31,7 @@ async function main() {
     const { macFeed, windowsFeed, linuxFeeds } = fromCandidate('./build-scripts/update-feed');
     const policy = JSON.parse(fs.readFileSync('signatures/policy.json', 'utf8'));
     const options = { dir, version, baseUrl: `https://local.hyperclay.com/releases/${version}`,
-      releaseDate: new Date(JSON.parse(fs.readFileSync('.platform-context.json', 'utf8')).releaseDate).toISOString() };
+      releaseDate: new Date(JSON.parse(fs.readFileSync('.platform-context.json', 'utf8')).payload_date).toISOString() };
     fs.mkdirSync('feeds', { recursive: true });
     const feeds = [['latest-mac.yml', macFeed(options)], ['latest.yml', windowsFeed(options)]];
     if (policy.linuxUpdates) feeds.push(...linuxFeeds(options));
