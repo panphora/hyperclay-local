@@ -25,7 +25,7 @@ const REPO_FIELDS = [
   'key', 'root', 'commonDir', 'branch', 'remote', 'remoteRepo', 'pushUrlSha256', 'objectFormat'
 ];
 const DEP_KEYS = [
-  'run', 'localRun', 'fs', 'now', 'wallNow', 'sleep', 'signal', 'logReadFailure', 'assertPublishWindow'
+  'run', 'localRun', 'fs', 'now', 'wallNow', 'sleep', 'signal', 'logReadFailure', 'assertPublishWindow', 'promotionRecord'
 ];
 const DIAGNOSTICS = {
   WORKFLOW_DISPATCH_UNKNOWN: 'Workflow dispatch has no verified run identity',
@@ -123,6 +123,7 @@ function resolveDeps(value, allowDispatch) {
     wallNow: supplied.wallNow === undefined ? () => Date.now() : supplied.wallNow,
     sleep: supplied.sleep === undefined ? defaultSleep : supplied.sleep,
     signal: supplied.signal,
+    promotionRecord: supplied.promotionRecord,
     logReadFailure: supplied.logReadFailure,
     assertPublishWindow: supplied.assertPublishWindow
   };
@@ -223,7 +224,8 @@ function postOnce(deps, repo, attempt, timeout) {
       version: attempt.version,
       dry_run: attempt.mode === 'dry-run',
       source_sha: attempt.sourceSha,
-      attempt_id: attempt.id
+      attempt_id: attempt.id,
+      ...(deps.promotionRecord ? { promotion_record: JSON.stringify(deps.promotionRecord) } : {})
     }
   });
   let result;

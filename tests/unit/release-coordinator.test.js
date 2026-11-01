@@ -2694,3 +2694,72 @@ describePosix('caller explicit repair', () => {
     expect(FERRY_CHILDREN.size).toBe(0);
   });
 });
+
+function promotionFixtureRecord(fixture) {
+  const version = VERSION;
+  const names = installerNames(version);
+  const groups = {
+    'build-macos': [names[0], names[1], `HyperclayLocal-${version}-mac.zip`, `HyperclayLocal-${version}-arm64-mac.zip`],
+    'build-windows': [names[2]], 'build-linux-x64': [names[3]], 'build-linux-arm64': [names[4]],
+    'linux-update-signing': ['policy.json'], 'update-feed': ['latest-mac.yml', 'latest.yml']
+  };
+  const candidate = 'c'.repeat(64);
+  return { schema: 2, app: 'hyperclay-local', version, source_sha: 'a'.repeat(40), release_sha: fixture.sourceSha,
+    manifest_identity: 'b'.repeat(64), candidate_sha256: candidate,
+    payload_date: '2026-10-03T19:00:00.000Z', bucket: 'hyperclay-candidates',
+    files: Object.entries(groups).flatMap(([group, files]) => files.map(file => ({ group, name: file,
+      key: `candidates/hyperclay-local/${candidate}/attempt-1/out/${file}`, size: 1, sha256: 'd'.repeat(64) }))) };
+}
+
+testPosix('promotion dispatch retains identity and resumes a failed upload without any build gate or bump', async () => {
+  const fixture = makeFixture();
+  const record = promotionFixtureRecord(fixture);
+  const harness = makeHarness(fixture, { uuids: [RELEASE_ID, ATTEMPT_ID, FRESH_ATTEMPT_ID] });
+  harness.supplied.chooseBump = () => { throw new Error('Promotion must never select a version'); };
+  let runId = RUN_ID;
+  let attemptId = ATTEMPT_ID;
+  harness.supplied.gh = (args, opts) => {
+    if (args.includes('POST')) {
+      expect(JSON.parse(opts.input).inputs.promotion_record).toBe(JSON.stringify(record));
+      return postHint(runId);
+    }
+    if (args.some(arg => arg.endsWith('/release.yml') || arg.endsWith(`/workflows/${WORKFLOW_ID}`))) return ghOk(definitionBody());
+    return ghOk(runBody({ attemptId, sourceSha: fixture.sourceSha, mode: 'publish', version: VERSION,
+      runId: args.some(arg => arg.includes(`/runs/${RUN_ID}`)) ? RUN_ID : runId, conclusion: 'failure' }));
+  };
+  const first = await runRelease({ repoRoot: fixture.repo, cacheRoot: fixture.cacheRoot,
+    flags: flagsFor(), promotionRecord: record }, harness.supplied);
+  expect(first.outcome).toBe('failed-ci');
+  expect(first.state.sourceSha).toBe(fixture.sourceSha);
+  expect(first.state.version).toBe(VERSION);
+  runId = NEW_RUN_ID;
+  attemptId = FRESH_ATTEMPT_ID;
+  // The original failed run retains its original attempt identity.
+  const route = harness.supplied.gh;
+  harness.supplied.gh = (args, opts) => args.some(arg => arg.includes(`/runs/${RUN_ID}`))
+    ? ghOk(runBody({ attemptId: ATTEMPT_ID, sourceSha: fixture.sourceSha, mode: 'publish', version: VERSION, conclusion: 'failure' }))
+    : route(args, opts);
+  const second = await release(fixture, { resume: true }, harness);
+  expect(second.outcome).toBe('failed-ci');
+  expect(second.state.releaseId).toBe(first.state.releaseId);
+  expect(second.state.sourceSha).toBe(first.state.sourceSha);
+  expect(second.state.version).toBe(first.state.version);
+  expect(second.state.attempts).toHaveLength(2);
+  expect(harness.gates).toEqual([]);
+  expect(harness.posts()).toHaveLength(2);
+});
+
+
+testPosix.each(['head', 'dirty', 'version'])('promotion refuses %s mismatch before remote actions', async mode => {
+  const fixture = makeFixture();
+  const record = promotionFixtureRecord(fixture);
+  const harness = makeHarness(fixture);
+  if (mode === 'head') record.release_sha = 'f'.repeat(40);
+  if (mode === 'dirty') write(fixture.repo, 'untracked.txt', 'pending work');
+  if (mode === 'version') record.version = '1.30.0';
+  await expect(runRelease({ repoRoot: fixture.repo, cacheRoot: fixture.cacheRoot,
+    flags: flagsFor(), promotionRecord: record }, harness.supplied)).rejects.toThrow(
+    mode === 'dirty' ? 'clean tree' : 'mismatch');
+  expect(harness.posts()).toHaveLength(0);
+  expect(harness.pushes()).toHaveLength(0);
+});

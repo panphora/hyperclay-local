@@ -554,7 +554,7 @@ describe('validateReleaseManifest purity', () => {
     expect(loaded).toContain('release-publication.js');
     for (const name of FORBIDDEN_MODULES) expect(loaded).not.toContain(name);
     expect(Object.keys(require('../../scripts/release-publication'))).toEqual([
-      'validateReleaseManifest', 'validatePublicationProof', 'validateLegacyPublicationProof', 'selectUploadJob',
+      'expectedInstallerNames', 'validateReleaseManifest', 'validatePublicationProof', 'validateLegacyPublicationProof', 'selectUploadJob',
       'selectLegacyUploadJob', 'readPublishedSourceVersion', 'readPublicationPair', 'readPublicationEvidence'
     ]);
   });

@@ -11,6 +11,11 @@ run-name: release v${{ inputs.version }} ${{ inputs.dry_run && 'dry-run' || 'pub
 on:
   workflow_dispatch:
     inputs:
+      promotion_record:
+        description: "Qualified promotion record JSON, upload retained bytes only"
+        required: false
+        default: ""
+        type: string
       version:
         description: "Version being released (must match package.json at this commit)"
         required: true
@@ -92,6 +97,7 @@ jobs:
   # the Windows leg before it reported, and the seventh found 14 failures nobody had
   # ever seen, because the Windows suite had in fact never run to completion here.
   test-macos:
+    if: ${{ inputs.promotion_record == '' }}
     needs: verify
     runs-on: macos-14
     timeout-minutes: 45
@@ -111,6 +117,7 @@ jobs:
 
 
   test-windows:
+    if: ${{ inputs.promotion_record == '' }}
     needs: verify
     runs-on: windows-latest
     timeout-minutes: 45
@@ -130,6 +137,7 @@ jobs:
 
 
   test-linux:
+    if: ${{ inputs.promotion_record == '' }}
     needs: verify
     # Both shipped Linux arches. The arm64 runner is also what builds the arm64
     # AppImage, so this is the same environment the release binary comes from.
@@ -159,6 +167,7 @@ jobs:
   # MIT by deleting a labelled clause list. A release whose residue is no longer
   # MIT would ship a promise it cannot keep.
   license:
+    if: ${{ inputs.promotion_record == '' }}
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -444,13 +453,13 @@ jobs:
   # finally list all four platforms and their real sizes. Before this, Windows
   # uploaded itself from its own job and never appeared in that file.
   upload:
-    needs: [test-macos, test-windows, test-linux, license,
+    needs: [verify, test-macos, test-windows, test-linux, license,
             build-macos, build-linux, build-windows]
     # A dry run still builds, signs, notarizes and verifies every platform, and the
     # installers are downloadable from the run's artifacts. It just never touches R2,
     # which is what makes it safe to prove this pipeline against a version that has
     # already shipped.
-    if: ${{ !inputs.dry_run }}
+    if: ${{ always() && !cancelled() && !inputs.dry_run && needs.verify.result == 'success' && (inputs.promotion_record != '' || (needs.build-macos.result == 'success' && needs.build-linux.result == 'success' && needs.build-windows.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -463,14 +472,17 @@ jobs:
           npm-version: ${{ env.NPM_VERSION }}
 
       - uses: actions/download-artifact@v4
+        if: ${{ inputs.promotion_record == '' }}
         with:
           path: executables
           merge-multiple: true
 
       - name: What is about to be published
+        if: ${{ inputs.promotion_record == '' }}
         run: ls -lh executables/
 
       - name: Upload to R2
+        if: ${{ inputs.promotion_record == '' }}
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY }}
@@ -481,3 +493,15 @@ jobs:
           # publishes no Linux update feed and says so in a notice.
           HLOCAL_UPDATE_SEED: ${{ secrets.HLOCAL_UPDATE_SEED }}
         run: node build-scripts/post-build.js
+
+      - name: Promote qualified candidate without rebuilding
+        if: ${{ inputs.promotion_record != '' }}
+        env:
+          PROMOTION_RECORD: ${{ inputs.promotion_record }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_CANDIDATES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATES_SECRET_ACCESS_KEY }}
+          R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY }}
+          R2_SECRET_KEY: ${{ secrets.R2_SECRET_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: node scripts/release-candidate-promote.js

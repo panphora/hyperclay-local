@@ -31,7 +31,7 @@ const active = state => state.attempts.find(attempt => attempt.id === state.acti
 function fail(code, message, cause) { return Object.assign(new Error(message), { code, cause }); }
 function need(value, message) { if (!value) throw fail('RELEASE_COORDINATOR_INVALID', message); }
 
-async function runRelease({ repoRoot, cacheRoot, flags }, supplied = {}) {
+async function runRelease({ repoRoot, cacheRoot, flags, promotionRecord }, supplied = {}) {
   const f = validateOptions(flags);
   need(!f.help, 'Help belongs to the CLI entry');
   const reader = createLocalGitReader();
@@ -137,9 +137,11 @@ async function runRelease({ repoRoot, cacheRoot, flags }, supplied = {}) {
     }
     assertIdentity();
   };
+  let promotion = null;
+  const promotionPath = state => path.join(repoDir, `promotion-${state.releaseId}.json`);
   let gatesDone = false;
   const gates = async (kind, state, sourceSha = null) => {
-    if (gatesDone) return;
+    if (promotion || gatesDone) return;
     checkAbort();
     need(typeof d.newBuildGates === 'function', 'New work needs the actual CLI build gates');
     await d.newBuildGates({ kind, version: state ? state.version : currentVersion(), sourceSha,
@@ -163,7 +165,44 @@ async function runRelease({ repoRoot, cacheRoot, flags }, supplied = {}) {
     if (f.resumeSource !== null && state !== null) need(state.phase === 'failed-ci',
       '--resume-source needs the existing failed-ci publish lane');
 
-    if (f.dryRun) {
+    const retainedPromotion = state && (state.phase !== 'complete' || f.resume || f.reconcileOnly || promotionRecord?.version === state.version) && d.fs.existsSync(promotionPath(state))
+      ? JSON.parse(readBoundedOrdinaryFile(promotionPath(state), { fs: d.fs, maxBytes: 1024 * 1024 }).toString('utf8')) : null;
+    if (promotionRecord !== undefined || retainedPromotion) {
+      need(!f.dryRun && !f.bump && f.version === null && f.resumeSource === null && !f.skipUiPass,
+        'Promotion excludes build and version selection flags');
+      promotion = promotionRecord === undefined ? retainedPromotion : promotionRecord;
+      const { validatePromotionRecord } = require('./release-candidate-promote');
+      promotion = validatePromotionRecord(promotion, { version: currentVersion(),
+        releaseSha: git(['rev-parse', 'HEAD']),
+        clean: d.run('git', ['-c', 'core.fsmonitor=false', 'status', '--porcelain', '--untracked-files=all'],
+          { cwd: identity.root, echoStdout: false, env: { GIT_OPTIONAL_LOCKS: '0' } }).trim() === '' });
+      need(retainedPromotion === null || isDeepStrictEqual(retainedPromotion, promotion),
+        'Promotion record differs from the retained release');
+      if (state && state.phase !== 'complete') {
+        need(retainedPromotion && state.version === promotion.version && state.sourceSha === promotion.release_sha,
+          'Promotion conflicts with the pending release');
+      } else if (state === null || state.version !== promotion.version) {
+        need(!f.reconcileOnly, 'Reconcile-only cannot begin a promotion');
+        need(state === null || above(promotion.version, state.version), 'Promotion version must increase');
+        guard();
+        const next = createReleaseState({ releaseId: d.randomUUID(), version: promotion.version,
+          mode: 'publish', at: stamp(), sourceSha: promotion.release_sha, versionIntent: null }, identity, { repoDir });
+        d.fs.mkdirSync(repoDir, { recursive: true, mode: 0o700 });
+        const fd = d.fs.openSync(promotionPath(next), 'wx', 0o600);
+        try {
+          d.fs.writeFileSync(fd, JSON.stringify(promotion));
+          d.fs.fsyncSync(fd);
+        } finally { d.fs.closeSync(fd); }
+        const dirFd = d.fs.openSync(repoDir, 'r');
+        try { d.fs.fsyncSync(dirFd); } finally { d.fs.closeSync(dirFd); }
+        state = write(next, state);
+      }
+      need(state.version === promotion.version && state.sourceSha === promotion.release_sha,
+        'Promotion version or source mismatch');
+      workflowDeps.promotionRecord = promotion;
+    }
+
+    if (!promotion && f.dryRun) {
       const publish = readLane('publish');
       const attempt = publish && active(publish);
       need(!attempt || !['requested', 'unknown'].includes(attempt.dispatch) &&
@@ -184,7 +223,7 @@ async function runRelease({ repoRoot, cacheRoot, flags }, supplied = {}) {
           at: stamp(), sourceSha, versionIntent: null }, identity, { repoDir });
         state = write(next, state);
       }
-    } else {
+    } else if (!promotion) {
       if (state && state.phase === 'complete') {
         verifyRetainedRelease({ state, repoDir }, readDeps);
         if (f.resume || f.reconcileOnly) return result('complete');
@@ -220,6 +259,17 @@ async function runRelease({ repoRoot, cacheRoot, flags }, supplied = {}) {
     }
     if (state.phase !== 'complete') need(currentVersion() === state.version,
       'Working package version differs from the pending release');
+
+    if (state.phase === 'failed-ci' && promotion && f.resume && !f.reconcileOnly) {
+      await reobserveFailedRelease({ state, repoDir }, publicationDeps);
+      const latest = await observeLatestAttempt({ state, repoDir }, publicationDeps);
+      need(latest.status === 'completed' && latest.runAttempt === active(state).runAttempt,
+        'A later CI attempt exists; reconcile it before retrying promotion');
+      const workflowId = await workflowDefinition(active(state).workflowId);
+      const attempt = makeWorkflowAttempt({ state, repoDir, workflowId, attemptId: d.randomUUID(),
+        sourceSha: state.sourceSha, dispatchRef: `v${state.version}`, retryPromotion: true });
+      state = event(state, { type: 'begin-promotion-attempt', previousRunId: active(state).runId, attempt });
+    }
 
     if (state.phase === 'failed-ci') {
       if (f.resumeSource === null) {

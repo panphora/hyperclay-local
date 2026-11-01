@@ -99,9 +99,16 @@ function makeWorkflowAttempt(input) {
       ['dispatch', 'legacy-failed-run'].includes(active.identityKind) &&
       isCompletedNonSuccess(active)) {
     if (state.mode !== 'publish') throw attemptError('A repair attempt requires a publish release');
-    if (sourceSha === active.sourceSha) throw attemptError('A repair attempt must dispatch a different source');
-    if (dispatchRef !== 'main') throw attemptError('A repair attempt must dispatch main');
-    event = { type: 'begin-repair-attempt', at: state.updatedAt, previousRunId: active.runId };
+    if (input.retryPromotion === true) {
+      if (sourceSha !== active.sourceSha || dispatchRef !== `v${state.version}`) {
+        throw attemptError('Promotion retry must retain the original source and tag');
+      }
+      event = { type: 'begin-promotion-attempt', at: state.updatedAt, previousRunId: active.runId };
+    } else {
+      if (sourceSha === active.sourceSha) throw attemptError('A repair attempt must dispatch a different source');
+      if (dispatchRef !== 'main') throw attemptError('A repair attempt must dispatch main');
+      event = { type: 'begin-repair-attempt', at: state.updatedAt, previousRunId: active.runId };
+    }
   } else {
     throw attemptError('A workflow attempt requires a source-ready release or a failed-ci repair');
   }

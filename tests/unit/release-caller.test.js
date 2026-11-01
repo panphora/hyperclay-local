@@ -17,7 +17,7 @@ const ROOT = path.join(__dirname, '..', '..');
 const SOURCE_SCRIPTS = path.join(ROOT, 'scripts');
 const WORKFLOW_FILE = path.join(ROOT, '.github', 'workflows', 'release.yml');
 const STATUS_GUARD = path.join(ROOT, 'tests', 'fixtures', 'release-status-cli-guard.js');
-const FROZEN_COORDINATOR_SHA256 = 'a26888bd2e7cb0887300534be6a35a1192b3dd4ca2cc4367edafc7eca6039bd9';
+const FROZEN_COORDINATOR_SHA256 = 'f4a0334db2916ea0f33b685bfc74f69ac8e4ab6b03d4bdef6b5d0d125f58a050';
 const VERSION = '1.2.3';
 const ATTEMPT_ID = '12345678-1234-4123-8123-123456789abc';
 const RUN_DIR = typeof process.env.FLASHIMP_RUN_DIR === 'string' && process.env.FLASHIMP_RUN_DIR !== ''
@@ -609,7 +609,7 @@ describe('caller workflow identity', () => {
     expect(checkoutRows).toHaveLength(9);
     expect(checkoutRows.map(row => row.job).sort()).toEqual(expectedJobs.slice().sort());
     expect(checkoutRows.every(row => row.ref === '${{ inputs.source_sha }}')).toBe(true);
-    expect(jobs.upload.if).toBe('${{ !inputs.dry_run }}');
+    expect(jobs.upload.if).toBe("${{ always() && !cancelled() && !inputs.dry_run && needs.verify.result == 'success' && (inputs.promotion_record != '' || (needs.build-macos.result == 'success' && needs.build-linux.result == 'success' && needs.build-windows.result == 'success')) }}");
 
     const identitySteps = jobs.verify.steps.filter(
       step => step.name === 'Recorded source and version match the workflow identity'

@@ -859,6 +859,7 @@ function readPublicationEvidence(input, options) {
 }
 
 module.exports = {
+  expectedInstallerNames,
   validateReleaseManifest,
   validatePublicationProof,
   validateLegacyPublicationProof,

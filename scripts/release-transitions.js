@@ -23,6 +23,7 @@ const EVENT_KEYS = {
   'install-observed': ['type', 'at', 'install'],
   'tail-complete': ['type', 'at'],
   'begin-rejected-attempt': ['type', 'at', 'previousAttemptId', 'attemptId'],
+  'begin-promotion-attempt': ['type', 'at', 'previousRunId', 'attempt'],
   'begin-repair-attempt': ['type', 'at', 'previousRunId', 'attempt'],
 };
 
@@ -436,6 +437,20 @@ function transitionRelease(state, event, identity, options) {
       };
       next.attempts = next.attempts.concat([attempt]);
       next.activeAttemptId = attempt.id;
+      next.phase = 'workflow';
+      next.lastError = null;
+      break;
+    }
+
+    case 'begin-promotion-attempt': {
+      const previous = requireActiveDispatch(next, 'begin-promotion-attempt');
+      if (next.mode !== 'publish' || next.phase !== 'failed-ci' || !isCompletedNonSuccess(previous) ||
+          previous.runId !== event.previousRunId || next.artifacts.state !== 'pending') {
+        refuse('Promotion retry requires the recorded failed upload and an untouched publication');
+      }
+      requireFreshAttempt(event.attempt, next, { dispatchRef: `v${next.version}`, sourceChanged: false });
+      next.attempts = next.attempts.concat([structuredClone(event.attempt)]);
+      next.activeAttemptId = event.attempt.id;
       next.phase = 'workflow';
       next.lastError = null;
       break;

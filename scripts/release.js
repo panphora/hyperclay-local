@@ -54,8 +54,18 @@ if (process.env.HYPERCLAY_RELEASE_LOG_WORKER !== '1' && !externalCapturePath(pro
 
 const { parseReleaseOptions } = require('./release-options');
 let flags;
+let promotionRecord;
 try {
-  flags = parseReleaseOptions(process.argv.slice(2));
+  const args = process.argv.slice(2);
+  const candidateArgs = args.filter(arg => arg.startsWith('--from-candidate='));
+  if (candidateArgs.length > 1) throw new Error('Choose one promotion record');
+  flags = parseReleaseOptions(args.filter(arg => !arg.startsWith('--from-candidate=')));
+  if (candidateArgs.length) {
+    if (flags.bump || flags.version || flags.dryRun || flags.resumeSource || flags.skipUiPass) {
+      throw new Error('--from-candidate excludes version selection, dry-run, source repair and build flags');
+    }
+    promotionRecord = JSON.parse(fs.readFileSync(candidateArgs[0].slice('--from-candidate='.length), 'utf8'));
+  }
 } catch (error) {
   console.error(error.message);
   console.error('Use --help for usage information');
@@ -68,6 +78,7 @@ if (flags.help) {
   console.log('Finish the recorded release before starting another version. Nothing prompts.');
   console.log('  --major|--minor|--patch  Choose the next version bump');
   console.log('  --version=X.Y.Z         Choose an exact higher version');
+  console.log('  --from-candidate=PATH   Publish retained qualified installers without rebuilding');
   console.log('  --resume                Continue the recorded release without bumping');
   console.log('  --dry-run               Build/sign/notarize without publishing installers');
   console.log('  --reconcile-only        Observe existing work and finish a proven publication tail');
@@ -319,7 +330,7 @@ async function main() {
   process.once('SIGTERM', onTerm);
   try {
     const { runRelease } = require('./release-coordinator');
-    const outcome = await runRelease({ repoRoot: ROOT_DIR, flags }, {
+    const outcome = await runRelease({ repoRoot: ROOT_DIR, flags, promotionRecord }, {
       chooseBump, newBuildGates, install: flags.noInstall ? undefined : updateThisMac,
       signal: controller.signal, log: logInfo
     });
