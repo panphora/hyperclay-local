@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [1.34.1] - 2026-11-02
+
+### Changed
+- The bundled ClayJS and the offline runtime are now 1.19.0, so documents built offline run on the newer version.
+
+### Fixed
+- Reveal and Export use the native Windows path, so Explorer can select the file.
+
 ## [1.34.0] - 2026-10-31
 
 ### Added
