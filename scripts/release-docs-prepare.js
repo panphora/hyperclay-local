@@ -488,8 +488,9 @@ function prepareDownloadSizes({ version, parentDir, runDir, publication }, { run
   requireLiveMatchesSnapshot(snapshot, live);
   snapshot.liveState = live;
 
-  const readme = fs.readFileSync(path.join(snapshot.beforeDir, 'README.md'), 'utf8');
-  const website = fs.readFileSync(path.join(snapshot.beforeDir, 'website/index.html'), 'utf8');
+  // A promoted candidate commits only the version in package.json, so the download links still name the last release.
+  const readme = prepareVersion(fs.readFileSync(path.join(snapshot.beforeDir, 'README.md'), 'utf8'), version).updated;
+  const website = prepareVersion(fs.readFileSync(path.join(snapshot.beforeDir, 'website/index.html'), 'utf8'), version).updated;
   const { renderDownloadSizes } = require('./write-download-sizes');
   const output = renderDownloadSizes({ readme, website, manifest }, { version, sourceSha: publication.sourceSha });
   fs.writeFileSync(path.join(snapshot.sourceDir, 'README.md'), output.readme);
