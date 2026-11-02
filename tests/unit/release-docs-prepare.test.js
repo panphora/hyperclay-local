@@ -8,7 +8,7 @@ const os = require('os');
 const path = require('path');
 
 const { prepareExternalDocs, prepareVersion } = require('../../scripts/release-docs-prepare');
-const { testPosix } = require('../helpers/platform');
+const { describePosix, testPosix } = require('../helpers/platform');
 
 jest.setTimeout(60000);
 
@@ -178,7 +178,8 @@ describe('prepareVersion', () => {
   });
 });
 
-describe('prepareExternalDocs', () => {
+// Releases run on macOS, and git archive plus tar with a drive-letter path is not portable.
+describePosix('prepareExternalDocs', () => {
   test('prepares the hyperclay target file with exact bytes', () => {
     const fixture = makeFixture();
     const { prepared } = invoke(fixture, NEW);

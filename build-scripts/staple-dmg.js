@@ -1,4 +1,5 @@
 const { execSync } = require('child_process');
+const { validateStaple } = require('./stapler-validate');
 const path = require('path');
 
 require('dotenv').config();
@@ -53,7 +54,7 @@ exports.default = async function stapleDmg(context) {
     // to remove.
     execSync(`xcrun notarytool submit "${dmg}" ${credentials} --wait`, { stdio: 'inherit' });
     execSync(`xcrun stapler staple "${dmg}"`, { stdio: 'inherit' });
-    execSync(`xcrun stapler validate "${dmg}"`, { stdio: 'inherit' });
+    validateStaple(dmg);
     console.log(`   ✅ ${path.basename(dmg)} stapled`);
   }
 };

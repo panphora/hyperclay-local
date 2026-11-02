@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { expectedShard, verifyShard, verifyUnion } = require('../../scripts/release-test-shard');
+const { testPosix } = require('../helpers/platform');
 
 jest.setTimeout(180000);
 
@@ -55,7 +56,7 @@ function verify(report, extra = {}) {
   return verifyShard({ allFiles, index: 1, total: 3, rootDir: fixture, report, ...extra });
 }
 
-test('expectedShard matches Jest exactly for all three shards', () => {
+testPosix('expectedShard matches Jest exactly for all three shards', () => {
   expect(allFiles).toHaveLength(25);
   expect(allFiles.every(file => path.isAbsolute(file))).toBe(true);
   expect(jestShards.map(files => files.length)).toEqual([9, 8, 8]);
@@ -71,7 +72,7 @@ test('shards are disjoint and their exact union is the real fixture list', () =>
   expect(verifyUnion(allFiles, 3, fixture)).toEqual({ ok: true, problems: [] });
 });
 
-test('path hashing normalizes Windows separators like Jest', () => {
+testPosix('path hashing normalizes Windows separators like Jest', () => {
   const posixFiles = allFiles.map(file => `C:/repo/${path.posix.relative(fixture, file)}`);
   const windowsFiles = posixFiles.map(file => file.replace(/\//g, '\\'));
   for (let index = 1; index <= 3; index += 1) {
@@ -107,6 +108,12 @@ test.each([
   const result = verify(report);
   expect(result.ok).toBe(false);
   expect(result.problems.some(message => message.startsWith(`${problem}:`))).toBe(true);
+});
+
+test.each(['focused', 'skipped'])('a %s suite with conditional skips counts as completed', status => {
+  const report = cleanReport();
+  report.testResults[0].status = status;
+  expect(verify(report)).toEqual({ ok: true, problems: [] });
 });
 
 test('suite execution error in Jest JSON is refused', () => {

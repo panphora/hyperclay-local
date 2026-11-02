@@ -6,6 +6,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const yaml = require('js-yaml');
 const { candidateJobGraph, candidateContract } = require('../../scripts/release-candidate');
+const { testPosix } = require('../helpers/platform');
 const root = path.resolve(__dirname, '../..');
 const source = fs.readFileSync(path.join(root, '.github/workflows/platform-candidate.yml'), 'utf8');
 const workflow = yaml.load(source);
@@ -99,7 +100,7 @@ test('desktop checks consume their exact retained build without rebuilding', () 
   }
 });
 
-test('archive extraction preserves safe symlinks and executable bits and rejects escapes', () => {
+testPosix('archive extraction preserves safe symlinks and executable bits and rejects escapes', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'candidate-workflow-'));
   try {
     const helper = path.join(root, 'scripts/platform-candidate-archive.py');

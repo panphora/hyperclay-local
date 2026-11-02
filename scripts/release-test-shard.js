@@ -4,6 +4,9 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
+// Jest reports a suite with conditional test.skip as focused and an all-skipped suite as skipped.
+const COMPLETED_SUITE = new Set(['passed', 'focused', 'skipped']);
+
 function validateShard(index, total) {
   if (!Number.isSafeInteger(total) || total < 1 ||
       !Number.isSafeInteger(index) || index < 1 || index > total) {
@@ -50,7 +53,7 @@ function verifyShard({ allFiles, index, total, report, rootDir = process.cwd() }
     else if (!expected.has(name)) problems.push(`wrong-shard: ${name}`);
     if (seen.has(name)) problems.push(`duplicate-file: ${name}`);
     seen.add(name);
-    if (result?.status !== 'passed' || result?.testExecError) {
+    if (!COMPLETED_SUITE.has(result?.status) || result?.testExecError) {
       problems.push(`suite-not-passed: ${name} (status=${result?.status}${result?.testExecError ? ', testExecError' : ''})`);
     }
   }

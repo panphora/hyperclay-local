@@ -132,6 +132,7 @@ describe('release.js wiring', () => {
       SKIP_UI_PASS: skip,
       TRANSCRIPT: '/fixture/release.log',
       flags: { skipUiPass: skip, noInstall },
+      promotionRecord: undefined,
       colors: { cyan: '', reset: '' },
       AbortController,
       spawnSync: jest.fn(() => ({ status: 0 })),

@@ -49,7 +49,7 @@ async function main() {
   fs.writeFileSync(`${outputDir}/SHA256SUMS.json`, JSON.stringify(hashes));
   fs.mkdirSync('../retained', { recursive: true });
   const archive = path.resolve(`../retained/${name}.tar.gz`);
-  execFileSync('tar', ['-czf', archive, '-C', outputDir, '.'], { stdio: 'inherit' });
+  execFileSync('tar', ['-czf', path.relative(process.cwd(), archive), '-C', outputDir, '.'], { stdio: 'inherit' });
   const prefix = attemptPrefix();
   const client = new S3Client({ region: 'auto', endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` });
   for (const [file, filePath] of [[`transfer/${name}`, archive], ...files.map(file => [`out/${file}`, path.join(outputDir, file)])]) {
