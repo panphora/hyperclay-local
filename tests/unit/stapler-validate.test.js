@@ -1,4 +1,4 @@
-const { validateStaple } = require('../../build-scripts/stapler-validate');
+const { stapleTicket, validateStaple } = require('../../build-scripts/stapler-validate');
 
 const sleep = () => {};
 
@@ -15,4 +15,12 @@ test('a ticket that never validates still fails', () => {
   const run = jest.fn(() => { throw new Error('Error 65'); });
   expect(() => validateStaple('/a.app', { run, sleep })).toThrow('Error 65');
   expect(run).toHaveBeenCalledTimes(4);
+});
+
+test('stapling retries a dropped connection too', () => {
+  const run = jest.fn()
+    .mockImplementationOnce(() => { throw new Error('Error 68'); })
+    .mockImplementationOnce(() => {});
+  stapleTicket('/a.dmg', { run, sleep });
+  expect(run).toHaveBeenLastCalledWith('xcrun stapler staple "/a.dmg"');
 });

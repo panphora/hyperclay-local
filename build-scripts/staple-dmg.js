@@ -1,5 +1,5 @@
 const { execSync } = require('child_process');
-const { validateStaple } = require('./stapler-validate');
+const { stapleTicket, validateStaple } = require('./stapler-validate');
 const path = require('path');
 
 require('dotenv').config();
@@ -53,7 +53,7 @@ exports.default = async function stapleDmg(context) {
     // Gatekeeper check on a user's machine, which is exactly the thing this exists
     // to remove.
     execSync(`xcrun notarytool submit "${dmg}" ${credentials} --wait`, { stdio: 'inherit' });
-    execSync(`xcrun stapler staple "${dmg}"`, { stdio: 'inherit' });
+    stapleTicket(dmg);
     validateStaple(dmg);
     console.log(`   ✅ ${path.basename(dmg)} stapled`);
   }

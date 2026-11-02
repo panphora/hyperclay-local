@@ -1,5 +1,5 @@
 const { execSync } = require('child_process');
-const { validateStaple } = require('./stapler-validate');
+const { stapleTicket, validateStaple } = require('./stapler-validate');
 const fs = require('fs');
 const path = require('path');
 
@@ -60,7 +60,7 @@ exports.default = async function notarizeSubmit(context) {
       execSync(`xcrun notarytool submit "${zipPath}" ${credentials} --wait`, { stdio: 'inherit' });
 
       console.log('   → Stapling ticket...');
-      execSync(`xcrun stapler staple "${appPath}"`, { stdio: 'inherit' });
+      stapleTicket(appPath);
       validateStaple(appPath);
 
       fs.unlinkSync(zipPath);

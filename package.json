@@ -85,6 +85,7 @@
       "node_modules/mini-svg-data-uri/**"
     ],
     "mac": {
+      "notarize": false,
       "icon": "build/icon.icns",
       "extendInfo": {
         "HCLUpdateNowArg": 1

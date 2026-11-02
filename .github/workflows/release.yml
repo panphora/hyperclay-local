@@ -226,15 +226,16 @@ jobs:
 
       - name: Verify the DMGs and update zips carry a stapled ticket
         run: |
+          stapler_validate() { for attempt in 1 2 3 4; do xcrun stapler validate "$1" && return 0; sleep 15; done; return 1; }
           for dmg in executables/*.dmg; do
             echo "── $dmg"
             # The disk image's own ticket, which is what Gatekeeper checks on the
             # download. Without it that check is an online one even though the app
             # inside is stapled.
-            xcrun stapler validate "$dmg"
+            stapler_validate "$dmg"
             hdiutil attach "$dmg" -nobrowse -quiet -mountpoint /tmp/dmgcheck
             codesign -dv --verbose=4 /tmp/dmgcheck/*.app 2>&1 | grep -E "Authority|TeamIdentifier"
-            xcrun stapler validate /tmp/dmgcheck/*.app
+            stapler_validate /tmp/dmgcheck/*.app
             spctl -a -vvv -t install /tmp/dmgcheck/*.app
             hdiutil detach /tmp/dmgcheck -quiet
           done
@@ -246,7 +247,7 @@ jobs:
             rm -rf /tmp/zipcheck && mkdir /tmp/zipcheck
             ditto -x -k "$zip" /tmp/zipcheck
             codesign --verify --deep --strict --verbose=2 /tmp/zipcheck/*.app
-            xcrun stapler validate /tmp/zipcheck/*.app
+            stapler_validate /tmp/zipcheck/*.app
             spctl -a -vvv -t exec /tmp/zipcheck/*.app
           done
 
