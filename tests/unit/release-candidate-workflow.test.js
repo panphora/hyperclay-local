@@ -258,6 +258,12 @@ exports.S3Client = class { async send(command) {
     fs.writeFileSync(path.join(candidate, 'signatures/policy.json'), '{"linuxUpdates":true}');
     expect(run('feeds').status).toBe(0);
     expect(fs.readdirSync(path.join(candidate, 'feeds'))).toEqual(expect.arrayContaining(['latest-linux.yml', 'latest-linux-arm64.yml']));
+    fs.writeFileSync(path.join(candidate, 'executables/latest-linux.yml'), 'electron-builder feed');
+    expect(run('retain', 'build-linux-x64').status).toBe(0);
+    const listed = spawnSync('tar', ['-tzf', path.join(temp, 'retained/build-linux-x64.tar.gz')], { encoding: 'utf8' });
+    expect(listed.stdout).toContain('HyperclayLocal-1.34.0.AppImage');
+    expect(listed.stdout).toContain('SHA256SUMS.json');
+    expect(listed.stdout).not.toContain('latest-linux.yml');
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }
