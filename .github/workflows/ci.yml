@@ -21,7 +21,7 @@ jobs:
       # Every platform reports. A Linux-only failure is the whole reason Linux is here.
       fail-fast: false
       matrix:
-        os: [macos-15, ubuntu-latest, windows-latest]
+        os: ["${{ vars.MAC_RUNNER || 'warp-macos-15-arm64-6x' }}", ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     # A hung step must fail fast and visibly: a job killed at GitHub's six hour
     # ceiling reports as "cancelled", which reads like someone stopped it.
