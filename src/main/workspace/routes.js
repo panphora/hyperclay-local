@@ -4,10 +4,12 @@ const { getConsentRegistry, resolveReadPath } = require('../utils/path-resolver'
 const { documentEtag } = require('../spec-wire');
 const { logicalBytes } = require('../page-state-store');
 const { safePath, refusal } = require('./commands');
+const { stripCopyBytes } = require('../copy-content');
 
 const SAVE_MAX_BYTES = 20 * 1024 * 1024;
 const UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 const FORWARDED_HEADERS = ['content-type', 'if-match', 'save-id', 'page-if-match', 'page-revision', 'accept'];
+const DOCUMENT_NAME = /\.html(?:clay)?$/i;
 
 function sendJson(res, status, value) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store',
@@ -168,7 +170,10 @@ async function handleWorkspaceRoute({ req, res, url, root, route, settings, sync
   }
   if (route === 'download' && req.method === 'GET') {
     const rel = safePath(url.searchParams.get('path'));
-    const bytes = await fs.readFile(await fileFor(root, rel));
+    const stored = await fs.readFile(await fileFor(root, rel));
+    // A downloaded document is a copy, so the copy-only analytics and promos go before it is
+    // sent. Every other file is sent byte for byte, and the file on disk is only ever read.
+    const bytes = DOCUMENT_NAME.test(rel) ? stripCopyBytes(stored) : stored;
     res.writeHead(200, { 'Content-Type': 'application/octet-stream',
       'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(path.basename(rel))}`,
       'Content-Length': bytes.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });

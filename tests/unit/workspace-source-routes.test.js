@@ -36,6 +36,80 @@ test('source reads stored bytes and stamp, saves through the root, and keeps the
   expect(await (await request('/api/roots/root-a/download?path=A.html')).text()).not.toContain('data-hyperclay-bridge');
 });
 
+test('a downloaded document carries no copy-only analytics, and every other file is byte-identical', async () => {
+  h = await fixture();
+  const authored = [
+    '<!doctype html>',
+    '<html>',
+    '<head>',
+    '  <script clay="no-copy">window.tracker={id:7};</script>',
+    '  <script src="/_/clayjs/clay.js" clay="no-copy-unless:paid-forms"></script>',
+    '</head>',
+    '<body>',
+    '  <div clay="no-copy">Upgrade to keep this</div>',
+    '  <p>Keep</p>',
+    '</body>',
+    '</html>',
+    '',
+  ].join('\n');
+  await fs.writeFile(path.join(h.dir, 'A.html'), authored);
+  const binary = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]);
+  await fs.writeFile(path.join(h.dir, 'photo.png'), binary);
+  await h.startRoot();
+  const request = await h.start();
+
+  const download = await request('/api/roots/root-a/download?path=A.html');
+  const body = await download.text();
+  expect(download.headers.get('content-length')).toBe(String(Buffer.byteLength(body)));
+  expect(body).not.toContain('window.tracker');
+  expect(body).not.toContain('clay.js');
+  expect(body).not.toContain('Upgrade to keep this');
+  expect(body).toContain('  <p>Keep</p>');
+
+  const asset = await request('/api/roots/root-a/download?path=photo.png');
+  expect(Buffer.from(await asset.arrayBuffer())).toEqual(binary);
+  expect(asset.headers.get('content-length')).toBe(String(binary.length));
+
+  expect((await (await request(`${source}?path=A.html`)).json()).html).toBe(authored);
+  expect(await fs.readFile(path.join(h.dir, 'A.html'), 'utf8')).toBe(authored);
+});
+
+test('a normal save keeps the authored copy-only loader on disk, and only a copy leaves it out', async () => {
+  h = await fixture();
+  await fs.writeFile(path.join(h.dir, 'A.html'), page('before'));
+  await h.startRoot();
+  const request = await h.start();
+  const authored = [
+    '<!doctype html>',
+    '<html>',
+    '<head>',
+    '  <script clay="no-copy">window.tracker={id:7};</script>',
+    '  <script src="/_/clayjs/clay.js" clay="no-copy-unless:paid-forms"></script>',
+    '</head>',
+    '<body>',
+    '  <div clay="no-copy">Upgrade to keep this</div>',
+    '  <p>after</p>',
+    '</body>',
+    '</html>',
+    '',
+  ].join('\n');
+  const before = await (await request(`${source}?path=A.html`)).json();
+  const saved = await put(request, { path: 'A.html', html: authored, etag: before.etag, operationId: 'save-marked' });
+  expect(saved.status).toBe(200);
+
+  const disk = await fs.readFile(path.join(h.dir, 'A.html'), 'utf8');
+  expect(disk).toContain('window.tracker');
+  expect(disk).toContain('clay.js');
+  expect(disk).toContain('Upgrade to keep this');
+  expect((await (await request(`${source}?path=A.html`)).json()).html).toBe(disk);
+
+  const download = await (await request('/api/roots/root-a/download?path=A.html')).text();
+  expect(download).not.toContain('window.tracker');
+  expect(download).not.toContain('clay.js');
+  expect(download).not.toContain('Upgrade to keep this');
+  expect(download).toContain('<p>after</p>');
+});
+
 test('stale save preserves the root status and current stamp', async () => {
   h = await fixture();
   await fs.writeFile(path.join(h.dir, 'A.html'), page('before'));

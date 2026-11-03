@@ -1,0 +1,92 @@
+[
+  {
+    "name": "unconditional-no-copy-element",
+    "input": "<body>\n  <div clay=\"no-copy\">Tracked</div>\n  <p>Keep</p>\n</body>\n",
+    "expected": "<body>\n  <p>Keep</p>\n</body>\n"
+  },
+  {
+    "name": "unconditional-no-copy-owner-copy",
+    "input": "<body>\n  <div id=\"owner\" clay=\"no-copy\">\n    <span>Owner copy</span>\n  </div>\n  <p>Keep</p>\n</body>\n",
+    "expected": "<body>\n  <p>Keep</p>\n</body>\n"
+  },
+  {
+    "name": "conditional-paid-forms",
+    "input": "<body>\n  <div clay=\"no-copy-unless:paid-forms\">\n    <form method=\"POST\" data-message-form=\"Subscribed!\"></form>\n  </div>\n  <p>Keep</p>\n</body>\n",
+    "expected": "<body>\n  <p>Keep</p>\n</body>\n"
+  },
+  {
+    "name": "conditional-among-other-tokens",
+    "input": "<body>\n  <section class=\"card\twide\" clay=\"  card \t no-copy-unless:paid-forms\r\n wide \">\n    <form action=\"/_/message\"></form>\n  </section>\n  <p>Keep</p>\n</body>\n",
+    "expected": "<body>\n  <p>Keep</p>\n</body>\n"
+  },
+  {
+    "name": "legacy-paid-only-forms",
+    "input": "<body>\n  <div class=\"lead\" data-paid-only=\"forms\">\n    <form data-message-form=\"Subscribed!\"></form>\n  </div>\n  <p>Keep</p>\n</body>\n",
+    "expected": "<body>\n  <p>Keep</p>\n</body>\n"
+  },
+  {
+    "name": "legacy-and-unconditional-on-one-element",
+    "input": "<body>\n  <div data-paid-only=\"ai\" clay=\"no-copy\">Promo</div>\n  <p>Keep</p>\n</body>\n",
+    "expected": "<body>\n  <p>Keep</p>\n</body>\n"
+  },
+  {
+    "name": "uppercase-attribute-name-exact-token",
+    "input": "<body>\n  <DIV CLAY=\"no-copy\">Tracked</DIV>\n  <p>Keep</p>\n</body>\n",
+    "expected": "<body>\n  <p>Keep</p>\n</body>\n"
+  },
+  {
+    "name": "token-case-is-not-lowercased",
+    "input": "<body>\n  <div clay=\"NO-COPY\">Kept</div>\n</body>\n",
+    "expected": "<body>\n  <div clay=\"NO-COPY\">Kept</div>\n</body>\n"
+  },
+  {
+    "name": "sibling-unconditional-and-conditional",
+    "input": "<body>\n  <div clay=\"no-copy\">A</div>\n  <div clay=\"no-copy-unless:paid-forms\">B</div>\n  <div clay=\"no-copy\">C</div>\n  <p>Keep</p>\n</body>\n",
+    "expected": "<body>\n  <p>Keep</p>\n</body>\n"
+  },
+  {
+    "name": "unconditional-wins-over-nested-conditional",
+    "input": "<body>\n  <div clay=\"no-copy\">\n    <div clay=\"no-copy-unless:paid-forms\">Inner</div>\n  </div>\n  <p>Keep</p>\n</body>\n",
+    "expected": "<body>\n  <p>Keep</p>\n</body>\n"
+  },
+  {
+    "name": "void-node-unconditional",
+    "input": "<body>\n  <p>Before</p>\n  <br clay=\"no-copy\">\n  <p>After</p>\n</body>\n",
+    "expected": "<body>\n  <p>Before</p>\n  <p>After</p>\n</body>\n"
+  },
+  {
+    "name": "script-in-head-unconditional",
+    "input": "<!doctype html>\n<html>\n<head>\n  <meta charset=\"utf-8\">\n  <script clay=\"no-copy\">window.tracker={id:7};</script>\n  <title>Kept</title>\n</head>\n<body>\n  <p>Hello</p>\n</body>\n</html>\n",
+    "expected": "<!doctype html>\n<html>\n<head>\n  <meta charset=\"utf-8\">\n  <title>Kept</title>\n</head>\n<body>\n  <p>Hello</p>\n</body>\n</html>\n"
+  },
+  {
+    "name": "inline-script-conditional",
+    "input": "<body>\n  <p>Hello</p>\n  <script clay=\"no-copy-unless:paid-forms\">window.tracker={id:7};</script>\n</body>\n",
+    "expected": "<body>\n  <p>Hello</p>\n</body>\n"
+  },
+  {
+    "name": "unicode-before-and-around-ranges",
+    "input": "<body>\n  <p>é中🎉 café</p>\n  <div clay=\"no-copy\">中文</div>\n  <p>é中🎉 café again</p>\n</body>\n",
+    "expected": "<body>\n  <p>é中🎉 café</p>\n  <p>é中🎉 café again</p>\n</body>\n"
+  },
+  {
+    "name": "crlf-line-endings",
+    "input": "<body>\r\n  <div clay=\"no-copy\">A</div>\r\n  <p>Keep</p>\r\n</body>\r\n",
+    "expected": "<body>\r\n  <p>Keep</p>\r\n</body>\r\n"
+  },
+  {
+    "name": "unknown-conditional-spelling-is-kept",
+    "input": "<body>\n  <div clay=\"no-copy-unless:paid-formz\">Kept</div>\n  <p>Keep</p>\n</body>\n",
+    "expected": "<body>\n  <div clay=\"no-copy-unless:paid-formz\">Kept</div>\n  <p>Keep</p>\n</body>\n"
+  },
+  {
+    "name": "token-that-only-looks-like-no-copy",
+    "input": "<body>\n  <div clay=\"card no-copy-banner\">Kept</div>\n</body>\n",
+    "expected": "<body>\n  <div clay=\"card no-copy-banner\">Kept</div>\n</body>\n"
+  },
+  {
+    "name": "no-markers-at-all",
+    "input": "<body>\n  <p>Hello</p>\n</body>\n",
+    "expected": "<body>\n  <p>Hello</p>\n</body>\n"
+  }
+]

@@ -119,6 +119,62 @@ describe('exporting a document and its assets as a zip', () => {
     ]);
   });
 
+  test('a copy-only loader and promo are cut from the document in the zip, and the file on disk keeps them', async () => {
+    const documentPath = path.join(dir, 'board.html');
+    const authored = [
+      '<!doctype html>',
+      '<html>',
+      '<head>',
+      '  <script clay="no-copy">window.tracker={id:7};</script>',
+      '  <script src="/_/clayjs/clay.js" clay="no-copy-unless:paid-forms"></script>',
+      '</head>',
+      '<body>',
+      '  <div clay="no-copy">Upgrade to keep this</div>',
+      '  <p>Board</p>',
+      '</body>',
+      '</html>',
+      '',
+    ].join('\n');
+    await fs.writeFile(documentPath, authored);
+    const assets = path.join(dir, 'assets-board');
+    await fs.mkdir(assets);
+    const photo = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]);
+    await fs.writeFile(path.join(assets, 'photo-abc.png'), photo);
+
+    await exportDocumentZip(documentPath, outPath);
+
+    const entries = await readZip(outPath);
+    const byName = Object.fromEntries(entries.map((entry) => [entry.name, entry.content]));
+    const zipped = byName['board/board.html'].toString('utf8');
+    expect(zipped).not.toContain('window.tracker');
+    expect(zipped).not.toContain('clay.js');
+    expect(zipped).not.toContain('Upgrade to keep this');
+    expect(zipped).toContain('  <p>Board</p>');
+    expect(byName['board/assets-board/photo-abc.png']).toEqual(photo);
+    expect(await fs.readFile(documentPath, 'utf8')).toBe(authored);
+  });
+
+  test('a marked document that is not valid UTF-8 is packaged filtered, with every outside byte kept', async () => {
+    const documentPath = path.join(dir, 'board.html');
+    const authored = Buffer.concat([
+      Buffer.from('<body>\n  <div clay="no-copy">Promo</div>\n  <p>'),
+      Buffer.from([0xff, 0xfe, 0x80, 0xc3]),
+      Buffer.from('</p>\n</body>\n'),
+    ]);
+    await fs.writeFile(documentPath, authored);
+
+    await exportDocumentZip(documentPath, outPath);
+
+    const entries = await readZip(outPath);
+    expect(entries.map((entry) => entry.name)).toEqual(['board/board.html']);
+    expect(entries[0].content).toEqual(Buffer.concat([
+      Buffer.from('<body>\n  <p>'),
+      Buffer.from([0xff, 0xfe, 0x80, 0xc3]),
+      Buffer.from('</p>\n</body>\n'),
+    ]));
+    expect(await fs.readFile(documentPath)).toEqual(authored);
+  });
+
   test('assetsDirFor names the uploads folder after the document', () => {
     expect(assetsDirFor('board.html')).toBe('assets-board');
   });
@@ -220,6 +276,21 @@ describe('exporting a document and its assets as a zip', () => {
     expect(zipped).not.toContain('/_/uploads/');
 
     expect(await fs.readFile(documentPath)).toEqual(before);
+  });
+
+  test('a marked loader is cut before the upload link is rewritten relatively', async () => {
+    const documentPath = path.join(dir, 'board.html');
+    await fs.writeFile(documentPath, '<script clay="no-copy">window.tracker={id:7};</script>\n<img src="/_/uploads/assets-board/a.png">');
+    const uploadsDir = path.join(dir, 'uploads');
+    await fs.mkdir(path.join(uploadsDir, 'assets-board'), { recursive: true });
+    await fs.writeFile(path.join(uploadsDir, 'assets-board', 'a.png'), 'png-bytes');
+
+    await exportDocumentZip(documentPath, outPath, { uploadsDir });
+
+    const entries = await readZip(outPath);
+    const zipped = entries.find((entry) => entry.name === 'board/board.html').content.toString();
+    expect(zipped).not.toContain('window.tracker');
+    expect(zipped).toBe('\n<img src="uploads/assets-board/a.png">');
   });
 
   test('an upload linked twice lands in the zip once', async () => {

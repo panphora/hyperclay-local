@@ -3,6 +3,7 @@ const fsPromises = require('fs/promises');
 const path = require('path');
 const yazl = require('yazl');
 const { assetsDirFor, canonicalForWrite } = require('./server');
+const { stripCopyBytes } = require('./copy-content');
 
 // Where a document links an upload, and the characters a link is made of.
 // hyperclay.com finds its references with the same rule, so both sides agree on
@@ -61,7 +62,10 @@ async function exportDocumentZip(documentPath, outPath, { uploadsDir } = {}) {
   const top = folder.slice('assets-'.length);
   const assetsPath = path.join(path.dirname(documentPath), folder);
   const assets = await assetsFolderIsReal(assetsPath) ? await listAssetFiles(assetsPath) : [];
-  const documentBytes = await fsPromises.readFile(documentPath);
+  const sourceBytes = await fsPromises.readFile(documentPath);
+  // A copy carries no copy-only analytics or promos, and the file on disk is only ever
+  // read: the packaged document is filtered before anything is canonicalized.
+  const documentBytes = stripCopyBytes(sourceBytes);
   const linked = await linkedUploads(documentBytes, uploadsDir);
   // The packaged copy is the canonical document, like every authoritative write: a file
   // that reached disk elsewhere still holding this host's `/_/clayjs/` URLs is exported
@@ -70,7 +74,7 @@ async function exportDocumentZip(documentPath, outPath, { uploadsDir } = {}) {
   const decoded = linked.text === null ? documentBytes.toString('utf8') : linked.text;
   const exact = linked.text !== null || Buffer.from(decoded, 'utf8').equals(documentBytes);
   const packaged = exact ? canonicalForWrite(decoded) : null;
-  const keepFile = linked.text === null && (!exact || packaged === decoded);
+  const keepFile = documentBytes === sourceBytes && linked.text === null && (!exact || packaged === decoded);
 
   // A name only this call uses, so two exports to the same place never remove
   // each other's work, and a failure removes only what this call wrote.
@@ -86,6 +90,7 @@ async function exportDocumentZip(documentPath, outPath, { uploadsDir } = {}) {
       // copy in the zip reaches its files relatively and opens anywhere. The file
       // on disk is only ever read. A document with no such link keeps its bytes.
       if (keepFile) zip.addFile(documentPath, `${top}/${path.basename(documentPath)}`);
+      else if (packaged === null) zip.addBuffer(documentBytes, `${top}/${path.basename(documentPath)}`);
       else zip.addBuffer(Buffer.from(packaged, 'utf8'), `${top}/${path.basename(documentPath)}`);
       for (const file of assets) {
         zip.addFile(path.join(assetsPath, file), `${top}/${folder}/${file.split(path.sep).join('/')}`);

@@ -5,6 +5,7 @@ const { getConsentRegistry, resolveReadPath, resolveWritePath, validateSegments 
 const { withDocumentWrite, withStructureChange, atomicWriteFile } = require('../utils/write-queue');
 const { storePageState, movePageState, movePageStateDir, dropPageState, dropPageStateDir } = require('../page-state-store');
 const templateManifest = require('../document-templates/manifest.json');
+const { stripCopyBytes } = require('../copy-content');
 
 function refusal(reason, message, status = 400) {
   return Object.assign(new Error(message), { reason, status });
@@ -32,6 +33,40 @@ function safeName(value) {
   if (typeof value !== 'string' || !value || value.includes('/')) throw refusal('forbidden', 'Invalid name', 403);
   safePath(value);
   return value;
+}
+
+const DOCUMENT_NAME = /\.html(?:clay)?$/i;
+const METADATA_DIR = '.hyperclay';
+
+// A duplicate is a new document, so its documents are filtered before they reach the
+// destination: nothing raw is ever written first for the root watcher to see. Each entry is
+// created exclusively, so an occupied destination is never overwritten, and the source is only
+// ever read. Versions and automatic recovery state keep their bytes.
+async function copyDocumentTree(from, to) {
+  const stat = await fs.lstat(from);
+  if (stat.isDirectory()) {
+    if (path.basename(from) === METADATA_DIR) {
+      await fs.cp(from, to, { recursive: true, errorOnExist: true, force: false });
+      return;
+    }
+    const mode = stat.mode & 0o777;
+    await fs.mkdir(to, { mode });
+    await fs.chmod(to, mode);
+    for (const name of await fs.readdir(from)) await copyDocumentTree(path.join(from, name), path.join(to, name));
+    return;
+  }
+  if (stat.isSymbolicLink()) {
+    await fs.cp(from, to, { errorOnExist: true, force: false });
+    return;
+  }
+  if (DOCUMENT_NAME.test(path.basename(from))) {
+    const mode = stat.mode & 0o777;
+    const bytes = await fs.readFile(from);
+    await fs.writeFile(to, stripCopyBytes(bytes), { flag: 'wx', mode });
+    await fs.chmod(to, mode);
+    return;
+  }
+  await fs.copyFile(from, to, fsModule.constants.COPYFILE_EXCL);
 }
 
 async function exists(file) {
@@ -182,8 +217,7 @@ async function executeCommand({ root, authority, engine, request, tree, moved, c
     try {
       await fs.mkdir(path.dirname(destination), { recursive: true });
       if (request.command === 'duplicate') {
-        if (fromStat.isDirectory()) await fs.cp(fromCanonical, destination, { recursive: true, errorOnExist: true, force: false });
-        else await fs.copyFile(fromCanonical, destination, fsModule.constants.COPYFILE_EXCL);
+        await copyDocumentTree(fromCanonical, destination);
         authority?.setAdmission(token, { rootId: root.id, logicalPath: toRel, canonicalPath: destination,
           active: true, prefix: fromStat.isDirectory() });
       } else {

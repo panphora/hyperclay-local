@@ -117,6 +117,105 @@ test('Trashing a page drops its merge state, and Trashing a folder drops the who
   expect(await readPageState(h.dir, 'Notes/A.html')).toBeNull();
 });
 
+const authoredPage = (title) => [
+  '<!doctype html>',
+  '<html>',
+  '<head>',
+  '  <script clay="no-copy">window.tracker={id:7};</script>',
+  '  <script src="/_/clayjs/clay.js" clay="no-copy-unless:paid-forms"></script>',
+  '</head>',
+  '<body>',
+  `  <div clay="no-copy">Upgrade to keep this ${title}</div>`,
+  `  <p>${title}</p>`,
+  '</body>',
+  '</html>',
+  '',
+].join('\n');
+
+const markedRuntime = [
+  'window.tracker',
+  'clay.js',
+  'Upgrade to keep this',
+];
+
+test('duplicating a document writes a copy without the copy-only content, and the original keeps it', async () => {
+  h = await fixture();
+  const original = authoredPage('Board');
+  await fs.writeFile(path.join(h.dir, 'A.html'), original);
+  const request = await h.start();
+
+  expect(await command(request, { command: 'duplicate', path: 'A.html', name: 'Copy.html' }))
+    .toEqual({ status: 200, body: { path: 'Copy.html' } });
+
+  const copy = await fs.readFile(path.join(h.dir, 'Copy.html'), 'utf8');
+  for (const marker of markedRuntime) expect(copy).not.toContain(marker);
+  expect(copy).toContain('<p>Board</p>');
+  expect(await fs.readFile(path.join(h.dir, 'A.html'), 'utf8')).toBe(original);
+});
+
+test('duplicating a folder filters every document it holds and copies everything else byte for byte', async () => {
+  h = await fixture();
+  const page = authoredPage('Page');
+  const nested = authoredPage('Nested');
+  const binary = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0xfe]);
+  await fs.mkdir(path.join(h.dir, 'Notes', 'sub', 'deeper'), { recursive: true });
+  await fs.mkdir(path.join(h.dir, 'Notes', 'assets-notes'), { recursive: true });
+  await fs.writeFile(path.join(h.dir, 'Notes', 'A.html'), page);
+  await fs.writeFile(path.join(h.dir, 'Notes', 'sub', 'B.htmlclay'), nested);
+  await fs.writeFile(path.join(h.dir, 'Notes', 'sub', 'deeper', 'plain.txt'), 'plain bytes');
+  await fs.writeFile(path.join(h.dir, 'Notes', 'assets-notes', 'photo.png'), binary);
+  const inside = path.join(h.dir, 'outside.txt');
+  await fs.writeFile(inside, 'outside bytes');
+  await fs.symlink(inside, path.join(h.dir, 'Notes', 'sub', 'link.txt'));
+  const request = await h.start();
+
+  expect(await command(request, { command: 'duplicate', path: 'Notes', name: 'Copy' }))
+    .toEqual({ status: 200, body: { path: 'Copy' } });
+
+  const copiedPage = await fs.readFile(path.join(h.dir, 'Copy', 'A.html'), 'utf8');
+  const copiedNested = await fs.readFile(path.join(h.dir, 'Copy', 'sub', 'B.htmlclay'), 'utf8');
+  for (const document of [copiedPage, copiedNested]) {
+    for (const marker of markedRuntime) expect(document).not.toContain(marker);
+  }
+  expect(copiedPage).toContain('<p>Page</p>');
+  expect(copiedNested).toContain('<p>Nested</p>');
+  expect(await fs.readFile(path.join(h.dir, 'Copy', 'assets-notes', 'photo.png'))).toEqual(binary);
+  expect(await fs.readFile(path.join(h.dir, 'Copy', 'sub', 'deeper', 'plain.txt'), 'utf8')).toBe('plain bytes');
+  expect((await fs.lstat(path.join(h.dir, 'Copy', 'sub', 'link.txt'))).isSymbolicLink()).toBe(true);
+  expect(await fs.readFile(inside, 'utf8')).toBe('outside bytes');
+  expect((await fs.lstat(path.join(h.dir, 'Notes', 'sub', 'link.txt'))).isSymbolicLink()).toBe(true);
+
+  expect(await fs.readFile(path.join(h.dir, 'Notes', 'A.html'), 'utf8')).toBe(page);
+  expect(await fs.readFile(path.join(h.dir, 'Notes', 'sub', 'B.htmlclay'), 'utf8')).toBe(nested);
+  expect(await fs.readFile(path.join(h.dir, 'Notes', 'assets-notes', 'photo.png'))).toEqual(binary);
+  expect(await fs.readFile(path.join(h.dir, 'Notes', 'sub', 'deeper', 'plain.txt'), 'utf8')).toBe('plain bytes');
+});
+
+test('a duplicate never overwrites the destination, and leaves the metadata of the source alone', async () => {
+  h = await fixture();
+  const template = await fs.readFile(path.join(__dirname, '../fixtures/ypage-template.html'), 'utf8');
+  await fs.writeFile(path.join(h.dir, 'A.html'), await storePageState(h.dir, 'A.html', template));
+  const metadataBefore = {};
+  for (const name of await fs.readdir(path.join(h.dir, '.hyperclay', 'page-state'), { recursive: true })) {
+    const file = path.join(h.dir, '.hyperclay', 'page-state', name);
+    if ((await fs.lstat(file)).isFile()) metadataBefore[name] = await fs.readFile(file);
+  }
+  await fs.writeFile(path.join(h.dir, 'Taken.html'), 'occupant');
+  const request = await h.start();
+
+  expect(await command(request, { command: 'duplicate', path: 'A.html', name: 'Taken.html' }))
+    .toMatchObject({ status: 409, body: { reason: 'conflict' } });
+  expect(await fs.readFile(path.join(h.dir, 'Taken.html'), 'utf8')).toBe('occupant');
+
+  const metadataAfter = {};
+  for (const name of await fs.readdir(path.join(h.dir, '.hyperclay', 'page-state'), { recursive: true })) {
+    const file = path.join(h.dir, '.hyperclay', 'page-state', name);
+    if ((await fs.lstat(file)).isFile()) metadataAfter[name] = await fs.readFile(file);
+  }
+  expect(Object.keys(metadataAfter).length).toBeGreaterThan(0);
+  expect(metadataAfter).toEqual(metadataBefore);
+});
+
 test('occupied destinations, cross-root paths, unsafe paths, and unknown templates are refused', async () => {
   h = await fixture();
   await fs.writeFile(path.join(h.dir, 'A.html'), '<html>A</html>');
