@@ -46,10 +46,13 @@ jobs:
                 for core in /tmp/core.*; do [ -f "$core" ] || continue; gdb -q -batch -ex 'info proc mappings' -ex bt -ex 'x/3i $pc' -ex 'thread apply all x/i $pc' "$BIN" "$core" 2>&1 | grep -aE 'electron.bin|^#|=> |signal|Thread' | head -60 | cut -c1-200 > "$out/bt-$name-$i.txt"; sudo rm -f "$core"; done; fi
               sudo rm -f /tmp/core.* 2>/dev/null; rm -rf "$home" 2>/dev/null; done
             echo "$name n=$n ok=$ok bad=$bad codes:$codes" | tee -a "$out/result.txt"; }
-          sudo apt-get install -y strace >/dev/null 2>&1
-          printf '#!/bin/bash\nexec strace -f -qq -e trace=execve,exit_group,kill,tgkill -s 200 -o "$HOME/st.txt" "%s" "$@"\n' "$NEW" > /tmp/straced; chmod +x /tmp/straced
-          APPIMAGE="$NEW"; variant new-logged 100 --enable-logging=stderr --v=1
-          APPIMAGE=/tmp/straced; variant new-extract-traced 80 --appimage-extract-and-run --no-sandbox
+          bare() { local v="$1" n="$2" name="$3"; shift 3; local d="/tmp/bare-$v"; if [ ! -d "$d" ]; then mkdir -p "$d/app"; (cd "$d" && npm init -y >/dev/null && npm i "electron@$v" --no-audit --no-fund --min-release-age=0 >/dev/null 2>&1); echo 'const{app}=require("electron");app.whenReady().then(()=>setTimeout(()=>app.quit(),300));' > "$d/app/main.js"; echo '{"name":"t","version":"1.0.0","main":"main.js"}' > "$d/app/package.json"; fi
+            local bad=0 c codes=""; for i in $(seq 1 "$n"); do xvfb-run -a env ELECTRON_DISABLE_SANDBOX=1 "$d/node_modules/electron/dist/electron" --ozone-platform=x11 "$@" "$d/app" >/tmp/bare.log 2>&1; c=$?; if [ "$c" != 0 ]; then bad=$((bad+1)); codes="$codes $c"; fi; sudo rm -f /tmp/core.* 2>/dev/null; done; echo "$name electron@$v n=$n bad=$bad codes:$codes" | tee -a "$out/result.txt"; }
+          for round in 1 2; do
+            bare 43.8.6 100 bare-pinned
+            bare 43.8.7 100 bare-latest43
+            bare 38.3.0 100 bare-old
+          done
           cat "$out/result.txt"
       - uses: actions/upload-artifact@v4
         if: always()
