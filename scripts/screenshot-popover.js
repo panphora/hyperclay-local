@@ -14,12 +14,13 @@
 // The development states (scripts/popover-scenarios.js entries with `dev: true`, one
 // per C4 §4 mockup) are captured by name only: `--scenario all` skips them.
 //
-// First run needs the browser: npm run screenshot:setup  (playwright install chromium)
+// First run needs the browser: npm run screenshot:setup  (npm run browser:install)
 
 const path = require('path');
 const fs = require('fs');
 const { PANEL_WIDTH, PANEL_HEIGHT } = require('../src/main/popover-dimensions');
 const { SCENARIOS } = require('./popover-scenarios');
+const { chromeOptions } = require('./chrome-for-testing/browser-runtime.cjs');
 
 const REPO = path.resolve(__dirname, '..');
 const POPOVER_HTML = 'file://' + path.join(REPO, 'src/renderer/popover.html');
@@ -261,7 +262,7 @@ async function main() {
 
   let browser;
   try {
-    browser = await chromium.launch();
+    browser = await chromium.launch(chromeOptions());
   } catch (e) {
     console.error('Could not launch Chromium. Run once: npm run screenshot:setup');
     console.error(String(e.message || e));

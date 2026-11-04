@@ -34,7 +34,7 @@
 // means the harness could not answer, and the gate exits 3 rather than green, so
 // "could not check" never reads as "conforms".
 
-import { readFile, writeFile, rm } from 'node:fs/promises';
+import { readFile, writeFile, rm, lstat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
@@ -93,9 +93,23 @@ async function loadChromium() {
   } catch {
     throw new Error(
       'playwright is not resolvable from ' + process.cwd() + '. Run this from a repo that ' +
-      'has it, or `npm i -D playwright && npx playwright install chromium` there first.'
+      'has it, or `npm i -D playwright@1.64.1` there first, then follow that repo\'s browser setup instructions.'
     );
   }
+}
+
+async function browserLaunchOptions() {
+  const helper = path.join(process.cwd(), 'scripts', 'chrome-for-testing', 'browser-runtime.cjs');
+  try {
+    await lstat(helper);
+  } catch (error) {
+    if (error.code === 'ENOENT') return {};
+    throw error;
+  }
+  const mod = await import(pathToFileURL(helper).href);
+  const chromeOptions = mod.chromeOptions || mod.default?.chromeOptions;
+  if (typeof chromeOptions !== 'function') throw new Error(`Pinned browser helper has no chromeOptions(): ${helper}`);
+  return chromeOptions();
 }
 
 // Origin validation (spec §8), probed from OUTSIDE a browser.
@@ -174,7 +188,7 @@ async function main() {
   // fetch, which the origin probe uses, has no per-request equivalent.
   if (args.insecure) process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(await browserLaunchOptions());
   // --insecure is opt-in and never a default. A dev host commonly serves HTTPS with a
   // certificate no store trusts, and Chromium then refuses the page outright, which
   // surfaces as the run timing out waiting for results rather than as anything about

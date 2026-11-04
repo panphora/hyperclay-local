@@ -1,0 +1,35 @@
+{
+  "version": "156.0.8078.80",
+  "platforms": {
+    "mac-arm64": {
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/156.0.8078.80/mac-arm64/chrome-mac-arm64.zip",
+      "sha256": "8bc590d1b1acac042a000234c768f31830f25a3983a83ed5e067114c87c4cad1",
+      "executable": "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+    },
+    "mac-x64": {
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/156.0.8078.80/mac-x64/chrome-mac-x64.zip",
+      "sha256": "672b79dc79fdf28bb2ec9787b7fa33810c2b3cfd946a0fb4d3b72775f4e6fd9a",
+      "executable": "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+    },
+    "linux64": {
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/156.0.8078.80/linux64/chrome-linux64.zip",
+      "sha256": "b711c720f774be355197f32edf37e0651418ba036d92446ee2da19ac017540a7",
+      "executable": "chrome"
+    },
+    "linux-arm64": {
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/156.0.8078.80/linux-arm64/chrome-linux-arm64.zip",
+      "sha256": "1f496a826c9ba4d6a5f5bf2de686145fe718528c2cc3dbeb96b5893b89653724",
+      "executable": "chrome"
+    },
+    "win32": {
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/156.0.8078.80/win32/chrome-win32.zip",
+      "sha256": "191a656d22c7ebd345bf13c20f04100bd37ed35170e9070dc0ddfd425109ac66",
+      "executable": "chrome.exe"
+    },
+    "win64": {
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/156.0.8078.80/win64/chrome-win64.zip",
+      "sha256": "16edb57d6107bf1c48a7c149b8d78b155fe614410093796dd72441fd6640540f",
+      "executable": "chrome.exe"
+    }
+  }
+}
