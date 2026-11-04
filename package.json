@@ -8,7 +8,7 @@
   "author": "Hyperclay",
   "license": "SEE LICENSE IN LICENSE",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "test": "jest",
@@ -36,7 +36,8 @@
     "upload-to-r2": "node build-scripts/post-build.js",
     "release": "node scripts/release.js",
     "update-external-docs": "node scripts/update-external-docs.js",
-    "screenshot:setup": "playwright install chromium",
+    "screenshot:setup": "npm run browser:install",
+    "browser:install": "node scripts/chrome-for-testing/browser-runtime.cjs install",
     "screenshot:popover": "npm run build-css && npm run build-react && node scripts/screenshot-popover.js --scenario all",
     "test:app": "cross-env HCL_TESTS=app jest",
     "test:full": "npm test && npm run test:node",
@@ -199,18 +200,19 @@
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
     "dotenv": "^17.2.3",
-    "electron": "^38.3.0",
+    "electron": "43.8.6",
     "electron-builder": "^26.7.0",
     "electronmon": "^2.0.4",
     "jest": "^30.2.0",
     "js-yaml": "^4.1.1",
-    "playwright": "^1.61.1",
+    "playwright": "1.64.1",
     "rimraf": "^6.1.0",
     "supertest": "^7.0.0",
     "tslib": "^2.8.1",
     "wait-on": "^9.0.1",
     "webpack": "^5.102.1",
-    "webpack-cli": "^6.0.1"
+    "webpack-cli": "^6.0.1",
+    "yauzl": "3.4.0"
   },
   "dependencies": {
     "@panphora/clayjs": "^1.19.0",
@@ -238,7 +240,7 @@
     "yazl": "^3.3.1"
   },
   "overrides": {
-    "yauzl": "^3.4.0"
+    "yauzl": "3.4.0"
   },
   "hyper": {
     "kind": "app",
@@ -248,7 +250,7 @@
   "allowScripts": {
     "@parcel/watcher@2.5.1": true,
     "@tailwindcss/oxide@4.1.14": true,
-    "electron@38.3.0": true,
+    "electron@43.8.6": true,
     "electron-winstaller@5.4.0": true,
     "fsevents@2.3.3": true,
     "fsevents@2.3.2": true,
