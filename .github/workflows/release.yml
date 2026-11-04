@@ -312,7 +312,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb dbus-x11
-          npx playwright install --with-deps chromium
+          npx playwright install-deps chromium
+          npm run browser:install && node scripts/chrome-for-testing/configure-linux-sandbox.cjs
 
       # Only `appimage-launch` gates the release, not all four checks. It is the
       # one that answers the release question - does the binary about to ship

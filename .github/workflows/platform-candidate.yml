@@ -404,7 +404,8 @@ jobs:
         ref: ${{ github.workflow_sha }}
         path: trusted
     - uses: ./trusted/.github/actions/candidate
-    - run: npx playwright install --with-deps chromium
+    - run: npx playwright install-deps chromium
+    - run: npm run browser:install && node scripts/chrome-for-testing/configure-linux-sandbox.cjs
     - run: npm test -- --runInBand tests/integration/host-gate.test.js
       env:
         HOST_GATE: '1'
@@ -673,7 +674,8 @@ jobs:
     - run: |-
         sudo apt-get update
         sudo apt-get install -y xvfb dbus-x11
-        npx playwright install --with-deps chromium
+        npx playwright install-deps chromium
+        npm run browser:install && node scripts/chrome-for-testing/configure-linux-sandbox.cjs
     - run: |-
         VERSION=$(node -p "require('./package.json').version")
         export APPIMAGE="$PWD/executables/HyperclayLocal-${VERSION}.AppImage"
@@ -711,7 +713,8 @@ jobs:
     - run: |-
         sudo apt-get update
         sudo apt-get install -y xvfb dbus-x11
-        npx playwright install --with-deps chromium
+        npx playwright install-deps chromium
+        npm run browser:install && node scripts/chrome-for-testing/configure-linux-sandbox.cjs
     - run: |-
         VERSION=$(node -p "require('./package.json').version")
         export APPIMAGE="$PWD/executables/HyperclayLocal-${VERSION}.AppImage"
@@ -749,7 +752,8 @@ jobs:
     - run: |-
         sudo apt-get update
         sudo apt-get install -y xvfb dbus-x11
-        npx playwright install --with-deps chromium
+        npx playwright install-deps chromium
+        npm run browser:install && node scripts/chrome-for-testing/configure-linux-sandbox.cjs
     - run: |-
         VERSION=$(node -p "require('./package.json').version")
         export APPIMAGE="$PWD/executables/HyperclayLocal-${VERSION}.AppImage"
@@ -787,7 +791,8 @@ jobs:
     - run: |-
         sudo apt-get update
         sudo apt-get install -y xvfb dbus-x11
-        npx playwright install --with-deps chromium
+        npx playwright install-deps chromium
+        npm run browser:install && node scripts/chrome-for-testing/configure-linux-sandbox.cjs
     - run: |-
         VERSION=$(node -p "require('./package.json').version")
         export APPIMAGE="$PWD/executables/HyperclayLocal-${VERSION}.AppImage"
@@ -825,7 +830,8 @@ jobs:
     - run: |-
         sudo apt-get update
         sudo apt-get install -y xvfb dbus-x11
-        npx playwright install --with-deps chromium
+        npx playwright install-deps chromium
+        npm run browser:install && node scripts/chrome-for-testing/configure-linux-sandbox.cjs
     - run: |-
         VERSION=$(node -p "require('./package.json').version")
         export APPIMAGE="$PWD/executables/HyperclayLocal-${VERSION}-arm64.AppImage"
@@ -863,7 +869,8 @@ jobs:
     - run: |-
         sudo apt-get update
         sudo apt-get install -y xvfb dbus-x11
-        npx playwright install --with-deps chromium
+        npx playwright install-deps chromium
+        npm run browser:install && node scripts/chrome-for-testing/configure-linux-sandbox.cjs
     - run: |-
         VERSION=$(node -p "require('./package.json').version")
         export APPIMAGE="$PWD/executables/HyperclayLocal-${VERSION}-arm64.AppImage"
@@ -901,7 +908,8 @@ jobs:
     - run: |-
         sudo apt-get update
         sudo apt-get install -y xvfb dbus-x11
-        npx playwright install --with-deps chromium
+        npx playwright install-deps chromium
+        npm run browser:install && node scripts/chrome-for-testing/configure-linux-sandbox.cjs
     - run: |-
         VERSION=$(node -p "require('./package.json').version")
         export APPIMAGE="$PWD/executables/HyperclayLocal-${VERSION}-arm64.AppImage"
@@ -939,7 +947,8 @@ jobs:
     - run: |-
         sudo apt-get update
         sudo apt-get install -y xvfb dbus-x11
-        npx playwright install --with-deps chromium
+        npx playwright install-deps chromium
+        npm run browser:install && node scripts/chrome-for-testing/configure-linux-sandbox.cjs
     - run: |-
         VERSION=$(node -p "require('./package.json').version")
         export APPIMAGE="$PWD/executables/HyperclayLocal-${VERSION}-arm64.AppImage"

@@ -58,7 +58,8 @@ jobs:
           npm-version: ${{ env.NPM_VERSION }}
 
       # playwright is already a devDependency; this downloads the browser it drives.
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install-deps chromium
+      - run: npm run browser:install && node scripts/chrome-for-testing/configure-linux-sandbox.cjs
 
       - run: npm test -- --runInBand tests/integration/host-gate.test.js
         env:
@@ -97,7 +98,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb dbus-x11
-          npx playwright install --with-deps chromium
+          npx playwright install-deps chromium
+          npm run browser:install && node scripts/chrome-for-testing/configure-linux-sandbox.cjs
 
       - name: Linux checks
         env:
