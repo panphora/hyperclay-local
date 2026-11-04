@@ -47,14 +47,17 @@ jobs:
               sudo rm -f /tmp/core.* 2>/dev/null; rm -rf "$home" 2>/dev/null; done
             echo "$name n=$n ok=$ok bad=$bad codes:$codes" | tee -a "$out/result.txt"; }
           ROOT=/tmp/x/squashfs-root; LAUNCHER="${BIN%.bin}"
-          cp "$ROOT/AppRun" "$out/AppRun.txt"
-          cp -a "$ROOT" /tmp/x/dump; D=/tmp/x/dump; printf '#!/bin/bash\nenv | sort > /tmp/apprun-env\necho "args: $*" > /tmp/apprun-args\n' > "$D/$(basename "$LAUNCHER")"; chmod +x "$D/$(basename "$LAUNCHER")"
-          env | sort > /tmp/base-env; "$D/AppRun" a b; cat /tmp/apprun-args | tee -a "$out/result.txt"
-          comm -13 /tmp/base-env /tmp/apprun-env | grep -vE '^(_|PWD|OLDPWD|SHLVL)=' | sed "s|/tmp/x/dump|$ROOT|g" > /tmp/added-env; cut -c1-220 /tmp/added-env | tee -a "$out/result.txt"
-          wrap() { local f="$1"; shift; { echo '#!/bin/bash'; while IFS= read -r line; do printf 'export %q\n' "$line"; done; echo "exec \"$LAUNCHER\" \"\$@\""; } > "$f"; chmod +x "$f"; }
+          mk() { local f="$1"; shift; { echo '#!/bin/bash'; printf '%s\n' "$@"; } > "$f"; chmod +x "$f"; }
+          EX="exec \"$LAUNCHER\" \"\$@\""
+          P="export PATH=\"$ROOT:$ROOT/usr/sbin:\$PATH\""
+          X="export XDG_DATA_DIRS=\"$ROOT/usr/share/:./share/:/usr/share/gnome:/usr/local/share/:/usr/share/::/usr/share/gnome/:/usr/local/share/:/usr/share/\""
+          L="export LD_LIBRARY_PATH=\"$ROOT/usr/lib:\""
+          G="export GSETTINGS_SCHEMA_DIR=\"$ROOT/usr/share/glib-2.0/schemas:\""
+          T='a=("$@"); atexit() { exec '"\"$LAUNCHER\""' "${a[@]}"; }; trap atexit EXIT'
+          mk /tmp/w-all "$P" "$X" "$L" "$G" "$EX"; mk /tmp/w-path "$P" "$EX"; mk /tmp/w-xdg "$X" "$EX"; mk /tmp/w-ld "$L" "$EX"; mk /tmp/w-gs "$G" "$EX"; mk /tmp/w-trap "$T"; mk /tmp/w-plain "$EX"
+          cat /tmp/w-trap /tmp/w-ld | cut -c1-200 | tee -a "$out/result.txt"
           APPIMAGE="$ROOT/AppRun"; variant apprun-control 150
-          wrap /tmp/w-all < /tmp/added-env; APPIMAGE=/tmp/w-all; variant launcher-all-env 150
-          n=0; while IFS= read -r line; do n=$((n+1)); printf '%s\n' "$line" | wrap "/tmp/w-$n"; APPIMAGE="/tmp/w-$n"; variant "only-${line%%=*}" 150; done < /tmp/added-env
+          for w in plain all path xdg ld gs trap; do APPIMAGE="/tmp/w-$w"; variant "w-$w" 150; done
           cat "$out/result.txt"
       - uses: actions/upload-artifact@v4
         if: always()
