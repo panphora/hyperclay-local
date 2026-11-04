@@ -36,6 +36,7 @@ capture_failure() {
   [ ! -f "$LAB/app.pid" ] || pid="$(cat "$LAB/app.pid")"
   [ ! -f "$LAB/app.log" ] || keep "$LAB/app.log"
   [ ! -f "$LAB/app.pid" ] || keep "$LAB/app.pid"
+  [ ! -f "$LAB/xvfb.log" ] || keep "$LAB/xvfb.log"
   {
     date -u '+%Y-%m-%dT%H:%M:%SZ'
     printf 'check=%s\nreason=%s\nappimage=%s\nlauncher_pid=%s\n' "$CHECK" "$*" "$APPIMAGE" "$pid"
@@ -43,7 +44,9 @@ capture_failure() {
       if kill -0 "$pid" 2>/dev/null; then
         echo "launcher_status=present (see STAT below)"
       else
-        echo "launcher_status=absent (exit status unavailable)"
+        local launcher_exit=0
+        wait "$pid" 2>/dev/null || launcher_exit=$?
+        echo "launcher_status=exited with status $launcher_exit"
       fi
       echo "--- launcher and its process group, before cleanup"
       ps -eo pid,ppid,pgid,stat,etime,args | awk -v pid="$pid" 'NR == 1 || $1 == pid || $3 == pid'
@@ -121,7 +124,7 @@ launch() {
   mkdir -p "$home/tmp"
   # ELECTRON_ENABLE_LOGGING puts Chromium's own startup log in app.log, so a launch that stalls before
   # app ready leaves a trail.
-  HOME="$home" XDG_CONFIG_HOME="$home/.config" TMPDIR="$home/tmp" ELECTRON_ENABLE_LOGGING=1 setsid xvfb-run -a -s "-screen 0 1280x800x24" "$APPIMAGE" "$@" > "$LAB/app.log" 2>&1 &
+  HOME="$home" XDG_CONFIG_HOME="$home/.config" TMPDIR="$home/tmp" ELECTRON_ENABLE_LOGGING=1 setsid xvfb-run -a -e "$LAB/xvfb.log" -s "-screen 0 1280x800x24" "$APPIMAGE" "$@" > "$LAB/app.log" 2>&1 &
   echo $! > "$LAB/app.pid"
   echo $!
 }
