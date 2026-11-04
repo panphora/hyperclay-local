@@ -47,17 +47,14 @@ jobs:
               sudo rm -f /tmp/core.* 2>/dev/null; rm -rf "$home" 2>/dev/null; done
             echo "$name n=$n ok=$ok bad=$bad codes:$codes" | tee -a "$out/result.txt"; }
           ROOT=/tmp/x/squashfs-root; LAUNCHER="${BIN%.bin}"
-          mk() { local f="$1"; shift; { echo '#!/bin/bash'; printf '%s\n' "$@"; } > "$f"; chmod +x "$f"; }
-          EX="exec \"$LAUNCHER\" \"\$@\""
-          P="export PATH=\"$ROOT:$ROOT/usr/sbin:\$PATH\""
-          X="export XDG_DATA_DIRS=\"$ROOT/usr/share/:./share/:/usr/share/gnome:/usr/local/share/:/usr/share/::/usr/share/gnome/:/usr/local/share/:/usr/share/\""
-          L="export LD_LIBRARY_PATH=\"$ROOT/usr/lib:\""
-          G="export GSETTINGS_SCHEMA_DIR=\"$ROOT/usr/share/glib-2.0/schemas:\""
-          T='a=("$@"); atexit() { exec '"\"$LAUNCHER\""' "${a[@]}"; }; trap atexit EXIT'
-          mk /tmp/w-all "$P" "$X" "$L" "$G" "$EX"; mk /tmp/w-path "$P" "$EX"; mk /tmp/w-xdg "$X" "$EX"; mk /tmp/w-ld "$L" "$EX"; mk /tmp/w-gs "$G" "$EX"; mk /tmp/w-trap "$T"; mk /tmp/w-plain "$EX"
-          cat /tmp/w-trap /tmp/w-ld | cut -c1-200 | tee -a "$out/result.txt"
-          APPIMAGE="$ROOT/AppRun"; variant apprun-control 150
-          for w in plain all path xdg ld gs trap; do APPIMAGE="/tmp/w-$w"; variant "w-$w" 150; done
+          cp -a "$ROOT" /tmp/x/control; L2="/tmp/x/control/$(basename "$LAUNCHER")"
+          python3 -c "import re,sys;p=sys.argv[1];s=open(p).read();n=re.sub(r'if \[ -n \"\\$\{XDG_DATA_DIRS\+x\}\" \]; then.*?\nfi\n','',s,count=1,flags=re.S);assert n!=s;open(p,'w').write(n)" "$L2"
+          head -5 "$L2" | cut -c1-100 | tee -a "$out/result.txt"
+          for round in 1 2 3; do
+            APPIMAGE="/tmp/x/control/AppRun"; variant "control-old-launcher-$round" 150
+            APPIMAGE="$NEW"; variant "fixed-appimage-$round" 150
+            APPIMAGE="$ROOT/AppRun"; variant "fixed-apprun-$round" 150
+          done
           cat "$out/result.txt"
       - uses: actions/upload-artifact@v4
         if: always()

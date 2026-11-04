@@ -19,6 +19,12 @@
  * Chromium has already chosen its platform, and a switch appended from main.js only
  * reaches the child processes, which then cannot draw. Without a DISPLAY (no
  * XWayland) the app starts on Wayland as before.
+ *
+ * electron-builder's AppRun rewrites XDG_DATA_DIRS with a relative ./share/, empty
+ * entries and duplicates. With that value Electron 43 crashes at startup in about 3%
+ * of launches on a kernel 7.0 host (SIGTRAP, with PartitionAlloc's "slotsize" marker
+ * on the stack). The launcher runs after AppRun, so it keeps only the first copy of
+ * each absolute directory that exists.
  */
 
 const fs = require('fs');
@@ -26,6 +32,17 @@ const path = require('path');
 
 const LAUNCHER = `#!/bin/bash
 here="$(dirname "$(readlink -f "$0")")"
+if [ -n "\${XDG_DATA_DIRS+x}" ]; then
+  kept=""
+  IFS=: read -ra dirs <<< "$XDG_DATA_DIRS"
+  for dir in "\${dirs[@]}"; do
+    case "$dir" in /*) ;; *) continue ;; esac
+    [ -d "$dir" ] || continue
+    case ":$kept:" in *":$dir:"*) continue ;; esac
+    kept="\${kept:+$kept:}$dir"
+  done
+  if [ -n "$kept" ]; then export XDG_DATA_DIRS="$kept"; else unset XDG_DATA_DIRS; fi
+fi
 if [ "$(id -u)" = "0" ] || ! unshare -Ur true 2>/dev/null; then
   export ELECTRON_DISABLE_SANDBOX=1
 fi
