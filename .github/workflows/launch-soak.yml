@@ -42,16 +42,14 @@ jobs:
           variant() { local name="$1" n="$2"; shift 2; local ok=0 bad=0 codes="" i
             for i in $(seq 1 "$n"); do local home; home="$(fresh_home "$name-$i")"; launch "$home" "$@" >/dev/null; local pid; pid="$(cat "$LAB/app.pid")"; local up=0 t=0
               while [ $t -lt 120 ]; do curl -s -o /dev/null -m 1 "http://127.0.0.1:$PORT/_/meta" && { up=1; break; }; kill -0 "$pid" 2>/dev/null || break; sleep 0.25; t=$((t+1)); done
-              if [ $up = 1 ]; then ok=$((ok+1)); stop "$pid"; else local c=0; if kill -0 "$pid" 2>/dev/null; then c=stuck; else wait "$pid" 2>/dev/null || c=$?; fi; bad=$((bad+1)); codes="$codes $c"; { echo "--- $name #$i status $c"; tail -5 "$LAB/app.log" | cut -c1-240; } >> "$out/result.txt"; stop "$pid"
-                for core in /tmp/core.*; do [ -f "$core" ] || continue; gdb -q -batch -ex bt -ex 'x/3i $pc' "$BIN" "$core" 2>&1 | tail -50 | cut -c1-220 > "$out/bt-$name-$i.txt"; sudo rm -f "$core"; done; fi
+              if [ $up = 1 ]; then ok=$((ok+1)); stop "$pid"; else local c=0; if kill -0 "$pid" 2>/dev/null; then c=stuck; else wait "$pid" 2>/dev/null || c=$?; fi; bad=$((bad+1)); codes="$codes $c"; { echo "--- $name #$i status $c"; tail -30 "$LAB/app.log" | cut -c1-240; [ -f "$home/st.txt" ] && tail -25 "$home/st.txt" | cut -c1-240; } >> "$out/result.txt"; stop "$pid"
+                for core in /tmp/core.*; do [ -f "$core" ] || continue; gdb -q -batch -ex 'info proc mappings' -ex bt -ex 'x/3i $pc' -ex 'thread apply all x/i $pc' "$BIN" "$core" 2>&1 | grep -aE 'electron.bin|^#|=> |signal|Thread' | head -60 | cut -c1-200 > "$out/bt-$name-$i.txt"; sudo rm -f "$core"; done; fi
               sudo rm -f /tmp/core.* 2>/dev/null; rm -rf "$home" 2>/dev/null; done
             echo "$name n=$n ok=$ok bad=$bad codes:$codes" | tee -a "$out/result.txt"; }
-          for round in 1 2; do
-            APPIMAGE="$NEW"; variant "new-as-is-$round" 60
-            APPIMAGE="$OLD"; variant "old-as-is-$round" 60
-            APPIMAGE="$NEW"; variant "new-extract-$round" 40 --appimage-extract-and-run --no-sandbox
-            APPIMAGE="$OLD"; variant "old-extract-$round" 40 --appimage-extract-and-run --no-sandbox
-          done
+          sudo apt-get install -y strace >/dev/null 2>&1
+          printf '#!/bin/bash\nexec strace -f -qq -e trace=execve,exit_group,kill,tgkill -s 200 -o "$HOME/st.txt" "%s" "$@"\n' "$NEW" > /tmp/straced; chmod +x /tmp/straced
+          APPIMAGE="$NEW"; variant new-logged 100 --enable-logging=stderr --v=1
+          APPIMAGE=/tmp/straced; variant new-extract-traced 80 --appimage-extract-and-run --no-sandbox
           cat "$out/result.txt"
       - uses: actions/upload-artifact@v4
         if: always()
