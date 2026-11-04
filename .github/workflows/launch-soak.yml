@@ -46,13 +46,12 @@ jobs:
                 for core in /tmp/core.*; do [ -f "$core" ] || continue; gdb -q -batch -ex 'info proc mappings' -ex bt -ex 'x/3i $pc' -ex 'thread apply all x/i $pc' "$BIN" "$core" 2>&1 | grep -aE 'electron.bin|^#|=> |signal|Thread' | head -60 | cut -c1-200 > "$out/bt-$name-$i.txt"; sudo rm -f "$core"; done; fi
               sudo rm -f /tmp/core.* 2>/dev/null; rm -rf "$home" 2>/dev/null; done
             echo "$name n=$n ok=$ok bad=$bad codes:$codes" | tee -a "$out/result.txt"; }
-          declare -f launch > /tmp/launch-with-log.sh
-          sed 's/ELECTRON_ENABLE_LOGGING=1 //' /tmp/launch-with-log.sh > /tmp/launch-no-log.sh
-          grep -c ELECTRON_ENABLE_LOGGING /tmp/launch-with-log.sh /tmp/launch-no-log.sh | tee -a "$out/result.txt"
-          for round in 1 2 3; do
-            source /tmp/launch-with-log.sh; variant "control-logging-$round" 60
-            source /tmp/launch-no-log.sh; variant "no-logging-$round" 60
-          done
+          ROOT=/tmp/x/squashfs-root; LAUNCHER="${BIN%.bin}"; ls -la "$LAUNCHER" "$ROOT/AppRun" | tee -a "$out/result.txt"
+          try() { local name="$1" n="$2" trapd=0 other="" c h i; shift 2; for i in $(seq 1 "$n"); do h="$(fresh_home "$name-$i")"; mkdir -p "$h/tmp"; HOME="$h" XDG_CONFIG_HOME="$h/.config" TMPDIR="$h/tmp" timeout -k 1 4 xvfb-run -a "$@" >/tmp/try.log 2>&1; c=$?; case "$c" in 133) trapd=$((trapd+1));; 0|124|137|143) ;; *) other="$other $c";; esac; pkill -9 -f "hyperclay-local-electron" 2>/dev/null; pkill -9 -f "$(basename "$NEW")" 2>/dev/null; pkill -9 Xvfb 2>/dev/null; sudo rm -f /tmp/core.* 2>/dev/null; rm -rf "$h" 2>/dev/null; done; echo "$name n=$n sigtrap=$trapd other:$other" | tee -a "$out/result.txt"; }
+          try control-appimage 120 "$NEW"
+          try apprun 120 "$ROOT/AppRun"
+          try launcher 120 "$LAUNCHER"
+          ELECTRON_DISABLE_SANDBOX=1 try binary-settings 120 "$BIN" --ozone-platform=x11
           cat "$out/result.txt"
       - uses: actions/upload-artifact@v4
         if: always()
