@@ -46,12 +46,20 @@ jobs:
                 for core in /tmp/core.*; do [ -f "$core" ] || continue; gdb -q -batch -ex 'info proc mappings' -ex bt -ex 'x/3i $pc' -ex 'thread apply all x/i $pc' "$BIN" "$core" 2>&1 | grep -aE 'electron.bin|^#|=> |signal|Thread' | head -60 | cut -c1-200 > "$out/bt-$name-$i.txt"; sudo rm -f "$core"; done; fi
               sudo rm -f /tmp/core.* 2>/dev/null; rm -rf "$home" 2>/dev/null; done
             echo "$name n=$n ok=$ok bad=$bad codes:$codes" | tee -a "$out/result.txt"; }
-          bare() { local v="$1" n="$2" name="$3"; shift 3; local d="/tmp/bare-$v"; if [ ! -d "$d" ]; then mkdir -p "$d/app"; (cd "$d" && npm init -y >/dev/null && npm i "electron@$v" --no-audit --no-fund >/dev/null 2>&1; [ -x node_modules/electron/dist/electron ] || node node_modules/electron/install.js >/dev/null 2>&1; [ -x node_modules/electron/dist/electron ] || ./node_modules/.bin/install-electron --no-progress >/dev/null 2>&1); [ -x "$d/node_modules/electron/dist/electron" ] || { echo "$name electron@$v BINARY MISSING" | tee -a "$out/result.txt"; return; }; echo 'const{app}=require("electron");app.whenReady().then(()=>setTimeout(()=>app.quit(),300));' > "$d/app/main.js"; echo '{"name":"t","version":"1.0.0","main":"main.js"}' > "$d/app/package.json"; fi
-            local bad=0 c codes=""; for i in $(seq 1 "$n"); do xvfb-run -a env ELECTRON_DISABLE_SANDBOX=1 "$d/node_modules/electron/dist/electron" --ozone-platform=x11 "$@" "$d/app" >/tmp/bare.log 2>&1; c=$?; if [ "$c" != 0 ]; then bad=$((bad+1)); codes="$codes $c"; fi; sudo rm -f /tmp/core.* 2>/dev/null; done; echo "$name electron@$v n=$n bad=$bad codes:$codes" | tee -a "$out/result.txt"; }
+          npm i --no-save @electron/asar >/dev/null 2>&1; ls node_modules/@electron/asar/bin >/dev/null || echo ASAR-MISSING | tee -a "$out/result.txt"
+          ROOT=/tmp/x/squashfs-root
+          mkdir -p /tmp/tiny; echo 'const{app}=require("electron");app.whenReady().then(()=>setTimeout(()=>app.quit(),300));' > /tmp/tiny/main.js; echo '{"name":"t","version":"1.0.0","main":"main.js"}' > /tmp/tiny/package.json
+          node node_modules/.bin/asar pack /tmp/tiny /tmp/tiny.asar
+          cp -a "$ROOT" /tmp/x/swapped; cp /tmp/tiny.asar /tmp/x/swapped/resources/app.asar
+          cp -a "$ROOT" /tmp/x/renamed; mkdir -p /tmp/bare; (cd /tmp/bare && npm init -y >/dev/null && npm i electron@43.8.6 --no-audit --no-fund >/dev/null 2>&1; [ -x node_modules/electron/dist/electron ] || ./node_modules/.bin/install-electron --no-progress >/dev/null 2>&1)
+          E=/tmp/bare/node_modules/electron/dist/electron; ls -la "$E" | tee -a "$out/result.txt"
+          cmp "$E" "$BIN" && echo "packaged binary identical to bare" | tee -a "$out/result.txt" || echo "packaged binary DIFFERS from bare" | tee -a "$out/result.txt"
+          try() { local name="$1" n="$2"; shift 2; local trap=0 other="" c h; for i in $(seq 1 "$n"); do h=$(mktemp -d /tmp/h.XXXXXX); HOME="$h" XDG_CONFIG_HOME="$h/.config" TMPDIR="$h" ELECTRON_DISABLE_SANDBOX=1 timeout -k 1 3 xvfb-run -a "$@" >/tmp/try.log 2>&1; c=$?; case "$c" in 133) trap=$((trap+1));; 0|124|137|143) ;; *) other="$other $c";; esac; pkill -9 -f "$h" 2>/dev/null; sudo rm -f /tmp/core.* 2>/dev/null; rm -rf "$h" 2>/dev/null; done; echo "$name n=$n sigtrap=$trap other:$other" | tee -a "$out/result.txt"; }
           for round in 1 2; do
-            bare 43.8.6 100 bare-pinned
-            bare 43.8.7 100 bare-latest43
-            bare 38.3.0 100 bare-old
+            try bare-tiny-freshhome 100 "$E" --ozone-platform=x11 /tmp/tiny
+            try bare-our-asar 100 "$E" --ozone-platform=x11 "$ROOT/resources/app.asar"
+            try packaged-our-asar 100 "$BIN" --ozone-platform=x11
+            try packaged-tiny-asar 100 /tmp/x/swapped/$(basename "$BIN") --ozone-platform=x11
           done
           cat "$out/result.txt"
       - uses: actions/upload-artifact@v4
