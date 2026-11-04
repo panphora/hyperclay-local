@@ -10,7 +10,7 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     defaults:
       run:
         shell: bash
@@ -46,12 +46,15 @@ jobs:
                 for core in /tmp/core.*; do [ -f "$core" ] || continue; gdb -q -batch -ex 'info proc mappings' -ex bt -ex 'x/3i $pc' -ex 'thread apply all x/i $pc' "$BIN" "$core" 2>&1 | grep -aE 'electron.bin|^#|=> |signal|Thread' | head -60 | cut -c1-200 > "$out/bt-$name-$i.txt"; sudo rm -f "$core"; done; fi
               sudo rm -f /tmp/core.* 2>/dev/null; rm -rf "$home" 2>/dev/null; done
             echo "$name n=$n ok=$ok bad=$bad codes:$codes" | tee -a "$out/result.txt"; }
-          ROOT=/tmp/x/squashfs-root; LAUNCHER="${BIN%.bin}"; ls -la "$LAUNCHER" "$ROOT/AppRun" | tee -a "$out/result.txt"
-          try() { local name="$1" n="$2" trapd=0 other="" c h i; shift 2; for i in $(seq 1 "$n"); do h="$(fresh_home "$name-$i")"; mkdir -p "$h/tmp"; HOME="$h" XDG_CONFIG_HOME="$h/.config" TMPDIR="$h/tmp" timeout -k 1 4 xvfb-run -a "$@" >/tmp/try.log 2>&1; c=$?; case "$c" in 133) trapd=$((trapd+1));; 0|124|137|143) ;; *) other="$other $c";; esac; pkill -9 -f "hyperclay-local-electron" 2>/dev/null; pkill -9 -f "$(basename "$NEW")" 2>/dev/null; pkill -9 Xvfb 2>/dev/null; sudo rm -f /tmp/core.* 2>/dev/null; rm -rf "$h" 2>/dev/null; done; echo "$name n=$n sigtrap=$trapd other:$other" | tee -a "$out/result.txt"; }
-          try control-appimage 120 "$NEW"
-          try apprun 120 "$ROOT/AppRun"
-          try launcher 120 "$LAUNCHER"
-          ELECTRON_DISABLE_SANDBOX=1 try binary-settings 120 "$BIN" --ozone-platform=x11
+          ROOT=/tmp/x/squashfs-root; LAUNCHER="${BIN%.bin}"
+          cp "$ROOT/AppRun" "$out/AppRun.txt"
+          cp -a "$ROOT" /tmp/x/dump; D=/tmp/x/dump; printf '#!/bin/bash\nenv | sort > /tmp/apprun-env\necho "args: $*" > /tmp/apprun-args\n' > "$D/$(basename "$LAUNCHER")"; chmod +x "$D/$(basename "$LAUNCHER")"
+          env | sort > /tmp/base-env; "$D/AppRun" a b; cat /tmp/apprun-args | tee -a "$out/result.txt"
+          comm -13 /tmp/base-env /tmp/apprun-env | grep -vE '^(_|PWD|OLDPWD|SHLVL)=' | sed "s|/tmp/x/dump|$ROOT|g" > /tmp/added-env; cut -c1-220 /tmp/added-env | tee -a "$out/result.txt"
+          wrap() { local f="$1"; shift; { echo '#!/bin/bash'; while IFS= read -r line; do printf 'export %q\n' "$line"; done; echo "exec \"$LAUNCHER\" \"\$@\""; } > "$f"; chmod +x "$f"; }
+          APPIMAGE="$ROOT/AppRun"; variant apprun-control 150
+          wrap /tmp/w-all < /tmp/added-env; APPIMAGE=/tmp/w-all; variant launcher-all-env 150
+          n=0; while IFS= read -r line; do n=$((n+1)); printf '%s\n' "$line" | wrap "/tmp/w-$n"; APPIMAGE="/tmp/w-$n"; variant "only-${line%%=*}" 150; done < /tmp/added-env
           cat "$out/result.txt"
       - uses: actions/upload-artifact@v4
         if: always()
