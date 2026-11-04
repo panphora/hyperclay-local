@@ -159,7 +159,7 @@ describeShell('Linux check deadlines and cleanup', () => {
     const bin = path.join(fixtureDir, 'bin');
     fs.mkdirSync(bin);
     fs.writeFileSync(path.join(bin, 'setsid'), '#!/usr/bin/perl\nuse POSIX (); POSIX::setsid() or die "setsid: $!"; exec @ARGV or die "exec: $!";\n', { mode: 0o755 });
-    fs.writeFileSync(path.join(bin, 'xvfb-run'), '#!/bin/bash\nshift 3\nexec "$@"\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'xvfb-run'), '#!/bin/bash\nshift 5\nexec "$@"\n', { mode: 0o755 });
     fs.writeFileSync(path.join(fixtureDir, 'lib.sh'), fs.readFileSync(path.join(linuxDir, 'lib.sh'), 'utf8') + [
       '',
       'wait_for_server() { for _ in {1..40}; do [ -f "$CI_FIXTURE/app-ready" ] && return 0; sleep 0.05; done; return 1; }',

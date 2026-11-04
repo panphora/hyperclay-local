@@ -46,7 +46,11 @@ capture_failure() {
       else
         local launcher_exit=0
         wait "$pid" 2>/dev/null || launcher_exit=$?
-        echo "launcher_status=exited with status $launcher_exit"
+        if [ "$launcher_exit" -eq 127 ]; then
+          echo "launcher_status=absent (exit status unavailable)"
+        else
+          echo "launcher_status=exited with status $launcher_exit"
+        fi
       fi
       echo "--- launcher and its process group, before cleanup"
       ps -eo pid,ppid,pgid,stat,etime,args | awk -v pid="$pid" 'NR == 1 || $1 == pid || $3 == pid'

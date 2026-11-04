@@ -71,7 +71,7 @@ for ((i=1; i<=80; i++)); do printf 'startup line %s\n' "$i"; done > "$LAB/app.lo
     expect(result.stderr).not.toContain('startup line 1\n');
   });
 
-  test('records an exited launcher without inventing an exit status', () => {
+  test('records the exit status of a launcher that has already been waited for', () => {
     const result = failLaunch(`
 bash -c 'exit 23' &
 fixture_pid=$!
@@ -80,9 +80,17 @@ printf '%s\n' "$fixture_pid" > "$LAB/app.pid"
 printf 'startup stopped early\n' > "$LAB/app.log"
 `);
     expect(result.status).toBe(1);
-    expect(artifact('startup-diagnostics.txt')).toContain('launcher_status=absent (exit status unavailable)');
+    expect(artifact('startup-diagnostics.txt')).toContain('launcher_status=exited with status 23');
     expect(artifact('app.log')).toBe('startup stopped early\n');
     expect(fs.existsSync(path.join(fixtureDir, 'stopped'))).toBe(true);
+  });
+
+  test('does not invent an exit status for a launcher this shell did not start', () => {
+    const result = failLaunch(`
+( bash -c 'exit 23' & printf '%s\n' "$!" > "$LAB/app.pid"; wait ) || true
+`);
+    expect(result.status).toBe(1);
+    expect(artifact('startup-diagnostics.txt')).toContain('launcher_status=absent (exit status unavailable)');
   });
 
   test('diagnostic command failures still preserve logs and run cleanup', () => {
@@ -125,7 +133,7 @@ describeShell('Linux launch isolation', () => {
 mktemp() { printf '%s/lab\n' "$DIAGNOSTICS_FIXTURE"; }
 id() { echo 1000; }
 setsid() { "$@"; }
-xvfb-run() { shift 3; "$@"; }
+xvfb-run() { shift 5; "$@"; }
 source "$DIAGNOSTICS_LIBRARY"
 stop() { :; }
 launch "$DIAGNOSTICS_FIXTURE/home-a"
