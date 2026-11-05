@@ -215,7 +215,7 @@
     "yauzl": "3.4.0"
   },
   "dependencies": {
-    "@panphora/clayjs": "^1.20.0",
+    "@panphora/clayjs": "^1.21.0",
     "@panphora/hyperclay-workspace": "^0.7.0",
     "@tanstack/react-query": "^5.104.5",
     "busboy": "^1.6.0",
