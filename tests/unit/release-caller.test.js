@@ -17,7 +17,7 @@ const ROOT = path.join(__dirname, '..', '..');
 const SOURCE_SCRIPTS = path.join(ROOT, 'scripts');
 const WORKFLOW_FILE = path.join(ROOT, '.github', 'workflows', 'release.yml');
 const STATUS_GUARD = path.join(ROOT, 'tests', 'fixtures', 'release-status-cli-guard.js');
-const FROZEN_COORDINATOR_SHA256 = 'f4a0334db2916ea0f33b685bfc74f69ac8e4ab6b03d4bdef6b5d0d125f58a050';
+const FROZEN_COORDINATOR_SHA256 = '85c070116b65577c668c8b41b315c26b935dd9cef281db02d9c29d20bd6db987';
 const VERSION = '1.2.3';
 const ATTEMPT_ID = '12345678-1234-4123-8123-123456789abc';
 const RUN_DIR = typeof process.env.FLASHIMP_RUN_DIR === 'string' && process.env.FLASHIMP_RUN_DIR !== ''

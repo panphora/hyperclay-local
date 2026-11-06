@@ -2749,6 +2749,45 @@ testPosix('promotion dispatch retains identity and resumes a failed upload witho
   expect(harness.posts()).toHaveLength(2);
 });
 
+testPosix('a resumed promotion accepts a later commit on top of its release commit, a new promotion does not', async () => {
+  const fixture = makeFixture();
+  const record = promotionFixtureRecord(fixture);
+  const harness = makeHarness(fixture, { uuids: [RELEASE_ID, ATTEMPT_ID, FRESH_ATTEMPT_ID] });
+  let runId = RUN_ID;
+  let attemptId = ATTEMPT_ID;
+  harness.supplied.gh = (args, opts) => {
+    if (args.includes('POST')) return postHint(runId);
+    if (args.some(arg => arg.endsWith('/release.yml') || arg.endsWith(`/workflows/${WORKFLOW_ID}`))) return ghOk(definitionBody());
+    if (args.some(arg => arg.includes(`/runs/${RUN_ID}`))) {
+      return ghOk(runBody({ attemptId: ATTEMPT_ID, sourceSha: fixture.sourceSha, mode: 'publish', version: VERSION, conclusion: 'failure' }));
+    }
+    return ghOk(runBody({ attemptId, sourceSha: fixture.sourceSha, mode: 'publish', version: VERSION, runId, conclusion: 'failure' }));
+  };
+  const first = await runRelease({ repoRoot: fixture.repo, cacheRoot: fixture.cacheRoot,
+    flags: flagsFor(), promotionRecord: record }, harness.supplied);
+  expect(first.outcome).toBe('failed-ci');
+  write(fixture.repo, 'later.txt', 'a fix made after the release commit');
+  git(fixture.repo, ['add', 'later.txt']);
+  git(fixture.repo, ['commit', '-q', '-m', 'later fix']);
+  expect(git(fixture.repo, ['rev-parse', 'HEAD']).trim()).not.toBe(fixture.sourceSha);
+  runId = NEW_RUN_ID;
+  attemptId = FRESH_ATTEMPT_ID;
+  const second = await release(fixture, { resume: true }, harness);
+  expect(second.outcome).toBe('failed-ci');
+  expect(second.state.releaseId).toBe(first.state.releaseId);
+  expect(second.state.sourceSha).toBe(fixture.sourceSha);
+
+  const fresh = makeFixture();
+  const freshRecord = promotionFixtureRecord(fresh);
+  write(fresh.repo, 'later.txt', 'a fix made after the release commit');
+  git(fresh.repo, ['add', 'later.txt']);
+  git(fresh.repo, ['commit', '-q', '-m', 'later fix']);
+  const freshHarness = makeHarness(fresh);
+  await expect(runRelease({ repoRoot: fresh.repo, cacheRoot: fresh.cacheRoot,
+    flags: flagsFor(), promotionRecord: freshRecord }, freshHarness.supplied)).rejects.toThrow('mismatch');
+  expect(freshHarness.posts()).toHaveLength(0);
+});
+
 
 testPosix.each(['head', 'dirty', 'version'])('promotion refuses %s mismatch before remote actions', async mode => {
   const fixture = makeFixture();

@@ -172,8 +172,12 @@ async function runRelease({ repoRoot, cacheRoot, flags, promotionRecord }, suppl
         'Promotion excludes build and version selection flags');
       promotion = promotionRecord === undefined ? retainedPromotion : promotionRecord;
       const { validatePromotionRecord } = require('./release-candidate-promote');
+      const head = git(['rev-parse', 'HEAD']);
+      const resumedPast = promotionRecord === undefined && state && state.phase !== 'complete' &&
+        typeof promotion.release_sha === 'string' && oid.test(promotion.release_sha) && head !== promotion.release_sha &&
+        require('./release-target-evidence').isAncestor(d.readRun, identity.root, undefined, promotion.release_sha, head);
       promotion = validatePromotionRecord(promotion, { version: currentVersion(),
-        releaseSha: git(['rev-parse', 'HEAD']),
+        releaseSha: resumedPast ? promotion.release_sha : head,
         clean: d.run('git', ['-c', 'core.fsmonitor=false', 'status', '--porcelain', '--untracked-files=all'],
           { cwd: identity.root, echoStdout: false, env: { GIT_OPTIONAL_LOCKS: '0' } }).trim() === '' });
       need(retainedPromotion === null || isDeepStrictEqual(retainedPromotion, promotion),
