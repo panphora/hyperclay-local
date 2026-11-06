@@ -183,4 +183,77 @@ describe('release.js entry', () => {
 
     expect(pkg.scripts.release).toBe('node scripts/release.js');
   });
+
+  test.each(['standalone', 'parent capture'])('keeps a size preparation failure in the %s release log', async mode => {
+    const scratch = scratchRepo('size-failure');
+    const home = tempDir('size-failure-home');
+    const message = 'README.md has no size to update';
+    fs.writeFileSync(path.join(scratch, 'scripts', 'release-coordinator.js'),
+      `exports.runRelease = async () => { throw new Error(${JSON.stringify(message)}); };\n`);
+    const capturePath = path.join(home, 'capture.log');
+    let run;
+    if (mode === 'parent capture') {
+      const fd = fs.openSync(capturePath, 'w', 0o600);
+      try {
+        run = await runEntry(scratch, ['--resume'], {
+          home,
+          env: { HYPERSAVE_RELEASE_CAPTURE: '1', HYPERSAVE_RELEASE_LOG: capturePath },
+          stdio: ['ignore', fd, fd]
+        });
+      } finally {
+        fs.closeSync(fd);
+      }
+    } else {
+      run = await runEntry(scratch, ['--resume'], { home });
+    }
+    expect(run.code).toBe(1);
+    const logPath = mode === 'parent capture' ? capturePath : transcriptPaths(home)[0];
+    expect(fs.readFileSync(logPath, 'utf8')).toContain(message);
+  });
+
+  test('keeps the real missing README size error in parent output and the worker transcript', async () => {
+    const scratch = scratchRepo('real-size-failure');
+    const home = tempDir('real-size-failure-home');
+    const version = '1.2.3';
+    const sourceSha = 'a'.repeat(40);
+    const { expectedInstallerNames } = require('../../scripts/release-publication');
+    const files = expectedInstallerNames(version);
+    const manifest = {
+      version,
+      commit: sourceSha,
+      date: '2026-11-05T00:00:00.000Z',
+      files,
+      sizes: Object.fromEntries(files.map(name => [name, 1048576]))
+    };
+    const readme = files.map(name => `[${name}](https://example.invalid/${name})`).join('\n');
+    fs.writeFileSync(path.join(scratch, 'README.md'), readme);
+    fs.writeFileSync(path.join(scratch, 'release-info.json'), JSON.stringify(manifest));
+    fs.writeFileSync(path.join(scratch, 'scripts', 'release-coordinator.js'), [
+      "const fs = require('fs');",
+      `const { renderDownloadSizes } = require(${JSON.stringify(path.join(REPO, 'scripts', 'write-download-sizes.js'))});`,
+      'exports.runRelease = async ({ repoRoot }) => renderDownloadSizes({',
+      "  readme: fs.readFileSync(require('path').join(repoRoot, 'README.md'), 'utf8'),",
+      "  website: '',",
+      "  manifest: JSON.parse(fs.readFileSync(require('path').join(repoRoot, 'release-info.json'), 'utf8'))",
+      `}, ${JSON.stringify({ version, sourceSha })});`,
+      ''
+    ].join('\n'));
+    const capturePath = path.join(home, 'hypersave.log');
+    const fd = fs.openSync(capturePath, 'w', 0o600);
+    let run;
+    try {
+      run = await runEntry(scratch, ['--resume'], { home, stdio: ['ignore', fd, fd] });
+    } finally {
+      fs.closeSync(fd);
+    }
+    const message = `README.md has no size to update for ${files[0]}`;
+    expect(run.code).toBe(1);
+    expect(fs.readFileSync(capturePath, 'utf8')).toContain(message);
+    const transcripts = transcriptPaths(home);
+    expect(transcripts).toHaveLength(1);
+    const transcript = fs.readFileSync(transcripts[0], 'utf8');
+    expect(transcript).toContain(message);
+    expect(transcript).toMatch(/# finished \S+ exit code=1 signal=null/);
+    expect(fs.readFileSync(path.join(scratch, 'README.md'), 'utf8')).toBe(readme);
+  });
 });
