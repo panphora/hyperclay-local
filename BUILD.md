@@ -228,6 +228,8 @@ xattr -cr "/Applications/HyperclayLocal.app"
 - Verify Apple ID credentials are correct
 - Check that your Developer ID certificate is valid
 - Ensure hardened runtime is enabled in `package.json`
+- If notarization fails with `HTTP status code: 403. A required agreement is missing or has expired.`, authentication succeeded and Apple's Program License Agreement lapsed: do not chase credentials, because only the Account Holder can accept the agreement at `developer.apple.com`
+- Prove notarization by mounting the `.dmg` and running `spctl -a -vvv -t install` on the `.app` inside (`accepted` / `source=Notarized Developer ID`); `xcrun stapler validate` on the `.dmg` reporting no ticket is a red herring because the ticket is stapled to the `.app`
 
 ### Windows: Workflow fails at signing step
 - Check GitHub secrets are set correctly (no extra spaces)
