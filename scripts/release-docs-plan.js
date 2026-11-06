@@ -455,9 +455,11 @@ function requireSourceAfter(entries, snapshots, target, version) {
     const readme = byPath.get('README.md');
     const website = byPath.get('website/index.html');
     const { renderDownloadSizes } = require('./write-download-sizes');
+    // The size step first brings a promoted candidate's links up to the version.
+    const { prepareVersion } = require('./release-docs-prepare');
     const output = renderDownloadSizes({
-      readme: readme.beforeBytes.toString('utf8'),
-      website: website.beforeBytes.toString('utf8'),
+      readme: prepareVersion(readme.beforeBytes.toString('utf8'), version).updated,
+      website: prepareVersion(website.beforeBytes.toString('utf8'), version).updated,
       manifest,
     }, { version, sourceSha: target.publication.sourceSha });
     if (!readme.afterBytes.equals(Buffer.from(output.readme, 'utf8'))
