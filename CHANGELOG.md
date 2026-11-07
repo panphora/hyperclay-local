@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [1.35.0] - 2026-11-06
+
+### Changed
+- Copied documents no longer include content that is only meant to be copied.
+
+### Fixed
+- The Linux app starts reliably on newer kernels, including when the desktop environment sets duplicate or relative data directory entries.
+
 ## [1.34.1] - 2026-11-02
 
 ### Changed
